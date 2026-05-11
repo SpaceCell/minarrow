@@ -24,7 +24,10 @@
 //! and zero-copy FFI interchange.
 //!
 //! Cast into *Polars* dataframe via `.to_polars()` or *Apache Arrow* RecordBatch via `.to_apache_arrow()`,
-//! zero-copy, via the `cast_polars` and `cast_arrow` features.
+//! zero-copy, via the `cast_polars` and `cast_arrow` features. Round-trip the
+//! other direction with `Table::from_polars(&df)` or `Table::from_apache_arrow(&rb)`,
+//! or call `(&df).into()` / `(&rb).into()`. Each has a `try_*` sibling returning
+//! `Result<_, MinarrowError>`.
 
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -680,22 +683,31 @@ impl Table {
     ///
     /// The Arrow schema is derived from the imported array dtypes while
     /// preserving the original field names and nullability flags.
+    ///
+    /// Panics on FFI failure or empty table. For a fallible variant, see
+    /// [`Table::try_to_apache_arrow`].
     #[cfg(feature = "cast_arrow")]
     #[inline]
     pub fn to_apache_arrow(&self) -> RecordBatch {
-        use arrow::array::ArrayRef;
-        assert!(
-            !self.cols.is_empty(),
-            "Cannot build RecordBatch from an empty Table"
-        );
+        self.try_to_apache_arrow()
+            .expect("Table::to_apache_arrow failed")
+    }
 
-        // Convert columns
-        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(self.cols.len());
-        for col in &self.cols {
-            arrays.push(col.to_apache_arrow());
+    /// Fallible variant of [`Table::to_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    pub fn try_to_apache_arrow(&self) -> Result<RecordBatch, MinarrowError> {
+        use arrow::array::ArrayRef;
+        if self.cols.is_empty() {
+            return Err(MinarrowError::ShapeError {
+                message: "cannot build RecordBatch from an empty Table".to_string(),
+            });
         }
 
-        // Build Arrow Schema using field names + imported dtypes
+        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(self.cols.len());
+        for col in &self.cols {
+            arrays.push(col.try_to_apache_arrow()?);
+        }
+
         let mut fields = Vec::with_capacity(self.cols.len());
         for (i, col) in self.cols.iter().enumerate() {
             let dt = arrays[i].data_type().clone();
@@ -707,21 +719,99 @@ impl Table {
         }
         let schema = Arc::new(arrow_schema::Schema::new(fields));
 
-        // Assemble batch
-        RecordBatch::try_new(schema, arrays).expect("Failed to build RecordBatch from Table")
+        Ok(RecordBatch::try_new(schema, arrays)?)
     }
 
     // ** The below polars function is tested tests/polars.rs **
 
-    /// Casts the table to a Polars DataFrame
+    /// Casts the table to a Polars DataFrame.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`Table::try_to_polars`].
     #[cfg(feature = "cast_polars")]
     pub fn to_polars(&self) -> DataFrame {
-        let cols = self
-            .cols
-            .iter()
-            .map(|fa| Column::new(fa.field.name.clone().into(), fa.to_polars()))
-            .collect::<Vec<_>>();
-        DataFrame::new(self.n_rows, cols).expect("DataFrame build failed")
+        self.try_to_polars().expect("Table::to_polars failed")
+    }
+
+    /// Fallible variant of [`Table::to_polars`].
+    #[cfg(feature = "cast_polars")]
+    pub fn try_to_polars(&self) -> Result<DataFrame, MinarrowError> {
+        let mut cols = Vec::with_capacity(self.cols.len());
+        for fa in &self.cols {
+            let series = fa.try_to_polars()?;
+            cols.push(Column::new(fa.field.name.clone().into(), series));
+        }
+        Ok(DataFrame::new(self.n_rows, cols)?)
+    }
+
+    // ===========================================================
+    // Apache Arrow / Polars import (`from_*`)
+    // ===========================================================
+
+    /// Build a `Table` from an arrow-rs `RecordBatch`. Column names, dtypes,
+    /// nullability, and any custom field metadata are recovered from the
+    /// RecordBatch schema. The Table name will be empty; assign one via
+    /// `Table::new` if needed.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`Table::try_from_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    #[inline]
+    pub fn from_apache_arrow(rb: &RecordBatch) -> Table {
+        Self::try_from_apache_arrow(rb).expect("Table::from_apache_arrow failed")
+    }
+
+    /// Fallible variant of [`Table::from_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    pub fn try_from_apache_arrow(rb: &RecordBatch) -> Result<Table, MinarrowError> {
+        let schema = rb.schema();
+        let mut cols = Vec::with_capacity(rb.num_columns());
+        for (i, col) in rb.columns().iter().enumerate() {
+            let arr_field = schema.field(i);
+            let fa = FieldArray::try_from_apache_arrow(arr_field.name(), col)?;
+            cols.push(fa);
+        }
+        Ok(Table::new(String::new(), Some(cols)))
+    }
+
+    /// Build a `Table` from a Polars `DataFrame`. Column names, dtypes,
+    /// nullability, and any custom Series metadata are recovered.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`Table::try_from_polars`].
+    #[cfg(feature = "cast_polars")]
+    #[inline]
+    pub fn from_polars(df: &DataFrame) -> Table {
+        Self::try_from_polars(df).expect("Table::from_polars failed")
+    }
+
+    /// Fallible variant of [`Table::from_polars`].
+    #[cfg(feature = "cast_polars")]
+    pub fn try_from_polars(df: &DataFrame) -> Result<Table, MinarrowError> {
+        let columns = df.columns();
+        let mut cols = Vec::with_capacity(columns.len());
+        for column in columns {
+            // Polars Column owns its data either as a Series or scalar; materialise
+            // into a single chunked Series so we can hit the polars_arrow FFI path.
+            let series = column.as_materialized_series();
+            let fa = FieldArray::try_from_polars(series)?;
+            cols.push(fa);
+        }
+        Ok(Table::new(String::new(), Some(cols)))
+    }
+}
+
+#[cfg(feature = "cast_arrow")]
+impl From<&RecordBatch> for Table {
+    fn from(rb: &RecordBatch) -> Self {
+        Table::from_apache_arrow(rb)
+    }
+}
+
+#[cfg(feature = "cast_polars")]
+impl From<&DataFrame> for Table {
+    fn from(df: &DataFrame) -> Self {
+        Table::from_polars(df)
     }
 }
 

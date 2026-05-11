@@ -28,9 +28,7 @@ use std::any::TypeId;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
-#[cfg(feature = "cast_arrow")]
-use crate::ffi::arrow_c_ffi::export_to_c;
-#[cfg(feature = "cast_arrow")]
+#[cfg(any(feature = "cast_arrow", feature = "cast_polars"))]
 use crate::ffi::schema::Schema;
 #[cfg(feature = "cast_arrow")]
 use arrow::array::ArrayRef;
@@ -2911,57 +2909,64 @@ impl Array {
         }
     }
 
-    /// Derive a `Field` from the array (via `Field::from_array`)
-    /// and call `to_apache_arrow_with_field`.
+    // ===========================================================
+    // Apache Arrow bridge - tested under tests/apache_arrow.rs
+    // ===========================================================
+    //
+    // For specific logical types such as Timestamp/Time/Duration/Interval,
+    // wrap the array in a `FieldArray` with the desired `Field` and
+    // call `FieldArray::to_apache_arrow()`.
+
+    /// Build an arrow-rs `ArrayRef`, deriving a `Field` from the array shape.
     ///
-    /// For Timestamp/Time/Duration/Interval, prefer passing
-    /// an explicit `Field` via `to_apache_arrow_with_field`.
+    /// Panics on FFI failure. For a fallible variant returning
+    /// `Result<_, MinarrowError>`, see [`Array::try_to_apache_arrow`].
+    ///
+    /// For Timestamp/Time/Duration/Interval, wrap in a `FieldArray` with the
+    /// desired `Field` and use `FieldArray::to_apache_arrow()`.
     #[cfg(feature = "cast_arrow")]
     #[inline]
     pub fn to_apache_arrow(&self, name: &str) -> ArrayRef {
-        let derived = Field::from_array(name, self, None);
-        self.to_apache_arrow_with_field(&derived)
+        self.try_to_apache_arrow(name)
+            .expect("Array::to_apache_arrow failed")
     }
 
-    /// Export this Minarrow array via Arrow C FFI using `field` as the
-    /// logical type; then import into arrow-rs as `ArrayRef`.
-    ///
-    /// Use this when you need explicit temporal/interval semantics.
+    /// Fallible variant of [`Array::to_apache_arrow`].
     #[cfg(feature = "cast_arrow")]
-    #[inline]
-    pub fn to_apache_arrow_with_field(&self, field: &Field) -> ArrayRef {
-        // 1) Export using the provided logical field (source of truth)
-        let schema = Schema::from(vec![field.clone()]);
-        let (c_arr, c_schema) = export_to_c(Arc::new(self.clone()), schema);
-
-        // 2) Move FFI structs out (arrow-rs takes ownership)
-        let arr_ptr = c_arr as *mut arrow::array::ffi::FFI_ArrowArray;
-        let sch_ptr = c_schema as *mut arrow::array::ffi::FFI_ArrowSchema;
-        let ffi_arr = unsafe { arr_ptr.read() };
-        let ffi_sch = unsafe { sch_ptr.read() };
-
-        // 3) Import into arrow-rs (fully qualified)
-        let array_data = unsafe {
-            arrow::array::ffi::from_ffi(ffi_arr, &ffi_sch).expect("arrow-rs FFI import failed")
-        };
-
-        arrow::array::make_array(array_data)
+    pub fn try_to_apache_arrow(&self, name: &str) -> Result<ArrayRef, MinarrowError> {
+        let field = Field::from_array(name, self, None);
+        crate::ffi::arrow_rs::export(Arc::new(self.clone()), Schema::from(vec![field]))
     }
 
-    // ** The below 2 polars functions are tested under tests/polars.rs **
+    // ===========================================================
+    // Polars bridge - tested under tests/polars.rs
+    // ===========================================================
+    //
+    // For specific logical types, wrap in a `FieldArray` with the desired
+    // `Field` and call `FieldArray::to_polars()`.
 
-    /// Build a Polars Series using a derived Field (dtype/nullability from the array).
+    /// Build a Polars Series, deriving a `Field` from the array shape.
     ///
-    /// If you need an explicit logical type, use `to_polars_with_field`.
-    /// For **Timestamp/Time/Duration/Interval**:
-    ///     - prefer `to_polars_with_field` with an explicit Field::new.
-    ///     - then, append the`minarrow::ArrowType` to the `Field` that matches the desired datetime type.
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`Array::try_to_polars`].
+    ///
+    /// For Timestamp/Time/Duration/Interval, wrap in a `FieldArray` with the
+    /// desired `Field` and use `FieldArray::to_polars()`.
     #[cfg(feature = "cast_polars")]
     pub fn to_polars(&self, name: &str) -> polars::prelude::Series {
+        self.try_to_polars(name)
+            .expect("Array::to_polars failed")
+    }
+
+    /// Fallible variant of [`Array::to_polars`].
+    #[cfg(feature = "cast_polars")]
+    pub fn try_to_polars(&self, name: &str) -> Result<polars::prelude::Series, MinarrowError> {
+        // Map physical Datetime variants to a sensible Arrow logical type for
+        // export; specific Timestamp/Time/Duration/Interval semantics need a
+        // FieldArray with an explicit Field.
         #[cfg(feature = "datetime")]
         use crate::{TemporalArray, TimeUnit, ffi::arrow_dtype::ArrowType};
 
-        // We infer what is directly inferrable and expected
         let field = match self {
             #[cfg(feature = "datetime")]
             Array::TemporalArray(TemporalArray::Datetime32(a)) => {
@@ -2980,7 +2985,6 @@ impl Array {
                     TimeUnit::Seconds => ArrowType::Timestamp(TimeUnit::Seconds, None),
                     TimeUnit::Microseconds => ArrowType::Timestamp(TimeUnit::Microseconds, None),
                     TimeUnit::Nanoseconds => ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
-                    // We default to Date64 here for compatibility rather than Date32
                     TimeUnit::Days => ArrowType::Date64,
                 };
                 Field::new(name.to_string(), ty, a.is_nullable(), None)
@@ -2988,197 +2992,56 @@ impl Array {
             _ => Field::from_array(name.to_string(), self, None),
         };
 
-        self.to_polars_with_field(name, &field)
+        crate::ffi::polars::export(
+            Arc::new(self.clone()),
+            name,
+            Schema::from(vec![field]),
+        )
+    }
+    // ===========================================================
+    // Apache Arrow / Polars import (`from_*`)
+    // ===========================================================
+
+    /// Import an arrow-rs `ArrayRef` into a Minarrow `Array`.
+    ///
+    /// The recovered `Field` (dtype + nullable + metadata) is dropped. Use
+    /// [`crate::FieldArray::from_apache_arrow`] to preserve it.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`Array::try_from_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    #[inline]
+    pub fn from_apache_arrow(arr: &arrow::array::ArrayRef) -> Array {
+        Self::try_from_apache_arrow(arr).expect("Array::from_apache_arrow failed")
     }
 
-    /// Export via Arrow C -> import into polars_arrow -> build Series.
-    /// Field supplies logical type; `name` is used for the Series.
+    /// Fallible variant of [`Array::from_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    pub fn try_from_apache_arrow(
+        arr: &arrow::array::ArrayRef,
+    ) -> Result<Array, MinarrowError> {
+        let (array_arc, _field) = crate::ffi::arrow_rs::import(arr)?;
+        Ok(Arc::try_unwrap(array_arc).unwrap_or_else(|arc| (*arc).clone()))
+    }
+
+    /// Import a Polars `Series` into a Minarrow `Array`.
     ///
-    /// For **Timestamp/Time/Duration/Interval**: append `minarrow::ArrowType` to the `Field`
-    /// that matches the desired datetime type.
+    /// The series name and recovered Field metadata are dropped. Use
+    /// [`crate::FieldArray::from_polars`] to preserve them.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`Array::try_from_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn to_polars_with_field(&self, name: &str, field: &Field) -> polars::prelude::Series {
-        use std::sync::Arc;
+    #[inline]
+    pub fn from_polars(s: &polars::prelude::Series) -> Array {
+        Self::try_from_polars(s).expect("Array::from_polars failed")
+    }
 
-        // 1) Export  Minarrow array with the provided logical Field
-        let schema = crate::ffi::schema::Schema::from(vec![field.clone()]);
-        let (c_arr, c_schema) =
-            crate::ffi::arrow_c_ffi::export_to_c(Arc::new(self.clone()), schema);
-
-        // 2) Move ArrowArray (ownership transfer to arrow2)
-        let arr_ptr = c_arr as *mut polars_arrow::ffi::ArrowArray;
-        let _sch_ptr = c_schema as *mut polars_arrow::ffi::ArrowSchema;
-        let arr_val = unsafe { std::ptr::read(arr_ptr) };
-
-        // 3) Build arrow2 dtype directly from Field
-        // We do it this way to avoid (at the time of writing) unsupported FFI types like Nanoseconds.
-        let a2_dtype: polars_arrow::datatypes::ArrowDataType = match &field.dtype {
-            crate::ffi::arrow_dtype::ArrowType::Null => {
-                polars_arrow::datatypes::ArrowDataType::Null
-            }
-            crate::ffi::arrow_dtype::ArrowType::Boolean => {
-                polars_arrow::datatypes::ArrowDataType::Boolean
-            }
-
-            #[cfg(feature = "extended_numeric_types")]
-            crate::ffi::arrow_dtype::ArrowType::Int8 => {
-                polars_arrow::datatypes::ArrowDataType::Int8
-            }
-            #[cfg(feature = "extended_numeric_types")]
-            crate::ffi::arrow_dtype::ArrowType::Int16 => {
-                polars_arrow::datatypes::ArrowDataType::Int16
-            }
-            crate::ffi::arrow_dtype::ArrowType::Int32 => {
-                polars_arrow::datatypes::ArrowDataType::Int32
-            }
-            crate::ffi::arrow_dtype::ArrowType::Int64 => {
-                polars_arrow::datatypes::ArrowDataType::Int64
-            }
-
-            #[cfg(feature = "extended_numeric_types")]
-            crate::ffi::arrow_dtype::ArrowType::UInt8 => {
-                polars_arrow::datatypes::ArrowDataType::UInt8
-            }
-            #[cfg(feature = "extended_numeric_types")]
-            crate::ffi::arrow_dtype::ArrowType::UInt16 => {
-                polars_arrow::datatypes::ArrowDataType::UInt16
-            }
-            crate::ffi::arrow_dtype::ArrowType::UInt32 => {
-                polars_arrow::datatypes::ArrowDataType::UInt32
-            }
-            crate::ffi::arrow_dtype::ArrowType::UInt64 => {
-                polars_arrow::datatypes::ArrowDataType::UInt64
-            }
-
-            crate::ffi::arrow_dtype::ArrowType::Float32 => {
-                polars_arrow::datatypes::ArrowDataType::Float32
-            }
-            crate::ffi::arrow_dtype::ArrowType::Float64 => {
-                polars_arrow::datatypes::ArrowDataType::Float64
-            }
-
-            crate::ffi::arrow_dtype::ArrowType::String => {
-                polars_arrow::datatypes::ArrowDataType::Utf8
-            }
-            #[cfg(feature = "large_string")]
-            crate::ffi::arrow_dtype::ArrowType::LargeString => {
-                polars_arrow::datatypes::ArrowDataType::LargeUtf8
-            }
-            // Utf8View is converted to regular Utf8 during import, so map to Utf8
-            crate::ffi::arrow_dtype::ArrowType::Utf8View => {
-                polars_arrow::datatypes::ArrowDataType::Utf8
-            }
-
-            #[cfg(feature = "datetime")]
-            crate::ffi::arrow_dtype::ArrowType::Date32 => {
-                polars_arrow::datatypes::ArrowDataType::Date32
-            }
-            #[cfg(feature = "datetime")]
-            crate::ffi::arrow_dtype::ArrowType::Date64 => {
-                polars_arrow::datatypes::ArrowDataType::Date64
-            }
-
-            #[cfg(feature = "datetime")]
-            crate::ffi::arrow_dtype::ArrowType::Time32(u) => {
-                polars_arrow::datatypes::ArrowDataType::Time32(match u {
-                    crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
-                    crate::TimeUnit::Milliseconds => polars_arrow::datatypes::TimeUnit::Millisecond,
-                    _ => panic!("Time32 supports Seconds or Milliseconds only"),
-                })
-            }
-            #[cfg(feature = "datetime")]
-            crate::ffi::arrow_dtype::ArrowType::Time64(u) => {
-                polars_arrow::datatypes::ArrowDataType::Time64(match u {
-                    crate::TimeUnit::Microseconds => polars_arrow::datatypes::TimeUnit::Microsecond,
-                    crate::TimeUnit::Nanoseconds => polars_arrow::datatypes::TimeUnit::Nanosecond,
-                    _ => panic!("Time64 supports Microseconds or Nanoseconds only"),
-                })
-            }
-
-            #[cfg(feature = "datetime")]
-            crate::ffi::arrow_dtype::ArrowType::Duration32(u) => {
-                polars_arrow::datatypes::ArrowDataType::Duration(match u {
-                    crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
-                    crate::TimeUnit::Milliseconds => polars_arrow::datatypes::TimeUnit::Millisecond,
-                    _ => panic!("Duration32 supports Seconds or Milliseconds only"),
-                })
-            }
-            #[cfg(feature = "datetime")]
-            crate::ffi::arrow_dtype::ArrowType::Duration64(u) => {
-                polars_arrow::datatypes::ArrowDataType::Duration(match u {
-                    crate::TimeUnit::Microseconds => polars_arrow::datatypes::TimeUnit::Microsecond,
-                    crate::TimeUnit::Nanoseconds => polars_arrow::datatypes::TimeUnit::Nanosecond,
-                    _ => panic!("Duration64 supports Microseconds or Nanoseconds only"),
-                })
-            }
-
-            #[cfg(feature = "datetime")]
-            crate::ffi::arrow_dtype::ArrowType::Timestamp(u, tz) => {
-                polars_arrow::datatypes::ArrowDataType::Timestamp(
-                    match u {
-                        crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
-                        crate::TimeUnit::Milliseconds => {
-                            polars_arrow::datatypes::TimeUnit::Millisecond
-                        }
-                        crate::TimeUnit::Microseconds => {
-                            polars_arrow::datatypes::TimeUnit::Microsecond
-                        }
-                        crate::TimeUnit::Nanoseconds => {
-                            polars_arrow::datatypes::TimeUnit::Nanosecond
-                        }
-                        crate::TimeUnit::Days => panic!("Timestamp(Days) is invalid"),
-                    },
-                    tz.as_ref().map(|s| s.as_str().into()),
-                )
-            }
-
-            #[cfg(feature = "datetime")]
-            crate::ffi::arrow_dtype::ArrowType::Interval(iu) => {
-                polars_arrow::datatypes::ArrowDataType::Interval(match iu {
-                    crate::IntervalUnit::YearMonth => {
-                        polars_arrow::datatypes::IntervalUnit::YearMonth
-                    }
-                    crate::IntervalUnit::DaysTime => polars_arrow::datatypes::IntervalUnit::DayTime,
-                    crate::IntervalUnit::MonthDaysNs => {
-                        polars_arrow::datatypes::IntervalUnit::MonthDayNano
-                    }
-                })
-            }
-
-            crate::ffi::arrow_dtype::ArrowType::Dictionary(idx) => {
-                let key: polars_arrow::datatypes::IntegerType = match idx {
-                    #[cfg(feature = "default_categorical_8")]
-                    crate::ffi::arrow_dtype::CategoricalIndexType::UInt8 => {
-                        polars_arrow::datatypes::IntegerType::UInt8
-                    }
-                    #[cfg(feature = "extended_categorical")]
-                    crate::ffi::arrow_dtype::CategoricalIndexType::UInt16 => {
-                        polars_arrow::datatypes::IntegerType::UInt16
-                    }
-                    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-                    crate::ffi::arrow_dtype::CategoricalIndexType::UInt32 => {
-                        polars_arrow::datatypes::IntegerType::UInt32
-                    }
-                    #[cfg(feature = "extended_categorical")]
-                    crate::ffi::arrow_dtype::CategoricalIndexType::UInt64 => {
-                        polars_arrow::datatypes::IntegerType::UInt64
-                    }
-                };
-                polars_arrow::datatypes::ArrowDataType::Dictionary(
-                    key,
-                    Box::new(polars_arrow::datatypes::ArrowDataType::Utf8),
-                    false,
-                )
-            }
-        };
-
-        // 4) Import into arrow2 and build a Polars Series
-        let a2_array: Box<dyn polars_arrow::array::Array> =
-            unsafe { polars_arrow::ffi::import_array_from_c(arr_val, a2_dtype.clone()) }
-                .expect("polars_arrow import_array_from_c failed");
-
-        polars::prelude::Series::from_arrow(name.into(), a2_array)
-            .expect("Polars Series::from_arrow failed")
+    /// Fallible variant of [`Array::from_polars`].
+    #[cfg(feature = "cast_polars")]
+    pub fn try_from_polars(s: &polars::prelude::Series) -> Result<Array, MinarrowError> {
+        let (array_arc, _field) = crate::ffi::polars::import(s)?;
+        Ok(Arc::try_unwrap(array_arc).unwrap_or_else(|arc| (*arc).clone()))
     }
 }
 

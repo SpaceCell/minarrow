@@ -32,6 +32,16 @@
 //! - Streaming ingestion into append-only datasets.
 //! - Windowed or mini-batch analytics.
 //! - Incremental build-up of tables for later unification.
+//!
+//! ## Apache Arrow / Polars bridges (`cast_arrow` / `cast_polars` features)
+//! - `to_apache_arrow()` exports each batch as an arrow-rs `RecordBatch`.
+//! - `to_polars()` builds a polars `DataFrame` whose columns are chunked Series
+//!   mirroring the SuperTable's batches.
+//! - `from_apache_arrow(&[RecordBatch])` and `from_polars(&DataFrame)`
+//!   recover schema, dtypes, and chunk boundaries on import.
+//! - Each panicking method has a `try_*` sibling returning `Result<_, MinarrowError>`.
+//! - `&[RecordBatch]` and `&DataFrame` can be converted via `.into()` for
+//!   ergonomic call sites.
 
 use std::fmt::{Display, Formatter};
 
@@ -879,6 +889,191 @@ impl Display for SuperTable {
         }
 
         Ok(())
+    }
+}
+
+// ===========================================================
+// Apache Arrow / Polars bridges for SuperTable
+// ===========================================================
+
+impl SuperTable {
+    /// Export each batch as an arrow-rs `RecordBatch`.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`SuperTable::try_to_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    #[inline]
+    pub fn to_apache_arrow(&self) -> Vec<arrow::array::RecordBatch> {
+        self.try_to_apache_arrow()
+            .expect("SuperTable::to_apache_arrow failed")
+    }
+
+    /// Fallible variant of [`SuperTable::to_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    pub fn try_to_apache_arrow(
+        &self,
+    ) -> Result<Vec<arrow::array::RecordBatch>, MinarrowError> {
+        let mut out = Vec::with_capacity(self.batches.len());
+        for batch in &self.batches {
+            out.push(batch.try_to_apache_arrow()?);
+        }
+        Ok(out)
+    }
+
+    /// Build a polars `DataFrame` whose columns are chunked Series mirroring
+    /// the SuperTable's batches.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`SuperTable::try_to_polars`].
+    #[cfg(feature = "cast_polars")]
+    #[inline]
+    pub fn to_polars(&self) -> polars::frame::DataFrame {
+        self.try_to_polars()
+            .expect("SuperTable::to_polars failed")
+    }
+
+    /// Fallible variant of [`SuperTable::to_polars`].
+    #[cfg(feature = "cast_polars")]
+    pub fn try_to_polars(
+        &self,
+    ) -> Result<polars::frame::DataFrame, MinarrowError> {
+        use polars::prelude::Column;
+        if self.batches.is_empty() {
+            // Build an empty DataFrame matching the schema.
+            return Ok(polars::frame::DataFrame::default());
+        }
+
+        let n_cols = self.batches[0].n_cols();
+        let mut col_series: Vec<polars::prelude::Series> =
+            Vec::with_capacity(n_cols);
+
+        // Per column, fold per-batch Series via `append` so chunks survive.
+        for col_idx in 0..n_cols {
+            let mut iter = self.batches.iter();
+            let first_batch = iter.next().unwrap();
+            let mut acc = first_batch.cols[col_idx].try_to_polars()?;
+            for batch in iter {
+                let s = batch.cols[col_idx].try_to_polars()?;
+                acc.append(&s)?;
+            }
+            col_series.push(acc);
+        }
+
+        let cols: Vec<Column> = col_series
+            .into_iter()
+            .map(|s| Column::new(s.name().clone(), s))
+            .collect();
+        Ok(polars::frame::DataFrame::new(self.n_rows, cols)?)
+    }
+
+    /// Build a `SuperTable` from a slice of arrow-rs `RecordBatch` values.
+    /// All batches must share the same schema.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`SuperTable::try_from_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    #[inline]
+    pub fn from_apache_arrow(
+        batches: &[arrow::array::RecordBatch],
+    ) -> SuperTable {
+        Self::try_from_apache_arrow(batches)
+            .expect("SuperTable::from_apache_arrow failed")
+    }
+
+    /// Fallible variant of [`SuperTable::from_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    pub fn try_from_apache_arrow(
+        batches: &[arrow::array::RecordBatch],
+    ) -> Result<SuperTable, MinarrowError> {
+        if batches.is_empty() {
+            return Ok(SuperTable::new(String::new()));
+        }
+        let mut tables = Vec::with_capacity(batches.len());
+        for rb in batches {
+            tables.push(Arc::new(Table::try_from_apache_arrow(rb)?));
+        }
+        Ok(SuperTable::from_batches(tables, None))
+    }
+
+    /// Build a `SuperTable` from a Polars `DataFrame`, preserving per-column
+    /// chunk boundaries as separate batches.
+    ///
+    /// All columns must share the same number of chunks for this to map cleanly
+    /// to batches; if chunks are misaligned across columns we re-chunk the
+    /// DataFrame to a single chunk first as a fallback.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`SuperTable::try_from_polars`].
+    #[cfg(feature = "cast_polars")]
+    #[inline]
+    pub fn from_polars(df: &polars::frame::DataFrame) -> SuperTable {
+        Self::try_from_polars(df)
+            .expect("SuperTable::from_polars failed")
+    }
+
+    /// Fallible variant of [`SuperTable::from_polars`].
+    #[cfg(feature = "cast_polars")]
+    pub fn try_from_polars(
+        df: &polars::frame::DataFrame,
+    ) -> Result<SuperTable, MinarrowError> {
+        let columns = df.columns();
+        if columns.is_empty() {
+            return Ok(SuperTable::new(String::new()));
+        }
+
+        // Materialise each column to a Series and read its chunk count.
+        let series: Vec<&polars::prelude::Series> = columns
+            .iter()
+            .map(|c| c.as_materialized_series())
+            .collect();
+        let n_chunks = series[0].n_chunks();
+        let aligned = series.iter().all(|s| s.n_chunks() == n_chunks);
+
+        if !aligned {
+            // Misaligned chunks: fall back to a single-batch SuperTable built
+            // from a rechunked DataFrame. We rebuild via Table::from_polars
+            // which calls per-column FieldArray::try_from_polars (which itself
+            // uses chunk 0; for misaligned multi-chunk Series, we rechunk).
+            let mut rechunked = df.clone();
+            rechunked.align_chunks_par();
+            let table = Table::try_from_polars(&rechunked)?;
+            return Ok(SuperTable::from_batches(vec![Arc::new(table)], None));
+        }
+
+        // Aligned: build one Table per chunk index by importing the i'th
+        // chunk of each Series directly through the polars bridge.
+        use polars::prelude::CompatLevel;
+        let mut batches = Vec::with_capacity(n_chunks);
+        for chunk_idx in 0..n_chunks {
+            let mut cols = Vec::with_capacity(series.len());
+            for s in &series {
+                let arr2 = s.to_arrow(chunk_idx, CompatLevel::oldest());
+                let (array_arc, field) = crate::ffi::polars::import_chunk(
+                    s.name().as_str(),
+                    s.null_count() > 0,
+                    arr2,
+                )?;
+                let array =
+                    Arc::try_unwrap(array_arc).unwrap_or_else(|arc| (*arc).clone());
+                cols.push(FieldArray::new(field, array));
+            }
+            batches.push(Arc::new(Table::new(String::new(), Some(cols))));
+        }
+        Ok(SuperTable::from_batches(batches, None))
+    }
+}
+
+#[cfg(feature = "cast_arrow")]
+impl From<&[arrow::array::RecordBatch]> for SuperTable {
+    fn from(batches: &[arrow::array::RecordBatch]) -> Self {
+        SuperTable::from_apache_arrow(batches)
+    }
+}
+
+#[cfg(feature = "cast_polars")]
+impl From<&polars::frame::DataFrame> for SuperTable {
+    fn from(df: &polars::frame::DataFrame) -> Self {
+        SuperTable::from_polars(df)
     }
 }
 

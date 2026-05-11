@@ -27,7 +27,7 @@
 use std::error::Error;
 use std::fmt;
 
-/// Catch all error type for `Minarrow`
+/// Catch all error types for `Minarrow`
 #[derive(Debug, PartialEq)]
 pub enum MinarrowError {
     ColumnLengthMismatch {
@@ -64,6 +64,14 @@ pub enum MinarrowError {
         feature: String,
     },
     IndexError(String),
+    /// External bridge failure surfaced by `to_apache_arrow` / `to_polars` /
+    /// `from_apache_arrow` / `from_polars` or any of their `try_*` siblings.
+    /// `source` identifies the foreign library (e.g. `"arrow-rs"`, `"polars"`)
+    /// so the same variant can carry errors from either bridge.
+    BridgeError {
+        source: &'static str,
+        message: String,
+    },
 }
 
 impl fmt::Display for MinarrowError {
@@ -143,11 +151,34 @@ impl fmt::Display for MinarrowError {
             MinarrowError::IndexError(message) => {
                 write!(f, "Index error: {}", message)
             }
+            MinarrowError::BridgeError { source, message } => {
+                write!(f, "Bridge error ({}): {}", source, message)
+            }
         }
     }
 }
 
 impl Error for MinarrowError {}
+
+#[cfg(feature = "cast_arrow")]
+impl From<arrow::error::ArrowError> for MinarrowError {
+    fn from(e: arrow::error::ArrowError) -> Self {
+        MinarrowError::BridgeError {
+            source: "arrow-rs",
+            message: e.to_string(),
+        }
+    }
+}
+
+#[cfg(feature = "cast_polars")]
+impl From<polars::error::PolarsError> for MinarrowError {
+    fn from(e: polars::error::PolarsError) -> Self {
+        MinarrowError::BridgeError {
+            source: "polars",
+            message: e.to_string(),
+        }
+    }
+}
 
 /// Error type for all kernel operations.
 ///

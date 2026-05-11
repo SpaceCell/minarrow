@@ -27,6 +27,14 @@
 //! - Field metadata is stored once at the SuperArray level, not per-chunk.
 //! - Use `from_arrays()` when you don't need field metadata (e.g., Dam consolidation)
 //! - Use `from_arrays_with_field()` when field metadata is required
+//!
+//! ## Apache Arrow / Polars bridges (`cast_arrow` / `cast_polars` features)
+//! - `to_apache_arrow()` exports each chunk as an arrow-rs `ArrayRef`.
+//! - `to_polars()` builds a polars `Series` whose internal chunks mirror the SuperArray.
+//! - `from_apache_arrow(name, &[ArrayRef])` and `from_polars(&Series)`
+//!   recover dtype + field metadata across chunks.
+//! - Each panicking method has a `try_*` sibling returning `Result<_, MinarrowError>`.
+//! - `&Series` can be converted via `(&series).into()` for ergonomic call sites.
 
 use std::fmt::{Display, Formatter};
 use std::iter::FromIterator;
@@ -1086,6 +1094,178 @@ impl Concatenate for SuperArray {
             field: self.field.or(other.field),
             null_counts,
         })
+    }
+}
+
+// ===========================================================
+// Apache Arrow / Polars bridges for SuperArray
+// ===========================================================
+
+impl SuperArray {
+    /// Export each chunk as an arrow-rs `ArrayRef`. The resulting `Vec` has the
+    /// same length as `self.n_chunks()`. Field metadata travels with each chunk
+    /// when the SuperArray was built with one.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`SuperArray::try_to_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    #[inline]
+    pub fn to_apache_arrow(&self) -> Vec<arrow::array::ArrayRef> {
+        self.try_to_apache_arrow()
+            .expect("SuperArray::to_apache_arrow failed")
+    }
+
+    /// Fallible variant of [`SuperArray::to_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    pub fn try_to_apache_arrow(
+        &self,
+    ) -> Result<Vec<arrow::array::ArrayRef>, MinarrowError> {
+        let mut out = Vec::with_capacity(self.chunks.len());
+        // When a field is present, use it so logical types (Timestamp/Time/etc)
+        // are preserved across chunks. Otherwise derive per chunk from shape.
+        match self.field.as_deref() {
+            Some(field) => {
+                for chunk in &self.chunks {
+                    out.push(crate::ffi::arrow_rs::export(
+                        Arc::new(chunk.clone()),
+                        crate::ffi::schema::Schema::from(vec![field.clone()]),
+                    )?);
+                }
+            }
+            None => {
+                for chunk in &self.chunks {
+                    out.push(chunk.try_to_apache_arrow("")?);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Build a polars `Series` whose internal arrow chunks mirror the
+    /// SuperArray's chunks. Requires a stored field for the name.
+    ///
+    /// Panics on FFI failure or missing field metadata. For a fallible variant,
+    /// see [`SuperArray::try_to_polars`].
+    #[cfg(feature = "cast_polars")]
+    #[inline]
+    pub fn to_polars(&self) -> polars::prelude::Series {
+        self.try_to_polars().expect("SuperArray::to_polars failed")
+    }
+
+    /// Fallible variant of [`SuperArray::to_polars`].
+    #[cfg(feature = "cast_polars")]
+    pub fn try_to_polars(
+        &self,
+    ) -> Result<polars::prelude::Series, MinarrowError> {
+        let field = self.field.as_deref().ok_or_else(|| MinarrowError::TypeError {
+            from: "SuperArray",
+            to: "polars::Series",
+            message: Some("SuperArray has no field metadata; assign one before exporting".into()),
+        })?;
+        let schema = crate::ffi::schema::Schema::from(vec![field.clone()]);
+
+        if self.chunks.is_empty() {
+            // Build an empty Series with the right dtype via an empty chunk.
+            return crate::ffi::polars::export(
+                Arc::new(Array::Null),
+                &field.name,
+                schema,
+            );
+        }
+
+        // Build a Series per chunk, then concatenate via polars to preserve chunks.
+        let mut iter = self.chunks.iter();
+        let first = crate::ffi::polars::export(
+            Arc::new(iter.next().unwrap().clone()),
+            &field.name,
+            schema.clone(),
+        )?;
+        let mut acc = first;
+        for chunk in iter {
+            let s = crate::ffi::polars::export(
+                Arc::new(chunk.clone()),
+                &field.name,
+                schema.clone(),
+            )?;
+            acc.append(&s)?;
+        }
+        Ok(acc)
+    }
+
+    /// Build a `SuperArray` from arrow-rs chunks sharing a single column name.
+    ///
+    /// The schema of each chunk must match. Dtype, nullability, and any custom
+    /// metadata are recovered from the first chunk.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`SuperArray::try_from_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    #[inline]
+    pub fn from_apache_arrow(
+        name: impl Into<String>,
+        chunks: &[arrow::array::ArrayRef],
+    ) -> SuperArray {
+        Self::try_from_apache_arrow(name, chunks)
+            .expect("SuperArray::from_apache_arrow failed")
+    }
+
+    /// Fallible variant of [`SuperArray::from_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    pub fn try_from_apache_arrow(
+        name: impl Into<String>,
+        chunks: &[arrow::array::ArrayRef],
+    ) -> Result<SuperArray, MinarrowError> {
+        let name: String = name.into();
+        if chunks.is_empty() {
+            return Ok(SuperArray::new());
+        }
+        let mut field_arrays = Vec::with_capacity(chunks.len());
+        for c in chunks {
+            field_arrays.push(FieldArray::try_from_apache_arrow(name.clone(), c)?);
+        }
+        Ok(SuperArray::from_field_array_chunks(field_arrays))
+    }
+
+    /// Build a `SuperArray` from a Polars `Series`, preserving the Series'
+    /// internal chunk boundaries.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`SuperArray::try_from_polars`].
+    #[cfg(feature = "cast_polars")]
+    #[inline]
+    pub fn from_polars(s: &polars::prelude::Series) -> SuperArray {
+        Self::try_from_polars(s).expect("SuperArray::from_polars failed")
+    }
+
+    /// Fallible variant of [`SuperArray::from_polars`].
+    #[cfg(feature = "cast_polars")]
+    pub fn try_from_polars(
+        s: &polars::prelude::Series,
+    ) -> Result<SuperArray, MinarrowError> {
+        use polars::prelude::CompatLevel;
+        let n = s.n_chunks();
+        if n == 0 {
+            return Ok(SuperArray::new());
+        }
+        let name = s.name().as_str().to_string();
+        let nullable = s.null_count() > 0;
+
+        let mut field_arrays = Vec::with_capacity(n);
+        for i in 0..n {
+            let arr2 = s.to_arrow(i, CompatLevel::oldest());
+            let (array_arc, field) =
+                crate::ffi::polars::import_chunk(&name, nullable, arr2)?;
+            let array = Arc::try_unwrap(array_arc).unwrap_or_else(|arc| (*arc).clone());
+            field_arrays.push(FieldArray::new(field, array));
+        }
+        Ok(SuperArray::from_field_array_chunks(field_arrays))
+    }
+}
+
+#[cfg(feature = "cast_polars")]
+impl From<&polars::prelude::Series> for SuperArray {
+    fn from(s: &polars::prelude::Series) -> Self {
+        SuperArray::from_polars(s)
     }
 }
 

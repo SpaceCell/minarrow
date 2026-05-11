@@ -190,6 +190,10 @@ pub mod ffi {
     pub mod arrow_c_ffi;
     pub mod arrow_dtype;
     pub mod schema;
+    #[cfg(feature = "cast_arrow")]
+    pub mod arrow_rs;
+    #[cfg(feature = "cast_polars")]
+    pub mod polars;
 }
 
 /// **Type Standardisation** - `MaskedArray`, `View`, `Print` traits + more,

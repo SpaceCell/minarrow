@@ -17,11 +17,22 @@
 //! Couples a `Field` (i.e., array-level schema metadata) with an immutable `Array` of values.
 //!
 //! Used as the primary column representation in `Minarrow` tables, ensuring
-//! schema and data remain consistent.  
+//! schema and data remain consistent.
 //!
 //! Supports creation from raw components or by inferring schema from arrays,
 //! and is the unit transferred over Arrow FFI or to external libraries
 //! such as Apache Arrow or Polars.
+//!
+//! ## Apache Arrow / Polars bridges (`cast_arrow` / `cast_polars` features)
+//!
+//! - `to_apache_arrow()` / `to_polars()` export with the stored `Field`, so
+//!   Timestamp/Time/Duration/Interval logical types round-trip correctly.
+//! - `from_apache_arrow(name, &ArrayRef)` and `from_polars(&Series)` recover
+//!   dtype, nullability, and any custom field metadata from the FFI schema.
+//!   For polars, the column name comes from `s.name()`.
+//! - Each panicking method has a `try_*` sibling returning
+//!   `Result<_, MinarrowError>`. `&Series` can also be converted via
+//!   `(&series).into()` for ergonomic call sites.
 
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
@@ -298,20 +309,116 @@ impl FieldArray {
         result
     }
 
-    /// Export this field+array over FFI and import into arrow-rs.
+    /// Export this field+array over Arrow C-FFI and import into arrow-rs.
+    ///
+    /// Carries the stored `Field` through the conversion, preserving logical
+    /// types such as Timestamp/Time/Duration/Interval.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`FieldArray::try_to_apache_arrow`].
     #[cfg(feature = "cast_arrow")]
     #[inline]
     pub fn to_apache_arrow(&self) -> ArrayRef {
-        self.array.to_apache_arrow_with_field(&self.field)
+        self.try_to_apache_arrow()
+            .expect("FieldArray::to_apache_arrow failed")
+    }
+
+    /// Fallible variant of [`FieldArray::to_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    #[inline]
+    pub fn try_to_apache_arrow(&self) -> Result<ArrayRef, MinarrowError> {
+        crate::ffi::arrow_rs::export(
+            Arc::new(self.array.clone()),
+            crate::ffi::schema::Schema::from(vec![(*self.field).clone()]),
+        )
     }
 
     // ** The below polars function is tested tests/polars.rs **
 
-    /// Casts the FieldArray to a polars Series
+    /// Casts the FieldArray to a polars Series, preserving the stored `Field`.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`FieldArray::try_to_polars`].
     #[cfg(feature = "cast_polars")]
     pub fn to_polars(&self) -> Series {
-        let name = self.field.name.as_str();
-        self.array.to_polars_with_field(name, &self.field)
+        self.try_to_polars().expect("FieldArray::to_polars failed")
+    }
+
+    /// Fallible variant of [`FieldArray::to_polars`].
+    #[cfg(feature = "cast_polars")]
+    pub fn try_to_polars(&self) -> Result<Series, MinarrowError> {
+        crate::ffi::polars::export(
+            Arc::new(self.array.clone()),
+            self.field.name.as_str(),
+            crate::ffi::schema::Schema::from(vec![(*self.field).clone()]),
+        )
+    }
+
+    // ===========================================================
+    // Apache Arrow / Polars import (`from_*`)
+    // ===========================================================
+
+    /// Build a `FieldArray` from an arrow-rs `ArrayRef` and a column name.
+    ///
+    /// arrow-rs `ArrayRef` does not carry a column name (only `Schema`/`Field` do),
+    /// so the caller must provide one. Dtype, nullability, and any custom metadata
+    /// are recovered from the FFI schema.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`FieldArray::try_from_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    #[inline]
+    pub fn from_apache_arrow(
+        name: impl Into<String>,
+        arr: &arrow::array::ArrayRef,
+    ) -> FieldArray {
+        Self::try_from_apache_arrow(name, arr)
+            .expect("FieldArray::from_apache_arrow failed")
+    }
+
+    /// Fallible variant of [`FieldArray::from_apache_arrow`].
+    #[cfg(feature = "cast_arrow")]
+    pub fn try_from_apache_arrow(
+        name: impl Into<String>,
+        arr: &arrow::array::ArrayRef,
+    ) -> Result<FieldArray, MinarrowError> {
+        let (array_arc, mut field) = crate::ffi::arrow_rs::import(arr)?;
+        field.name = name.into();
+        let array = Arc::try_unwrap(array_arc).unwrap_or_else(|arc| (*arc).clone());
+        Ok(FieldArray::new(field, array))
+    }
+
+    /// Build a `FieldArray` from a Polars `Series`.
+    ///
+    /// Name comes from `s.name()`. Dtype, nullability, and any custom metadata
+    /// are recovered from the FFI schema.
+    ///
+    /// Panics on FFI failure. For a fallible variant, see
+    /// [`FieldArray::try_from_polars`].
+    #[cfg(feature = "cast_polars")]
+    #[inline]
+    pub fn from_polars(s: &polars::prelude::Series) -> FieldArray {
+        Self::try_from_polars(s).expect("FieldArray::from_polars failed")
+    }
+
+    /// Fallible variant of [`FieldArray::from_polars`].
+    #[cfg(feature = "cast_polars")]
+    pub fn try_from_polars(
+        s: &polars::prelude::Series,
+    ) -> Result<FieldArray, MinarrowError> {
+        let (array_arc, field) = crate::ffi::polars::import(s)?;
+        let array = Arc::try_unwrap(array_arc).unwrap_or_else(|arc| (*arc).clone());
+        Ok(FieldArray::new(field, array))
+    }
+}
+
+// Provides `(&series).into()` ergonomics for building a FieldArray.
+// Panics on FFI failure - users who want the fallible flavour should call
+// the named `FieldArray::try_from_polars(&s)?` method instead.
+#[cfg(feature = "cast_polars")]
+impl From<&polars::prelude::Series> for FieldArray {
+    fn from(s: &polars::prelude::Series) -> Self {
+        FieldArray::from_polars(s)
     }
 }
 
