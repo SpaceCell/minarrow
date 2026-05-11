@@ -23,7 +23,7 @@ description = "Apache Arrow-compatible, Rust-first columnar data library for hig
 
 # Arrow and Polars are for optional to/from_apache_arrow() and to/from_polars() via the optional
 # `cast_arrow` and `cast_polars` features.
-arrow = { version = "58.0.0", default-features = false, features = [
+arrow = { version = "58.2.0", default-features = false, features = [
     "ffi",
     "prettyprint",
 ], optional = true }
