@@ -120,7 +120,15 @@ impl<T: Integer> CategoricalArray<T> {
         let data: Buffer<T> = data.into();
 
         validate_null_mask_len(data.len(), &null_mask);
+        // Per the Arrow spec, values at null positions are unspecified, so we
+        // skip them here. Pandas, for instance, writes a sentinel (-1, which
+        // wraps to 255 for u8 indices) into null slots when exporting a
+        // Categorical over the C Data Interface.
         for (i, code) in data.iter().enumerate() {
+            let is_valid = null_mask.as_ref().map_or(true, |m| m.get(i));
+            if !is_valid {
+                continue;
+            }
             let idx = code
                 .to_usize()
                 .unwrap_or_else(|| panic!("Failed to convert code to usize at position {}", i));
@@ -1386,6 +1394,38 @@ mod tests {
         assert_eq!(arr.get(1), None);
         assert!(arr.is_null(1));
         assert_eq!(arr.get(2), Some("b"));
+    }
+
+    #[test]
+    fn new_tolerates_out_of_range_indices_at_null_positions() {
+        // Mirrors pandas' Arrow export of a Categorical with NA: the indices
+        // buffer holds -1 at null slots, which becomes 255 when the index
+        // type is u8. The null mask correctly marks the slot invalid.
+        let data: Vec64<u8> = vec64![0, 1, 255, 0];
+        let unique_values: Vec64<String> =
+            vec64!["Yes".to_string(), "No".to_string()];
+        let mask = bm(&[true, true, false, true]);
+
+        let arr = CategoricalArray::<u8>::new(data, unique_values, Some(mask));
+
+        assert_eq!(arr.len(), 4);
+        assert_eq!(arr.get_str(0), Some("Yes"));
+        assert_eq!(arr.get_str(1), Some("No"));
+        assert_eq!(arr.get_str(2), None);
+        assert_eq!(arr.get_str(3), Some("Yes"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Index 255 out of bounds")]
+    fn new_still_rejects_out_of_range_indices_at_valid_positions() {
+        // Same shape as above, but the offending slot is marked valid -
+        // construction must still fail loudly.
+        let data: Vec64<u8> = vec64![0, 1, 255, 0];
+        let unique_values: Vec64<String> =
+            vec64!["Yes".to_string(), "No".to_string()];
+        let mask = bm(&[true, true, true, true]);
+
+        let _ = CategoricalArray::<u8>::new(data, unique_values, Some(mask));
     }
 
     #[test]
