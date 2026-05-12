@@ -24,6 +24,22 @@
 //! chunked equivalents).
 //!
 //! Gated by the `cast_arrow` feature.
+//!
+//! ## arrow-rs round-trip behaviour
+//!
+//! arrow-rs preserves the Arrow C Data Interface format string verbatim, so
+//! every tested logical type round-trips with dtype and payload bytes
+//! unchanged: `Int8/16/32/64`, `UInt8/16/32/64`, `Float32/64`, `Boolean`,
+//! `String` / `LargeString`, `Dictionary` (categorical), `Date32`, `Date64`,
+//! `Time32(Seconds | Milliseconds)`, `Time64(Microseconds | Nanoseconds)`,
+//! `Timestamp` (all four units with and without a timezone), `Duration32`,
+//! and `Duration64`.
+//!
+//! ## Null masks
+//!
+//! Null bitmaps are part of the C Data Interface buffer set and travel
+//! through this bridge unchanged in both directions. Null counts and bit
+//! positions round-trip exactly.
 
 use std::sync::Arc;
 

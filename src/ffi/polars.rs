@@ -29,6 +29,38 @@
 //! and their `from_*` siblings (and the `Super*` chunked equivalents).
 //!
 //! Gated by the `cast_polars` feature.
+//!
+//! ## Polars round-trip behaviour
+//!
+//! Most Arrow logical types pass through polars unchanged. A few logical types
+//! are normalised by polars's internal representation on the way through. These
+//! conversions are **lossless** - the same logical value is preserved, null
+//! mask survives, and dtype/payload are rescaled together - but the type
+//! label and byte payload differ on the return trip. Each is covered by
+//! a dedicated round-trip test that asserts the promotion explicitly so any
+//! future polars behaviour change surfaces immediately.
+//!
+//! | Sent into polars                    | Returned from polars                | Notes                                              |
+//! |-------------------------------------|--------------------------------------|----------------------------------------------------|
+//! | `Date64` (i64 ms-since-epoch)       | `Timestamp(Milliseconds, None)`     | Payload byte-identical (same i64 ms).              |
+//! | `Time32(Seconds)` (i32)             | `Time64(Nanoseconds)` (i64)         | Payload rescaled: `n * 1_000_000_000`.             |
+//! | `Time32(Milliseconds)` (i32)        | `Time64(Nanoseconds)` (i64)         | Payload rescaled: `n * 1_000_000`.                 |
+//! | `Time64(Microseconds)` (i64)        | `Time64(Nanoseconds)` (i64)         | Payload rescaled: `n * 1_000`.                     |
+//! | `String` / `LargeString` (utf8)     | may return as the other offset width| Polars normalises to its preferred offset width;   |
+//! |                                     |                                     | bytes/text content preserved.                      |
+//!
+//! All other tested logical types - `Int8/16/32/64`, `UInt8/16/32/64`,
+//! `Float32/64`, `Boolean`, `Date32`, `Time64(Nanoseconds)`, all `Timestamp`
+//! units with and without a timezone, `Duration32`, `Duration64`, and
+//! `Dictionary` (categorical) - return with their dtype and payload bytes
+//! unchanged.
+//!
+//! ## Null masks
+//!
+//! Polars preserves the null mask in every direction we test, including
+//! across the type promotions above. Validity bits sit on the underlying
+//! Arrow array and travel through `Series::to_arrow` / `Series::from_arrow`
+//! along with the data buffer.
 
 use std::sync::Arc;
 

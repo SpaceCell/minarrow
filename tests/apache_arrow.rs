@@ -26,12 +26,35 @@ use arrow::datatypes::{DataType as ADataType, TimeUnit as ATimeUnit};
 use arrow::record_batch::RecordBatch;
 
 use minarrow::{
-    fa_i32, fa_str32, fa_u32, Array as MArray, ArrowType, Field, FieldArray, NumericArray, Table,
-    TextArray,
+    fa_i32, fa_str32, fa_u32, Array as MArray, ArrowType, Field, FieldArray, MaskedArray,
+    NumericArray, Table, TextArray,
 };
 
 #[cfg(feature = "datetime")]
 use minarrow::{TemporalArray, TimeUnit};
+
+// ----- helpers -----
+
+/// Round-trip an `Array` through arrow-rs at the bare-Array level and assert
+/// data equality. Discards Field metadata.
+#[track_caller]
+fn round_trip_array(a: MArray, name: &str) {
+    let ar = a.to_apache_arrow(name);
+    let back = MArray::from_apache_arrow(&ar);
+    assert_eq!(a, back, "Array round-trip mismatch for '{}'", name);
+}
+
+/// Round-trip a `FieldArray` through arrow-rs preserving Field metadata.
+#[track_caller]
+fn round_trip_field_array(fa: FieldArray) {
+    let name = fa.field.name.clone();
+    let dtype = fa.field.dtype.clone();
+    let ar = fa.to_apache_arrow();
+    let back = FieldArray::from_apache_arrow(&name, &ar);
+    assert_eq!(back.field.name, name, "name lost");
+    assert_eq!(back.field.dtype, dtype, "dtype lost");
+    assert_eq!(back.array, fa.array, "data mismatch for '{}'", name);
+}
 
 // -------------------------------
 // Array -> Arrow (numeric)
@@ -370,4 +393,413 @@ fn test_table_to_arrow_record_batch() {
     assert_eq!(a.value(1), 2);
     assert_eq!(b.value(0), "x");
     assert_eq!(b.value(1), "y");
+}
+
+// =============================================================
+// Exhaustive type coverage round-trip
+// =============================================================
+
+#[test]
+fn rt_arrow_i32() {
+    round_trip_array(arr_i32_like(&[1, -2, 3, i32::MAX, i32::MIN]), "i32");
+}
+
+#[test]
+fn rt_arrow_i64() {
+    let mut a = minarrow::IntegerArray::<i64>::default();
+    for v in &[1i64, -2, 3, i64::MAX, i64::MIN] { a.push(*v); }
+    round_trip_array(MArray::from_int64(a), "i64");
+}
+
+#[test]
+fn rt_arrow_u32() {
+    let mut a = minarrow::IntegerArray::<u32>::default();
+    for v in &[0u32, 1, u32::MAX] { a.push(*v); }
+    round_trip_array(MArray::from_uint32(a), "u32");
+}
+
+#[test]
+fn rt_arrow_u64() {
+    let mut a = minarrow::IntegerArray::<u64>::default();
+    for v in &[0u64, 1, u64::MAX] { a.push(*v); }
+    round_trip_array(MArray::from_uint64(a), "u64");
+}
+
+#[test]
+fn rt_arrow_f32() {
+    let mut a = minarrow::FloatArray::<f32>::default();
+    for v in &[0.0_f32, -1.5, 3.14, f32::INFINITY, f32::MIN, f32::MAX] { a.push(*v); }
+    round_trip_array(MArray::from_float32(a), "f32");
+}
+
+#[test]
+fn rt_arrow_f64() {
+    let mut a = minarrow::FloatArray::<f64>::default();
+    for v in &[0.0_f64, -1.5, 3.14, f64::INFINITY, f64::MIN, f64::MAX] { a.push(*v); }
+    round_trip_array(MArray::from_float64(a), "f64");
+}
+
+#[test]
+fn rt_arrow_bool() {
+    let mut a = minarrow::BooleanArray::<()>::default();
+    for v in &[true, false, true, true, false] { a.push(*v); }
+    round_trip_array(MArray::BooleanArray(std::sync::Arc::new(a)), "bool");
+}
+
+#[test]
+fn rt_arrow_string32() {
+    let arr = std::sync::Arc::new(
+        minarrow::StringArray::<u32>::from_slice(&["alpha", "beta", "gamma", ""])
+    );
+    round_trip_array(MArray::TextArray(TextArray::String32(arr)), "string32");
+}
+
+#[cfg(feature = "large_string")]
+#[test]
+fn rt_arrow_string64() {
+    let arr = std::sync::Arc::new(
+        minarrow::StringArray::<u64>::from_slice(&["one", "two", "three"])
+    );
+    round_trip_array(MArray::TextArray(TextArray::String64(arr)), "string64");
+}
+
+#[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+#[test]
+fn rt_arrow_categorical32() {
+    let arr = std::sync::Arc::new(minarrow::CategoricalArray::<u32>::from_slices(
+        &[0u32, 1, 2, 0, 1],
+        &["red".to_string(), "green".to_string(), "blue".to_string()],
+    ));
+    round_trip_array(MArray::TextArray(TextArray::Categorical32(arr)), "cat32");
+}
+
+// ----- Datetime logical types (via FieldArray) -----
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_date32() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime32(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i32> {
+            data: minarrow::Buffer::from_slice(&[18000, 18500, 19000]),
+            null_mask: None,
+            time_unit: TimeUnit::Days,
+        },
+    )));
+    let fa = FieldArray::new(Field::new("d32", ArrowType::Date32, false, None), a);
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_date64() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime64(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i64> {
+            data: minarrow::Buffer::from_slice(&[1_600_000_000_000_i64, 1_700_000_000_000]),
+            null_mask: None,
+            time_unit: TimeUnit::Milliseconds,
+        },
+    )));
+    let fa = FieldArray::new(Field::new("d64", ArrowType::Date64, false, None), a);
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_time32_sec() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime32(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i32> {
+            data: minarrow::Buffer::from_slice(&[0_i32, 3600, 86399]),
+            null_mask: None,
+            time_unit: TimeUnit::Seconds,
+        },
+    )));
+    let fa = FieldArray::new(
+        Field::new("t32s", ArrowType::Time32(TimeUnit::Seconds), false, None),
+        a,
+    );
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_time32_ms() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime32(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i32> {
+            data: minarrow::Buffer::from_slice(&[0_i32, 1000, 86_399_000]),
+            null_mask: None,
+            time_unit: TimeUnit::Milliseconds,
+        },
+    )));
+    let fa = FieldArray::new(
+        Field::new("t32m", ArrowType::Time32(TimeUnit::Milliseconds), false, None),
+        a,
+    );
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_time64_us() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime64(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i64> {
+            data: minarrow::Buffer::from_slice(&[0_i64, 1_000_000, 86_399_000_000]),
+            null_mask: None,
+            time_unit: TimeUnit::Microseconds,
+        },
+    )));
+    let fa = FieldArray::new(
+        Field::new("t64u", ArrowType::Time64(TimeUnit::Microseconds), false, None),
+        a,
+    );
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_time64_ns() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime64(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i64> {
+            data: minarrow::Buffer::from_slice(&[0_i64, 1_000_000_000, 86_399_000_000_000]),
+            null_mask: None,
+            time_unit: TimeUnit::Nanoseconds,
+        },
+    )));
+    let fa = FieldArray::new(
+        Field::new("t64n", ArrowType::Time64(TimeUnit::Nanoseconds), false, None),
+        a,
+    );
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_timestamp_s() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime64(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i64> {
+            data: minarrow::Buffer::from_slice(&[1_600_000_000_i64, 1_700_000_000]),
+            null_mask: None,
+            time_unit: TimeUnit::Seconds,
+        },
+    )));
+    let fa = FieldArray::new(
+        Field::new("ts_s", ArrowType::Timestamp(TimeUnit::Seconds, None), false, None),
+        a,
+    );
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_timestamp_ms() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime64(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i64> {
+            data: minarrow::Buffer::from_slice(&[1_600_000_000_000_i64]),
+            null_mask: None,
+            time_unit: TimeUnit::Milliseconds,
+        },
+    )));
+    let fa = FieldArray::new(
+        Field::new("ts_ms", ArrowType::Timestamp(TimeUnit::Milliseconds, None), false, None),
+        a,
+    );
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_timestamp_us() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime64(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i64> {
+            data: minarrow::Buffer::from_slice(&[1_600_000_000_000_000_i64]),
+            null_mask: None,
+            time_unit: TimeUnit::Microseconds,
+        },
+    )));
+    let fa = FieldArray::new(
+        Field::new("ts_us", ArrowType::Timestamp(TimeUnit::Microseconds, None), false, None),
+        a,
+    );
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_timestamp_ns_with_tz() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime64(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i64> {
+            data: minarrow::Buffer::from_slice(&[1_600_000_000_000_000_000_i64]),
+            null_mask: None,
+            time_unit: TimeUnit::Nanoseconds,
+        },
+    )));
+    let fa = FieldArray::new(
+        Field::new(
+            "ts_ns_utc",
+            ArrowType::Timestamp(TimeUnit::Nanoseconds, Some("UTC".to_string())),
+            false,
+            None,
+        ),
+        a,
+    );
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_duration32_sec() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime32(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i32> {
+            data: minarrow::Buffer::from_slice(&[10_i32, 20, 30]),
+            null_mask: None,
+            time_unit: TimeUnit::Seconds,
+        },
+    )));
+    let fa = FieldArray::new(
+        Field::new("dur32s", ArrowType::Duration32(TimeUnit::Seconds), false, None),
+        a,
+    );
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_duration64_ns() {
+    let a = MArray::TemporalArray(TemporalArray::Datetime64(std::sync::Arc::new(
+        minarrow::DatetimeArray::<i64> {
+            data: minarrow::Buffer::from_slice(&[1_000_000_i64, 2_000_000]),
+            null_mask: None,
+            time_unit: TimeUnit::Nanoseconds,
+        },
+    )));
+    let fa = FieldArray::new(
+        Field::new("dur64n", ArrowType::Duration64(TimeUnit::Nanoseconds), false, None),
+        a,
+    );
+    round_trip_field_array(fa);
+}
+
+// ----- Nullability -----
+
+#[test]
+fn rt_arrow_i32_with_nulls() {
+    let mut a = minarrow::IntegerArray::<i32>::default();
+    a.push(1);
+    a.push_null();
+    a.push(3);
+    a.push_null();
+    a.push(5);
+    round_trip_array(MArray::from_int32(a), "i32_nulls");
+}
+
+#[test]
+fn rt_arrow_f64_with_nulls() {
+    let mut a = minarrow::FloatArray::<f64>::default();
+    a.push(1.5);
+    a.push_null();
+    a.push(2.5);
+    round_trip_array(MArray::from_float64(a), "f64_nulls");
+}
+
+#[test]
+fn rt_arrow_bool_with_nulls() {
+    let mut a = minarrow::BooleanArray::<()>::default();
+    a.push(true);
+    a.push_null();
+    a.push(false);
+    a.push_null();
+    a.push(true);
+    round_trip_array(MArray::BooleanArray(std::sync::Arc::new(a)), "bool_nulls");
+}
+
+#[test]
+fn rt_arrow_string_with_nulls() {
+    let mut a = minarrow::StringArray::<u32>::default();
+    a.push_str("foo");
+    a.push_null();
+    a.push_str("bar");
+    a.push_null();
+    a.push_str("");
+    round_trip_array(MArray::from_string32(a), "string_nulls");
+}
+
+#[test]
+fn rt_arrow_i32_all_null() {
+    let mut a = minarrow::IntegerArray::<i32>::default();
+    for _ in 0..5 { a.push_null(); }
+    round_trip_array(MArray::from_int32(a), "i32_all_null");
+}
+
+#[test]
+fn rt_arrow_string_all_null() {
+    let mut a = minarrow::StringArray::<u32>::default();
+    for _ in 0..3 { a.push_null(); }
+    round_trip_array(MArray::from_string32(a), "string_all_null");
+}
+
+// ----- Empty arrays -----
+
+#[test]
+fn rt_arrow_empty_i32() {
+    round_trip_array(MArray::from_int32(minarrow::IntegerArray::<i32>::default()), "empty_i32");
+}
+
+#[test]
+fn rt_arrow_empty_f64() {
+    round_trip_array(MArray::from_float64(minarrow::FloatArray::<f64>::default()), "empty_f64");
+}
+
+#[test]
+fn rt_arrow_empty_bool() {
+    round_trip_array(
+        MArray::BooleanArray(std::sync::Arc::new(minarrow::BooleanArray::<()>::default())),
+        "empty_bool",
+    );
+}
+
+#[test]
+fn rt_arrow_empty_string() {
+    round_trip_array(MArray::from_string32(minarrow::StringArray::<u32>::default()), "empty_string");
+}
+
+// ----- Single-element -----
+
+#[test]
+fn rt_arrow_single_element_i32() {
+    let mut a = minarrow::IntegerArray::<i32>::default();
+    a.push(42);
+    round_trip_array(MArray::from_int32(a), "single_i32");
+}
+
+#[test]
+fn rt_arrow_single_element_string() {
+    let arr = std::sync::Arc::new(minarrow::StringArray::<u32>::from_slice(&["solo"]));
+    round_trip_array(MArray::TextArray(TextArray::String32(arr)), "single_str");
+}
+
+// ----- Empty chunked containers -----
+
+#[cfg(feature = "chunked")]
+#[test]
+fn rt_arrow_empty_super_array() {
+    let sa = minarrow::SuperArray::new();
+    let chunks = sa.to_apache_arrow();
+    assert_eq!(chunks.len(), 0);
+}
+
+#[cfg(feature = "chunked")]
+#[test]
+fn rt_arrow_empty_super_table() {
+    let st = minarrow::SuperTable::new("".into());
+    let rbs = st.to_apache_arrow();
+    assert_eq!(rbs.len(), 0);
+    let back = minarrow::SuperTable::from_apache_arrow(&rbs);
+    assert_eq!(back.n_batches(), 0);
+}
+
+// ----- helpers -----
+
+fn arr_i32_like(vals: &[i32]) -> MArray {
+    let mut a = minarrow::IntegerArray::<i32>::default();
+    for v in vals { a.push(*v); }
+    MArray::from_int32(a)
 }
