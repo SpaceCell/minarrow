@@ -373,6 +373,10 @@ impl TableV {
     }
 
     /// Materialise the view into an owned Table. Respects active column selection.
+    ///
+    /// Each column delegates to `ArrayV::to_array()`, which avoids a buffer copy
+    /// when the column window already spans its full backing array. Genuinely
+    /// row-windowed columns fall through to `slice_clone` inside `to_array`.
     pub fn to_table(&self) -> Table {
         let col_indices = self.active_col_indices();
         let cols: Vec<_> = col_indices
@@ -380,14 +384,13 @@ impl TableV {
             .filter_map(|&col_idx| {
                 let field = self.fields.get(col_idx)?;
                 let window = self.cols.get(col_idx)?;
-                let w = window.as_tuple();
 
-                let sliced = w.0.slice_clone(w.1, w.2);
-                let null_count = sliced.null_count();
+                let array = window.to_array();
+                let null_count = array.null_count();
 
                 Some(FieldArray {
                     field: field.clone(),
-                    array: sliced,
+                    array,
                     null_count,
                 })
             })
@@ -1189,5 +1192,86 @@ mod tests {
         let empty = full_view.r(0..0);
         assert_eq!(empty.len(), 0);
         assert_eq!(empty.to_table().n_rows(), 0);
+    }
+
+    /// Pull out the inner `Arc<IntegerArray<i32>>` from a column for pointer-identity
+    /// checks. Asserts the column is the expected variant.
+    #[cfg(test)]
+    fn i32_arc(table: &Table, col_idx: usize) -> Arc<crate::IntegerArray<i32>> {
+        use crate::NumericArray;
+        match &table.cols[col_idx].array {
+            Array::NumericArray(NumericArray::Int32(arc)) => arc.clone(),
+            other => panic!("expected Int32 column, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_to_table_full_coverage_shares_arc() {
+        let fa_a = fa_i32!("a", 1, 2, 3, 4, 5);
+        let fa_b = fa_i32!("b", 10, 20, 30, 40, 50);
+
+        let mut tbl = Table::new_empty();
+        tbl.add_col(fa_a);
+        tbl.add_col(fa_b);
+
+        let src_a = i32_arc(&tbl, 0);
+        let src_b = i32_arc(&tbl, 1);
+
+        // Full-coverage view: offset=0, len matches each column's full length.
+        let view = TableV::from_table(tbl, 0, 5);
+        let materialised = view.to_table();
+
+        let out_a = i32_arc(&materialised, 0);
+        let out_b = i32_arc(&materialised, 1);
+
+        // Same allocation reused, not a fresh buffer copy.
+        assert!(Arc::ptr_eq(&src_a, &out_a), "column a should share the underlying Arc on full-coverage to_table");
+        assert!(Arc::ptr_eq(&src_b, &out_b), "column b should share the underlying Arc on full-coverage to_table");
+    }
+
+    #[test]
+    fn test_to_table_row_windowed_copies() {
+        let fa_a = fa_i32!("a", 1, 2, 3, 4, 5);
+
+        let mut tbl = Table::new_empty();
+        tbl.add_col(fa_a);
+
+        let src_a = i32_arc(&tbl, 0);
+
+        // Genuine row window forces per-column slice_clone (no fast path).
+        let view = TableV::from_table(tbl, 1, 3);
+        let materialised = view.to_table();
+        let out_a = i32_arc(&materialised, 0);
+
+        assert!(!Arc::ptr_eq(&src_a, &out_a), "row-windowed to_table must not alias the source buffer");
+        assert_eq!(materialised.n_rows(), 3);
+    }
+
+    #[cfg(feature = "select")]
+    #[test]
+    fn test_to_table_column_projection_kept_columns_share_arc() {
+        let fa_a = fa_i32!("a", 1, 2, 3, 4, 5);
+        let fa_b = fa_i32!("b", 10, 20, 30, 40, 50);
+        let fa_c = fa_i32!("c", 100, 200, 300, 400, 500);
+
+        let mut tbl = Table::new_empty();
+        tbl.add_col(fa_a);
+        tbl.add_col(fa_b);
+        tbl.add_col(fa_c);
+
+        let src_a = i32_arc(&tbl, 0);
+        let src_c = i32_arc(&tbl, 2);
+
+        // Drop column "b" via projection. Rows are still full coverage on the kept
+        // columns, so a and c should both bypass the buffer copy.
+        let view = TableV::from_table(tbl, 0, 5).c(vec!["a", "c"]);
+        let materialised = view.to_table();
+
+        assert_eq!(materialised.n_cols(), 2);
+        let out_a = i32_arc(&materialised, 0);
+        let out_c = i32_arc(&materialised, 1);
+
+        assert!(Arc::ptr_eq(&src_a, &out_a), "kept column a should share Arc under projection");
+        assert!(Arc::ptr_eq(&src_c, &out_c), "kept column c should share Arc under projection");
     }
 }

@@ -723,6 +723,17 @@ impl From<Array> for ArrayV {
     }
 }
 
+/// ArrayView -> Array
+///
+/// Delegates to `to_array`, which Arc-bumps the underlying allocation when the
+/// view spans its full backing array (offset = 0, len = array.len()) and only
+/// reallocates via `slice_clone` for genuinely windowed views.
+impl From<ArrayV> for Array {
+    fn from(view: ArrayV) -> Self {
+        view.to_array()
+    }
+}
+
 /// FieldArray -> ArrayView
 ///
 /// Takes self.array then offset 0, length self.len())
