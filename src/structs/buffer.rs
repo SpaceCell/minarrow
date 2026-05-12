@@ -167,6 +167,17 @@ impl<T> Buffer<T> {
     #[inline]
     pub fn from_shared(owner: SharedBuffer) -> Self {
         let bytes = owner.as_slice();
+        // Empty byte slices have no meaningful alignment - their
+        // pointer is allocator-determined (often the type's
+        // align_of() dangling sentinel) and there is nothing to read.
+        // Skip the alignment assertions and return an empty owned
+        // buffer; round-trips through SharedBuffer for zero-row
+        // columns work without panicking.
+        if bytes.is_empty() {
+            return Self {
+                storage: Storage::Owned(Vec64::new()),
+            };
+        }
         let size_of_t = std::mem::size_of::<T>();
         let ptr_usize = bytes.as_ptr() as usize;
         let align = std::mem::align_of::<T>();
