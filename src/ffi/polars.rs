@@ -64,7 +64,7 @@
 
 use std::sync::Arc;
 
-use polars::prelude::{CompatLevel, Series};
+use polars::prelude::Series;
 
 use crate::enums::error::MinarrowError;
 use crate::ffi::arrow_c_ffi::{ArrowArray, ArrowSchema, export_to_c, import_from_c_owned};
@@ -110,18 +110,6 @@ pub fn export(
     })?;
 
     Ok(Series::from_arrow(name.into(), a2_array)?)
-}
-
-/// Import a polars `Series` into a Minarrow `(Arc<Array>, Field)`.
-///
-/// Reads chunk 0 of the Series. Callers wanting all chunks should use the
-/// `SuperArray::from_polars` path which iterates over `s.n_chunks()`.
-///
-/// The recovered `Field` has its `name` overridden with `s.name()` so the
-/// Series name round-trips cleanly.
-pub fn import(s: &Series) -> Result<(Arc<Array>, Field), MinarrowError> {
-    let arr2 = s.to_arrow(0, CompatLevel::oldest());
-    import_chunk(s.name().as_str(), s.null_count() > 0, arr2)
 }
 
 /// Import a single polars_arrow `Array` (one chunk) with caller-supplied

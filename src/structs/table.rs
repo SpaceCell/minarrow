@@ -774,8 +774,41 @@ impl Table {
         Ok(Table::new(String::new(), Some(cols)))
     }
 
-    /// Build a `Table` from a Polars `DataFrame`. Column names, dtypes,
-    /// nullability, and any custom Series metadata are recovered.
+    /// Build a `Table` from a Polars `DataFrame`.
+    ///
+    /// A polars `DataFrame` has columns that are inherently multi-chunked;
+    /// the canonical mapping is `DataFrame` <-> [`crate::SuperTable`]. This
+    /// helper routes through [`crate::SuperTable::from_polars`] and then
+    /// **consolidates** the batches into a single contiguous `Table` with
+    /// 64-byte aligned column buffers.
+    ///
+    /// Column names, dtypes, nullability, and any custom Series metadata
+    /// are recovered.
+    ///
+    /// ## Performance note
+    /// Two separate costs to be aware of:
+    ///
+    /// 1. **Alignment copy**: Polars data is typically 8-byte aligned (per
+    ///    the Arrow spec default), while Minarrow uses 64-byte aligned
+    ///    `Vec64<T>` buffers for SIMD. Most of the time this results in a
+    ///    memory copy to realign on import, unless the source data happens
+    ///    to be pre-aligned to 64 bytes. The FFI hand-off itself is
+    ///    pointer-level zero-copy; the realignment is done by
+    ///    `Buffer::from_shared` when the source isn't 64-byte aligned.
+    ///
+    /// 2. **Consolidation copy**: Multi-chunk columns are merged into a
+    ///    single contiguous buffer per column, which is a second O(n)
+    ///    allocation and copy pass. Single-chunk DataFrames (e.g. after
+    ///    `df.align_chunks_par()` then `df.rechunk()` on the caller side)
+    ///    skip this step. The consolidation itself is cheap on Linux when
+    ///    the `vmap64` feature is enabled.
+    ///
+    /// In practice you should expect at least one full allocation + copy
+    /// when importing a polars DataFrame into a `Table`. If you would like
+    /// to preserve the original chunk boundaries and avoid the
+    /// consolidation step, use [`crate::SuperTable::from_polars`]
+    /// directly - though the alignment copy will still occur per chunk
+    /// that isn't pre-aligned.
     ///
     /// Panics on FFI failure. For a fallible variant, see
     /// [`Table::try_from_polars`].
@@ -788,16 +821,8 @@ impl Table {
     /// Fallible variant of [`Table::from_polars`].
     #[cfg(feature = "cast_polars")]
     pub fn try_from_polars(df: &DataFrame) -> Result<Table, MinarrowError> {
-        let columns = df.columns();
-        let mut cols = Vec::with_capacity(columns.len());
-        for column in columns {
-            // Polars Column owns its data either as a Series or scalar; materialise
-            // into a single chunked Series so we can hit the polars_arrow FFI path.
-            let series = column.as_materialized_series();
-            let fa = FieldArray::try_from_polars(series)?;
-            cols.push(fa);
-        }
-        Ok(Table::new(String::new(), Some(cols)))
+        use crate::traits::consolidate::Consolidate;
+        Ok(SuperTable::try_from_polars(df)?.consolidate())
     }
 }
 

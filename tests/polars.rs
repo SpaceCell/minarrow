@@ -628,6 +628,104 @@ fn rt_polars_empty_super_table() {
 
 // ----- Time32 / Time64 polars round-trip (real round-trip, not just export) -----
 
+// ----- Regression: multi-chunk Series must materialise fully -----
+//
+// Reported by kpiwonski: a 150-row iris CSV loaded via polars CsvReader
+// produced a multi-chunked Series. `FieldArray::from_polars` and
+// `Table::from_polars` previously read only chunk 0 (the first 2 rows)
+// because they called `s.to_arrow(0, ...)` once. The fix routes them
+// through `SuperArray::from_polars` / `SuperTable::from_polars` followed
+// by `consolidate`, so every chunk's data survives.
+
+#[test]
+fn rt_polars_field_array_from_multi_chunk_series() {
+    use minarrow::FieldArray;
+
+    // Build a Series with 3 explicit chunks of different sizes.
+    let mut s = Series::new("col".into(), &[1_i32, 2, 3]);
+    let s_b = Series::new("col".into(), &[4_i32, 5]);
+    let s_c = Series::new("col".into(), &[6_i32, 7, 8, 9, 10]);
+    s.append(&s_b).unwrap();
+    s.append(&s_c).unwrap();
+    assert!(s.n_chunks() > 1, "test precondition: multi-chunk Series");
+    assert_eq!(s.len(), 10);
+
+    let fa = FieldArray::from_polars(&s);
+    assert_eq!(fa.field.name, "col");
+    assert_eq!(fa.field.dtype, ArrowType::Int32);
+    assert_eq!(fa.len(), 10, "all chunks must survive the import");
+
+    // Verify the actual values
+    match &fa.array {
+        Array::NumericArray(NumericArray::Int32(arr)) => {
+            assert_eq!(&arr.data[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        }
+        other => panic!("expected Int32 array, got {:?}", other),
+    }
+}
+
+#[test]
+fn rt_polars_array_from_multi_chunk_series() {
+    // Same test for bare-Array path
+    let mut s = Series::new("x".into(), &[10_i64, 20]);
+    let s_b = Series::new("x".into(), &[30_i64, 40, 50]);
+    s.append(&s_b).unwrap();
+    assert!(s.n_chunks() > 1);
+    assert_eq!(s.len(), 5);
+
+    let a = Array::from_polars(&s);
+    assert_eq!(a.len(), 5);
+    match &a {
+        Array::NumericArray(NumericArray::Int64(arr)) => {
+            assert_eq!(&arr.data[..], &[10, 20, 30, 40, 50]);
+        }
+        other => panic!("expected Int64 array, got {:?}", other),
+    }
+}
+
+#[test]
+fn rt_polars_table_from_multi_chunk_dataframe() {
+    // Two columns, each with 2 chunks of different sizes, aligned to the
+    // same chunk boundaries (3+2 rows). DataFrame::from_polars should
+    // consolidate the columns to a single contiguous Table.
+    let mut a = Series::new("a".into(), &[1_i32, 2, 3]);
+    let a_b = Series::new("a".into(), &[4_i32, 5]);
+    a.append(&a_b).unwrap();
+    let mut b = Series::new("b".into(), &["x", "y", "z"]);
+    let b_b = Series::new("b".into(), &["w", "v"]);
+    b.append(&b_b).unwrap();
+    assert!(a.n_chunks() > 1);
+    assert!(b.n_chunks() > 1);
+
+    let df = DataFrame::new(5, vec![a.into_column(), b.into_column()]).unwrap();
+    assert_eq!(df.height(), 5);
+
+    let t = Table::from_polars(&df);
+    assert_eq!(t.n_rows(), 5, "all rows across chunks must survive");
+    assert_eq!(t.n_cols(), 2);
+    assert_eq!(t.col_names(), &["a", "b"]);
+
+    // Verify each column's values to ensure consolidation merged the
+    // chunks in order rather than dropping any.
+    match &t.cols[0].array {
+        Array::NumericArray(NumericArray::Int32(arr)) => {
+            assert_eq!(&arr.data[..], &[1, 2, 3, 4, 5]);
+        }
+        other => panic!("col 'a': expected Int32, got {:?}", other),
+    }
+    match &t.cols[1].array {
+        Array::TextArray(TextArray::String32(arr)) => {
+            let vals: Vec<&str> = (0..arr.len()).map(|i| arr.get_str(i).unwrap()).collect();
+            assert_eq!(vals, vec!["x", "y", "z", "w", "v"]);
+        }
+        Array::TextArray(TextArray::String64(arr)) => {
+            let vals: Vec<&str> = (0..arr.len()).map(|i| arr.get_str(i).unwrap()).collect();
+            assert_eq!(vals, vec!["x", "y", "z", "w", "v"]);
+        }
+        other => panic!("col 'b': expected String, got {:?}", other),
+    }
+}
+
 // ----- Time32 / Time64 polars round-trip -----
 //
 // Polars normalises ALL Time* logical types to `Time64(Nanoseconds)` internally
