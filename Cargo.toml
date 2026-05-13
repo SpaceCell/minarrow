@@ -149,8 +149,18 @@ snappy = ["dep:snappy"]
 # Adds `to_apache_arrow()` for casting into that library.
 cast_arrow = ["arrow", "arrow-schema"]
 
-# Adds `to_polars()` for casting into that library.
-cast_polars = ["polars", "polars-arrow", "large_string"]
+# Adds `to_polars()` / `from_polars()` for casting between Minarrow and Polars.
+# Pulls in `extended_categorical` and `extended_numeric_types` because Polars
+# routinely produces UInt8/UInt16 dictionary keys (for small Enums) and uses
+# the full range of compact numeric types (i8/i16/u8/u16). Importing those
+# without the matching variants present would panic at the FFI boundary.
+cast_polars = [
+    "polars",
+    "polars-arrow",
+    "large_string",
+    "extended_categorical",
+    "extended_numeric_types",
+]
 
 # Adds `Datetime` array types.
 datetime = []
