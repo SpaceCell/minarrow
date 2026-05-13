@@ -912,8 +912,7 @@ fn rt_polars_time32_sec_preserves_null_mask_through_promotion() {
 
 #[cfg(feature = "datetime")]
 #[test]
-fn 
-() {
+fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
     let mut data = minarrow::DatetimeArray::<i64> {
         data: minarrow::Buffer::from_slice(&[0_i64, 0, 1_000_000]),
         null_mask: None,
