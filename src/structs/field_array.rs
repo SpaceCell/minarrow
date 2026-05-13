@@ -390,8 +390,36 @@ impl FieldArray {
 
     /// Build a `FieldArray` from a Polars `Series`.
     ///
-    /// Name comes from `s.name()`. Dtype, nullability, and any custom metadata
-    /// are recovered from the FFI schema.
+    /// A polars `Series` is inherently multi-chunked; the canonical mapping
+    /// is `Series` <-> [`crate::SuperArray`]. This helper routes through
+    /// [`crate::SuperArray::from_polars`] and then **consolidates** the
+    /// chunks into a single contiguous, 64-byte aligned buffer.
+    ///
+    /// ## Performance note
+    /// Two separate costs to be aware of:
+    ///
+    /// 1. **Alignment copy**: Polars data is typically 8-byte aligned (per
+    ///    the Arrow spec default), while Minarrow uses 64-byte aligned
+    ///    `Vec64<T>` buffers for SIMD. Most of the time this results in a
+    ///    memory copy to realign on import, unless the source data happens
+    ///    to be pre-aligned to 64 bytes. The FFI hand-off itself is
+    ///    pointer-level zero-copy; the realignment is done by
+    ///    `Buffer::from_shared` when the source isn't 64-byte aligned.
+    ///
+    /// 2. **Consolidation copy**: Multi-chunk Series are merged into a
+    ///    single contiguous buffer, which is a second O(n) allocation and
+    ///    copy pass. Single-chunk Series (e.g. after `s.rechunk()` on the
+    ///    caller side) skip this step. The consolidation itself is cheap
+    ///    on Linux when the `vmap64` feature is enabled.
+    ///
+    /// In practice you should expect at least one full allocation + copy
+    /// when importing polars data into a `FieldArray`. If you would like to
+    /// preserve the original chunk boundaries and avoid the consolidation
+    /// step, use [`crate::SuperArray::from_polars`] directly - though the
+    /// alignment copy will still occur per chunk that isn't pre-aligned.
+    ///
+    /// Name comes from `s.name()`; dtype, nullability, and any custom
+    /// metadata are recovered from the FFI schema.
     ///
     /// Panics on FFI failure. For a fallible variant, see
     /// [`FieldArray::try_from_polars`].
@@ -406,8 +434,11 @@ impl FieldArray {
     pub fn try_from_polars(
         s: &polars::prelude::Series,
     ) -> Result<FieldArray, MinarrowError> {
-        let (array_arc, field) = crate::ffi::polars::import(s)?;
-        let array = Arc::try_unwrap(array_arc).unwrap_or_else(|arc| (*arc).clone());
+        use crate::SuperArray;
+        use crate::traits::consolidate::Consolidate;
+        let sa = SuperArray::try_from_polars(s)?;
+        let field = sa.field_ref().clone();
+        let array = sa.consolidate();
         Ok(FieldArray::new(field, array))
     }
 }

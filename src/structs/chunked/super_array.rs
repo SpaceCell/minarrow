@@ -1229,6 +1229,16 @@ impl SuperArray {
     /// Build a `SuperArray` from a Polars `Series`, preserving the Series'
     /// internal chunk boundaries.
     ///
+    /// ## Performance note
+    /// Polars data is typically 8-byte aligned (per the Arrow spec default),
+    /// while Minarrow uses 64-byte aligned `Vec64<T>` buffers for SIMD.
+    /// Most of the time this results in a memory copy per chunk to realign
+    /// on import, unless the source data happens to be pre-aligned to 64
+    /// bytes. The FFI hand-off itself is pointer-level zero-copy; the
+    /// realignment is done by `Buffer::from_shared` when the source isn't
+    /// 64-byte aligned. No consolidation copy is performed - chunk
+    /// boundaries are preserved as-is.
+    ///
     /// Panics on FFI failure. For a fallible variant, see
     /// [`SuperArray::try_from_polars`].
     #[cfg(feature = "cast_polars")]
