@@ -12,9 +12,18 @@ concurrency:
 
 jobs:
   features:
-    name: features • required (nightly)
+    name: features • ${{ matrix.config }} (nightly)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [default, no-default-features, all-features]
+    env:
+      # Each config builds the full Polars/arrow-rs tree into every example
+      # binary; trimming debug info keeps the target dir within disk limits.
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: none
     steps:
       - uses: actions/checkout@v4
 
@@ -27,8 +36,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          target-dir: /tmp/target
+          key: ${{ matrix.config }}
 
-      - run: cargo +nightly test --target-dir /tmp/target -- --quiet
-      - run: cargo +nightly test --no-default-features --target-dir /tmp/target -- --quiet
-      - run: cargo +nightly test --all-features --target-dir /tmp/target -- --quiet
+      - name: Set feature flags
+        id: flags
+        run: |
+          case "${{ matrix.config }}" in
+            default)             echo "args=" >> "$GITHUB_OUTPUT" ;;
+            no-default-features) echo "args=--no-default-features" >> "$GITHUB_OUTPUT" ;;
+            all-features)        echo "args=--all-features" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - run: cargo +nightly test ${{ steps.flags.outputs.args }} -- --quiet
