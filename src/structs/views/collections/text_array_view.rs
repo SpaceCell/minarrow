@@ -181,8 +181,15 @@ impl TextArrayV {
         Array::TextArray(self.array.clone()) // Arc clone for data buffer
     }
 
-    /// Returns an owned `TextArray` clone of the window.
+    /// Returns an owned `TextArray` for the window.
+    ///
+    /// If the view covers the entire backing array, returns a cheap Arc clone
+    /// of the original variant. Otherwise deep-copies the window via
+    /// `slice_clone` through `inner_array`.
     pub fn to_text_array(&self) -> TextArray {
+        if self.offset == 0 && self.len == self.array.len() {
+            return self.array.clone();
+        }
         self.inner_array().slice_clone(self.offset, self.len).str()
     }
 
@@ -491,5 +498,41 @@ mod tests {
     fn test_text_array_view_from_array_panics_on_wrong_variant() {
         let array = Array::Null;
         let _view = TextArrayV::from(array);
+    }
+
+    #[test]
+    fn test_to_text_array_full_coverage_shares_arc() {
+        let arr = StringArray::<u32>::from_slice(&["a", "b", "c"]);
+        let src = Arc::new(arr);
+        let text = TextArray::String32(src.clone());
+
+        let view = TextArrayV::new(text, 0, 3);
+        let out = view.to_text_array();
+
+        match out {
+            TextArray::String32(out_arc) => assert!(
+                Arc::ptr_eq(&src, &out_arc),
+                "full-coverage to_text_array should share the underlying Arc"
+            ),
+            _ => panic!("expected String32 variant"),
+        }
+    }
+
+    #[test]
+    fn test_to_text_array_windowed_copies() {
+        let arr = StringArray::<u32>::from_slice(&["a", "b", "c"]);
+        let src = Arc::new(arr);
+        let text = TextArray::String32(src.clone());
+
+        let view = TextArrayV::new(text, 1, 2);
+        let out = view.to_text_array();
+
+        match out {
+            TextArray::String32(out_arc) => assert!(
+                !Arc::ptr_eq(&src, &out_arc),
+                "windowed to_text_array must allocate a fresh buffer"
+            ),
+            _ => panic!("expected String32 variant"),
+        }
     }
 }

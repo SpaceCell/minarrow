@@ -196,8 +196,15 @@ impl TemporalArrayV {
         Array::TemporalArray(self.array.clone()) // Arc clone for data buffer
     }
 
-    /// Converts the view into a sliced `TemporalArray`.
+    /// Converts the view into an owned `TemporalArray` for the window.
+    ///
+    /// If the view covers the entire backing array, returns a cheap Arc clone
+    /// of the original variant. Otherwise deep-copies the window via
+    /// `slice_clone` through `inner_array`.
     pub fn to_temporal_array(&self) -> TemporalArray {
+        if self.offset == 0 && self.len == self.array.len() {
+            return self.array.clone();
+        }
         self.inner_array().slice_clone(self.offset, self.len).dt()
     }
 
@@ -832,5 +839,41 @@ mod tests {
     fn test_temporal_array_view_from_array_panics_on_wrong_variant() {
         let array = Array::Null;
         let _view = TemporalArrayV::from(array);
+    }
+
+    #[test]
+    fn test_to_temporal_array_full_coverage_shares_arc() {
+        let arr = DatetimeArray::<i64>::from_slice(&[10, 20, 30], None);
+        let src = Arc::new(arr);
+        let temporal = TemporalArray::Datetime64(src.clone());
+
+        let view = TemporalArrayV::new(temporal, 0, 3);
+        let out = view.to_temporal_array();
+
+        match out {
+            TemporalArray::Datetime64(out_arc) => assert!(
+                Arc::ptr_eq(&src, &out_arc),
+                "full-coverage to_temporal_array should share the underlying Arc"
+            ),
+            _ => panic!("expected Datetime64 variant"),
+        }
+    }
+
+    #[test]
+    fn test_to_temporal_array_windowed_copies() {
+        let arr = DatetimeArray::<i64>::from_slice(&[10, 20, 30], None);
+        let src = Arc::new(arr);
+        let temporal = TemporalArray::Datetime64(src.clone());
+
+        let view = TemporalArrayV::new(temporal, 1, 2);
+        let out = view.to_temporal_array();
+
+        match out {
+            TemporalArray::Datetime64(out_arc) => assert!(
+                !Arc::ptr_eq(&src, &out_arc),
+                "windowed to_temporal_array must allocate a fresh buffer"
+            ),
+            _ => panic!("expected Datetime64 variant"),
+        }
     }
 }

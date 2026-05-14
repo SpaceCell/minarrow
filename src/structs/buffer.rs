@@ -230,7 +230,7 @@ impl<T> Buffer<T> {
     /// Construct a zero-copy buffer as a window into a SharedBuffer.
     ///
     /// The buffer views elements `[offset .. offset + len]` of type T within
-    /// the shared allocation. The SharedBuffer is cloned (via a refcount bump) 
+    /// the shared allocation. The SharedBuffer is cloned (via a refcount bump)
     /// so the underlying memory stays alive.
     ///
     /// This is used by Matrix::to_table to create per-column FloatArray

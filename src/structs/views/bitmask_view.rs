@@ -142,9 +142,17 @@ impl BitmaskV {
         self.bitmask.slice(self.offset, self.len)
     }
 
-    /// Returns a Bitmask copy of the view.
+    /// Returns an owned `Bitmask` for the window.
+    ///
+    /// If the view covers the entire backing bitmask, returns a clone of the
+    /// underlying `Bitmask` (cheap for `Shared` storage; a byte memcpy for
+    /// `Owned` storage). Otherwise falls back to bit-by-bit `slice_clone`,
+    /// which has to honour bit alignment across the window boundary.
     #[inline]
     pub fn to_bitmask(&self) -> Bitmask {
+        if self.offset == 0 && self.len == self.bitmask.len() {
+            return (*self.bitmask).clone();
+        }
         self.bitmask.slice_clone(self.offset, self.len)
     }
 
@@ -476,5 +484,33 @@ mod tests {
         assert!(dbg.contains("BitmaskView"));
         assert!(dbg.contains("offset"));
         assert!(dbg.contains("set_count"));
+    }
+
+    #[test]
+    fn test_to_bitmask_full_coverage_matches_source() {
+        let bits = [true, false, true, false, true];
+        let mask = Bitmask::from_bools(&bits);
+        let view = BitmaskV::new(mask.clone(), 0, 5);
+        let out = view.to_bitmask();
+
+        assert_eq!(out.len(), 5);
+        for (i, expected) in bits.iter().enumerate() {
+            assert_eq!(out.get(i), *expected, "bit {} mismatched", i);
+        }
+        assert_eq!(out, mask, "full-coverage to_bitmask should equal the source bitmask");
+    }
+
+    #[test]
+    fn test_to_bitmask_windowed_matches_slice() {
+        let bits = [true, false, true, false, true, false];
+        let mask = Bitmask::from_bools(&bits);
+        let view = BitmaskV::new(mask, 2, 3);
+        let out = view.to_bitmask();
+
+        assert_eq!(out.len(), 3);
+        // Window is bits[2..5] = [true, false, true]
+        assert!(out.get(0));
+        assert!(!out.get(1));
+        assert!(out.get(2));
     }
 }

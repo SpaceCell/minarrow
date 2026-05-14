@@ -213,8 +213,15 @@ impl NumericArrayV {
         }
     }
 
-    /// Materialise a deep copy as an owned NumericArray for the window.
+    /// Materialise as an owned `NumericArray` for the window.
+    ///
+    /// If the view covers the entire backing array, returns a cheap Arc clone
+    /// of the original variant. Otherwise deep-copies the window via
+    /// `slice_clone` through `inner_array`.
     pub fn to_numeric_array(&self) -> NumericArray {
+        if self.offset == 0 && self.len == self.array.len() {
+            return self.array.clone();
+        }
         self.inner_array().slice_clone(self.offset, self.len).num()
     }
 
@@ -603,5 +610,47 @@ mod tests {
     fn test_numeric_array_view_from_array_panics_on_wrong_variant() {
         let array = Array::Null;
         let _view = NumericArrayV::from(array);
+    }
+
+    #[test]
+    fn test_to_numeric_array_full_coverage_shares_arc() {
+        let mut arr = IntegerArray::<i32>::default();
+        arr.push(1);
+        arr.push(2);
+        arr.push(3);
+        let src = Arc::new(arr);
+        let numeric = NumericArray::Int32(src.clone());
+
+        let view = NumericArrayV::new(numeric, 0, 3);
+        let out = view.to_numeric_array();
+
+        match out {
+            NumericArray::Int32(out_arc) => assert!(
+                Arc::ptr_eq(&src, &out_arc),
+                "full-coverage to_numeric_array should share the underlying Arc"
+            ),
+            _ => panic!("expected Int32 variant"),
+        }
+    }
+
+    #[test]
+    fn test_to_numeric_array_windowed_copies() {
+        let mut arr = IntegerArray::<i32>::default();
+        arr.push(1);
+        arr.push(2);
+        arr.push(3);
+        let src = Arc::new(arr);
+        let numeric = NumericArray::Int32(src.clone());
+
+        let view = NumericArrayV::new(numeric, 1, 2);
+        let out = view.to_numeric_array();
+
+        match out {
+            NumericArray::Int32(out_arc) => assert!(
+                !Arc::ptr_eq(&src, &out_arc),
+                "windowed to_numeric_array must allocate a fresh buffer"
+            ),
+            _ => panic!("expected Int32 variant"),
+        }
     }
 }

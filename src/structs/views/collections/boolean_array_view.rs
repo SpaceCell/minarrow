@@ -166,8 +166,15 @@ impl BooleanArrayV {
         Array::BooleanArray(self.array.clone()) // Arc clone for data buffer
     }
 
-    /// Returns an owned `BooleanArray` clone of the window.
+    /// Returns an owned `BooleanArray` for the window.
+    ///
+    /// If the view covers the entire backing array, returns a cheap Arc clone
+    /// of the original allocation. Otherwise deep-copies the window via
+    /// `slice_clone` through `inner_array`.
     pub fn to_boolean_array(&self) -> Arc<BooleanArray<()>> {
+        if self.offset == 0 && self.len == self.array.len() {
+            return self.array.clone();
+        }
         self.inner_array().slice_clone(self.offset, self.len).bool()
     }
 
@@ -528,5 +535,39 @@ mod tests {
         assert_eq!(bool_view.offset, 1);
         assert_eq!(bool_view.get_bool(0), Some(false));
         assert_eq!(bool_view.get_bool(1), Some(true));
+    }
+
+    #[test]
+    fn test_to_boolean_array_full_coverage_shares_arc() {
+        let mut arr = BooleanArray::<()>::default();
+        arr.push(true);
+        arr.push(false);
+        arr.push(true);
+        let src = Arc::new(arr);
+
+        let view = BooleanArrayV::new(src.clone(), 0, 3);
+        let out = view.to_boolean_array();
+
+        assert!(
+            Arc::ptr_eq(&src, &out),
+            "full-coverage to_boolean_array should share the underlying Arc"
+        );
+    }
+
+    #[test]
+    fn test_to_boolean_array_windowed_copies() {
+        let mut arr = BooleanArray::<()>::default();
+        arr.push(true);
+        arr.push(false);
+        arr.push(true);
+        let src = Arc::new(arr);
+
+        let view = BooleanArrayV::new(src.clone(), 1, 2);
+        let out = view.to_boolean_array();
+
+        assert!(
+            !Arc::ptr_eq(&src, &out),
+            "windowed to_boolean_array must allocate a fresh buffer"
+        );
     }
 }
