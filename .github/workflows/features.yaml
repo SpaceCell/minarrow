@@ -50,12 +50,13 @@ jobs:
       - run: cargo +nightly test ${{ steps.flags.outputs.args }} -- --quiet
 
   pyo3:
-    name: minarrow-pyo3 build (nightly)
+    name: minarrow-pyo3 (nightly)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # Catches version drift between `minarrow` and `minarrow-pyo3`,
-      # which lives in its own workspace at ./pyo3.
+      # The pyo3 crate is its own workspace, so the main `features` matrix
+      # never sees it. This job catches both version drift against `minarrow`
+      # and FFI regressions against a real PyArrow.
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: none
     steps:
@@ -74,10 +75,34 @@ jobs:
           workspaces: pyo3
 
       - name: Set up Python
+        id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: cargo build (pyo3)
+      - name: Create venv and install PyArrow
+        working-directory: pyo3
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install "pyarrow>=14.0.0"
+
+      - name: cargo build (default features)
         working-directory: pyo3
         run: cargo +nightly build --all-features
+
+      - name: cargo test (FFI roundtrips)
+        working-directory: pyo3
+        env:
+          # The embedded interpreter needs to find its stdlib and pyarrow.
+          # `pythonLocation` is exported by actions/setup-python and points
+          # at the install prefix. PYTHONHOME -> stdlib, LD_LIBRARY_PATH ->
+          # libpython.so, PYTHONPATH -> venv site-packages where pyarrow lives.
+          PYO3_PYTHON: ${{ github.workspace }}/pyo3/.venv/bin/python
+          PYTHONHOME: ${{ env.pythonLocation }}
+          PYTHONPATH: ${{ github.workspace }}/pyo3/.venv/lib/python3.12/site-packages
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
+        run: |
+          cargo +nightly test \
+            --no-default-features \
+            --features "datetime,extended_numeric_types,extended_categorical"

@@ -106,10 +106,6 @@
 //! result = my_extension.process_batch(batch)
 //! ```
 
-#![feature(allocator_api)]
-#![feature(slice_ptr_get)]
-#![feature(portable_simd)]
-
 use pyo3::prelude::*;
 use std::sync::Arc;
 
