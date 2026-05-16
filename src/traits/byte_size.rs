@@ -126,7 +126,7 @@ impl<T: crate::traits::type_unions::Integer> ByteSize for CategoricalArray<T> {
     #[inline]
     fn est_bytes(&self) -> usize {
         let data_bytes = self.data.est_bytes();
-        let unique_values_bytes = self.unique_values.est_bytes();
+        let unique_values_bytes = self.dictionary.values.est_bytes();
         let mask_bytes = self.null_mask.as_ref().map_or(0, |m| m.est_bytes());
         data_bytes + unique_values_bytes + mask_bytes
     }

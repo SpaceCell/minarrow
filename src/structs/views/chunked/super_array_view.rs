@@ -55,6 +55,7 @@ use crate::{
     enums::error::MinarrowError,
     enums::shape_dim::ShapeDim,
     structs::bitmask::Bitmask,
+    structs::dictionary::Dictionary,
     structs::variants::boolean::BooleanArray,
     structs::variants::categorical::CategoricalArray,
     traits::type_unions::Integer,
@@ -307,33 +308,52 @@ fn consolidate_categorical_slices<T: Integer + Default + Clone>(slices: &[ArrayV
     use crate::traits::consolidate::extend_null_mask;
     use crate::traits::masked_array::MaskedArray;
 
-    // Extract the dictionary from the first slice
-    let first_dict = match &slices[0].array {
+    // Extract the dictionary from the first slice. The match arms cover
+    // every enabled width and return `&Dictionary<T>` for the slice's
+    // width; the casts unify them onto the function's generic `T` (which
+    // matches the concrete width at the call site).
+    let first_dict: &Dictionary<T> = match &slices[0].array {
         #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-        Array::TextArray(TextArray::Categorical32(arr)) => &arr.unique_values,
+        Array::TextArray(TextArray::Categorical32(arr)) => unsafe {
+            &*(&arr.dictionary as *const Dictionary<u32> as *const Dictionary<T>)
+        },
         #[cfg(feature = "default_categorical_8")]
-        Array::TextArray(TextArray::Categorical8(arr)) => &arr.unique_values,
+        Array::TextArray(TextArray::Categorical8(arr)) => unsafe {
+            &*(&arr.dictionary as *const Dictionary<u8> as *const Dictionary<T>)
+        },
         #[cfg(feature = "extended_categorical")]
-        Array::TextArray(TextArray::Categorical16(arr)) => &arr.unique_values,
+        Array::TextArray(TextArray::Categorical16(arr)) => unsafe {
+            &*(&arr.dictionary as *const Dictionary<u16> as *const Dictionary<T>)
+        },
         #[cfg(feature = "extended_categorical")]
-        Array::TextArray(TextArray::Categorical64(arr)) => &arr.unique_values,
+        Array::TextArray(TextArray::Categorical64(arr)) => unsafe {
+            &*(&arr.dictionary as *const Dictionary<u64> as *const Dictionary<T>)
+        },
         _ => panic!("Expected CategoricalArray"),
     };
 
-    // Verify all slices share the same dictionary (via pointer comparison)
+    // Verify all slices share the same dictionary instance.
     let all_same_dict = slices.iter().all(|s| {
-        let dict = match &s.array {
+        let dict: &Dictionary<T> = match &s.array {
             #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-            Array::TextArray(TextArray::Categorical32(arr)) => &arr.unique_values,
+            Array::TextArray(TextArray::Categorical32(arr)) => unsafe {
+                &*(&arr.dictionary as *const Dictionary<u32> as *const Dictionary<T>)
+            },
             #[cfg(feature = "default_categorical_8")]
-            Array::TextArray(TextArray::Categorical8(arr)) => &arr.unique_values,
+            Array::TextArray(TextArray::Categorical8(arr)) => unsafe {
+                &*(&arr.dictionary as *const Dictionary<u8> as *const Dictionary<T>)
+            },
             #[cfg(feature = "extended_categorical")]
-            Array::TextArray(TextArray::Categorical16(arr)) => &arr.unique_values,
+            Array::TextArray(TextArray::Categorical16(arr)) => unsafe {
+                &*(&arr.dictionary as *const Dictionary<u16> as *const Dictionary<T>)
+            },
             #[cfg(feature = "extended_categorical")]
-            Array::TextArray(TextArray::Categorical64(arr)) => &arr.unique_values,
+            Array::TextArray(TextArray::Categorical64(arr)) => unsafe {
+                &*(&arr.dictionary as *const Dictionary<u64> as *const Dictionary<T>)
+            },
             _ => return false,
         };
-        std::ptr::eq(dict.as_ptr(), first_dict.as_ptr())
+        dict.shares_with(first_dict)
     });
 
     if !all_same_dict {
@@ -442,8 +462,23 @@ fn consolidate_categorical_slices<T: Integer + Default + Clone>(slices: &[ArrayV
         current_len += slice.len();
     }
 
-    // Create result CategoricalArray with shared dictionary
-    let result = CategoricalArray::<T>::new(result_data, first_dict.clone(), result_mask);
+    // Result categorical reuses the shared dictionary snapshot. All slices
+    // have already been verified above to share the same dictionary, so the
+    // first slice's Shared Arc is the correct one to bind to. The function
+    // is generic over `T`, but the match arms only fire when the categorical
+    // is at the corresponding width, so the `Arc<DictionaryInner<u32>>`
+    // (etc.) the snapshot was extracted from is the same shape as
+    // `Arc<DictionaryInner<T>>` at the call site - the transmute reinterprets
+    // the marker type only.
+    let snapshot_concrete = first_dict
+        .as_shared()
+        .expect("consolidate_categorical_slices: all slices share a Shared dictionary")
+        .clone();
+    let snapshot: Arc<crate::structs::dictionary::DictionaryInner<T>> = unsafe {
+        std::mem::transmute(snapshot_concrete)
+    };
+    let result =
+        CategoricalArray::<T>::with_dictionary(result_data, snapshot, result_mask);
 
     // Wrap in appropriate variant
     if std::mem::size_of::<T>() == 4 {

@@ -40,7 +40,9 @@ use std::collections::HashMap;
 
 use crate::enums::error::{KernelError, log_length_mismatch};
 use crate::kernels::bitmask::merge_bitmasks_to_new;
+use crate::structs::dictionary::Dictionary;
 use crate::structs::variants::categorical::CategoricalArray;
+use std::sync::Arc;
 #[cfg(feature = "str_arithmetic")]
 use memchr::memmem::Finder;
 
@@ -447,7 +449,7 @@ fn apply_dict_dict_impl<T: Integer>(
 
     // Build unique dictionary for the output, initially union of both inputs
     let mut uniq: Vec64<String> = Vec64::with_capacity(
-        lhs_array.unique_values.len() + rhs_array.unique_values.len() + lhs_logical_len,
+        lhs_array.dictionary.len() + rhs_array.dictionary.len() + lhs_logical_len,
     );
 
     #[cfg(feature = "fast_hash")]
@@ -457,9 +459,10 @@ fn apply_dict_dict_impl<T: Integer>(
     let mut dict: HashMap<String, T> = HashMap::with_capacity(uniq.capacity());
 
     for v in lhs_array
-        .unique_values
+        .dictionary
+        .values()
         .iter()
-        .chain(rhs_array.unique_values.iter())
+        .chain(rhs_array.dictionary.values().iter())
     {
         if !dict.contains_key(v) {
             let idx = T::from_usize(uniq.len());
@@ -610,7 +613,7 @@ fn apply_dict_dict_impl<T: Integer>(
 
     Ok(CategoricalArray {
         data: out_data.into(),
-        unique_values: uniq,
+        dictionary: Dictionary::from(uniq),
         null_mask: Some(out_mask),
     })
 }
@@ -885,8 +888,8 @@ where
     let mut out_null = Bitmask::new_set_all(total_out, false);
 
     // Prepare dictionary and unique values (for this slice)
-    let mut uniq: Vec64<String> = Vec64::with_capacity(larr.unique_values.len() + llen);
-    uniq.extend(larr.unique_values.iter().cloned());
+    let mut uniq: Vec64<String> = Vec64::with_capacity(larr.dictionary.len() + llen);
+    uniq.extend(larr.dictionary.iter().cloned());
 
     #[cfg(feature = "fast_hash")]
     let mut dict: AHashMap<String, u32> = AHashMap::with_capacity(uniq.len());
@@ -993,7 +996,7 @@ where
 
     Ok(CategoricalArray {
         data: out_data.into(),
-        unique_values: uniq,
+        dictionary: Dictionary::from(uniq),
         null_mask: Some(out_null),
     })
 }
@@ -1237,7 +1240,7 @@ where
 
     Ok(CategoricalArray {
         data: data.into(),
-        unique_values,
+        dictionary: Arc::new(Dictionary::from(unique_values)),
         null_mask: out_mask,
     })
 }

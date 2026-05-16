@@ -450,7 +450,7 @@ pub fn export_to_c(array: Arc<Array>, schema: Schema) -> (*mut ArrowArray, *mut 
             &array,
             schema,
             cat.data.len() as i64,
-            &cat.unique_values,
+            cat.dictionary.values(),
             32,
         ),
         #[cfg(feature = "default_categorical_8")]
@@ -458,7 +458,7 @@ pub fn export_to_c(array: Arc<Array>, schema: Schema) -> (*mut ArrowArray, *mut 
             &array,
             schema,
             cat.data.len() as i64,
-            &cat.unique_values,
+            cat.dictionary.values(),
             8,
         ),
         #[cfg(feature = "extended_categorical")]
@@ -466,7 +466,7 @@ pub fn export_to_c(array: Arc<Array>, schema: Schema) -> (*mut ArrowArray, *mut 
             &array,
             schema,
             cat.data.len() as i64,
-            &cat.unique_values,
+            cat.dictionary.values(),
             16,
         ),
         #[cfg(feature = "extended_categorical")]
@@ -474,7 +474,7 @@ pub fn export_to_c(array: Arc<Array>, schema: Schema) -> (*mut ArrowArray, *mut 
             &array,
             schema,
             cat.data.len() as i64,
-            &cat.unique_values,
+            cat.dictionary.values(),
             64,
         ),
 
@@ -520,7 +520,7 @@ fn export_categorical_array_to_c(
     array: &Arc<Array>,
     schema: Schema,
     codes_len: i64,
-    unique_values: &Vec64<String>,
+    unique_values: &[String],
     index_bits: usize,
 ) -> (*mut ArrowArray, *mut ArrowSchema) {
     let codes_ptr = array.data_ptr_and_byte_len().0;

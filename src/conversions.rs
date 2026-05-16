@@ -62,7 +62,7 @@ use crate::enums::error::MinarrowError;
 #[cfg(feature = "views")]
 use crate::traits::view::View;
 use crate::{
-    Array, Bitmask, BooleanArray, CategoricalArray, FloatArray, Integer, IntegerArray,
+    Array, Bitmask, BooleanArray, CategoricalArray, Dictionary, FloatArray, Integer, IntegerArray,
     NumericArray, StringArray, TextArray, Vec64,
 };
 use num_traits::FromPrimitive;
@@ -519,7 +519,7 @@ macro_rules! string_to_cat {
 
                 Ok(CategoricalArray {
                     data: codes.into(),
-                    unique_values: uniq,
+                    dictionary: Dictionary::from(uniq),
                     null_mask: src.null_mask.clone(),
                 })
             }
@@ -561,7 +561,7 @@ macro_rules! cat_to_string {
 
                 for &code in &src.data {
                     let idx = code.to_usize();
-                    let s = &src.unique_values[idx];
+                    let s = &src.dictionary.values()[idx];
                     let bytes = s.as_bytes();
                     data.extend_from_slice(bytes);
 
@@ -654,9 +654,10 @@ macro_rules! cat_to_cat_widen {
         impl From<&CategoricalArray<$src>> for CategoricalArray<$dst> {
             fn from(src: &CategoricalArray<$src>) -> Self {
                 let data = src.data.iter().map(|&x| x as $dst).collect();
+                let values: Vec<String> = src.dictionary.values().to_vec();
                 CategoricalArray {
                     data,
-                    unique_values: src.unique_values.clone(),
+                    dictionary: Dictionary::<$dst>::from(values),
                     null_mask: src.null_mask.clone(),
                 }
             }
@@ -677,9 +678,10 @@ macro_rules! cat_to_cat_narrow {
                         target: stringify!($dst),
                     })?);
                 }
+                let values: Vec<String> = src.dictionary.values().to_vec();
                 Ok(CategoricalArray {
                     data: data.into(),
-                    unique_values: src.unique_values.clone(),
+                    dictionary: Dictionary::<$dst>::from(values),
                     null_mask: src.null_mask.clone(),
                 })
             }

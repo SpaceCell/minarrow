@@ -693,7 +693,7 @@ impl Array {
                             mask.set(i, false);
                         } else {
                             let idx = cat.data[i] as usize;
-                            let raw = &cat.unique_values[idx];
+                            let raw = &cat.dictionary.values()[idx];
                             match raw.parse::<i32>() {
                                 Ok(val) => {
                                     out.push(val);
@@ -719,7 +719,7 @@ impl Array {
                             mask.set(i, false);
                         } else {
                             let idx = cat.data[i] as usize;
-                            let raw = &cat.unique_values[idx];
+                            let raw = &cat.dictionary.values()[idx];
                             match raw.parse::<i32>() {
                                 Ok(val) => {
                                     out.push(val);
@@ -745,7 +745,7 @@ impl Array {
                             mask.set(i, false);
                         } else {
                             let idx = cat.data[i] as usize;
-                            let raw = &cat.unique_values[idx];
+                            let raw = &cat.dictionary.values()[idx];
                             match raw.parse::<i32>() {
                                 Ok(val) => {
                                     out.push(val);
@@ -771,7 +771,7 @@ impl Array {
                             mask.set(i, false);
                         } else {
                             let idx = cat.data[i] as usize;
-                            let raw = &cat.unique_values[idx];
+                            let raw = &cat.dictionary.values()[idx];
                             match raw.parse::<i64>() {
                                 Ok(val) => {
                                     out.push(val);
@@ -4212,12 +4212,14 @@ mod tests {
                 // .data indices: [0, 0, 1, 2, ...]
                 // Only "42" and "999" parse as i32
                 let expected_vals: Vec<i32> = cat
-                    .unique_values
+                    .dictionary
+                    .values()
                     .iter()
                     .map(|s| s.parse::<i32>().unwrap_or(0))
                     .collect();
                 let expected_mask: Vec<bool> = cat
-                    .unique_values
+                    .dictionary
+                    .values()
                     .iter()
                     .map(|s| s.parse::<i32>().is_ok())
                     .collect();

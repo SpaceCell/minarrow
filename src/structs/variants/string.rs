@@ -58,6 +58,9 @@ use crate::traits::print::MAX_PREVIEW;
 use crate::traits::shape::Shape;
 use crate::traits::type_unions::Integer;
 use crate::utils::validate_null_mask_len;
+use std::sync::Arc;
+
+use crate::structs::dictionary::Dictionary;
 use crate::{
     Bitmask, Buffer, CategoricalArray, Length, Offset, StringAVT, impl_arc_masked_array, vec64,
 };
@@ -464,7 +467,7 @@ impl<T: Integer> StringArray<T> {
 
         CategoricalArray {
             data: indices.into(),
-            unique_values: uniques.into(),
+            dictionary: Dictionary::from(Vec64::from(uniques)),
             null_mask: self.null_mask.clone(),
         }
     }
