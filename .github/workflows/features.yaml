@@ -48,3 +48,36 @@ jobs:
           esac
 
       - run: cargo +nightly test ${{ steps.flags.outputs.args }} -- --quiet
+
+  pyo3:
+    name: minarrow-pyo3 build (nightly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Catches version drift between `minarrow` and `minarrow-pyo3`,
+      # which lives in its own workspace at ./pyo3.
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: none
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain (nightly)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: clippy,rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: pyo3
+          workspaces: pyo3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: cargo build (pyo3)
+        working-directory: pyo3
+        run: cargo +nightly build --all-features
