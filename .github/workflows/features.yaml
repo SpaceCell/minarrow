@@ -12,18 +12,24 @@ concurrency:
 
 jobs:
   features:
-    name: features • ${{ matrix.config }} (nightly)
-    runs-on: ubuntu-latest
+    name: features • ${{ matrix.os }} • ${{ matrix.config }} (nightly)
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         config: [default, no-default-features, all-features]
     env:
       # Each config builds the full Polars/arrow-rs tree into every example
       # binary; trimming debug info keeps the target dir within disk limits.
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: none
+    defaults:
+      run:
+        # Use bash on every runner so the case-statement step below works
+        # identically on Windows, macOS, and Linux.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -36,7 +42,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          key: ${{ matrix.config }}
+          key: ${{ matrix.os }}-${{ matrix.config }}
 
       - name: Set feature flags
         id: flags
