@@ -354,7 +354,7 @@ impl MaskedArray for BooleanArray<()> {
     type T = bool;
     type Container = Bitmask;
     type LogicalType = bool;
-    type CopyType = bool;
+    type CopyType<'a> = bool where Self: 'a;
 
     fn data(&self) -> &Bitmask {
         &self.data

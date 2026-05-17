@@ -152,7 +152,7 @@ impl ArrayV {
 
     /// Returns the value at logical index `i` within the window, or `None` if out of bounds or null.
     #[inline]
-    pub fn get<T: MaskedArray + 'static>(&self, i: usize) -> Option<T::CopyType> {
+    pub fn get<T: MaskedArray + 'static>(&self, i: usize) -> Option<T::CopyType<'_>> {
         if i >= self.len {
             return None;
         }
@@ -162,10 +162,12 @@ impl ArrayV {
     /// Returns the value at logical index `i` within the window (unchecked).
     ///
     /// # Safety
-    /// `i` must be strictly less than `self.len` and `self.offset + i` must
-    /// be a valid index into the underlying array. Violating either is UB.
+    /// `i` must be less than the view's logical length. No bounds check is performed.
     #[inline]
-    pub unsafe fn get_unchecked<T: MaskedArray + 'static>(&self, i: usize) -> Option<T::CopyType> {
+    pub unsafe fn get_unchecked<T: MaskedArray + 'static>(
+        &self,
+        i: usize,
+    ) -> Option<T::CopyType<'_>> {
         unsafe { self.array.inner::<T>().get_unchecked(self.offset + i) }
     }
 
