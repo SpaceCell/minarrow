@@ -18,7 +18,7 @@
 #[cfg(all(feature = "c_ffi_tests", test))]
 mod arrow_c_integration {
     use std::ffi::CString;
-    use std::os::raw::c_int;
+    use std::os::raw::{c_char, c_int};
     use std::sync::Arc;
 
     #[cfg(feature = "datetime")]
@@ -46,8 +46,8 @@ mod arrow_c_integration {
         fn c_arrow_check_dict32(arr: *const ArrowArray) -> c_int;
         fn c_arrow_check_schema(
             schema: *const ArrowSchema,
-            expected_name: *const i8,
-            expected_format: *const i8,
+            expected_name: *const c_char,
+            expected_format: *const c_char,
         ) -> c_int;
     }
 

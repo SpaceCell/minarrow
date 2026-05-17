@@ -49,6 +49,68 @@ jobs:
 
       - run: cargo +nightly test ${{ steps.flags.outputs.args }} -- --quiet
 
+  cross-arm:
+    name: cross-check • ${{ matrix.target }} • ${{ matrix.config }} (nightly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+        config: [default, no-default-features, all-features]
+        include:
+          - target: aarch64-unknown-linux-gnu
+            apt_pkg: gcc-aarch64-linux-gnu
+            linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER
+            linker_bin: aarch64-linux-gnu-gcc
+          - target: armv7-unknown-linux-gnueabihf
+            apt_pkg: gcc-arm-linux-gnueabihf
+            linker_env: CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER
+            linker_bin: arm-linux-gnueabihf-gcc
+    env:
+      # Cross-compile check only - guards against target-dependent type
+      # regressions, e.g. c_char signedness on aarch64-linux, 32-bit usize
+      # and alignment differences on armv7. Runs in parallel with the host
+      # `features` matrix.
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: none
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain (nightly)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_pkg }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: cross-${{ matrix.target }}-${{ matrix.config }}
+
+      - name: Set feature flags
+        id: flags
+        run: |
+          case "${{ matrix.config }}" in
+            default)             echo "args=" >> "$GITHUB_OUTPUT" ;;
+            no-default-features) echo "args=--no-default-features" >> "$GITHUB_OUTPUT" ;;
+            all-features)        echo "args=--all-features" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: cargo check (${{ matrix.target }})
+        run: |
+          # The linker env var name is target-specific
+          # (CARGO_TARGET_<TARGET>_LINKER), so export inline per matrix entry.
+          export ${{ matrix.linker_env }}=${{ matrix.linker_bin }}
+          cargo +nightly check --target ${{ matrix.target }} ${{ steps.flags.outputs.args }}
+
   pyo3:
     name: minarrow-pyo3 (nightly)
     runs-on: ubuntu-latest

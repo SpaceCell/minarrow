@@ -50,7 +50,7 @@
 //! fair-use to implement its published interoperability standard as per
 //! https://www.apache.org/foundation/marks/ .
 
-use std::ffi::{CString, c_void};
+use std::ffi::{CString, c_char, c_void};
 use std::sync::Arc;
 use std::{ptr, slice};
 
@@ -121,9 +121,9 @@ impl ArrowArray {
 #[repr(C)]
 #[derive(Clone)]
 pub struct ArrowSchema {
-    pub format: *const i8,
-    pub name: *const i8,
-    pub metadata: *const i8,
+    pub format: *const c_char,
+    pub name: *const c_char,
+    pub metadata: *const c_char,
     pub flags: i64,
     pub n_children: i64,
     pub children: *mut *mut ArrowSchema,
@@ -163,7 +163,7 @@ pub struct ArrowArrayStream {
         Option<unsafe extern "C" fn(stream: *mut ArrowArrayStream, out: *mut ArrowSchema) -> i32>,
     pub get_next:
         Option<unsafe extern "C" fn(stream: *mut ArrowArrayStream, out: *mut ArrowArray) -> i32>,
-    pub get_last_error: Option<unsafe extern "C" fn(stream: *mut ArrowArrayStream) -> *const i8>,
+    pub get_last_error: Option<unsafe extern "C" fn(stream: *mut ArrowArrayStream) -> *const c_char>,
     pub release: Option<unsafe extern "C" fn(stream: *mut ArrowArrayStream)>,
     pub private_data: *mut c_void,
 }
@@ -589,7 +589,7 @@ fn export_categorical_array_to_c(
     };
     let metadata_ptr = metadata_bytes
         .as_ref()
-        .map(|b| b.as_ptr() as *const i8)
+        .map(|b| b.as_ptr() as *const c_char)
         .unwrap_or(ptr::null());
 
     let arr = Box::new(ArrowArray {
@@ -1489,8 +1489,8 @@ unsafe fn import_categorical(
         sch.dictionary as *const _
     } else {
         synthetic_schema = ArrowSchema {
-            format: b"u\0".as_ptr() as *const i8,
-            name: b"\0".as_ptr() as *const i8,
+            format: b"u\0".as_ptr() as *const c_char,
+            name: b"\0".as_ptr() as *const c_char,
             metadata: ptr::null(),
             flags: 0,
             n_children: 0,
@@ -1594,8 +1594,8 @@ unsafe fn import_categorical_narrow_to_u8(
         sch.dictionary as *const _
     } else {
         synthetic_schema = ArrowSchema {
-            format: b"u\0".as_ptr() as *const i8,
-            name: b"\0".as_ptr() as *const i8,
+            format: b"u\0".as_ptr() as *const c_char,
+            name: b"\0".as_ptr() as *const c_char,
             metadata: ptr::null(),
             flags: 0,
             n_children: 0,
@@ -1763,7 +1763,7 @@ fn create_arrow_export(
     };
     let metadata_ptr = metadata_bytes
         .as_ref()
-        .map(|b| b.as_ptr() as *const i8)
+        .map(|b| b.as_ptr() as *const c_char)
         .unwrap_or(ptr::null());
 
     // ArrowArray
@@ -1915,7 +1915,7 @@ fn export_struct_to_c_inner(
     let metadata_bytes = metadata.map(|m| encode_arrow_metadata(&m));
     let metadata_ptr = metadata_bytes
         .as_ref()
-        .map(|b| b.as_ptr() as *const i8)
+        .map(|b| b.as_ptr() as *const c_char)
         .unwrap_or(ptr::null());
 
     let struct_holder = Box::new(StructSchemaHolder {
@@ -1973,7 +1973,7 @@ fn encode_arrow_metadata(pairs: &std::collections::BTreeMap<String, String>) -> 
 /// # Safety
 /// The pointer must be null or point to a valid Arrow metadata buffer.
 pub unsafe fn decode_arrow_metadata(
-    ptr: *const i8,
+    ptr: *const c_char,
 ) -> Option<std::collections::BTreeMap<String, String>> {
     if ptr.is_null() {
         return None;
@@ -2158,7 +2158,7 @@ unsafe extern "C" fn rb_stream_get_schema(
         };
         let metadata_ptr = metadata_bytes
             .as_ref()
-            .map(|b| b.as_ptr() as *const i8)
+            .map(|b| b.as_ptr() as *const c_char)
             .unwrap_or(ptr::null());
 
         let child_holder = Box::new(StructSchemaHolder {
@@ -2191,7 +2191,7 @@ unsafe extern "C" fn rb_stream_get_schema(
     let metadata_bytes = holder.schema_metadata.clone();
     let metadata_ptr = metadata_bytes
         .as_ref()
-        .map(|b| b.as_ptr() as *const i8)
+        .map(|b| b.as_ptr() as *const c_char)
         .unwrap_or(ptr::null());
 
     let schema_holder = Box::new(StructSchemaHolder {
@@ -2388,7 +2388,7 @@ impl HasLastError for ArrayStreamHolder {
 
 unsafe extern "C" fn stream_get_last_error<T: HasLastError>(
     stream: *mut ArrowArrayStream,
-) -> *const i8 {
+) -> *const c_char {
     unsafe {
         if stream.is_null() || (*stream).private_data.is_null() {
             return ptr::null();
