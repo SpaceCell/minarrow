@@ -666,10 +666,10 @@ impl Display for TemporalArray {
 }
 
 /// Writes the standard header, then delegates to the contained array's Display.
-fn write_temporal_array_with_header<T>(
+fn write_temporal_array_with_header(
     f: &mut Formatter<'_>,
     dtype: &str,
-    arr: &(impl MaskedArray<CopyType = T> + Display + ?Sized),
+    arr: &(impl MaskedArray + Display + ?Sized),
 ) -> std::fmt::Result {
     writeln!(
         f,

@@ -111,7 +111,7 @@ macro_rules! impl_masked_array {
             type T = T;
             type Container = $container;
             type LogicalType = $logicaltype;
-            type CopyType = $logicaltype; // (currently the) same for all macro-implemented types
+            type CopyType<'a> = $logicaltype where Self: 'a;
 
             /// Returns a reference to the underlying data vector.
             fn data(&self) -> &Buffer<T> {
@@ -906,7 +906,7 @@ macro_rules! impl_arc_masked_array {
             type T = $T;
             type Container = $Container;
             type LogicalType = $LogicalType;
-            type CopyType = $CopyType;
+            type CopyType<'a> = $CopyType where Self: 'a;
 
             fn len(&self) -> usize {
                 (**self).len()
@@ -920,36 +920,36 @@ macro_rules! impl_arc_masked_array {
             fn data_mut(&mut self) -> &mut Self::Container {
                 ::std::sync::Arc::make_mut(self).data_mut()
             }
-            fn get(&self, idx: usize) -> Option<Self::CopyType> {
+            fn get(&self, idx: usize) -> Option<Self::CopyType<'_>> {
                 (**self).get(idx)
             }
             fn set(&mut self, idx: usize, value: Self::LogicalType) {
                 ::std::sync::Arc::make_mut(self).set(idx, value)
             }
-            unsafe fn get_unchecked(&self, idx: usize) -> Option<Self::CopyType> {
+            unsafe fn get_unchecked(&self, idx: usize) -> Option<Self::CopyType<'_>> {
                 unsafe { (**self).get_unchecked(idx) }
             }
             unsafe fn set_unchecked(&mut self, idx: usize, value: Self::LogicalType) {
                 unsafe { ::std::sync::Arc::make_mut(self).set_unchecked(idx, value) }
             }
-            fn iter(&self) -> impl Iterator<Item = Self::CopyType> + '_ {
+            fn iter(&self) -> impl Iterator<Item = Self::CopyType<'_>> + '_ {
                 (**self).iter()
             }
-            fn iter_opt(&self) -> impl Iterator<Item = Option<Self::CopyType>> + '_ {
+            fn iter_opt(&self) -> impl Iterator<Item = Option<Self::CopyType<'_>>> + '_ {
                 (**self).iter_opt()
             }
             fn iter_range(
                 &self,
                 offset: usize,
                 len: usize,
-            ) -> impl Iterator<Item = Self::CopyType> + '_ {
+            ) -> impl Iterator<Item = Self::CopyType<'_>> + '_ {
                 (**self).iter_range(offset, len)
             }
             fn iter_opt_range(
                 &self,
                 offset: usize,
                 len: usize,
-            ) -> impl Iterator<Item = Option<Self::CopyType>> + '_ {
+            ) -> impl Iterator<Item = Option<Self::CopyType<'_>>> + '_ {
                 (**self).iter_opt_range(offset, len)
             }
             fn push(&mut self, value: Self::LogicalType) {
@@ -1030,7 +1030,7 @@ macro_rules! impl_arc_masked_array {
             type T = $T;
             type Container = $Container;
             type LogicalType = $LogicalType;
-            type CopyType = $CopyType;
+            type CopyType<'a> = $CopyType where Self: 'a;
 
             fn len(&self) -> usize {
                 (**self).len()
@@ -1044,36 +1044,36 @@ macro_rules! impl_arc_masked_array {
             fn data_mut(&mut self) -> &mut Self::Container {
                 ::std::sync::Arc::make_mut(self).data_mut()
             }
-            fn get(&self, idx: usize) -> Option<Self::CopyType> {
+            fn get(&self, idx: usize) -> Option<Self::CopyType<'_>> {
                 (**self).get(idx)
             }
             fn set(&mut self, idx: usize, value: Self::LogicalType) {
                 ::std::sync::Arc::make_mut(self).set(idx, value)
             }
-            unsafe fn get_unchecked(&self, idx: usize) -> Option<Self::CopyType> {
+            unsafe fn get_unchecked(&self, idx: usize) -> Option<Self::CopyType<'_>> {
                 unsafe { (**self).get_unchecked(idx) }
             }
             unsafe fn set_unchecked(&mut self, idx: usize, value: Self::LogicalType) {
                 unsafe { ::std::sync::Arc::make_mut(self).set_unchecked(idx, value) }
             }
-            fn iter(&self) -> impl Iterator<Item = Self::CopyType> + '_ {
+            fn iter(&self) -> impl Iterator<Item = Self::CopyType<'_>> + '_ {
                 (**self).iter()
             }
-            fn iter_opt(&self) -> impl Iterator<Item = Option<Self::CopyType>> + '_ {
+            fn iter_opt(&self) -> impl Iterator<Item = Option<Self::CopyType<'_>>> + '_ {
                 (**self).iter_opt()
             }
             fn iter_range(
                 &self,
                 offset: usize,
                 len: usize,
-            ) -> impl Iterator<Item = Self::CopyType> + '_ {
+            ) -> impl Iterator<Item = Self::CopyType<'_>> + '_ {
                 (**self).iter_range(offset, len)
             }
             fn iter_opt_range(
                 &self,
                 offset: usize,
                 len: usize,
-            ) -> impl Iterator<Item = Option<Self::CopyType>> + '_ {
+            ) -> impl Iterator<Item = Option<Self::CopyType<'_>>> + '_ {
                 (**self).iter_opt_range(offset, len)
             }
             fn push(&mut self, value: Self::LogicalType) {

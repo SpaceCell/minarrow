@@ -47,8 +47,16 @@ pub trait MaskedArray {
     /// The logical type that the data carries
     type LogicalType: Default;
 
-    /// The type that implements `Copy` (e.g., &str)
-    type CopyType: Default;
+    /// The element type returned by `get`/`iter` etc.
+    ///
+    /// Modelled as a generic associated type so that string-like arrays
+    /// can return `&'a str` borrowed from `&self`, instead of widening the
+    /// borrow to `'static` (which would be unsound). For fixed-width types
+    /// like numerics the lifetime is unused and the alias resolves to the
+    /// element type itself, e.g. `type CopyType<'a> = T`.
+    type CopyType<'a>: Default
+    where
+        Self: 'a;
 
     /// **************************************************
     /// The below methods differ for the Boolean (bit-packed),
@@ -73,13 +81,13 @@ pub trait MaskedArray {
     fn data_mut(&mut self) -> &mut Self::Container;
 
     /// Retrieves the value at the given index, or None if null or beyond length.
-    fn get(&self, idx: usize) -> Option<Self::CopyType>;
+    fn get(&self, idx: usize) -> Option<Self::CopyType<'_>>;
 
     /// Sets the value at the given index, updating the null‐mask.
     fn set(&mut self, idx: usize, value: Self::LogicalType);
 
     /// Like `get`, but skips the `idx >= len()` check.
-    unsafe fn get_unchecked(&self, idx: usize) -> Option<Self::CopyType>;
+    unsafe fn get_unchecked(&self, idx: usize) -> Option<Self::CopyType<'_>>;
 
     /// Like `set`, but skips bounds checks.
     unsafe fn set_unchecked(&mut self, idx: usize, value: Self::LogicalType);
@@ -98,20 +106,24 @@ pub trait MaskedArray {
     }
 
     /// Returns an iterator over the T values in this array.
-    fn iter(&self) -> impl Iterator<Item = Self::CopyType> + '_;
+    fn iter(&self) -> impl Iterator<Item = Self::CopyType<'_>> + '_;
 
     /// Returns an iterator over the T values, as `Option<Self::T>`.
-    fn iter_opt(&self) -> impl Iterator<Item = Option<Self::CopyType>> + '_;
+    fn iter_opt(&self) -> impl Iterator<Item = Option<Self::CopyType<'_>>> + '_;
 
     /// Returns an iterator over a range of T values in this array.
-    fn iter_range(&self, offset: usize, len: usize) -> impl Iterator<Item = Self::CopyType> + '_;
+    fn iter_range(
+        &self,
+        offset: usize,
+        len: usize,
+    ) -> impl Iterator<Item = Self::CopyType<'_>> + '_;
 
     /// Returns an iterator over a range of T values, as `Option<T>`.
     fn iter_opt_range(
         &self,
         offset: usize,
         len: usize,
-    ) -> impl Iterator<Item = Option<Self::CopyType>> + '_;
+    ) -> impl Iterator<Item = Option<Self::CopyType<'_>>> + '_;
 
     /// Appends a value to the array, updating masks if present.
     fn push(&mut self, value: Self::LogicalType);

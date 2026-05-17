@@ -585,10 +585,10 @@ impl Display for TextArray {
 }
 
 /// Writes the header, then delegates row printing to the array's Display.
-fn write_text_array_with_header<T>(
+fn write_text_array_with_header(
     f: &mut Formatter<'_>,
     dtype: &str,
-    arr: &(impl MaskedArray<CopyType = T> + Display + ?Sized),
+    arr: &(impl MaskedArray + Display + ?Sized),
 ) -> std::fmt::Result {
     writeln!(
         f,

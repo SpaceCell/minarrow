@@ -410,11 +410,7 @@ impl<T: Integer> CategoricalArray<T> {
             if self.is_null(idx) {
                 None
             } else {
-                Some(unsafe {
-                    std::mem::transmute::<&str, &'static str>(
-                        &self.unique_values[dict_idx.to_usize()],
-                    )
-                })
+                Some(self.unique_values[dict_idx.to_usize()].as_str())
             }
         })
     }
@@ -450,11 +446,7 @@ impl<T: Integer> CategoricalArray<T> {
                 if self.is_null(idx) {
                     None
                 } else {
-                    Some(unsafe {
-                        std::mem::transmute::<&str, &'static str>(
-                            &self.unique_values[dict_idx.to_usize()],
-                        )
-                    })
+                    Some(self.unique_values[dict_idx.to_usize()].as_str())
                 }
             })
     }
@@ -530,7 +522,7 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
 
     type LogicalType = String;
 
-    type CopyType = &'static str;
+    type CopyType<'a> = &'a str where Self: 'a;
 
     #[inline]
     fn len(&self) -> usize {
@@ -547,31 +539,24 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
 
     /// Retrieves the value at the given index, or `None` if null.
     ///
-    /// # ⚠️ WARNING - prefer `get_str`
-    /// This method returns a `&static str` for trait compatibility. However, the returned
-    /// reference **borrows from the backing buffer of the array** and must not outlive
-    /// the lifetime of `self`. It is **not truly static**.
-    ///
-    /// *Instead, prefer `get_str` for practical use*, or, if you
-    /// are using this to build on top of the trait, ensure that you *do not store* the values.
+    /// The returned `&str` borrows from `self`, tied to the lifetime of `&self`
+    /// via the trait's GAT `CopyType<'a>`.
     ///
     /// # Panics
     /// Panics if `idx >= self.len()` or if `data[idx]` is an invalid index into `unique_values`.
     #[inline]
-    fn get(&self, idx: usize) -> Option<Self::CopyType> {
+    fn get(&self, idx: usize) -> Option<&str> {
         if self.is_null(idx) {
             return None;
         }
 
         let dict_idx = self.data[idx].to_usize();
-
-        // SAFETY: Must not escape beyond the borrow lifetime of self.
-        Some(unsafe { std::mem::transmute::<&str, &'static str>(&self.unique_values[dict_idx]) })
+        Some(&self.unique_values[dict_idx])
     }
 
     /// Sets the value at `idx`. Marks as valid.
     ///
-    /// # ⚠️ Prefer `set_str`, which avoids a reallocation.
+    /// Prefer `set_str` when you have a `&str` to avoid the `String` allocation.
     #[inline]
     fn set(&mut self, idx: usize, value: Self::LogicalType) {
         self.set_str(idx, &value)
@@ -579,24 +564,12 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
 
     /// Like `get`, but skips bounds checks on both the data and dictionary index.
     ///
-    /// # ⚠️ WARNING - prefer `get_str_unchecked`
-    /// This method returns a `&static str` for trait compatibility. However, the returned
-    /// reference **borrows from the backing buffer of the array** and must not outlive
-    /// the lifetime of `self`. It is **not truly static**.
-    ///
-    /// *Instead, prefer `get_str_unchecked` for practical use*, or, if you
-    /// are using this to build on top of the trait, ensure that you *do not store* the values.
-    ///
     /// # Safety
     /// Caller must ensure:
     /// - `idx` is within bounds of `self.data`
     /// - `self.data[idx]` yields a valid index into `self.unique_values`
-    /// - The result is not held beyond the lifetime of `self`
-    ///
-    /// The transmute casts the internal `&str` to `'static`, but this is only valid
-    /// as long as `self` is alive. Do **not** persist the reference.
     #[inline]
-    unsafe fn get_unchecked(&self, idx: usize) -> Option<Self::CopyType> {
+    unsafe fn get_unchecked(&self, idx: usize) -> Option<&str> {
         if let Some(mask) = &self.null_mask {
             if !mask.get(idx) {
                 return None;
@@ -604,14 +577,12 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
         }
 
         let dict_idx = unsafe { self.data.get_unchecked(idx).to_usize().unwrap() };
-        Some(unsafe {
-            std::mem::transmute::<&str, &'static str>(self.unique_values.get_unchecked(dict_idx))
-        })
+        Some(unsafe { self.unique_values.get_unchecked(dict_idx).as_str() })
     }
 
     /// Like `set`, but skips all bounds checks.
     ///
-    /// ⚠️ Prefer `set_str_unchecked` as it avoids a reallocation.
+    /// Prefer `set_str_unchecked` when you have a `&str` to avoid the `String` allocation.
     #[inline]
     unsafe fn set_unchecked(&mut self, idx: usize, value: Self::LogicalType) {
         // find or insert
@@ -635,62 +606,38 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
         }
     }
 
-    /// Returns an iterator of `&'static str` values.
-    ///
-    /// # ⚠️ WARNING - prefer `iter_str`
-    /// This method returns a `&static str` for trait compatibility. However, the returned
-    /// reference **borrows from the backing buffer of the array** and must not outlive
-    /// the lifetime of `self`. It is **not truly static**.
-    ///
-    /// *Instead, prefer `iter_str` for practical use*, or, if you
-    /// are using this to build on top of the trait, ensure that you *do not store* the values.
+    /// Returns an iterator of `&str` values borrowed from `self`.
     ///
     /// Nulls are represented as an empty string `""`.
     #[inline]
-    fn iter(&self) -> impl Iterator<Item = Self::CopyType> + '_ {
+    fn iter(&self) -> impl Iterator<Item = &str> + '_ {
         self.data.iter().enumerate().map(move |(idx, &dict_idx)| {
             if self.is_null(idx) {
                 ""
             } else {
-                unsafe {
-                    std::mem::transmute::<&str, &'static str>(
-                        &self.unique_values[dict_idx.to_usize()],
-                    )
-                }
+                self.unique_values[dict_idx.to_usize()].as_str()
             }
         })
     }
 
-    /// Returns an iterator over `Option<&'static str>`, yielding `None` for nulls.
+    /// Returns an iterator over `Option<&str>`, yielding `None` for nulls.
     ///
-    /// # ⚠️ WARNING - prefer `iter_str_opt`
-    /// This method returns a `&static str` for trait compatibility. However, the returned
-    /// reference **borrows from the backing buffer of the array** and must not outlive
-    /// the lifetime of `self`. It is **not truly static**.
-    ///
-    /// *Instead, prefer `iter_str_opt` for practical use*, or, if you
-    /// are using this to build on top of the trait, ensure that you *do not store* the values.
+    /// The returned references borrow from `self`.
     #[inline]
-    fn iter_opt(&self) -> impl Iterator<Item = Option<Self::CopyType>> + '_ {
+    fn iter_opt(&self) -> impl Iterator<Item = Option<&str>> + '_ {
         self.data.iter().enumerate().map(move |(idx, &dict_idx)| {
             if self.is_null(idx) {
                 None
             } else {
-                Some(unsafe {
-                    std::mem::transmute::<&str, &'static str>(
-                        &self.unique_values[dict_idx.to_usize()],
-                    )
-                })
+                Some(self.unique_values[dict_idx.to_usize()].as_str())
             }
         })
     }
 
-    /// Returns an iterator of `&'static str` values for a specified range.
-    ///
-    /// ⚠️ WARNING - prefer `iter_str_range`
-    /// The returned references borrow from the backing buffer and are not truly static.
+    /// Returns an iterator of `&str` values for a specified range.
+    /// Nulls yield `""`.
     #[inline]
-    fn iter_range(&self, offset: usize, len: usize) -> impl Iterator<Item = &'static str> + '_ {
+    fn iter_range(&self, offset: usize, len: usize) -> impl Iterator<Item = &str> + '_ {
         self.data[offset..offset + len]
             .iter()
             .enumerate()
@@ -699,25 +646,18 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
                 if self.is_null(idx) {
                     ""
                 } else {
-                    unsafe {
-                        std::mem::transmute::<&str, &'static str>(
-                            &self.unique_values[dict_idx.to_usize()],
-                        )
-                    }
+                    self.unique_values[dict_idx.to_usize()].as_str()
                 }
             })
     }
 
-    /// Returns an iterator over `Option<&'static str>` values for a specified range.
-    ///
-    /// ⚠️ WARNING - prefer `iter_str_opt_range`
-    /// The returned references borrow from the backing buffer and are not truly static.
+    /// Returns an iterator over `Option<&str>` values for a specified range.
     #[inline]
     fn iter_opt_range(
         &self,
         offset: usize,
         len: usize,
-    ) -> impl Iterator<Item = Option<&'static str>> + '_ {
+    ) -> impl Iterator<Item = Option<&str>> + '_ {
         self.data[offset..offset + len]
             .iter()
             .enumerate()
@@ -726,26 +666,23 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
                 if self.is_null(idx) {
                     None
                 } else {
-                    Some(unsafe {
-                        std::mem::transmute::<&str, &'static str>(
-                            &self.unique_values[dict_idx.to_usize()],
-                        )
-                    })
+                    Some(self.unique_values[dict_idx.to_usize()].as_str())
                 }
             })
     }
 
     /// Append string, adding to dictionary if new.
     ///
-    /// ⚠️ Prefer `push_str` as it avoids a reallocation.
+    /// Prefer `push_str` when you have a `&str` to avoid the `String` allocation;
+    /// it also returns the assigned dictionary code.
     #[inline]
     fn push(&mut self, value: Self::LogicalType) {
         self.push_str(&value);
     }
 
-    /// Append string, adding to dictionary if new, without bounds checking
+    /// Append string, adding to dictionary if new, without bounds checking.
     ///
-    /// ⚠️ Prefer `push_str_unchecked` as it avoids a reallocation.
+    /// Prefer `push_str_unchecked` when you have a `&str` to avoid the `String` allocation.
     ///
     /// # Safety
     /// - The caller must ensure `self.data` has sufficient capacity (i.e., already resized).
@@ -1307,7 +1244,7 @@ impl_arc_masked_array!(
     T = T,
     Container = Buffer<T>,
     LogicalType = String,
-    CopyType = &'static str,
+    CopyType = &'a str,
     BufferT = T,
     Variant = TextArray,
     Bound = Integer,
