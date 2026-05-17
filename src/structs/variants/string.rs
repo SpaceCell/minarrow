@@ -37,13 +37,13 @@
 //! Use for variable-length UTF-8 text with Arrow interop, compact memory layout,
 //! and high-throughput append/scan workloads.
 //!
-//! ## Safety note
-//! Trait methods from `MaskedArray` that return `&'static str` are for trait
-//! compatibility only-the data actually borrows from `self`. Prefer the `*_str`
-//! methods in this module for correct lifetime management.
+//! ## Note on string borrows
+//! `MaskedArray::get` / `iter` return `&str` borrowed from `self` (via the
+//! trait's GAT `CopyType<'a>`), so the borrow checker prevents the returned
+//! references from outliving the array. The inherent `*_str` methods on this
+//! type are equivalent and exist for backwards-compatibility.
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::mem::transmute;
 use std::ops::{Deref, DerefMut, Index, Range};
 
 use num_traits::{NumCast, Zero};
@@ -410,7 +410,7 @@ impl<T: Integer> StringArray<T> {
         })
     }
 
-    /// Pushes a string onto the array
+    /// Pushes a string onto the array.
     #[inline]
     pub fn push_str(&mut self, value: &str) {
         let len_before = <T as NumCast>::from(self.data.len()).unwrap();
@@ -507,7 +507,7 @@ impl<T: Integer> MaskedArray for StringArray<T> {
 
     type LogicalType = String;
 
-    type CopyType = &'static str;
+    type CopyType<'a> = &'a str where Self: 'a;
 
     fn data(&self) -> &Self::Container {
         &self.data
@@ -519,62 +519,25 @@ impl<T: Integer> MaskedArray for StringArray<T> {
 
     /// Returns the string value at the given index, or `None` if the value is null.
     ///
-    /// # ⚠️ WARNING - prefer `get_str`
-    /// This method returns a `&static str` for trait compatibility. However, the returned
-    /// reference **borrows from the backing buffer of the array** and must not outlive
-    /// the lifetime of `self`. It is **not truly static**.
-    ///
-    /// *Instead, prefer `get_str` for practical use*, or, if you
-    /// are using this to build on top of the trait, ensure that you *do not store* the values.
-    ///
-    /// This is an intentional (but unfortunate) design trade-off to maintain a uniform trait
-    /// interface across array types without introducing lifetime parameters everywhere.
-    /// For example, numeric types do not require lifetimes, and the alternatives would either be:
-    /// 1)  Forcing all non-string types to use `<'a>` across these main trait methods
-    /// 2)  Returning owned string copies rather than borrows.
-    ///  
-    /// Hence, prefer `get_str` when you have the option, and use this within its actual lifetime
-    /// context when you don't have a choice (i.e., when building off the trait contract).
-    ///
-    /// ## ⚠️ Incorrect Usage (do **not** do this):
-    ///
-    /// ```no_run
-    /// use minarrow::{MaskedArray, StringArray};
-    /// let s: &str;
-    /// {
-    ///     let arr = StringArray::<u32>::from_slice(&["a", "b"]);
-    ///     s = unsafe { arr.get(0).unwrap() }; // Not truly static
-    /// }
-    /// // ⚠️ Use-after-free - Undefined Behaviour
-    /// println!("{}", s);
-    /// ```
-    ///
-    /// # Safety
-    ///
-    /// - Caller must ensure `idx` is within bounds.
-    /// - The backing array must not be mutated or dropped for the duration of the borrow.
-    /// - The offsets and data must be valid.
+    /// The returned `&str` borrows from `self` via the trait's `CopyType<'a>`,
+    /// so the borrow checker will prevent it from outliving the array.
     ///
     /// # Panics
     /// Panics if offset values are inconsistent or indexing violates memory bounds.
     #[inline]
-    fn get(&self, idx: usize) -> Option<&'static str> {
+    fn get(&self, idx: usize) -> Option<&str> {
         if self.is_null(idx) {
             return None;
         }
         let start = self.offsets[idx].to_usize();
         let end = self.offsets[idx + 1].to_usize();
 
-        Some(unsafe {
-            std::mem::transmute::<&str, &'static str>(std::str::from_utf8_unchecked(
-                &self.data[start..end],
-            ))
-        })
+        Some(unsafe { std::str::from_utf8_unchecked(&self.data[start..end]) })
     }
 
     /// Sets the string at the given index, updating offsets, data buffer, and null mask.
     ///
-    /// # ⚠️ Prefer `set_str` as it avoids a reallocation.
+    /// Prefer `set_str` when you have a `&str` to avoid the `String` allocation.
     ///
     /// Panics if `idx >= self.len()`.
     #[inline]
@@ -582,49 +545,14 @@ impl<T: Integer> MaskedArray for StringArray<T> {
         self.set_str(idx, &value)
     }
 
-    /// Returns the string value at the given index, or `None` if the value is null,
-    /// without bounds checking. Prefer "unchecked" for performance critical code.
-    ///
-    /// # ⚠️ WARNING - prefer `get_str_unchecked`
-    /// This method returns a `&static str` for trait compatibility. However, the returned
-    /// reference **borrows from the backing buffer of the array** and must not outlive
-    /// the lifetime of `self`. It is **not truly static**.
-    ///
-    /// *Instead, prefer `get_str` for practical use*, or, if you
-    /// are using this to build on top of the trait, ensure that you *do not store* the values.
-    ///
-    /// This is an intentional (but unfortunate) design trade-off to maintain a uniform trait
-    /// interface across array types without introducing lifetime parameters everywhere.
-    /// For example, numeric types do not require lifetimes, and the alternatives would either be:
-    /// 1)  Forcing all non-string types to use `<'a>` across these main trait methods
-    /// 2)  Returning owned string copies rather than borrows.
-    ///  
-    /// Hence, prefer `get_str` when you have the option, and use this within its actual lifetime
-    /// context when you don't have a choice (i.e., when building off the trait contract).
-    ///
-    /// ## ⚠️ Incorrect Usage (do **not** do this):
-    ///
-    /// ```no_run
-    /// use minarrow::{MaskedArray, StringArray};
-    /// let s: &str;
-    /// {
-    ///     let arr = StringArray::<u32>::from_slice(&["a", "b"]);
-    ///     s = unsafe { arr.get_unchecked(0).unwrap() }; // Not truly static
-    /// }
-    /// // ⚠️ Use-after-free - Undefined Behaviour
-    /// println!("{}", s);
-    /// ```
+    /// Returns the string value at the given index, or `None` if null,
+    /// without bounds checking.
     ///
     /// # Safety
-    ///
-    /// - Caller must ensure `idx` is within bounds.
-    /// - The backing array must not be mutated or dropped for the duration of the borrow.
-    /// - The offsets and data must be valid.
-    ///
-    /// # Panics
-    /// Panics if offset values are inconsistent or indexing violates memory bounds.
+    /// - Caller must ensure `idx` is within bounds of `self.offsets`.
+    /// - The offsets and data must be valid (monotonic, in-range).
     #[inline]
-    unsafe fn get_unchecked(&self, idx: usize) -> Option<&'static str> {
+    unsafe fn get_unchecked(&self, idx: usize) -> Option<&str> {
         // null‐check
         if let Some(mask) = &self.null_mask {
             if !mask.get(idx) {
@@ -634,133 +562,76 @@ impl<T: Integer> MaskedArray for StringArray<T> {
         // slice out the bytes without checking offsets bounds
         let start = unsafe { self.offsets.get_unchecked(idx).to_usize().unwrap() };
         let end = unsafe { self.offsets.get_unchecked(idx + 1).to_usize().unwrap() };
-        Some(unsafe {
-            std::mem::transmute::<&str, &'static str>(std::str::from_utf8_unchecked(
-                &self.data[start..end],
-            ))
-        })
+        Some(unsafe { std::str::from_utf8_unchecked(&self.data[start..end]) })
     }
 
     /// Like `set`, but skips bounds checks on `idx`.
     ///
-    /// # ⚠️ Prefer `set_str_unchecked` as it avoids a reallocation.
-    /// ```
+    /// Prefer `set_str_unchecked` when you have a `&str` to avoid the `String` allocation.
     #[inline]
     unsafe fn set_unchecked(&mut self, idx: usize, value: String) {
         unsafe { self.set_str_unchecked(idx, &value) };
     }
 
-    /// Returns an iterator over all values in the array, skipping null checks.
+    /// Returns an iterator over all values in the array.
     ///
-    /// # Safety Note
-    ///
-    /// # ⚠️ WARNING
-    /// This method returns a `&static str` for trait compatibility. However, the returned
-    /// reference **borrows from the backing buffer of the array** and must not outlive
-    /// the lifetime of `self`. It is **not truly static**.
-    ///
-    /// *Instead, prefer `iter_str` for practical use*, or, if you
-    /// are using this to build on top of the trait, ensure that you *do not store* the values.
-    ///
-    /// This is an intentional (but unfortunate) design trade-off to maintain a uniform trait
-    /// interface across array types without introducing lifetime parameters everywhere.
-    /// For example, numeric types do not require lifetimes, and the alternatives would either be
-    /// 1)  Forcing all non-string types to use `<'a>` across these main trait methods
-    /// 2)  Returning owned string copies rather than borrows.
-    ///  
-    /// Hence, prefer `iter_str` when you have the option, and use this within its actual lifetime
-    /// context when you don't have a choice (i.e., when building off the trait contract).
-    ///
-    /// ## ⚠️ Incorrect Usage (do **not** do this):
-    /// ```no_run
-    /// use minarrow::{MaskedArray, StringArray};
-    /// let data: &str;
-    /// {
-    ///     let arr = StringArray::<u32>::from_slice(&["alpha", "beta"]);
-    ///     data = arr.iter().next().unwrap(); // undefined behaviour
-    /// }
-    /// println!("{}", data); // ⚠️ Bad: Use-after-free - compiler will not complain
-    /// ```
+    /// The yielded `&str` items borrow from `self`. Nulls are not skipped here;
+    /// use `iter_opt` to distinguish null entries.
     #[inline]
-    fn iter(&self) -> impl Iterator<Item = &'static str> + '_ {
+    fn iter(&self) -> impl Iterator<Item = &str> + '_ {
         (0..self.len()).map(move |i| {
             let start = self.offsets[i].to_usize();
             let end = self.offsets[i + 1].to_usize();
-            unsafe {
-                transmute::<&str, &'static str>(std::str::from_utf8_unchecked(
-                    &self.data[start..end],
-                ))
-            }
+            unsafe { std::str::from_utf8_unchecked(&self.data[start..end]) }
         })
     }
 
-    /// Returns an iterator over `Option<&str>` where null entries return `None`.
-    ///
-    /// # ⚠️ Safety Note
-    ///
-    /// The same caveats apply as in [`iter`]: the returned `String` *must not*
-    /// be assumed to live beyond the array. See `iter` for more explanation.
-    /// ```
+    /// Returns an iterator over `Option<&str>` where null entries yield `None`.
+    /// The yielded references borrow from `self`.
     #[inline]
-    fn iter_opt(&self) -> impl Iterator<Item = Option<&'static str>> + '_ {
+    fn iter_opt(&self) -> impl Iterator<Item = Option<&str>> + '_ {
         (0..self.len()).map(move |i| {
             if self.is_null(i) {
                 None
             } else {
                 let start = self.offsets[i].to_usize();
                 let end = self.offsets[i + 1].to_usize();
-                Some(unsafe {
-                    transmute::<&str, &'static str>(std::str::from_utf8_unchecked(
-                        &self.data[start..end],
-                    ))
-                })
+                Some(unsafe { std::str::from_utf8_unchecked(&self.data[start..end]) })
             }
         })
     }
 
-    /// Returns an iterator over a range of `&'static str` values for trait compatibility.
-    ///
-    /// ⚠️ WARNING: The returned references are not truly `'static`.
+    /// Returns an iterator over a range of `&str` values borrowed from `self`.
     #[inline]
-    fn iter_range(&self, offset: usize, len: usize) -> impl Iterator<Item = &'static str> + '_ {
+    fn iter_range(&self, offset: usize, len: usize) -> impl Iterator<Item = &str> + '_ {
         (offset..offset + len).map(move |i| {
             let start = self.offsets[i].to_usize();
             let end = self.offsets[i + 1].to_usize();
-            unsafe {
-                std::mem::transmute::<&str, &'static str>(std::str::from_utf8_unchecked(
-                    &self.data[start..end],
-                ))
-            }
+            unsafe { std::str::from_utf8_unchecked(&self.data[start..end]) }
         })
     }
 
-    /// Returns an iterator over a range of `Option<&'static str>` values.
-    ///
-    /// ⚠️ WARNING: The returned references are not truly `'static`.
+    /// Returns an iterator over a range of `Option<&str>` values borrowed from `self`.
     #[inline]
     fn iter_opt_range(
         &self,
         offset: usize,
         len: usize,
-    ) -> impl Iterator<Item = Option<&'static str>> + '_ {
+    ) -> impl Iterator<Item = Option<&str>> + '_ {
         (offset..offset + len).map(move |i| {
             if self.is_null(i) {
                 None
             } else {
                 let start = self.offsets[i].to_usize();
                 let end = self.offsets[i + 1].to_usize();
-                Some(unsafe {
-                    std::mem::transmute::<&str, &'static str>(std::str::from_utf8_unchecked(
-                        &self.data[start..end],
-                    ))
-                })
+                Some(unsafe { std::str::from_utf8_unchecked(&self.data[start..end]) })
             }
         })
     }
 
     /// Appends a string value to the array, updating offsets and null mask as required.
     ///
-    /// ⚠️ Prefer `push_str` as it avoids an additional String allocation.
+    /// Prefer `push_str` when you have a `&str` to avoid the `String` allocation.
     #[inline]
     fn push(&mut self, s: String) {
         self.push_str(&s)
@@ -768,10 +639,10 @@ impl<T: Integer> MaskedArray for StringArray<T> {
 
     /// Appends a `String` to the array without any bounds or safety checks.
     ///
-    /// ⚠️ Prefer `push_str` as it avoids an additional String allocation.
+    /// Prefer `push_str_unchecked` when you have a `&str` to avoid the `String` allocation.
     ///
     /// # Safety
-    /// This simply forwards to `push_str_unchecked`, and has the same requirements.
+    /// This forwards to `push_str_unchecked`, and has the same requirements.
     #[inline(always)]
     unsafe fn push_unchecked(&mut self, value: String) {
         unsafe { self.push_str_unchecked(&value) };
@@ -1466,7 +1337,7 @@ impl_arc_masked_array!(
     T = T,
     Container = Buffer<u8>,
     LogicalType = String,
-    CopyType = &'static str,
+    CopyType = &'a str,
     BufferT = u8,
     Variant = TextArray,
     Bound = Integer,
