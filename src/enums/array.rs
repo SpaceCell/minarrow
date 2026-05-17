@@ -3073,11 +3073,22 @@ impl Array {
     }
 }
 
+/// Reinterpret-cast a `&[U]` window to `&[T]` when the caller has separately
+/// established that `U` and `T` are layout-compatible. Used by variant
+/// dispatch sites in this crate that already pattern-match on the concrete
+/// inner type.
 #[inline(always)]
-pub fn cast_slice<'a, U, T>(data: &'a [U], offset: usize, len: usize) -> Option<&'a [T]> {
-    // Safety: The caller is matching on a specific variant where U == T.
-    // Only returns Some if bounds are valid.
-    debug_assert_eq!(std::mem::size_of::<U>(), std::mem::size_of::<T>());
+pub(crate) fn cast_slice<'a, U, T>(data: &'a [U], offset: usize, len: usize) -> Option<&'a [T]> {
+    assert_eq!(
+        std::mem::size_of::<U>(),
+        std::mem::size_of::<T>(),
+        "cast_slice: size mismatch between U and T"
+    );
+    assert_eq!(
+        std::mem::align_of::<U>(),
+        std::mem::align_of::<T>(),
+        "cast_slice: alignment mismatch between U and T"
+    );
     if offset.checked_add(len)? > data.len() {
         return None;
     }

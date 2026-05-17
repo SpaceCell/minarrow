@@ -153,8 +153,16 @@ impl SharedBuffer {
     /// # Safety
     /// T must be a plain data type with no drop logic.
     pub unsafe fn from_vec64_typed<T>(v: Vec64<T>) -> Self {
-        let byte_len = v.len() * std::mem::size_of::<T>();
-        let byte_cap = v.0.capacity() * std::mem::size_of::<T>();
+        let size_of_t = std::mem::size_of::<T>();
+        let byte_len = v
+            .len()
+            .checked_mul(size_of_t)
+            .expect("from_vec64_typed: len * size_of::<T> overflow");
+        let byte_cap = v
+            .0
+            .capacity()
+            .checked_mul(size_of_t)
+            .expect("from_vec64_typed: capacity * size_of::<T> overflow");
         let ptr = v.0.as_ptr() as *mut u8;
         std::mem::forget(v);
         let raw_vec = unsafe {

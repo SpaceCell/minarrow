@@ -78,7 +78,6 @@
 //! interfaces for smooth interoperability.
 
 use std::fmt::{Display, Formatter};
-use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut, RangeBounds};
 use std::{fmt, mem};
 
@@ -759,30 +758,33 @@ impl<T> FromIterator<T> for Buffer<T> {
 }
 
 /// Consuming iterator – needed for `a.iter().zip(b)`, `collect()`, etc.
-impl<T> IntoIterator for Buffer<T> {
+///
+/// The `T: Copy` bound reflects the actual contract of `Buffer<T>`: the
+/// `Shared` variant stores `T` as a bit-pattern inside a byte buffer, so
+/// materialising an owned `Vec64<T>` from it requires `T` to have no drop
+/// glue to avoid double-drop on `T: Drop` types.
+impl<T: Copy> IntoIterator for Buffer<T> {
     type Item = T;
     type IntoIter = <Vec64<T> as IntoIterator>::IntoIter;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        // Prevent double drop
-        let mut this = ManuallyDrop::new(self);
-
-        unsafe {
-            match &mut this.storage {
-                Storage::Owned(vec) => {
-                    // Move out the Vec64<T>
-                    std::ptr::read(vec).into_iter()
-                }
-                Storage::Shared { owner, offset, len } => {
+        // Pattern-match by value so the SharedBuffer in `owner` drops at the
+        // end of the match arm and releases its refcount.
+        match self.storage {
+            Storage::Owned(vec) => vec.into_iter(),
+            Storage::Shared { owner, offset, len } => {
+                let v: Vec64<T> = unsafe {
                     let bytes = owner.as_slice();
                     let size_of_t = std::mem::size_of::<T>();
-                    let ptr = bytes.as_ptr().add(*offset * size_of_t);
-                    let mut v = Vec64::with_capacity(*len);
-                    std::ptr::copy_nonoverlapping(ptr as *const T, v.as_mut_ptr(), *len);
-                    v.set_len(*len);
-                    v.into_iter()
-                }
+                    let ptr = bytes.as_ptr().add(offset * size_of_t);
+                    let mut v: Vec64<T> = Vec64::with_capacity(len);
+                    std::ptr::copy_nonoverlapping(ptr as *const T, v.as_mut_ptr(), len);
+                    v.set_len(len);
+                    v
+                };
+                drop(owner);
+                v.into_iter()
             }
         }
     }

@@ -24,6 +24,7 @@ use crate::Cube;
 use crate::Matrix;
 #[cfg(feature = "scalar_type")]
 use crate::Scalar;
+use crate::traits::masked_array::MaskedArray;
 use crate::{Array, FieldArray, Table, enums::error::MinarrowError};
 use std::convert::TryFrom;
 use std::sync::Arc;

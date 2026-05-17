@@ -72,6 +72,20 @@ use crate::ffi::arrow_dtype::ArrowType;
 use crate::ffi::schema::Schema;
 use crate::{Array, Field};
 
+// Compile-time guard: the FFI bridge below pointer-casts between
+// minarrow's `ArrowArray` / `ArrowSchema` and polars_arrow's equivalents.
+// Both follow the Arrow C Data Interface spec and are `#[repr(C)]`, but a
+// silent layout drift (e.g. a polars upgrade adding a field) would turn
+// every cast into UB. Catch that at compile time.
+const _: () = assert!(
+    std::mem::size_of::<ArrowArray>() == std::mem::size_of::<polars_arrow::ffi::ArrowArray>(),
+    "ArrowArray size drift between minarrow and polars_arrow",
+);
+const _: () = assert!(
+    std::mem::size_of::<ArrowSchema>() == std::mem::size_of::<polars_arrow::ffi::ArrowSchema>(),
+    "ArrowSchema size drift between minarrow and polars_arrow",
+);
+
 /// Export a Minarrow array to a polars `Series`.
 ///
 /// `schema.fields[0]` supplies the logical type for the export. The Series

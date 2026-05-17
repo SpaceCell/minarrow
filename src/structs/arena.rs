@@ -206,13 +206,14 @@ impl Arena {
     #[inline]
     pub fn reserve_slice<T>(&mut self, count: usize) -> ArenaRegion {
         self.align_cursor();
-        let byte_len = count * mem::size_of::<T>();
+        let byte_len = count
+            .checked_mul(mem::size_of::<T>())
+            .expect("Arena::reserve_slice: count * size_of::<T> overflow");
+        let buf_len = self.buffer.len();
         assert!(
-            self.cursor + byte_len <= self.buffer.len(),
-            "Arena overflow: need {} bytes at offset {}, but capacity is {}",
-            byte_len,
-            self.cursor,
-            self.buffer.len()
+            byte_len <= buf_len && self.cursor <= buf_len - byte_len,
+            "Arena overflow: need {byte_len} bytes at offset {}, but capacity is {buf_len}",
+            self.cursor
         );
         let region = ArenaRegion {
             byte_offset: self.cursor,

@@ -84,7 +84,11 @@ impl Bitmask {
         if self.len == 0 || (self.len & 7) == 0 {
             return;
         }
-        let last = self.bits.len() - 1;
+        // Index the last byte that holds logical bits, not the last physical
+        // byte of the backing buffer. The two coincide for tightly-sized
+        // buffers but diverge when the bitmask was built with `Bitmask::new`
+        // over a larger Buffer<u8>.
+        let last = (self.len + 7) / 8 - 1;
         let mask = (1u8 << (self.len & 7)) - 1;
         self.bits[last] &= mask;
     }
@@ -789,8 +793,7 @@ impl Index<usize> for Bitmask {
 
     #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output {
-        // SAFETY: Caller guarantees index is within bounds.
-        if unsafe { self.get_unchecked(index) } {
+        if self.get(index) {
             &true
         } else {
             &false

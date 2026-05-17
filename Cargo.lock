@@ -1068,12 +1068,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gcc"
-version = "0.3.55"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f5f3913fa0bfe7ee1fd8248b6b9f42a5af4b9d65ec2dd2c3c26132b950ecfc2"
-
-[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1694,10 +1688,8 @@ dependencies = [
  "rayon",
  "regex",
  "ryu",
- "snappy",
  "time",
  "vec64",
- "zstd",
 ]
 
 [[package]]
@@ -3247,27 +3239,6 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
-
-[[package]]
-name = "snappy"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b570b1d39e2fcb136a07e46d15a1fe962ba71c151e4d8d6888f59f1fcd185bb1"
-dependencies = [
- "libc",
- "snappy-sys",
-]
-
-[[package]]
-name = "snappy-sys"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f873053ef085548b0b924db3aa2ce38d9389fb3be353bf7fcec4ababc99a307"
-dependencies = [
- "gcc",
- "libc",
- "pkg-config",
-]
 
 [[package]]
 name = "socket2"

@@ -95,11 +95,10 @@ impl BitmaskV {
     /// Construct a view over `bitmask[offset..offset+len)`.
     #[inline]
     pub fn new(bitmask: Bitmask, offset: usize, len: usize) -> Self {
+        let bm_len = bitmask.len();
         assert!(
-            offset + len <= bitmask.len(),
-            "BitmaskView: out of bounds (offset + len = {}, bitmask.len = {})",
-            offset + len,
-            bitmask.len()
+            len <= bm_len && offset <= bm_len - len,
+            "BitmaskView: out of bounds (offset = {offset}, len = {len}, bitmask.len = {bm_len})"
         );
         Self {
             bitmask: bitmask.into(),
@@ -204,8 +203,9 @@ impl BitmaskV {
     #[inline]
     pub fn slice(&self, offset: usize, len: usize) -> Self {
         assert!(
-            offset + len <= self.len,
-            "BitmaskView::slice: out of bounds"
+            len <= self.len && offset <= self.len - len,
+            "BitmaskView::slice: out of bounds (offset = {offset}, len = {len}, view len = {})",
+            self.len
         );
         Self {
             bitmask: self.bitmask.clone(),

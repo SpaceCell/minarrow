@@ -106,3 +106,13 @@ jobs:
           cargo +nightly test \
             --no-default-features \
             --features "datetime,extended_numeric_types,extended_categorical"
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

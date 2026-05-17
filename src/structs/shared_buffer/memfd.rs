@@ -66,6 +66,9 @@ use std::os::unix::io::{AsRawFd, RawFd};
 pub struct MemfdBuffer {
     /// Raw pointer to the aligned data region
     ptr: *mut u8,
+    /// Original (page-aligned) pointer returned by `mmap`. Required for
+    /// `munmap` because `ptr` is offset to a 64-byte boundary.
+    mmap_ptr: *mut u8,
     /// Usable length in bytes
     len: usize,
     /// Total mmap'd size (includes alignment padding)
@@ -111,14 +114,25 @@ impl MemfdBuffer {
             io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid name: {}", e))
         })?;
 
-        // Create memfd
-        let fd = unsafe { libc::memfd_create(c_name.as_ptr(), 0) };
+        // Create memfd with sealing enabled so we can lock the size below.
+        let fd = unsafe { libc::memfd_create(c_name.as_ptr(), libc::MFD_ALLOW_SEALING) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
 
         // Set size
         if unsafe { libc::ftruncate(fd, total_size as libc::off_t) } < 0 {
+            let err = io::Error::last_os_error();
+            unsafe { libc::close(fd) };
+            return Err(err);
+        }
+
+        // Seal the fd against grow/shrink. Consumers (including ourselves)
+        // can still read and write the contents but can no longer change the
+        // backing length, so any mapping we hand out remains valid for the
+        // life of the buffer.
+        let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
+        if unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, seals) } < 0 {
             let err = io::Error::last_os_error();
             unsafe { libc::close(fd) };
             return Err(err);
@@ -149,6 +163,7 @@ impl MemfdBuffer {
 
         Ok(Self {
             ptr: aligned_ptr,
+            mmap_ptr: mmap_ptr as *mut u8,
             len: size,
             mmap_len: total_size,
             fd,
@@ -182,19 +197,26 @@ impl MemfdBuffer {
 
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
 
-        // Get the actual size of the memfd
-        let metadata = file.metadata()?;
-        let total_size = metadata.len() as usize;
+        // Match what `new()` allocates: caller's requested size plus the
+        // 64-byte alignment padding window. The producer-declared length is
+        // verified to be at least this much, but we never map more than the
+        // alignment-padded window we asked for - a peer's outsized memfd
+        // can't be used to balloon our address space.
+        let needed = size
+            .checked_add(64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "size + 64 overflows"))?;
+        let actual_size = file.metadata()?.len() as usize;
 
-        if total_size < size {
+        if actual_size < needed {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
                     "Memfd too small: expected at least {} bytes, got {}",
-                    size, total_size
+                    needed, actual_size
                 ),
             ));
         }
+        let total_size = needed;
 
         // mmap the file
         let our_fd = file.as_raw_fd();
@@ -231,6 +253,7 @@ impl MemfdBuffer {
 
         Ok(Self {
             ptr: aligned_ptr,
+            mmap_ptr: mmap_ptr as *mut u8,
             len: size,
             mmap_len: total_size,
             fd: owned_fd,
@@ -287,14 +310,11 @@ impl AsMut<[u8]> for MemfdBuffer {
 
 impl Drop for MemfdBuffer {
     fn drop(&mut self) {
-        // Calculate the original mmap base pointer
-        let base_addr = self.ptr as usize;
-        let alignment_offset = base_addr % 64;
-        let mmap_ptr = unsafe { self.ptr.sub(alignment_offset) };
-
-        // Unmap the memory
+        // Unmap from the original mmap base. `self.ptr` is offset to a 64-byte
+        // boundary inside this allocation, so deriving the base from it would
+        // be lossy if `mmap` ever returns a non-64-aligned address.
         unsafe {
-            libc::munmap(mmap_ptr as *mut libc::c_void, self.mmap_len);
+            libc::munmap(self.mmap_ptr as *mut libc::c_void, self.mmap_len);
         }
 
         // Close the fd

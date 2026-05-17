@@ -45,8 +45,6 @@ time = { version = "0.3", optional = true, features = ["parsing", "formatting", 
 phf = { version = "0.13.1", features = ["macros"], optional = true }
 num-traits = "0.2.19"
 rayon = { version = "1.11.0", optional = true }
-snappy = { version = "0.4.0", optional = true }
-zstd = { version = "0.13.3", optional = true }
 ryu = { version = "1.0.23", optional = true }
 memchr = { version = "2.8.0", optional = true }
 ahash = { version = "0.8.12", optional = true }
@@ -137,14 +135,6 @@ views = []
 # with a small once-off performance penalty of cloning the columns into a contiguous buffer, that becomes noticeable
 # with large data sizes.
 matrix = []
-
-# Adds the zstd compression option for Parquet and IPC formats
-# Zstd offers a higher compression ratio but is slightly slower.
-zstd = ["dep:zstd"]
-
-# Adds the snappy compression option for Parquet and IPC format.
-# Snappy is lightweight, minimal, but with less compression than zstd.
-snappy = ["dep:snappy"]
 
 # Adds `to_apache_arrow()` for casting into that library.
 cast_arrow = ["arrow", "arrow-schema"]

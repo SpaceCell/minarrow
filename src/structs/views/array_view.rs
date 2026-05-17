@@ -96,11 +96,10 @@ impl ArrayV {
     /// Construct a windowed view of `array[offset..offset+len)`, with optional precomputed null count.
     #[inline]
     pub fn new(array: Array, offset: usize, len: usize) -> Self {
+        let array_len = array.len();
         assert!(
-            offset + len <= array.len(),
-            "ArrayView: window out of bounds (offset + len = {}, array.len = {})",
-            offset + len,
-            array.len()
+            len <= array_len && offset <= array_len - len,
+            "ArrayView: window out of bounds (offset = {offset}, len = {len}, array.len = {array_len})"
         );
         Self {
             array,
@@ -113,11 +112,10 @@ impl ArrayV {
     /// Construct a windowed view, supplying a precomputed null count.
     #[inline]
     pub fn new_nc(array: Array, offset: usize, len: usize, null_count: usize) -> Self {
+        let array_len = array.len();
         assert!(
-            offset + len <= array.len(),
-            "ArrayView: window out of bounds (offset + len = {}, array.len = {})",
-            offset + len,
-            array.len()
+            len <= array_len && offset <= array_len - len,
+            "ArrayView: window out of bounds (offset = {offset}, len = {len}, array.len = {array_len})"
         );
         let lock = OnceLock::new();
         let _ = lock.set(null_count); // Pre-initialize with the provided count
@@ -141,6 +139,17 @@ impl ArrayV {
         self.len == 0
     }
 
+    /// True when the view spans the entirety of its backing array
+    /// (offset == 0 and length matches the underlying array length).
+    /// When true, `to_array()` Arc-bumps the backing array directly with
+    /// no buffer copy. When false the view is genuinely windowed and
+    /// `to_array()` falls through to `slice_clone`, reallocating each
+    /// buffer.
+    #[inline]
+    pub fn spans_backing(&self) -> bool {
+        self.offset == 0 && self.len == self.array.len()
+    }
+
     /// Returns the value at logical index `i` within the window, or `None` if out of bounds or null.
     #[inline]
     pub fn get<T: MaskedArray + 'static>(&self, i: usize) -> Option<T::CopyType> {
@@ -151,8 +160,12 @@ impl ArrayV {
     }
 
     /// Returns the value at logical index `i` within the window (unchecked).
+    ///
+    /// # Safety
+    /// `i` must be strictly less than `self.len` and `self.offset + i` must
+    /// be a valid index into the underlying array. Violating either is UB.
     #[inline]
-    pub fn get_unchecked<T: MaskedArray + 'static>(&self, i: usize) -> Option<T::CopyType> {
+    pub unsafe fn get_unchecked<T: MaskedArray + 'static>(&self, i: usize) -> Option<T::CopyType> {
         unsafe { self.array.inner::<T>().get_unchecked(self.offset + i) }
     }
 

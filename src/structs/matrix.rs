@@ -263,13 +263,27 @@ impl Matrix {
         let n_rows = self.n_rows;
         let stride = self.stride;
         let n_cols = self.n_cols;
+        // The public fields permit a caller to set stride < n_rows, which
+        // would produce aliasing &mut slices below. Enforce the non-overlap
+        // invariant at the point that materialises the slices so the unsafe
+        // block keeps its non-aliasing guarantee.
+        assert!(
+            stride >= n_rows,
+            "Matrix::columns_mut: stride ({stride}) < n_rows ({n_rows}); column slices would alias"
+        );
+        let total = stride.checked_mul(n_cols).expect("Matrix::columns_mut: stride * n_cols overflow");
+        assert!(
+            self.data.len() >= total,
+            "Matrix::columns_mut: data buffer shorter than stride * n_cols"
+        );
         let ptr = self.data.as_mut_slice().as_mut_ptr();
         let mut result = Vec::with_capacity(n_cols);
 
         for col in 0..n_cols {
             let start = col * stride;
-            // SAFETY: each slice is within bounds and non-overlapping,
-            // we have exclusive &mut access to self.
+            // SAFETY: stride >= n_rows ensures successive column slices do
+            // not overlap, the data-length check ensures every slice is in
+            // bounds, and we hold exclusive &mut self for the whole vec.
             unsafe {
                 let col_ptr = ptr.add(start);
                 let slice = std::slice::from_raw_parts_mut(col_ptr, n_rows);
@@ -282,7 +296,7 @@ impl Matrix {
     /// Returns a single column as a slice, panics if col out of bounds.
     #[inline]
     pub fn col(&self, col: usize) -> &[f64] {
-        debug_assert!(col < self.n_cols, "Col out of bounds");
+        assert!(col < self.n_cols, "Col out of bounds");
         let slice = self.data.as_slice();
         &slice[(col * self.stride)..(col * self.stride + self.n_rows)]
     }
@@ -291,7 +305,7 @@ impl Matrix {
     /// Triggers copy-on-write if the backing buffer is currently shared.
     #[inline]
     pub fn col_mut(&mut self, col: usize) -> &mut [f64] {
-        debug_assert!(col < self.n_cols, "Col out of bounds");
+        assert!(col < self.n_cols, "Col out of bounds");
         let start = col * self.stride;
         &mut self.data.as_mut_slice()[start..start + self.n_rows]
     }

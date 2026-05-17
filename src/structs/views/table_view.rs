@@ -169,8 +169,9 @@ impl TableV {
     #[inline]
     pub fn from_self(&self, offset: usize, len: usize) -> Self {
         assert!(
-            offset + len <= self.len,
-            "TableView::from_self: slice out of bounds"
+            len <= self.len && offset <= self.len - len,
+            "TableView::from_self: slice out of bounds (offset = {offset}, len = {len}, view len = {})",
+            self.len
         );
 
         let mut fields = Vec::with_capacity(self.cols.len());
@@ -238,6 +239,23 @@ impl TableV {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.n_rows() == 0
+    }
+
+    /// True when the view spans the entirety of its backing table:
+    /// every column window spans its backing array (offset == 0, length
+    /// matches), and no column projection is active. When true,
+    /// `to_table()` produces an Arc-bumped Table with no per-column
+    /// buffer copy. When false the view is genuinely windowed or
+    /// projected and `to_table()` reallocates each column buffer.
+    #[inline]
+    pub fn spans_backing(&self) -> bool {
+        #[cfg(feature = "select")]
+        {
+            if self.active_col_selection.is_some() {
+                return false;
+            }
+        }
+        self.cols.iter().all(|c| c.spans_backing())
     }
 
     /// Returns the exclusive end row index of the window.
