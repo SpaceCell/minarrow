@@ -63,8 +63,7 @@ use crate::kernels::arithmetic::simd::{W8, W16, W32, W64};
 
 use crate::enums::operators::{LogicalOperator, UnaryOperator};
 use crate::kernels::bitmask::{
-    bitmask_window_bytes, bitmask_window_bytes_mut, clear_trailing_bits, mask_bits_as_words,
-    mask_bits_as_words_mut,
+    bitmask_window_bytes, bitmask_window_bytes_mut, clear_trailing_bits,
 };
 
 /// Primitive bit ops
@@ -105,28 +104,49 @@ where
         return Bitmask::new_set_all(0, false);
     }
     let mut out = Bitmask::new_set_all(len, false);
-    let nw = (len + 63) / 64;
-    unsafe {
-        let lp = mask_bits_as_words(bitmask_window_bytes(lhs_mask, lhs_off, len));
-        let rp = mask_bits_as_words(bitmask_window_bytes(rhs_mask, rhs_off, len));
-        let dp = mask_bits_as_words_mut(bitmask_window_bytes_mut(&mut out, 0, len));
-        let mut i = 0;
-        while i + LANES <= nw {
-            let a = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(lp.add(i), LANES));
-            let b = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(rp.add(i), LANES));
-            let r = match op {
-                LogicalOperator::And => a & b,
-                LogicalOperator::Or => a | b,
-                LogicalOperator::Xor => a ^ b,
-            };
-            std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
-            i += LANES;
+    {
+        let lhs_bytes = bitmask_window_bytes(lhs_mask, lhs_off, len);
+        let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
+        let dp_bytes = bitmask_window_bytes_mut(&mut out, 0, len);
+        // Bitmask byte buffers are tight at (len + 7) / 8 bytes. SIMD reads
+        // u64 words, so we only stride whole u64 words that fit entirely in
+        // the slice; the final 0..7 leftover bytes are handled byte-wise.
+        let total_bytes = lhs_bytes.len();
+        let full_words = total_bytes / 8;
+        let tail_bytes = total_bytes % 8;
+        unsafe {
+            let lp = lhs_bytes.as_ptr().cast::<u64>();
+            let rp = rhs_bytes.as_ptr().cast::<u64>();
+            let dp = dp_bytes.as_mut_ptr().cast::<u64>();
+            let mut i = 0;
+            while i + LANES <= full_words {
+                let a = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(lp.add(i), LANES));
+                let b = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(rp.add(i), LANES));
+                let r = match op {
+                    LogicalOperator::And => a & b,
+                    LogicalOperator::Or => a | b,
+                    LogicalOperator::Xor => a ^ b,
+                };
+                std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
+                i += LANES;
+            }
+            // Scalar word tail when full_words is not a multiple of LANES.
+            for k in i..full_words {
+                let a = *lp.add(k);
+                let b = *rp.add(k);
+                *dp.add(k) = match op {
+                    LogicalOperator::And => a & b,
+                    LogicalOperator::Or => a | b,
+                    LogicalOperator::Xor => a ^ b,
+                };
+            }
         }
-        // Tail often caused by `n % LANES != 0`; uses scalar fallback.
-        for k in i..nw {
-            let a = *lp.add(k);
-            let b = *rp.add(k);
-            *dp.add(k) = match op {
+        // Partial-byte tail strictly within the slice.
+        let base = full_words * 8;
+        for k in 0..tail_bytes {
+            let a = lhs_bytes[base + k];
+            let b = rhs_bytes[base + k];
+            dp_bytes[base + k] = match op {
                 LogicalOperator::And => a & b,
                 LogicalOperator::Or => a | b,
                 LogicalOperator::Xor => a ^ b,
@@ -174,24 +194,39 @@ where
         return Bitmask::new_set_all(0, false);
     }
     let mut out = Bitmask::new_set_all(len, false);
-    let nw = (len + 63) / 64;
-    unsafe {
-        let sp = mask_bits_as_words(bitmask_window_bytes(mask, offset, len));
-        let dp = mask_bits_as_words_mut(bitmask_window_bytes_mut(&mut out, 0, len));
-        let mut i = 0;
-        while i + LANES <= nw {
-            let a = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(sp.add(i), LANES));
-            let r = match op {
-                UnaryOperator::Not => !a,
-                _ => unreachable!(),
-            };
-            std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
-            i += LANES;
+    {
+        let src_bytes = bitmask_window_bytes(mask, offset, len);
+        let dp_bytes = bitmask_window_bytes_mut(&mut out, 0, len);
+        let total_bytes = src_bytes.len();
+        let full_words = total_bytes / 8;
+        let tail_bytes = total_bytes % 8;
+        unsafe {
+            let sp = src_bytes.as_ptr().cast::<u64>();
+            let dp = dp_bytes.as_mut_ptr().cast::<u64>();
+            let mut i = 0;
+            while i + LANES <= full_words {
+                let a = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(sp.add(i), LANES));
+                let r = match op {
+                    UnaryOperator::Not => !a,
+                    _ => unreachable!(),
+                };
+                std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
+                i += LANES;
+            }
+            // Scalar word tail when full_words is not a multiple of LANES.
+            for k in i..full_words {
+                let a = *sp.add(k);
+                *dp.add(k) = match op {
+                    UnaryOperator::Not => !a,
+                    _ => unreachable!(),
+                };
+            }
         }
-        // Tail often caused by `n % LANES != 0`; uses scalar fallback.
-        for k in i..nw {
-            let a = *sp.add(k);
-            *dp.add(k) = match op {
+        // Partial-byte tail strictly within the slice.
+        let base = full_words * 8;
+        for k in 0..tail_bytes {
+            let a = src_bytes[base + k];
+            dp_bytes[base + k] = match op {
                 UnaryOperator::Not => !a,
                 _ => unreachable!(),
             };
@@ -335,24 +370,42 @@ where
         return Bitmask::new_set_all(0, false);
     }
 
-    // Check which boolean values are present in rhs using word-level ops.
-    // Trailing bits in the last word must be masked off to avoid false positives.
-    let n_words = (len + 63) / 64;
-    let trailing = len & 63;
+    // Check which boolean values are present in rhs. Process whole u64 words
+    // that fit entirely in the tight byte slice, then handle the 0..7
+    // leftover bytes byte-by-byte. The partial last logical byte (when
+    // len & 7 != 0) is masked to its valid bits to avoid false positives
+    // from slack bits.
+    let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
+    let total_bytes = rhs_bytes.len();
+    let full_words = total_bytes / 8;
+    let tail_bytes = total_bytes % 8;
+    let full_logical_bytes = len / 8;
+    let last_bits = len & 7;
     let mut any_set = 0u64;
     let mut any_unset = 0u64;
     unsafe {
-        let rp = rhs_mask.bits.as_ptr().cast::<u64>().add(rhs_off / 64);
-        for k in 0..n_words {
-            let mut w = *rp.add(k);
-            if k == n_words - 1 && trailing != 0 {
-                let valid_mask = (1u64 << trailing) - 1;
-                w &= valid_mask;
-                any_set |= w;
-                any_unset |= (!w) & valid_mask;
-            } else {
-                any_set |= w;
-                any_unset |= !w;
+        let rp = rhs_bytes.as_ptr().cast::<u64>();
+        for k in 0..full_words {
+            let w = *rp.add(k);
+            any_set |= w;
+            any_unset |= !w;
+            if any_set != 0 && any_unset != 0 {
+                break;
+            }
+        }
+    }
+    if any_set == 0 || any_unset == 0 {
+        let base = full_words * 8;
+        for k in 0..tail_bytes {
+            let byte_index = base + k;
+            let b = rhs_bytes[byte_index];
+            if byte_index < full_logical_bytes {
+                any_set |= b as u64;
+                any_unset |= (!b) as u64;
+            } else if last_bits != 0 {
+                let m = (1u8 << last_bits) - 1;
+                any_set |= (b & m) as u64;
+                any_unset |= ((!b) & m) as u64;
             }
             if any_set != 0 && any_unset != 0 {
                 break;
@@ -414,35 +467,48 @@ where
             ao, bo
         );
     }
-    let n_words = (len + 63) / 64;
     let mut out = Bitmask::new_set_all(len, false);
 
+    let a_bytes = bitmask_window_bytes(am, ao, len);
+    let b_bytes = bitmask_window_bytes(bm, bo, len);
+    // Compare via u64 words for the whole-word portion that fits in the
+    // tight slice, then byte-by-byte for the 0..7 leftover bytes.
+    let total_bytes = a_bytes.len();
+    let full_words = total_bytes / 8;
+    let tail_bytes = total_bytes % 8;
+
     unsafe {
-        let ap = am.bits.as_ptr().cast::<u64>().add(ao / 64);
-        let bp = bm.bits.as_ptr().cast::<u64>().add(bo / 64);
+        let ap = a_bytes.as_ptr().cast::<u64>();
+        let bp = b_bytes.as_ptr().cast::<u64>();
         let dp = out.bits.as_mut_ptr().cast::<u64>();
-        let aw = std::slice::from_raw_parts(ap, n_words);
-        let bw = std::slice::from_raw_parts(bp, n_words);
 
         #[cfg(feature = "simd")]
         {
             let mut i = 0;
-            while i + LANES <= n_words {
-                let sa = Simd::<u64, LANES>::from_slice(&aw[i..i + LANES]);
-                let sb = Simd::<u64, LANES>::from_slice(&bw[i..i + LANES]);
+            while i + LANES <= full_words {
+                let sa = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(ap.add(i), LANES));
+                let sb = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(bp.add(i), LANES));
                 let eq = !(sa ^ sb);
                 std::ptr::copy_nonoverlapping(eq.as_array().as_ptr(), dp.add(i), LANES);
                 i += LANES;
             }
-            for k in i..n_words {
-                *dp.add(k) = !(aw[k] ^ bw[k]);
+            for k in i..full_words {
+                *dp.add(k) = !(*ap.add(k) ^ *bp.add(k));
             }
         }
         #[cfg(not(feature = "simd"))]
         {
-            for k in 0..n_words {
-                *dp.add(k) = !(aw[k] ^ bw[k]);
+            for k in 0..full_words {
+                *dp.add(k) = !(*ap.add(k) ^ *bp.add(k));
             }
+        }
+    }
+    // Partial-byte tail.
+    {
+        let base = full_words * 8;
+        let dp_bytes = bitmask_window_bytes_mut(&mut out, 0, len);
+        for k in 0..tail_bytes {
+            dp_bytes[base + k] = !(a_bytes[base + k] ^ b_bytes[base + k]);
         }
     }
     out.mask_trailing_bits();
@@ -519,61 +585,70 @@ where
         return true;
     }
 
-    // Short masks: single word comparison with trailing bit mask
-    if len < 64 {
-        let wa = unsafe { am.word_unchecked(ao / 64) };
-        let wb = unsafe { bm.word_unchecked(bo / 64) };
-        let valid_mask = (1u64 << len) - 1;
-        return (wa & valid_mask) == (wb & valid_mask);
-    }
-
     if ao % 64 != 0 || bo % 64 != 0 {
         panic!(
             "all_eq_mask_simd: offsets must be 64-bit aligned (got a: {}, b: {})",
             ao, bo
         );
     }
-    let n_words = (len + 63) / 64;
-    let trailing = len & 63;
+
+    let a_bytes = bitmask_window_bytes(am, ao, len);
+    let b_bytes = bitmask_window_bytes(bm, bo, len);
+    // Whole u64 words within the tight byte slice, then byte-by-byte
+    // for the 0..7 leftover. The partial last logical byte is masked
+    // to its valid bits so slack differences don't cause false negatives.
+    let total_bytes = a_bytes.len();
+    let full_words = total_bytes / 8;
+    let tail_bytes = total_bytes % 8;
+    let full_logical_bytes = len / 8;
+    let last_bits = len & 7;
 
     unsafe {
-        let aw = std::slice::from_raw_parts(am.bits.as_ptr().cast::<u64>().add(ao / 64), n_words);
-        let bw = std::slice::from_raw_parts(bm.bits.as_ptr().cast::<u64>().add(bo / 64), n_words);
+        let ap = a_bytes.as_ptr().cast::<u64>();
+        let bp = b_bytes.as_ptr().cast::<u64>();
 
         #[cfg(feature = "simd")]
         {
             use std::simd::prelude::SimdPartialEq;
             let mut i = 0;
-            while i + LANES <= n_words {
-                let sa = Simd::<u64, LANES>::from_slice(&aw[i..i + LANES]);
-                let sb = Simd::<u64, LANES>::from_slice(&bw[i..i + LANES]);
+            while i + LANES <= full_words {
+                let sa = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(ap.add(i), LANES));
+                let sb = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(bp.add(i), LANES));
                 if !sa.simd_eq(sb).all() {
                     return false;
                 }
                 i += LANES;
             }
-            for k in i..n_words {
-                if k == n_words - 1 && trailing != 0 {
-                    let mask = (1u64 << trailing) - 1;
-                    if (aw[k] & mask) != (bw[k] & mask) {
-                        return false;
-                    }
-                } else if aw[k] != bw[k] {
+            for k in i..full_words {
+                if *ap.add(k) != *bp.add(k) {
                     return false;
                 }
             }
         }
         #[cfg(not(feature = "simd"))]
         {
-            for k in 0..n_words {
-                if k == n_words - 1 && trailing != 0 {
-                    let mask = (1u64 << trailing) - 1;
-                    if (aw[k] & mask) != (bw[k] & mask) {
-                        return false;
-                    }
-                } else if aw[k] != bw[k] {
+            for k in 0..full_words {
+                if *ap.add(k) != *bp.add(k) {
                     return false;
                 }
+            }
+        }
+    }
+    // Partial-byte tail: compare byte-by-byte, masking the partial
+    // last logical byte to its valid bits.
+    let base = full_words * 8;
+    for k in 0..tail_bytes {
+        let byte_index = base + k;
+        let av = a_bytes[byte_index];
+        let bv = b_bytes[byte_index];
+        if byte_index < full_logical_bytes {
+            if av != bv {
+                return false;
+            }
+        } else if last_bits != 0 {
+            let m = (1u8 << last_bits) - 1;
+            if (av & m) != (bv & m) {
+                return false;
             }
         }
     }
@@ -600,44 +675,52 @@ where
     if len == 0 {
         return 0;
     }
-    let n_words = (len + 63) / 64;
-    let word_start = offset / 64;
+
+    let bytes = bitmask_window_bytes(mask, offset, len);
+    // Whole u64 words within the tight byte slice via SIMD, scalar
+    // tail for partial u64 words, then byte-by-byte for the leftover
+    // 0..7 bytes. The partial last logical byte is masked to its
+    // valid bits so slack ones don't inflate the count.
+    let total_bytes = bytes.len();
+    let full_words = total_bytes / 8;
+    let tail_bytes = total_bytes % 8;
+    let full_logical_bytes = len / 8;
+    let last_bits = len & 7;
     let mut acc = 0usize;
 
     unsafe {
-        let words = std::slice::from_raw_parts(
-            mask.bits.as_ptr().cast::<u64>().add(word_start),
-            n_words,
-        );
+        let words_ptr = bytes.as_ptr().cast::<u64>();
 
         #[cfg(feature = "simd")]
         {
             use std::simd::prelude::SimdUint;
             let mut i = 0;
-            while i + LANES <= n_words {
-                let v = Simd::<u64, LANES>::from_slice(&words[i..i + LANES]);
+            while i + LANES <= full_words {
+                let v = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(words_ptr.add(i), LANES));
                 acc += v.count_ones().reduce_sum() as usize;
                 i += LANES;
             }
-            for k in i..n_words {
-                if k == n_words - 1 && len % 64 != 0 {
-                    let slack_mask = (1u64 << (len % 64)) - 1;
-                    acc += (words[k] & slack_mask).count_ones() as usize;
-                } else {
-                    acc += words[k].count_ones() as usize;
-                }
+            for k in i..full_words {
+                acc += (*words_ptr.add(k)).count_ones() as usize;
             }
         }
         #[cfg(not(feature = "simd"))]
         {
-            for k in 0..n_words {
-                if k == n_words - 1 && len % 64 != 0 {
-                    let slack_mask = (1u64 << (len % 64)) - 1;
-                    acc += (words[k] & slack_mask).count_ones() as usize;
-                } else {
-                    acc += words[k].count_ones() as usize;
-                }
+            for k in 0..full_words {
+                acc += (*words_ptr.add(k)).count_ones() as usize;
             }
+        }
+    }
+    // Partial-byte tail.
+    let base = full_words * 8;
+    for k in 0..tail_bytes {
+        let byte_index = base + k;
+        let b = bytes[byte_index];
+        if byte_index < full_logical_bytes {
+            acc += b.count_ones() as usize;
+        } else if last_bits != 0 {
+            let m = (1u8 << last_bits) - 1;
+            acc += (b & m).count_ones() as usize;
         }
     }
     acc
@@ -651,39 +734,57 @@ where
     if mask.len == 0 {
         return true;
     }
-    // Short masks: single word comparison
-    if mask.len < 64 {
-        let w = unsafe { mask.word_unchecked(0) };
-        let valid_mask = (1u64 << mask.len) - 1;
-        return (w & valid_mask) == valid_mask;
-    }
-    let n_bits = mask.len;
-    let n_words = (n_bits + 63) / 64;
-    let words: &[u64] =
-        unsafe { std::slice::from_raw_parts(mask.bits.as_ptr() as *const u64, n_words) };
+    let len = mask.len;
+    let bytes = mask.bits.as_ref();
+    let total_bytes = (len + 7) / 8;
+    let full_words = total_bytes / 8;
+    let tail_bytes = total_bytes % 8;
+    let full_logical_bytes = len / 8;
+    let last_bits = len & 7;
 
-    let simd_chunks = n_words / LANES;
+    let all_ones_u64 = !0u64;
+    unsafe {
+        let words_ptr = bytes.as_ptr().cast::<u64>();
 
-    let all_ones = Simd::<u64, LANES>::splat(!0u64);
-    for chunk in 0..simd_chunks {
-        let base = chunk * LANES;
-        let arr = Simd::<u64, LANES>::from_slice(&words[base..base + LANES]);
-        if arr != all_ones {
-            return false;
+        #[cfg(feature = "simd")]
+        {
+            let all_ones = Simd::<u64, LANES>::splat(all_ones_u64);
+            let mut i = 0;
+            while i + LANES <= full_words {
+                let arr = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(words_ptr.add(i), LANES));
+                if arr != all_ones {
+                    return false;
+                }
+                i += LANES;
+            }
+            for k in i..full_words {
+                if *words_ptr.add(k) != all_ones_u64 {
+                    return false;
+                }
+            }
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            for k in 0..full_words {
+                if *words_ptr.add(k) != all_ones_u64 {
+                    return false;
+                }
+            }
         }
     }
-    // Tail often caused by `n % LANES =! 0`; uses scalar fallback
-    let tail_words = n_words % LANES;
-    let base = simd_chunks * LANES;
-    for k in 0..tail_words {
-        if base + k == n_words - 1 && n_bits % 64 != 0 {
-            let valid_bits = n_bits % 64;
-            let slack_mask = (1u64 << valid_bits) - 1;
-            if words[base + k] != slack_mask {
+    // Partial-byte tail: each fully-logical byte must be 0xFF; the
+    // partial last logical byte must have its valid_bits set.
+    let base = full_words * 8;
+    for k in 0..tail_bytes {
+        let byte_index = base + k;
+        let b = bytes[byte_index];
+        if byte_index < full_logical_bytes {
+            if b != 0xFF {
                 return false;
             }
-        } else {
-            if words[base + k] != !0u64 {
+        } else if last_bits != 0 {
+            let m = (1u8 << last_bits) - 1;
+            if (b & m) != m {
                 return false;
             }
         }
@@ -698,36 +799,56 @@ where
     if mask.len == 0 {
         return true;
     }
-    // Short masks: single word comparison
-    if mask.len < 64 {
-        let w = unsafe { mask.word_unchecked(0) };
-        let valid_mask = (1u64 << mask.len) - 1;
-        return (w & valid_mask) == 0;
-    }
-    let n_bits = mask.len;
-    let n_words = (n_bits + 63) / 64;
-    let words: &[u64] =
-        unsafe { std::slice::from_raw_parts(mask.bits.as_ptr() as *const u64, n_words) };
+    let len = mask.len;
+    let bytes = mask.bits.as_ref();
+    let total_bytes = (len + 7) / 8;
+    let full_words = total_bytes / 8;
+    let tail_bytes = total_bytes % 8;
+    let full_logical_bytes = len / 8;
+    let last_bits = len & 7;
 
-    let simd_chunks = n_words / LANES;
-    for chunk in 0..simd_chunks {
-        let base = chunk * LANES;
-        let arr = Simd::<u64, LANES>::from_slice(&words[base..base + LANES]);
-        if arr != Simd::<u64, LANES>::splat(0u64) {
-            return false;
+    unsafe {
+        let words_ptr = bytes.as_ptr().cast::<u64>();
+
+        #[cfg(feature = "simd")]
+        {
+            let zero = Simd::<u64, LANES>::splat(0u64);
+            let mut i = 0;
+            while i + LANES <= full_words {
+                let arr = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(words_ptr.add(i), LANES));
+                if arr != zero {
+                    return false;
+                }
+                i += LANES;
+            }
+            for k in i..full_words {
+                if *words_ptr.add(k) != 0u64 {
+                    return false;
+                }
+            }
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            for k in 0..full_words {
+                if *words_ptr.add(k) != 0u64 {
+                    return false;
+                }
+            }
         }
     }
-    let tail_words = n_words % LANES;
-    let base = simd_chunks * LANES;
-    for k in 0..tail_words {
-        if base + k == n_words - 1 && n_bits % 64 != 0 {
-            let valid_bits = n_bits % 64;
-            let slack_mask = (1u64 << valid_bits) - 1;
-            if words[base + k] & slack_mask != 0 {
+    // Partial-byte tail: each fully-logical byte must be 0; the partial
+    // last logical byte must have its valid_bits clear.
+    let base = full_words * 8;
+    for k in 0..tail_bytes {
+        let byte_index = base + k;
+        let b = bytes[byte_index];
+        if byte_index < full_logical_bytes {
+            if b != 0 {
                 return false;
             }
-        } else {
-            if words[base + k] != 0u64 {
+        } else if last_bits != 0 {
+            let m = (1u8 << last_bits) - 1;
+            if (b & m) != 0 {
                 return false;
             }
         }

@@ -52,8 +52,7 @@ use crate::{Bitmask, BitmaskVT};
 use crate::{
     enums::operators::{LogicalOperator, UnaryOperator},
     kernels::bitmask::{
-        bitmask_window_bytes, bitmask_window_bytes_mut, clear_trailing_bits, mask_bits_as_words,
-        mask_bits_as_words_mut,
+        bitmask_window_bytes, bitmask_window_bytes_mut, clear_trailing_bits,
     },
 };
 
@@ -73,17 +72,39 @@ use crate::{
 pub fn bitmask_binop_std(lhs: BitmaskVT<'_>, rhs: BitmaskVT<'_>, op: LogicalOperator) -> Bitmask {
     let (lhs_mask, lhs_off, len) = lhs;
     let (rhs_mask, rhs_off, _) = rhs;
+    if len == 0 {
+        return Bitmask::new_set_all(0, false);
+    }
     let mut out = Bitmask::new_set_all(len, false);
-    let nw = (len + 63) / 64;
-    unsafe {
-        let lp = mask_bits_as_words(bitmask_window_bytes(lhs_mask, lhs_off, len));
-        let rp = mask_bits_as_words(bitmask_window_bytes(rhs_mask, rhs_off, len));
-        let dp = mask_bits_as_words_mut(bitmask_window_bytes_mut(&mut out, 0, len));
-        for k in 0..nw {
-            *dp.add(k) = match op {
-                LogicalOperator::And => *lp.add(k) & *rp.add(k),
-                LogicalOperator::Or => *lp.add(k) | *rp.add(k),
-                LogicalOperator::Xor => *lp.add(k) ^ *rp.add(k),
+    {
+        let lhs_bytes = bitmask_window_bytes(lhs_mask, lhs_off, len);
+        let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
+        let dp_bytes = bitmask_window_bytes_mut(&mut out, 0, len);
+        // Tight byte slice: process whole u64 words that fit entirely,
+        // then handle the 0..7 leftover bytes byte-by-byte.
+        let total_bytes = lhs_bytes.len();
+        let full_words = total_bytes / 8;
+        let tail_bytes = total_bytes % 8;
+        unsafe {
+            let lp = lhs_bytes.as_ptr().cast::<u64>();
+            let rp = rhs_bytes.as_ptr().cast::<u64>();
+            let dp = dp_bytes.as_mut_ptr().cast::<u64>();
+            for k in 0..full_words {
+                *dp.add(k) = match op {
+                    LogicalOperator::And => *lp.add(k) & *rp.add(k),
+                    LogicalOperator::Or => *lp.add(k) | *rp.add(k),
+                    LogicalOperator::Xor => *lp.add(k) ^ *rp.add(k),
+                };
+            }
+        }
+        let base = full_words * 8;
+        for k in 0..tail_bytes {
+            let a = lhs_bytes[base + k];
+            let b = rhs_bytes[base + k];
+            dp_bytes[base + k] = match op {
+                LogicalOperator::And => a & b,
+                LogicalOperator::Or => a | b,
+                LogicalOperator::Xor => a ^ b,
             };
         }
     }
@@ -96,15 +117,32 @@ pub fn bitmask_binop_std(lhs: BitmaskVT<'_>, rhs: BitmaskVT<'_>, op: LogicalOper
 #[inline(always)]
 pub fn bitmask_unop_std(src: BitmaskVT<'_>, op: UnaryOperator) -> Bitmask {
     let (mask, offset, len) = src;
+    if len == 0 {
+        return Bitmask::new_set_all(0, false);
+    }
     let mut out = Bitmask::new_set_all(len, false);
-    let nw = (len + 63) / 64;
-    unsafe {
-        let sp = mask_bits_as_words(bitmask_window_bytes(mask, offset, len));
-        let dp = mask_bits_as_words_mut(bitmask_window_bytes_mut(&mut out, 0, len));
-        for k in 0..nw {
-            *dp.add(k) = match op {
-                UnaryOperator::Not => !*sp.add(k),
-                _ => unreachable!(), // Positive Negative invalid for bools
+    {
+        let src_bytes = bitmask_window_bytes(mask, offset, len);
+        let dp_bytes = bitmask_window_bytes_mut(&mut out, 0, len);
+        let total_bytes = src_bytes.len();
+        let full_words = total_bytes / 8;
+        let tail_bytes = total_bytes % 8;
+        unsafe {
+            let sp = src_bytes.as_ptr().cast::<u64>();
+            let dp = dp_bytes.as_mut_ptr().cast::<u64>();
+            for k in 0..full_words {
+                *dp.add(k) = match op {
+                    UnaryOperator::Not => !*sp.add(k),
+                    _ => unreachable!(), // Positive Negative invalid for bools
+                };
+            }
+        }
+        let base = full_words * 8;
+        for k in 0..tail_bytes {
+            let a = src_bytes[base + k];
+            dp_bytes[base + k] = match op {
+                UnaryOperator::Not => !a,
+                _ => unreachable!(),
             };
         }
     }
@@ -192,22 +230,34 @@ pub fn eq_mask(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> Bitmask {
     let (am, ao, len) = a;
     let (bm, bo, blen) = b;
     debug_assert_eq!(len, blen, "BitWindow length mismatch in eq_mask");
+    if len == 0 {
+        return Bitmask::new_set_all(0, true);
+    }
     if ao % 64 != 0 || bo % 64 != 0 {
         panic!(
             "eq_mask: offsets must be 64-bit aligned (got a: {}, b: {})",
             ao, bo
         );
     }
-    let a_words = ao / 64;
-    let b_words = bo / 64;
-    let n_words = (len + 63) / 64;
     let mut out = Bitmask::new_set_all(len, false);
-    for k in 0..n_words {
-        let wa = unsafe { am.word_unchecked(a_words + k) };
-        let wb = unsafe { bm.word_unchecked(b_words + k) };
-        let eq = !(wa ^ wb);
+    {
+        let a_bytes = bitmask_window_bytes(am, ao, len);
+        let b_bytes = bitmask_window_bytes(bm, bo, len);
+        let dp_bytes = bitmask_window_bytes_mut(&mut out, 0, len);
+        let total_bytes = a_bytes.len();
+        let full_words = total_bytes / 8;
+        let tail_bytes = total_bytes % 8;
         unsafe {
-            out.set_word_unchecked(k, eq);
+            let ap = a_bytes.as_ptr().cast::<u64>();
+            let bp = b_bytes.as_ptr().cast::<u64>();
+            let dp = dp_bytes.as_mut_ptr().cast::<u64>();
+            for k in 0..full_words {
+                *dp.add(k) = !(*ap.add(k) ^ *bp.add(k));
+            }
+        }
+        let base = full_words * 8;
+        for k in 0..tail_bytes {
+            dp_bytes[base + k] = !(a_bytes[base + k] ^ b_bytes[base + k]);
         }
     }
     out.mask_trailing_bits();
@@ -226,33 +276,50 @@ pub fn ne_mask(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> Bitmask {
 #[inline]
 pub fn all_eq_mask(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
     let (am, ao, len) = a;
+    let (bm, bo, blen) = b;
+    debug_assert_eq!(len, blen);
 
-    // Early exit check < 64 bits
-    if len < 64 {
-        for i in 0..len {
-            if unsafe { a.0.get_unchecked(a.1 + i) } != unsafe { b.0.get_unchecked(b.1 + i) } {
+    if len == 0 {
+        return true;
+    }
+    if ao % 64 != 0 || bo % 64 != 0 {
+        panic!(
+            "all_eq_mask: offsets must be 64-bit aligned (got a: {}, b: {})",
+            ao, bo
+        );
+    }
+
+    let a_bytes = bitmask_window_bytes(am, ao, len);
+    let b_bytes = bitmask_window_bytes(bm, bo, len);
+    let total_bytes = a_bytes.len();
+    let full_words = total_bytes / 8;
+    let tail_bytes = total_bytes % 8;
+    let full_logical_bytes = len / 8;
+    let last_bits = len & 7;
+
+    unsafe {
+        let ap = a_bytes.as_ptr().cast::<u64>();
+        let bp = b_bytes.as_ptr().cast::<u64>();
+        for k in 0..full_words {
+            if *ap.add(k) != *bp.add(k) {
                 return false;
             }
         }
-        return true;
     }
-
-    let (bm, bo, _) = b;
-    debug_assert_eq!(len, b.2);
-    let aw = ao >> 6;
-    let bw = bo >> 6;
-    let n_words = (len + 63) >> 6;
-    let trailing = len & 63;
-    for k in 0..n_words {
-        let wa = unsafe { am.word_unchecked(aw + k) };
-        let wb = unsafe { bm.word_unchecked(bw + k) };
-        if k == n_words - 1 && trailing != 0 {
-            let m = (1u64 << trailing) - 1;
-            if ((wa ^ wb) & m) != 0 {
+    let base = full_words * 8;
+    for k in 0..tail_bytes {
+        let byte_index = base + k;
+        let av = a_bytes[byte_index];
+        let bv = b_bytes[byte_index];
+        if byte_index < full_logical_bytes {
+            if av != bv {
                 return false;
             }
-        } else if wa != wb {
-            return false;
+        } else if last_bits != 0 {
+            let m = (1u8 << last_bits) - 1;
+            if (av & m) != (bv & m) {
+                return false;
+            }
         }
     }
     true
@@ -278,18 +345,32 @@ pub fn all_ne_mask(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
 #[inline]
 pub fn popcount_mask(m: BitmaskVT<'_>) -> usize {
     let (mask, offset, len) = m;
-    let n_words = (len + 63) / 64;
-    let word_start = offset / 64;
+    if len == 0 {
+        return 0;
+    }
+    let bytes = bitmask_window_bytes(mask, offset, len);
+    let total_bytes = bytes.len();
+    let full_words = total_bytes / 8;
+    let tail_bytes = total_bytes % 8;
+    let full_logical_bytes = len / 8;
+    let last_bits = len & 7;
     let mut acc = 0usize;
-    for k in 0..n_words {
-        let word = unsafe { mask.word_unchecked(word_start + k) };
-        // Mask off slack bits in final word if needed
-        if k == n_words - 1 && len % 64 != 0 {
-            let valid = len % 64;
-            let slack_mask = (1u64 << valid) - 1;
-            acc += (word & slack_mask).count_ones() as usize;
-        } else {
-            acc += word.count_ones() as usize;
+
+    unsafe {
+        let words_ptr = bytes.as_ptr().cast::<u64>();
+        for k in 0..full_words {
+            acc += (*words_ptr.add(k)).count_ones() as usize;
+        }
+    }
+    let base = full_words * 8;
+    for k in 0..tail_bytes {
+        let byte_index = base + k;
+        let b = bytes[byte_index];
+        if byte_index < full_logical_bytes {
+            acc += b.count_ones() as usize;
+        } else if last_bits != 0 {
+            let m = (1u8 << last_bits) - 1;
+            acc += (b & m).count_ones() as usize;
         }
     }
     acc
@@ -302,30 +383,34 @@ pub fn all_true_mask(mask: &Bitmask) -> bool {
     if n_bits == 0 {
         return true;
     }
+    let bytes = mask.bits.as_ref();
+    let total_bytes = (n_bits + 7) / 8;
+    let full_words = total_bytes / 8;
+    let tail_bytes = total_bytes % 8;
+    let full_logical_bytes = n_bits / 8;
+    let last_bits = n_bits & 7;
 
-    // Early exit for short mask
-    if n_bits < 64 {
-        for i in 0..n_bits {
-            if !unsafe { mask.get_unchecked(i) } {
+    unsafe {
+        let words_ptr = bytes.as_ptr().cast::<u64>();
+        for k in 0..full_words {
+            if *words_ptr.add(k) != !0u64 {
                 return false;
             }
         }
-        return true;
     }
-
-    let n_words = (n_bits + 63) >> 6;
-    let words: &[u64] =
-        unsafe { core::slice::from_raw_parts(mask.bits.as_ptr() as *const u64, n_words) };
-    let trailing = n_bits & 63;
-    for i in 0..n_words {
-        let w = words[i];
-        if i == n_words - 1 && trailing != 0 {
-            let m = (1u64 << trailing) - 1;
-            if (w & m) != m {
+    let base = full_words * 8;
+    for k in 0..tail_bytes {
+        let byte_index = base + k;
+        let b = bytes[byte_index];
+        if byte_index < full_logical_bytes {
+            if b != 0xFF {
                 return false;
             }
-        } else if w != !0u64 {
-            return false;
+        } else if last_bits != 0 {
+            let m = (1u8 << last_bits) - 1;
+            if (b & m) != m {
+                return false;
+            }
         }
     }
     true
@@ -334,33 +419,38 @@ pub fn all_true_mask(mask: &Bitmask) -> bool {
 /// Are *all* logical bits `0`?
 #[inline]
 pub fn all_false_mask(mask: &Bitmask) -> bool {
-    // Early exit check < 64 bits
-    if mask.len < 64 {
-        for i in 0..mask.len {
-            if unsafe { mask.get_unchecked(i) } {
-                return false;
-            }
-        }
-        return true;
-    }
-
     let n_bits = mask.len;
     if n_bits == 0 {
         return true;
     }
-    let n_words = (n_bits + 63) >> 6;
-    let words: &[u64] =
-        unsafe { core::slice::from_raw_parts(mask.bits.as_ptr() as *const u64, n_words) };
-    let trailing = n_bits & 63;
-    for i in 0..n_words {
-        let w = words[i];
-        if i == n_words - 1 && trailing != 0 {
-            let m = (1u64 << trailing) - 1;
-            if (w & m) != 0 {
+    let bytes = mask.bits.as_ref();
+    let total_bytes = (n_bits + 7) / 8;
+    let full_words = total_bytes / 8;
+    let tail_bytes = total_bytes % 8;
+    let full_logical_bytes = n_bits / 8;
+    let last_bits = n_bits & 7;
+
+    unsafe {
+        let words_ptr = bytes.as_ptr().cast::<u64>();
+        for k in 0..full_words {
+            if *words_ptr.add(k) != 0u64 {
                 return false;
             }
-        } else if w != 0 {
-            return false;
+        }
+    }
+    let base = full_words * 8;
+    for k in 0..tail_bytes {
+        let byte_index = base + k;
+        let b = bytes[byte_index];
+        if byte_index < full_logical_bytes {
+            if b != 0 {
+                return false;
+            }
+        } else if last_bits != 0 {
+            let m = (1u8 << last_bits) - 1;
+            if (b & m) != 0 {
+                return false;
+            }
         }
     }
     true
