@@ -1713,6 +1713,7 @@ mod fa_macro_tests {
         assert_eq!(fa.len(), 2);
     }
 
+    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
     #[test]
     fn test_fa_cat32_literals() {
         use crate::ffi::arrow_dtype::CategoricalIndexType;

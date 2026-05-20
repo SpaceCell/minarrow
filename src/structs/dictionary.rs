@@ -45,6 +45,7 @@
 
 use std::fmt;
 use std::ops::Deref;
+#[cfg(feature = "shared_dict")]
 use std::sync::Arc;
 
 use ::vec64::Vec64;

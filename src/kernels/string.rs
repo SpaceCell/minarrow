@@ -44,7 +44,6 @@ use regex::Regex;
 use crate::enums::error::KernelError;
 use crate::utils::confirm_mask_capacity;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 /// Side for string padding operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

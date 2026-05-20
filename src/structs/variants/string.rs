@@ -58,7 +58,6 @@ use crate::traits::print::MAX_PREVIEW;
 use crate::traits::shape::Shape;
 use crate::traits::type_unions::Integer;
 use crate::utils::validate_null_mask_len;
-use std::sync::Arc;
 
 use crate::structs::dictionary::Dictionary;
 use crate::{

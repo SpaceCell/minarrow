@@ -42,7 +42,6 @@ use crate::enums::error::{KernelError, log_length_mismatch};
 use crate::kernels::bitmask::merge_bitmasks_to_new;
 use crate::structs::dictionary::Dictionary;
 use crate::structs::variants::categorical::CategoricalArray;
-use std::sync::Arc;
 #[cfg(feature = "str_arithmetic")]
 use memchr::memmem::Finder;
 
@@ -889,7 +888,7 @@ where
 
     // Prepare dictionary and unique values (for this slice)
     let mut uniq: Vec64<String> = Vec64::with_capacity(larr.dictionary.len() + llen);
-    uniq.extend(larr.dictionary.iter().cloned());
+    uniq.extend(larr.dictionary.values().iter().cloned());
 
     #[cfg(feature = "fast_hash")]
     let mut dict: AHashMap<String, u32> = AHashMap::with_capacity(uniq.len());
@@ -1240,7 +1239,7 @@ where
 
     Ok(CategoricalArray {
         data: data.into(),
-        dictionary: Arc::new(Dictionary::from(unique_values)),
+        dictionary: Dictionary::from(unique_values),
         null_mask: out_mask,
     })
 }
@@ -1534,7 +1533,7 @@ mod tests {
         )
         .unwrap()
         .to_categorical_array();
-        assert_eq!(added.unique_values, expected_cat.unique_values);
+        assert_eq!(added.dictionary.values(), expected_cat.dictionary.values());
         assert_eq!(added.data, expected_cat.data);
 
         // Divide: Use slices
@@ -1547,7 +1546,7 @@ mod tests {
         )
         .unwrap()
         .to_categorical_array();
-        assert_eq!(divided.unique_values, expected_div.unique_values);
+        assert_eq!(divided.dictionary.values(), expected_div.dictionary.values());
         assert_eq!(divided.data, expected_div.data);
     }
 
@@ -1568,7 +1567,7 @@ mod tests {
         )
         .unwrap()
         .to_categorical_array();
-        assert_eq!(added.unique_values, expected_cat.unique_values);
+        assert_eq!(added.dictionary.values(), expected_cat.dictionary.values());
         assert_eq!(added.data, expected_cat.data);
 
         // Divide
@@ -1581,7 +1580,7 @@ mod tests {
         )
         .unwrap()
         .to_categorical_array();
-        assert_eq!(divided.unique_values, expected_div.unique_values);
+        assert_eq!(divided.dictionary.values(), expected_div.dictionary.values());
         assert_eq!(divided.data, expected_div.data);
     }
 

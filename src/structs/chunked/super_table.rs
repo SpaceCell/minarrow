@@ -1231,7 +1231,9 @@ fn absorb_one_column(table: &mut SuperTable, col_idx: usize, incoming: &mut Arc<
 mod tests {
     use super::*;
     use crate::ffi::arrow_dtype::ArrowType;
-    use crate::{fa_bool, fa_cat32, fa_f64, fa_i32, fa_i64, fa_str32};
+    use crate::{fa_bool, fa_f64, fa_i32, fa_i64, fa_str32};
+    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    use crate::fa_cat32;
     use crate::{Array, Field, FieldArray, MaskedArray, NumericArray, Table};
 
     fn table(cols: Vec<FieldArray>) -> Table {
