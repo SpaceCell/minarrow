@@ -47,22 +47,10 @@ jobs:
       - name: Set feature flags
         id: flags
         run: |
-          # `vmap64` and `memfd` are Linux-only by design. On non-Linux
-          # runners, `--all-features` would enable `vec64/mmap` and trip
-          # vec64's compile_error!, so we substitute an explicit feature
-          # list that omits the two Linux-gated features. Keep this list
-          # in sync with [features] in Cargo.toml when new ones are added.
-          NON_LINUX_ALL_FEATURES="parallel_proc,c_ffi_tests,default_categorical_8,extended_categorical,extended_numeric_types,cube,scalar_type,value_type,chunked,large_string,views,matrix,cast_arrow,cast_polars,datetime,simd,datetime_ops,str_arithmetic,fast_hash,broadcast,hash,size,arena,table_metadata,select"
           case "${{ matrix.config }}" in
             default)             echo "args=" >> "$GITHUB_OUTPUT" ;;
             no-default-features) echo "args=--no-default-features" >> "$GITHUB_OUTPUT" ;;
-            all-features)
-              if [ "${{ runner.os }}" = "Linux" ]; then
-                echo "args=--all-features" >> "$GITHUB_OUTPUT"
-              else
-                echo "args=--no-default-features --features ${NON_LINUX_ALL_FEATURES}" >> "$GITHUB_OUTPUT"
-              fi
-              ;;
+            all-features)        echo "args=--all-features" >> "$GITHUB_OUTPUT" ;;
           esac
 
       - run: cargo +nightly test ${{ steps.flags.outputs.args }} -- --quiet
