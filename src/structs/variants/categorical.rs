@@ -161,7 +161,9 @@ impl<T: Integer> CategoricalArray<T> {
             data: Vec64::with_capacity(cap).into(),
             unique_values: unique_values.unwrap_or_default(),
             null_mask: if null_mask {
-                Some(Bitmask::with_capacity(cap))
+                // All-valid (1) default - reserved validity slots default to
+                // valid under Arrow's 1=valid, 0=null convention.
+                Some(Bitmask::new_set_all(cap, true))
             } else {
                 None
             },
@@ -1306,6 +1308,25 @@ mod tests {
         assert!(arr.is_empty());
         assert!(arr.values().is_empty());
     }
+
+    #[test]
+    fn test_new_and_with_capacity() {
+        let mut arr = CategoricalArray::<u32>::with_capacity(8, None, true);
+        assert_eq!(arr.len(), 0);
+        assert!(arr.data.capacity() >= 8);
+        assert!(arr.null_mask.is_some());
+
+        // Reserved null-mask slots must default to valid (1).
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push_str("alpha");
+        arr.push_str("beta");
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push_null();
+        assert_eq!(arr.null_count(), 1);
+    }
+
     #[test]
     fn push_and_get() {
         let mut arr = CategoricalArray::<u8>::default();

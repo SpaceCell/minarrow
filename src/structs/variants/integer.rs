@@ -179,11 +179,24 @@ mod tests {
         assert_eq!(arr.data.len(), 0);
         assert!(arr.null_mask.is_none());
 
-        let arr = IntegerArray::<u16>::with_capacity(8, true);
+        let mut arr = IntegerArray::<u16>::with_capacity(8, true);
         assert_eq!(arr.data.len(), 0);
         assert!(arr.data.capacity() >= 8);
         assert!(arr.null_mask.is_some());
-        assert!(arr.null_mask.as_ref().unwrap().capacity() >= 8);
+
+        // Reserved null-mask slots must default to valid (1).
+        // null_count() == 0 on a fresh, empty array.
+        assert_eq!(arr.null_count(), 0);
+
+        // After non-null pushes, null_count remains 0 - the pre-allocated
+        // tail bits beyond len() must not poison the count.
+        arr.push(10);
+        arr.push(20);
+        assert_eq!(arr.null_count(), 0);
+
+        // A pushed null is the only thing that should bump the count.
+        arr.push_null();
+        assert_eq!(arr.null_count(), 1);
     }
 
     #[test]

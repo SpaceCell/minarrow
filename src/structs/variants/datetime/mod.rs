@@ -169,7 +169,9 @@ impl<T: Integer> DatetimeArray<T> {
         Self {
             data: Vec64::with_capacity(cap).into(),
             null_mask: if null_mask {
-                Some(Bitmask::with_capacity(cap))
+                // All-valid (1) default - reserved validity slots default to
+                // valid under Arrow's 1=valid, 0=null convention.
+                Some(Bitmask::new_set_all(cap, true))
             } else {
                 None
             },
@@ -496,11 +498,20 @@ mod tests {
         assert!(arr.data.is_empty());
         assert!(arr.null_mask.is_none());
 
-        let arr = DatetimeArray::<i64>::with_capacity(50, true, None);
+        let mut arr = DatetimeArray::<i64>::with_capacity(50, true, None);
         assert_eq!(arr.len(), 0);
         assert!(arr.data.capacity() >= 50);
         assert!(arr.null_mask.is_some());
-        assert!(arr.null_mask.as_ref().unwrap().capacity() >= 50);
+
+        // Reserved null-mask slots must default to valid (1).
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push(1_700_000_000);
+        arr.push(1_700_000_001);
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push_null();
+        assert_eq!(arr.null_count(), 1);
     }
 
     #[test]

@@ -138,7 +138,9 @@ impl BooleanArray<()> {
         Self {
             data: Bitmask::with_capacity(cap),
             null_mask: if null_mask {
-                Some(Bitmask::with_capacity(cap))
+                // All-valid (1) default - reserved validity slots default to
+                // valid under Arrow's 1=valid, 0=null convention.
+                Some(Bitmask::new_set_all(cap, true))
             } else {
                 None
             },
@@ -540,17 +542,16 @@ impl MaskedArray for BooleanArray<()> {
     #[inline]
     fn push_nulls(&mut self, n: usize) {
         let start = self.len;
-        self.data.resize(start + n, false);
+        let end = start + n;
+        self.data.resize(end, false);
         if let Some(nm) = &mut self.null_mask {
-            nm.resize(start + n, false);
+            nm.set_range(start, end, false);
         } else {
-            let mut nm = Bitmask::new_set_all(start + n, true);
-            for i in start..start + n {
-                nm.set(i, false);
-            }
+            let mut nm = Bitmask::new_set_all(end, true);
+            nm.set_range(start, end, false);
             self.null_mask = Some(nm);
         }
-        self.len += n;
+        self.len = end;
     }
 
     /// Appends a null value to the array without bounds or consistency checks.
@@ -1016,11 +1017,21 @@ mod tests {
         assert!(arr.data.is_empty());
         assert!(arr.null_mask.is_none());
 
-        let arr = BooleanArray::with_capacity(100, true);
+        let mut arr = BooleanArray::with_capacity(100, true);
         assert_eq!(arr.len(), 0);
         assert_eq!(arr.data.capacity(), 100); // logical bits reserved
         assert!(arr.null_mask.is_some());
         assert_eq!(arr.null_mask.as_ref().unwrap().capacity(), 100);
+
+        // Reserved null-mask slots must default to valid (1).
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push(true);
+        arr.push(false);
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push_null();
+        assert_eq!(arr.null_count(), 1);
     }
 
     #[test]
@@ -1461,5 +1472,61 @@ mod tests_parallel {
         assert!(null_mask.get(3));
         assert!(!null_mask.get(4)); // Last entry is null
         assert_eq!(arr1.null_count(), 1);
+    }
+
+    /// Appending a masked `other` onto a masked `self` whose mask len isn't
+    /// byte-aligned must carry `other`'s null mask across element-for-element.
+    /// Covers the `(Some, Some)` branch of `append_array`, which routes
+    /// through `Bitmask::extend_from_bitmask`.
+    #[test]
+    fn test_append_array_masked_other_non_byte_aligned() {
+        use crate::traits::masked_array::MaskedArray;
+
+        // self: 5 elements, all valid - null_mask.len() == 5 (not byte aligned).
+        let mut arr = BooleanArray::from_slice(&[true, false, true, false, true]);
+        arr.null_mask = Some(Bitmask::new_set_all(5, true));
+
+        // other: 3 elements with mask = [valid, null, valid].
+        let mut other = BooleanArray::from_slice(&[true, false, true]);
+        other.null_mask = Some(Bitmask::from_bools(&[true, false, true]));
+
+        arr.append_array(&other);
+
+        assert_eq!(arr.len(), 8);
+        // self's original 5 stay valid; other's mask carries across: v, n, v.
+        for i in 0..5 {
+            assert!(arr.get(i).is_some(), "self position {} must be valid", i);
+        }
+        assert!(arr.get(5).is_some(), "appended position 5 (other[0]) must be valid");
+        assert!(arr.get(6).is_none(), "appended position 6 (other[1]) must be null");
+        assert!(arr.get(7).is_some(), "appended position 7 (other[2]) must be valid");
+        assert_eq!(arr.null_count(), 1);
+    }
+
+    /// Appending an unmasked `other` onto a masked `self` whose mask len
+    /// isn't byte-aligned must mark every appended position valid. Covers
+    /// the `(Some, None)` branch of `append_array`, which routes through
+    /// `Bitmask::resize(_, true)`.
+    #[test]
+    fn test_append_array_unmasked_other_non_byte_aligned() {
+        use crate::traits::masked_array::MaskedArray;
+
+        // self has length 5 with a present-everywhere null mask, so
+        // null_mask.len() == 5 (not a byte boundary).
+        let mut arr = BooleanArray::from_slice(&[true, false, true, false, true]);
+        arr.null_mask = Some(Bitmask::new_set_all(5, true));
+
+        // other has 3 entries and no null mask - every appended position
+        // is implicitly valid.
+        let other = BooleanArray::from_slice(&[false, true, false]);
+        assert!(other.null_mask.is_none());
+
+        arr.append_array(&other);
+
+        assert_eq!(arr.len(), 8);
+        assert_eq!(arr.null_count(), 0);
+        for i in 0..8 {
+            assert!(arr.get(i).is_some(), "position {} must be valid", i);
+        }
     }
 }

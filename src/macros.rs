@@ -73,7 +73,9 @@ macro_rules! impl_numeric_array_constructors {
                 Self {
                     data: Vec64::with_capacity(cap).into(),
                     null_mask: if null_mask {
-                        Some($crate::structs::bitmask::Bitmask::with_capacity(cap))
+                        // All-valid (1) default - new slots represent "no information
+                        // yet" which under Arrow's 1=valid, 0=null convention is valid.
+                        Some($crate::structs::bitmask::Bitmask::new_set_all(cap, true))
                     } else {
                         None
                     },

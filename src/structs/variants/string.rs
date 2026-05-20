@@ -159,7 +159,9 @@ impl<T: Integer> StringArray<T> {
             offsets: offsets.into(),
             data: Vec64::with_capacity(values_cap).into(),
             null_mask: if null_mask {
-                Some(Bitmask::with_capacity(n_strings))
+                // All-valid (1) default - reserved validity slots default to
+                // valid under Arrow's 1=valid, 0=null convention.
+                Some(Bitmask::new_set_all(n_strings, true))
             } else {
                 None
             },
@@ -816,12 +818,10 @@ impl<T: Integer> MaskedArray for StringArray<T> {
         self.offsets.resize(end + 1, last);
 
         if let Some(mask) = self.null_mask_mut() {
-            mask.resize(end, false);
+            mask.set_range(start, end, false);
         } else {
             let mut m = Bitmask::new_set_all(end, true);
-            for i in start..end {
-                m.set(i, false);
-            }
+            m.set_range(start, end, false);
             self.set_null_mask(Some(m));
         }
     }
@@ -1478,13 +1478,22 @@ mod tests {
         assert!(arr.data.is_empty());
         assert!(arr.null_mask.is_none());
 
-        let arr: StringArray<u32> = StringArray::with_capacity(10, 64, true);
+        let mut arr: StringArray<u32> = StringArray::with_capacity(10, 64, true);
         assert_eq!(arr.len(), 0);
         assert_eq!(arr.offsets, offsets(&[0]));
         assert!(arr.data.capacity() >= 64);
         assert!(arr.offsets.capacity() >= 11);
         assert!(arr.null_mask.is_some());
-        assert!(arr.null_mask.as_ref().unwrap().capacity() >= 10);
+
+        // Reserved null-mask slots must default to valid (1).
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push_str("hello");
+        arr.push_str("world");
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push_null();
+        assert_eq!(arr.null_count(), 1);
     }
 
     #[test]
@@ -1603,12 +1612,22 @@ mod tests {
         assert!(arr.data.is_empty());
         assert!(arr.null_mask.is_none());
 
-        let arr: StringArray<u64> = StringArray::with_capacity(10, 64, true);
+        let mut arr: StringArray<u64> = StringArray::with_capacity(10, 64, true);
         assert_eq!(arr.len(), 0);
         assert_eq!(arr.offsets, offsets(&[0]));
         assert!(arr.data.capacity() >= 64);
         assert!(arr.offsets.capacity() >= 11);
         assert!(arr.null_mask.is_some());
+
+        // Reserved null-mask slots must default to valid (1).
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push_str("hello");
+        arr.push_str("world");
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push_null();
+        assert_eq!(arr.null_count(), 1);
     }
 
     #[test]

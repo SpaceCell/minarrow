@@ -194,11 +194,22 @@ mod tests {
         assert_eq!(arr.data.len(), 0);
         assert!(arr.null_mask.is_none());
 
-        let arr = FloatArray::<f32>::with_capacity(16, true);
+        let mut arr = FloatArray::<f32>::with_capacity(16, true);
         assert_eq!(arr.data.len(), 0);
         assert!(arr.data.capacity() >= 16);
         assert!(arr.null_mask.is_some());
-        assert!(arr.null_mask.as_ref().unwrap().capacity() >= 2);
+
+        // Reserved null-mask slots must default to valid (1).
+        assert_eq!(arr.null_count(), 0);
+
+        // After non-null pushes, null_count remains 0 - the pre-allocated
+        // tail bits beyond len() must not poison the count.
+        arr.push(1.5);
+        arr.push(2.5);
+        assert_eq!(arr.null_count(), 0);
+
+        arr.push_null();
+        assert_eq!(arr.null_count(), 1);
     }
 
     #[test]

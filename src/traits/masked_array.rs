@@ -268,12 +268,10 @@ pub trait MaskedArray {
         self.resize(end, Self::LogicalType::default());
 
         if let Some(mask) = self.null_mask_mut() {
-            mask.resize(end, false);
+            mask.set_range(start, end, false);
         } else {
             let mut m = Bitmask::new_set_all(end, true);
-            for i in start..end {
-                m.set(i, false);
-            }
+            m.set_range(start, end, false);
             self.set_null_mask(Some(m));
         }
     }

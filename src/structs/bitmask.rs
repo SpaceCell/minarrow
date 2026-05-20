@@ -310,6 +310,51 @@ impl Bitmask {
         self.resize(self.len + n, value);
     }
 
+    /// Set bits in `[start..end)` to `value`.
+    ///
+    /// Bit-precise on the boundary bytes (the byte holding `start` and the
+    /// byte holding `end`); a byte-level fill is used for any whole bytes
+    /// lying fully inside `[start..end)`. The mask auto-grows if
+    /// `end > self.len` via `ensure_capacity`.
+    #[inline]
+    pub fn set_range(&mut self, start: usize, end: usize, value: bool) {
+        if start >= end {
+            return;
+        }
+        self.ensure_capacity(end);
+
+        // Byte boundary at or after `start`, and at or before `end`.
+        let head_end = ((start + 7) / 8) * 8;
+        let tail_start = (end / 8) * 8;
+
+        // Range stays inside the first byte boundary - per-bit only.
+        if head_end >= end {
+            for i in start..end {
+                // SAFETY: i < end <= self.len after ensure_capacity
+                unsafe { self.set_unchecked(i, value) };
+            }
+            return;
+        }
+
+        // Head: bit-precise from `start` up to the next byte boundary.
+        for i in start..head_end {
+            unsafe { self.set_unchecked(i, value) };
+        }
+
+        // Middle: whole bytes fully inside `[start..end)`.
+        let fill = if value { 0xFFu8 } else { 0 };
+        let mid_start_byte = head_end / 8;
+        let mid_end_byte = tail_start / 8;
+        for byte_idx in mid_start_byte..mid_end_byte {
+            self.bits[byte_idx] = fill;
+        }
+
+        // Tail: bit-precise from the last byte boundary up to `end`.
+        for i in tail_start..end {
+            unsafe { self.set_unchecked(i, value) };
+        }
+    }
+
     /// Returns true if all bits are set (all valid).
     #[inline]
     pub fn all_true(&self) -> bool {
@@ -421,11 +466,32 @@ impl Bitmask {
     }
 
     /// Resizes mask to new_len. New bits set or cleared per `set`.
+    ///
+    /// Bit-correct across a partial old-byte boundary when extending: the
+    /// byte-level resize only fills *newly added* bytes, so bits in
+    /// `[old_len..next_byte_boundary)` would otherwise be untouched and stay
+    /// at the value the prior `mask_trailing_bits` left them (0). When
+    /// `set` is true those bits are flipped explicitly so the extension
+    /// honours the documented contract regardless of byte alignment.
     pub fn resize(&mut self, new_len: usize, set: bool) {
+        let old_len = self.len;
         let new_bytes = (new_len + 7) / 8;
         let fill = if set { 0xFF } else { 0 };
         self.bits.resize(new_bytes, fill);
         self.len = new_len;
+
+        // Extension across a non-byte-aligned old_len: set=true must reach
+        // the bits in the old partial byte. For set=false the class
+        // invariant already keeps those bits at 0.
+        if set && new_len > old_len && (old_len & 7) != 0 {
+            let byte_boundary = ((old_len + 7) / 8) * 8;
+            let limit = new_len.min(byte_boundary);
+            for i in old_len..limit {
+                // SAFETY: i < limit <= new_len = self.len, byte already exists.
+                unsafe { self.set_unchecked(i, true) };
+            }
+        }
+
         self.mask_trailing_bits();
     }
 
@@ -932,6 +998,33 @@ mod tests {
     }
 
     #[test]
+    fn test_resize_extend_with_true_across_partial_byte() {
+        // Mask of len 5: bits 0-4 set, bits 5-7 cleared by mask_trailing_bits.
+        let mut m = Bitmask::new_set_all(5, true);
+        assert_eq!(m.len(), 5);
+        for i in 0..5 {
+            assert!(m.get(i), "bit {} should be set before resize", i);
+        }
+
+        // Extending with set=true must set bits 5..8 to 1 even though they
+        // lie inside the old partial byte that the byte-level fill cannot
+        // reach.
+        m.resize(8, true);
+        assert_eq!(m.len(), 8);
+        for i in 0..8 {
+            assert!(m.get(i), "bit {} should be set after resize(8, true)", i);
+        }
+
+        // Extension that crosses a byte boundary: bits 5..12 must all be 1.
+        let mut m = Bitmask::new_set_all(5, true);
+        m.resize(12, true);
+        assert_eq!(m.len(), 12);
+        for i in 0..12 {
+            assert!(m.get(i), "bit {} should be set after resize(12, true)", i);
+        }
+    }
+
+    #[test]
     fn test_ensure_capacity_and_resize() {
         let mut m = Bitmask::new_set_all(1, false);
         m.ensure_capacity(20);
@@ -940,6 +1033,59 @@ mod tests {
         assert!(m.get(15));
         m.resize(100, false);
         assert!(m.len == 100);
+    }
+
+    #[test]
+    fn test_set_range() {
+        // Single-byte, sub-byte range.
+        let mut m = Bitmask::new_set_all(8, true);
+        m.set_range(1, 4, false);
+        assert!(m.get(0));
+        assert!(!m.get(1));
+        assert!(!m.get(2));
+        assert!(!m.get(3));
+        assert!(m.get(4));
+        assert!(m.get(7));
+
+        // Cross-byte range with head, middle byte, and tail.
+        let mut m = Bitmask::new_set_all(24, false);
+        m.set_range(3, 20, true);
+        for i in 0..3 {
+            assert!(!m.get(i), "leading bit {} should be clear", i);
+        }
+        for i in 3..20 {
+            assert!(m.get(i), "in-range bit {} should be set", i);
+        }
+        for i in 20..24 {
+            assert!(!m.get(i), "trailing bit {} should be clear", i);
+        }
+
+        // Byte-aligned start and end - hits middle byte path with no head/tail loops.
+        let mut m = Bitmask::new_set_all(24, true);
+        m.set_range(8, 16, false);
+        for i in 0..8 {
+            assert!(m.get(i));
+        }
+        for i in 8..16 {
+            assert!(!m.get(i));
+        }
+        for i in 16..24 {
+            assert!(m.get(i));
+        }
+
+        // Empty range is a no-op.
+        let mut m = Bitmask::new_set_all(8, true);
+        m.set_range(3, 3, false);
+        assert!(m.all_set());
+
+        // Auto-grow path: target beyond current len.
+        let mut m = Bitmask::new_set_all(4, true);
+        m.set_range(2, 6, false);
+        assert_eq!(m.len(), 6);
+        assert!(m.get(0));
+        assert!(m.get(1));
+        assert!(!m.get(2));
+        assert!(!m.get(5));
     }
 
     #[test]
