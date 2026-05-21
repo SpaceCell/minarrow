@@ -126,10 +126,10 @@ impl<T: crate::traits::type_unions::Integer> ByteSize for CategoricalArray<T> {
     #[inline]
     fn est_bytes(&self) -> usize {
         let data_bytes = self.data.est_bytes();
-        // Dictionary stores `Vec64<String>` inside Owned/Shared. Approximate
-        // the container at `len * size_of::<String>()`; matches the prior
+        // Approximate the dictionary container at
+        // `values_count * size_of::<String>()`; matches the prior
         // behaviour against `Vec64::est_bytes` for an appended-once vector.
-        let unique_values_bytes = self.dictionary.values().len() * std::mem::size_of::<String>();
+        let unique_values_bytes = self.values().len() * std::mem::size_of::<String>();
         let mask_bytes = self.null_mask.as_ref().map_or(0, |m| m.est_bytes());
         data_bytes + unique_values_bytes + mask_bytes
     }

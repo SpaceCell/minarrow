@@ -1002,7 +1002,7 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     .collect();
                 let aa = arena.write_slices::<u32>(&slices, n_rows, has_nulls);
                 let dict = if let Array::TextArray(TextArray::Categorical32(c)) = first {
-                    Vec64::from(c.dictionary.values().to_vec())
+                    Vec64::from(c.values().to_vec())
                 } else {
                     unreachable!()
                 };
@@ -1030,7 +1030,7 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     .collect();
                 let aa = arena.write_slices::<u8>(&slices, n_rows, has_nulls);
                 let dict = if let Array::TextArray(TextArray::Categorical8(c)) = first {
-                    Vec64::from(c.dictionary.values().to_vec())
+                    Vec64::from(c.values().to_vec())
                 } else {
                     unreachable!()
                 };
@@ -1058,7 +1058,7 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     .collect();
                 let aa = arena.write_slices::<u16>(&slices, n_rows, has_nulls);
                 let dict = if let Array::TextArray(TextArray::Categorical16(c)) = first {
-                    Vec64::from(c.dictionary.values().to_vec())
+                    Vec64::from(c.values().to_vec())
                 } else {
                     unreachable!()
                 };
@@ -1086,7 +1086,7 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     .collect();
                 let aa = arena.write_slices::<u64>(&slices, n_rows, has_nulls);
                 let dict = if let Array::TextArray(TextArray::Categorical64(c)) = first {
-                    Vec64::from(c.dictionary.values().to_vec())
+                    Vec64::from(c.values().to_vec())
                 } else {
                     unreachable!()
                 };
@@ -1406,7 +1406,7 @@ pub(crate) fn consolidate_tables_arena(
                     let dict = if let Array::TextArray(TextArray::Categorical32(a)) =
                         &tables[0].cols[col_idx].array
                     {
-                        Vec64::from(a.dictionary.values().to_vec())
+                        Vec64::from(a.values().to_vec())
                     } else {
                         unreachable!()
                     };
@@ -1438,7 +1438,7 @@ pub(crate) fn consolidate_tables_arena(
                     let dict = if let Array::TextArray(TextArray::Categorical8(a)) =
                         &tables[0].cols[col_idx].array
                     {
-                        Vec64::from(a.dictionary.values().to_vec())
+                        Vec64::from(a.values().to_vec())
                     } else {
                         unreachable!()
                     };
@@ -1470,7 +1470,7 @@ pub(crate) fn consolidate_tables_arena(
                     let dict = if let Array::TextArray(TextArray::Categorical16(a)) =
                         &tables[0].cols[col_idx].array
                     {
-                        Vec64::from(a.dictionary.values().to_vec())
+                        Vec64::from(a.values().to_vec())
                     } else {
                         unreachable!()
                     };
@@ -1502,7 +1502,7 @@ pub(crate) fn consolidate_tables_arena(
                     let dict = if let Array::TextArray(TextArray::Categorical64(a)) =
                         &tables[0].cols[col_idx].array
                     {
-                        Vec64::from(a.dictionary.values().to_vec())
+                        Vec64::from(a.values().to_vec())
                     } else {
                         unreachable!()
                     };

@@ -32,10 +32,12 @@ use ahash::{AHashMap, AHashSet};
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    Bitmask, BooleanArray, CategoricalArray, Dictionary, Integer, IntegerArray, MaskedArray,
+    Bitmask, BooleanArray, CategoricalArray, Integer, IntegerArray, MaskedArray,
     StringArray, Vec64,
     aliases::{CategoricalAVT, StringAVT},
 };
+#[cfg(feature = "shared_dict")]
+use crate::Dictionary;
 #[cfg(feature = "views")]
 use crate::TextArrayV;
 #[cfg(feature = "regex")]
@@ -227,6 +229,9 @@ pub fn concat_dict_dict<T: Integer>(
 
     Ok(CategoricalArray {
         data: data.into(),
+        #[cfg(not(feature = "shared_dict"))]
+        unique_values,
+        #[cfg(feature = "shared_dict")]
         dictionary: Dictionary::from(unique_values),
         null_mask: Some(out_mask),
     })
@@ -1007,15 +1012,15 @@ pub fn min_categorical_array<T: Integer>(window: CategoricalAVT<T>) -> Option<St
         {
             let code = arr.data[i];
             if min_code.map_or(true, |min| {
-                let sc = &arr.dictionary.values()[code.to_usize()];
-                let sm = &arr.dictionary.values()[min.to_usize()];
+                let sc = &arr.values()[code.to_usize()];
+                let sm = &arr.values()[min.to_usize()];
                 sc < sm
             }) {
                 min_code = Some(code);
             }
         }
     }
-    min_code.map(|code| arr.dictionary.values()[code.to_usize()].clone())
+    min_code.map(|code| arr.values()[code.to_usize()].clone())
 }
 
 /// Finds the lexicographically maximum dictionary string in a categorical array window.
@@ -1040,15 +1045,15 @@ pub fn max_categorical_array<T: Integer>(window: CategoricalAVT<T>) -> Option<St
         {
             let code = arr.data[i];
             if max_code.map_or(true, |max| {
-                let sc = &arr.dictionary.values()[code.to_usize()];
-                let sm = &arr.dictionary.values()[max.to_usize()];
+                let sc = &arr.values()[code.to_usize()];
+                let sm = &arr.values()[max.to_usize()];
                 sc > sm
             }) {
                 max_code = Some(code);
             }
         }
     }
-    max_code.map(|code| arr.dictionary.values()[code.to_usize()].clone())
+    max_code.map(|code| arr.values()[code.to_usize()].clone())
 }
 
 /// Counts the number of distinct string values in a string array window.
@@ -1153,15 +1158,15 @@ macro_rules! unary_dict_transform {
 
             // Transform each dictionary value once, build old->new index mapping
             #[cfg(feature = "fast_hash")]
-            let mut seen: AHashMap<String, T> = AHashMap::with_capacity(arr.dictionary.len());
+            let mut seen: AHashMap<String, T> = AHashMap::with_capacity(arr.values().len());
             #[cfg(not(feature = "fast_hash"))]
             let mut seen: std::collections::HashMap<String, T> =
-                std::collections::HashMap::with_capacity(arr.dictionary.len());
+                std::collections::HashMap::with_capacity(arr.values().len());
 
             let mut new_unique = Vec64::<String>::new();
-            let mut idx_map = Vec64::<T>::with_capacity(arr.dictionary.len());
+            let mut idx_map = Vec64::<T>::with_capacity(arr.values().len());
 
-            for old_val in arr.dictionary.values().iter() {
+            for old_val in arr.values().iter() {
                 let t: String = ($transform)(old_val.as_str());
                 let new_idx = match seen.get(&t) {
                     Some(&ix) => ix,
@@ -1189,7 +1194,10 @@ macro_rules! unary_dict_transform {
 
             Ok(CategoricalArray {
                 data: data.into(),
-                dictionary: Dictionary::from(new_unique),
+                #[cfg(not(feature = "shared_dict"))]
+        unique_values: new_unique,
+        #[cfg(feature = "shared_dict")]
+        dictionary: Dictionary::from(new_unique),
                 null_mask: mask_opt,
             })
         }
@@ -1515,15 +1523,15 @@ pub fn substring_dict<T: Integer>(
     });
 
     #[cfg(feature = "fast_hash")]
-    let mut seen: AHashMap<String, T> = AHashMap::with_capacity(arr.dictionary.len());
+    let mut seen: AHashMap<String, T> = AHashMap::with_capacity(arr.values().len());
     #[cfg(not(feature = "fast_hash"))]
     let mut seen: std::collections::HashMap<String, T> =
-        std::collections::HashMap::with_capacity(arr.dictionary.len());
+        std::collections::HashMap::with_capacity(arr.values().len());
 
     let mut new_unique = Vec64::<String>::new();
-    let mut idx_map = Vec64::<T>::with_capacity(arr.dictionary.len());
+    let mut idx_map = Vec64::<T>::with_capacity(arr.values().len());
 
-    for old_val in arr.dictionary.values().iter() {
+    for old_val in arr.values().iter() {
         let chars = old_val.chars().skip(start);
         let t: String = match opt_len {
             Some(n) => chars.take(n).collect(),
@@ -1554,6 +1562,9 @@ pub fn substring_dict<T: Integer>(
 
     Ok(CategoricalArray {
         data: data.into(),
+        #[cfg(not(feature = "shared_dict"))]
+        unique_values: new_unique,
+        #[cfg(feature = "shared_dict")]
         dictionary: Dictionary::from(new_unique),
         null_mask: mask_opt,
     })
@@ -1619,15 +1630,15 @@ pub fn replace_dict<T: Integer>(
     });
 
     #[cfg(feature = "fast_hash")]
-    let mut seen: AHashMap<String, T> = AHashMap::with_capacity(arr.dictionary.len());
+    let mut seen: AHashMap<String, T> = AHashMap::with_capacity(arr.values().len());
     #[cfg(not(feature = "fast_hash"))]
     let mut seen: std::collections::HashMap<String, T> =
-        std::collections::HashMap::with_capacity(arr.dictionary.len());
+        std::collections::HashMap::with_capacity(arr.values().len());
 
     let mut new_unique = Vec64::<String>::new();
-    let mut idx_map = Vec64::<T>::with_capacity(arr.dictionary.len());
+    let mut idx_map = Vec64::<T>::with_capacity(arr.values().len());
 
-    for old_val in arr.dictionary.values().iter() {
+    for old_val in arr.values().iter() {
         let t = old_val.replace(from, to);
         let new_idx = match seen.get(&t) {
             Some(&ix) => ix,
@@ -1654,6 +1665,9 @@ pub fn replace_dict<T: Integer>(
 
     Ok(CategoricalArray {
         data: data.into(),
+        #[cfg(not(feature = "shared_dict"))]
+        unique_values: new_unique,
+        #[cfg(feature = "shared_dict")]
         dictionary: Dictionary::from(new_unique),
         null_mask: mask_opt,
     })
@@ -1720,7 +1734,7 @@ pub fn repeat_dict<T: Integer>(
 
     // Repeat is a 1:1 mapping on dictionary values, no merging possible
     let mut new_unique = Vec64::<String>::new();
-    for old_val in arr.dictionary.values().iter() {
+    for old_val in arr.values().iter() {
         new_unique.push(old_val.repeat(n));
     }
 
@@ -1737,6 +1751,9 @@ pub fn repeat_dict<T: Integer>(
 
     Ok(CategoricalArray {
         data: data.into(),
+        #[cfg(not(feature = "shared_dict"))]
+        unique_values: new_unique,
+        #[cfg(feature = "shared_dict")]
         dictionary: Dictionary::from(new_unique),
         null_mask: mask_opt,
     })
@@ -1860,7 +1877,7 @@ pub fn pad_dict<T: Integer>(
 
     // Pad is 1:1 on dictionary values since padding a unique string always produces a unique result
     let mut new_unique = Vec64::<String>::new();
-    for old_val in arr.dictionary.values().iter() {
+    for old_val in arr.values().iter() {
         new_unique.push(pad_one(old_val));
     }
 
@@ -1877,6 +1894,9 @@ pub fn pad_dict<T: Integer>(
 
     Ok(CategoricalArray {
         data: data.into(),
+        #[cfg(not(feature = "shared_dict"))]
+        unique_values: new_unique,
+        #[cfg(feature = "shared_dict")]
         dictionary: Dictionary::from(new_unique),
         null_mask: mask_opt,
     })
@@ -1980,15 +2000,15 @@ pub fn regex_replace_dict<T: Integer>(
     });
 
     #[cfg(feature = "fast_hash")]
-    let mut seen: AHashMap<String, T> = AHashMap::with_capacity(arr.dictionary.len());
+    let mut seen: AHashMap<String, T> = AHashMap::with_capacity(arr.values().len());
     #[cfg(not(feature = "fast_hash"))]
     let mut seen: std::collections::HashMap<String, T> =
-        std::collections::HashMap::with_capacity(arr.dictionary.len());
+        std::collections::HashMap::with_capacity(arr.values().len());
 
     let mut new_unique = Vec64::<String>::new();
-    let mut idx_map = Vec64::<T>::with_capacity(arr.dictionary.len());
+    let mut idx_map = Vec64::<T>::with_capacity(arr.values().len());
 
-    for old_val in arr.dictionary.values().iter() {
+    for old_val in arr.values().iter() {
         let t = re.replace_all(old_val, replacement).into_owned();
         let new_idx = match seen.get(&t) {
             Some(&ix) => ix,
@@ -2015,6 +2035,9 @@ pub fn regex_replace_dict<T: Integer>(
 
     Ok(CategoricalArray {
         data: data.into(),
+        #[cfg(not(feature = "shared_dict"))]
+        unique_values: new_unique,
+        #[cfg(feature = "shared_dict")]
         dictionary: Dictionary::from(new_unique),
         null_mask: mask_opt,
     })
@@ -2692,6 +2715,9 @@ mod tests {
         let indices = vec64![1u32, 0, 3, 2]; // "zebra", "dog", "bee", "ant"
         let cat = CategoricalArray {
             data: indices.clone().into(),
+            #[cfg(not(feature = "shared_dict"))]
+            unique_values: Vec64::from(uniques.clone()),
+            #[cfg(feature = "shared_dict")]
             dictionary: Dictionary::from(Vec64::from(uniques.clone())),
             null_mask: None,
         };
@@ -2710,6 +2736,9 @@ mod tests {
         let indices = vec64![2u32, 0, 1, 3]; // "ant", "dog", "zebra", "bee"
         let cat = CategoricalArray {
             data: indices.clone().into(),
+            #[cfg(not(feature = "shared_dict"))]
+            unique_values: Vec64::from(uniques.clone()),
+            #[cfg(feature = "shared_dict")]
             dictionary: Dictionary::from(Vec64::from(uniques.clone())),
             null_mask: None,
         };
@@ -2727,6 +2756,9 @@ mod tests {
         null_mask.set(2, true);
         let cat = CategoricalArray {
             data: indices.clone().into(),
+            #[cfg(not(feature = "shared_dict"))]
+            unique_values: Vec64::from(uniques.clone()),
+            #[cfg(feature = "shared_dict")]
             dictionary: Dictionary::from(Vec64::from(uniques.clone())),
             null_mask: Some(null_mask),
         };
@@ -2744,6 +2776,9 @@ mod tests {
         null_mask.set(2, true);
         let cat = CategoricalArray {
             data: indices.clone().into(),
+            #[cfg(not(feature = "shared_dict"))]
+            unique_values: Vec64::from(uniques.clone()),
+            #[cfg(feature = "shared_dict")]
             dictionary: Dictionary::from(Vec64::from(uniques.clone())),
             null_mask: Some(null_mask),
         };

@@ -85,22 +85,22 @@ pub(crate) fn value_to_string(arr: &Array, idx: usize) -> String {
             #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
             TextArray::Categorical32(cat) => {
                 let key = cat.data[idx] as usize;
-                cat.dictionary.values()[key].clone()
+                cat.values()[key].clone()
             }
             #[cfg(feature = "default_categorical_8")]
             TextArray::Categorical8(cat) => {
                 let key = cat.data[idx] as usize;
-                cat.dictionary.values()[key].clone()
+                cat.values()[key].clone()
             }
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical16(cat) => {
                 let key = cat.data[idx] as usize;
-                cat.dictionary.values()[key].clone()
+                cat.values()[key].clone()
             }
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical64(cat) => {
                 let key = cat.data[idx] as usize;
-                cat.dictionary.values()[key].clone()
+                cat.values()[key].clone()
             }
             TextArray::Null => "null".into(),
         },

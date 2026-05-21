@@ -892,17 +892,17 @@ fn rt_arrow_super_table_shared_categorical32() {
     assert_eq!(strings_before, strings_after);
 
     // Both rebuilt chunks are Shared, and the first batch's dictionary is a
-    // prefix of the second (append-only invariant preserved through Arrow).
+    // Rebuilt batches share the same dictionary handle (Arc bumped at
+    // absorb time); both observe the union of all interned strings.
     let d0 = match &back.batches[0].cols[0].array {
-        MArray::TextArray(TextArray::Categorical32(c)) => &c.dictionary,
+        MArray::TextArray(TextArray::Categorical32(c)) => c.dictionary.clone(),
         _ => unreachable!(),
     };
     let d1 = match &back.batches[1].cols[0].array {
-        MArray::TextArray(TextArray::Categorical32(c)) => &c.dictionary,
+        MArray::TextArray(TextArray::Categorical32(c)) => c.dictionary.clone(),
         _ => unreachable!(),
     };
-    assert!(matches!(d0, Dictionary::Shared(_)));
-    assert!(matches!(d1, Dictionary::Shared(_)));
-    assert!(d0.is_prefix_of(d1));
+    assert!(d0.shares_with(&d1));
+    assert_eq!(d0.values(), &["a", "b", "c"]);
     assert_eq!(d1.values(), &["a", "b", "c"]);
 }

@@ -1764,6 +1764,9 @@ mod tests {
 
         let cat = CategoricalArray {
             data: data.into(),
+            #[cfg(not(feature = "shared_dict"))]
+            unique_values: unique,
+            #[cfg(feature = "shared_dict")]
             dictionary: Dictionary::from(unique),
             null_mask: Some(mask),
         };
@@ -1953,10 +1956,10 @@ mod tests {
         assert_eq!(result.get_str(4), Some("apple"));
 
         // Dictionary should be merged: apple, banana, cherry
-        assert_eq!(result.dictionary.len(), 3);
-        assert!(result.dictionary.values().contains(&"apple".to_string()));
-        assert!(result.dictionary.values().contains(&"banana".to_string()));
-        assert!(result.dictionary.values().contains(&"cherry".to_string()));
+        assert_eq!(result.values().len(), 3);
+        assert!(result.values().contains(&"apple".to_string()));
+        assert!(result.values().contains(&"banana".to_string()));
+        assert!(result.values().contains(&"cherry".to_string()));
     }
 
     #[test]
@@ -1990,8 +1993,8 @@ mod tests {
         let arr2 = CategoricalArray::<u32>::from_values(["alpha", "beta", "gamma", "alpha"]);
 
         // Verify initial state
-        assert_eq!(arr1.dictionary.len(), 3); // red, blue, green
-        assert_eq!(arr2.dictionary.len(), 3); // alpha, beta, gamma
+        assert_eq!(arr1.values().len(), 3); // red, blue, green
+        assert_eq!(arr2.values().len(), 3); // alpha, beta, gamma
 
         // Verify arr1 indices point to correct values
         assert_eq!(arr1.get_str(0), Some("red"));
@@ -2009,13 +2012,13 @@ mod tests {
         let result = arr1.concat(arr2).unwrap();
 
         // After concatenation, dictionary should have all 6 unique values
-        assert_eq!(result.dictionary.len(), 6);
-        assert!(result.dictionary.values().contains(&"red".to_string()));
-        assert!(result.dictionary.values().contains(&"blue".to_string()));
-        assert!(result.dictionary.values().contains(&"green".to_string()));
-        assert!(result.dictionary.values().contains(&"alpha".to_string()));
-        assert!(result.dictionary.values().contains(&"beta".to_string()));
-        assert!(result.dictionary.values().contains(&"gamma".to_string()));
+        assert_eq!(result.values().len(), 6);
+        assert!(result.values().contains(&"red".to_string()));
+        assert!(result.values().contains(&"blue".to_string()));
+        assert!(result.values().contains(&"green".to_string()));
+        assert!(result.values().contains(&"alpha".to_string()));
+        assert!(result.values().contains(&"beta".to_string()));
+        assert!(result.values().contains(&"gamma".to_string()));
 
         // Verify all values are correctly accessible after remapping
         assert_eq!(result.len(), 9);

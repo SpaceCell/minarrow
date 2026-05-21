@@ -59,6 +59,7 @@ use crate::traits::shape::Shape;
 use crate::traits::type_unions::Integer;
 use crate::utils::validate_null_mask_len;
 
+#[cfg(feature = "shared_dict")]
 use crate::structs::dictionary::Dictionary;
 use crate::{
     Bitmask, Buffer, CategoricalArray, Length, Offset, StringAVT, impl_arc_masked_array, vec64,
@@ -466,6 +467,9 @@ impl<T: Integer> StringArray<T> {
 
         CategoricalArray {
             data: indices.into(),
+            #[cfg(not(feature = "shared_dict"))]
+            unique_values: Vec64::from(uniques),
+            #[cfg(feature = "shared_dict")]
             dictionary: Dictionary::from(Vec64::from(uniques)),
             null_mask: self.null_mask.clone(),
         }

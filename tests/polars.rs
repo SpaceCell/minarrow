@@ -1023,23 +1023,23 @@ fn rt_polars_super_table_shared_categorical32() {
         .collect();
     assert_eq!(strings_before, strings_after);
 
-    // If polars produced Categorical32 batches, confirm the dictionary
-    // ordering invariant survived (later batch is a superset of earlier).
+    // If polars produced Categorical32 batches, confirm the chunks
+    // share the same dictionary handle (Arc bumped at absorb time)
+    // and both see the union of all interned strings.
     if let (
         Array::TextArray(TextArray::Categorical32(_)),
         Array::TextArray(TextArray::Categorical32(_)),
     ) = (&back.batches[0].cols[0].array, &back.batches[1].cols[0].array)
     {
         let d0 = match &back.batches[0].cols[0].array {
-            Array::TextArray(TextArray::Categorical32(c)) => &c.dictionary,
+            Array::TextArray(TextArray::Categorical32(c)) => c.dictionary.clone(),
             _ => unreachable!(),
         };
         let d1 = match &back.batches[1].cols[0].array {
-            Array::TextArray(TextArray::Categorical32(c)) => &c.dictionary,
+            Array::TextArray(TextArray::Categorical32(c)) => c.dictionary.clone(),
             _ => unreachable!(),
         };
-        assert!(matches!(d0, Dictionary::Shared(_)));
-        assert!(matches!(d1, Dictionary::Shared(_)));
-        assert!(d0.is_prefix_of(d1));
+        assert!(d0.shares_with(&d1));
+        assert_eq!(d0.values(), d1.values());
     }
 }

@@ -27,6 +27,7 @@
 use std::error::Error;
 use std::fmt;
 
+#[cfg(feature = "shared_dict")]
 use crate::structs::dictionary::DictionaryError;
 
 /// Catch all error types for `Minarrow`
@@ -74,15 +75,15 @@ pub enum MinarrowError {
         source: &'static str,
         message: String,
     },
-    /// Raised by a categorical dictionary operation, most commonly when a
-    /// growth attempt hits a `Shared` dictionary or exceeds the capacity of
-    /// the underlying index width. Callers that hit this on a `Shared`
-    /// dictionary should route the operation through the parent's `intern`
-    /// method so the canonical extends once and every sibling snapshot
-    /// remains coherent.
+    /// Raised by a categorical dictionary operation when the new
+    /// cardinality would exceed the index type's capacity. Only present
+    /// under `shared_dict`; without the feature, categorical mutators
+    /// panic on overflow instead, matching pre-PR semantics.
+    #[cfg(feature = "shared_dict")]
     DictionaryError(DictionaryError),
 }
 
+#[cfg(feature = "shared_dict")]
 impl From<DictionaryError> for MinarrowError {
     fn from(source: DictionaryError) -> Self {
         MinarrowError::DictionaryError(source)
@@ -169,6 +170,7 @@ impl fmt::Display for MinarrowError {
             MinarrowError::BridgeError { source, message } => {
                 write!(f, "Bridge error ({}): {}", source, message)
             }
+            #[cfg(feature = "shared_dict")]
             MinarrowError::DictionaryError(source) => {
                 write!(f, "Dictionary error: {}", source)
             }
