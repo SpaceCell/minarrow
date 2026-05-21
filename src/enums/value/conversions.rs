@@ -24,6 +24,7 @@ use crate::Cube;
 use crate::Matrix;
 #[cfg(feature = "scalar_type")]
 use crate::Scalar;
+use crate::traits::concatenate::Concatenate;
 use crate::traits::masked_array::MaskedArray;
 use crate::{Array, FieldArray, Table, enums::error::MinarrowError};
 use std::convert::TryFrom;
@@ -997,7 +998,22 @@ impl TryFrom<Value> for Array {
             Value::Matrix(_) => Err(err()),
             #[cfg(feature = "cube")]
             Value::Cube(_) => Err(err()),
-            Value::VecValue(_) => Err(err()),
+            Value::VecValue(inner) => {
+                let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                match values.len() {
+                    0 => Ok(Array::default()),
+                    1 => Array::try_from(values.into_iter().next().unwrap()),
+                    _ => {
+                        let mut iter = values.into_iter();
+                        let mut acc = Array::try_from(iter.next().unwrap())?;
+                        for v in iter {
+                            let next = Array::try_from(v)?;
+                            acc = acc.concat(next)?;
+                        }
+                        Ok(acc)
+                    }
+                }
+            }
             Value::BoxValue(_) => Err(err()),
             Value::ArcValue(_) => Err(err()),
             Value::Tuple2(_) => Err(err()),
@@ -1290,7 +1306,25 @@ impl TryFrom<Value> for Table {
             Value::Matrix(_) => Err(err()),
             #[cfg(feature = "cube")]
             Value::Cube(_) => Err(err()),
-            Value::VecValue(_) => Err(err()),
+            // VecValue terminal coercion: engine wire produced by `Long` fan-out gather.
+            // Empty -> Table::new_empty (typed-empty); single -> recurse on inner;
+            // many -> concat-fold across inner Tables.
+            Value::VecValue(inner) => {
+                let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                match values.len() {
+                    0 => Ok(Table::new_empty()),
+                    1 => Table::try_from(values.into_iter().next().unwrap()),
+                    _ => {
+                        let mut iter = values.into_iter();
+                        let mut acc = Table::try_from(iter.next().unwrap())?;
+                        for v in iter {
+                            let next = Table::try_from(v)?;
+                            acc = acc.concat(next)?;
+                        }
+                        Ok(acc)
+                    }
+                }
+            }
             Value::BoxValue(_) => Err(err()),
             Value::ArcValue(_) => Err(err()),
             Value::Tuple2(_) => Err(err()),
@@ -1347,6 +1381,50 @@ impl TryFrom<Value> for SuperTable {
         match v {
             Value::SuperTable(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            // VecValue terminal coercion: wrap inner Tables as chunks. Mirrors the
+            // `SuperArray::try_from(VecValue)` precedent. No row-data reallocation;
+            // each chunk holds an Arc<Table>. `None` lets SuperTable inherit its
+            // name from the first batch rather than imposing a fresh one.
+            //
+            // `SuperTable::from_batches` panics on schema mismatch between
+            // chunks; validate up-front and surface mismatches as a typed
+            // MinarrowError so this conversion never aborts the caller.
+            Value::VecValue(inner) => {
+                let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                let chunks: Result<Vec<Arc<Table>>, _> = values
+                    .into_iter()
+                    .map(|v| Table::try_from(v).map(Arc::new))
+                    .collect();
+                let chunks = chunks?;
+                if let Some(first) = chunks.first() {
+                    let n_cols = first.n_cols();
+                    for (idx, chunk) in chunks.iter().enumerate().skip(1) {
+                        if chunk.n_cols() != n_cols {
+                            return Err(MinarrowError::TypeError {
+                                from: "Value::VecValue",
+                                to: "SuperTable",
+                                message: Some(format!(
+                                    "batch {idx} column-count mismatch: {} vs {}",
+                                    chunk.n_cols(),
+                                    n_cols
+                                )),
+                            });
+                        }
+                        for (col_idx, fa) in chunk.cols.iter().enumerate() {
+                            if fa.field != first.cols[col_idx].field {
+                                return Err(MinarrowError::TypeError {
+                                    from: "Value::VecValue",
+                                    to: "SuperTable",
+                                    message: Some(format!(
+                                        "batch {idx} col {col_idx} schema mismatch"
+                                    )),
+                                });
+                            }
+                        }
+                    }
+                }
+                Ok(SuperTable::from_batches(chunks, None))
             }
             _ => Err(MinarrowError::TypeError {
                 from: "Value",
@@ -2020,5 +2098,138 @@ mod accessor_tests {
 
         let result = val.try_st();
         assert!(result.is_ok());
+    }
+}
+
+// VecValue -> typed-T terminal coercion tests. Exercises the engine wire format
+// produced by `Long` fan-out gather (`Value::VecValue<Vec<Value>>`) flowing into
+// `BlockStack<T>::collect()`'s `T::try_from(value)` step.
+#[cfg(test)]
+mod vecvalue_terminal_coercion_tests {
+    use super::*;
+    use crate::structs::field_array::field_array;
+    use crate::structs::variants::integer::IntegerArray;
+
+    fn arr_i32(values: &[i32]) -> Array {
+        Array::from_int32(IntegerArray::<i32>::from_slice(values))
+    }
+
+    fn val_arr_i32(values: &[i32]) -> Value {
+        Value::Array(Arc::new(arr_i32(values)))
+    }
+
+    fn val_table_one_col(name: &str, values: &[i32]) -> Value {
+        let t = Table::new(
+            name.to_string(),
+            Some(vec![field_array("c", arr_i32(values))]),
+        );
+        Value::Table(Arc::new(t))
+    }
+
+    // ----- Array::try_from -----
+
+    #[test]
+    fn try_from_vecvalue_empty_returns_typed_empty_array() {
+        let v = Value::VecValue(Arc::new(vec![]));
+        let arr = Array::try_from(v).expect("empty VecValue should coerce to Array::Null");
+        assert!(matches!(arr, Array::Null));
+    }
+
+    #[test]
+    fn try_from_vecvalue_single_unwraps_to_array() {
+        let inner = val_arr_i32(&[1, 2, 3]);
+        let v = Value::VecValue(Arc::new(vec![inner]));
+        let arr = Array::try_from(v).expect("single-element VecValue should unwrap");
+        assert_eq!(arr.len(), 3);
+    }
+
+    #[test]
+    fn try_from_vecvalue_multi_consolidates_array_rows() {
+        let parts = vec![val_arr_i32(&[1, 2]), val_arr_i32(&[3, 4, 5]), val_arr_i32(&[6])];
+        let v = Value::VecValue(Arc::new(parts));
+        let arr = Array::try_from(v).expect("multi VecValue<Array> should concat-fold");
+        assert_eq!(arr.len(), 6);
+        // Row order must be preserved across fan-out gather (invariant I5).
+        let na = arr.num().i32().unwrap();
+        assert_eq!(&na.data[..], &[1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn try_from_vecvalue_mismatched_concat_errors() {
+        // VecValue<[Array<i32>, Array<i64>]> — both convert to Array, but concat
+        // rejects the dtype mismatch.
+        let a = val_arr_i32(&[1]);
+        let b = Value::Array(Arc::new(Array::from_int64(
+            IntegerArray::<i64>::from_slice(&[2]),
+        )));
+        let v = Value::VecValue(Arc::new(vec![a, b]));
+        let res = Array::try_from(v);
+        assert!(res.is_err(), "incompatible inner dtypes must error, not silently coerce");
+    }
+
+    // ----- Table::try_from -----
+
+    #[test]
+    fn try_from_vecvalue_empty_returns_typed_empty_table() {
+        let v = Value::VecValue(Arc::new(vec![]));
+        let t = Table::try_from(v).expect("empty VecValue should coerce to empty Table");
+        assert_eq!(t.n_rows, 0);
+    }
+
+    #[test]
+    fn try_from_vecvalue_single_unwraps_to_table() {
+        let inner = val_table_one_col("t", &[10, 20]);
+        let v = Value::VecValue(Arc::new(vec![inner]));
+        let t = Table::try_from(v).expect("single-element VecValue should unwrap");
+        assert_eq!(t.n_rows, 2);
+    }
+
+    #[test]
+    fn try_from_vecvalue_multi_consolidates_table_rows() {
+        let parts = vec![
+            val_table_one_col("t", &[1, 2]),
+            val_table_one_col("t", &[3, 4]),
+        ];
+        let v = Value::VecValue(Arc::new(parts));
+        let t = Table::try_from(v).expect("multi VecValue<Table> should concat-fold");
+        assert_eq!(t.n_rows, 4);
+    }
+
+    // ----- SuperTable::try_from -----
+
+    #[cfg(feature = "chunked")]
+    #[test]
+    fn try_from_vecvalue_empty_returns_empty_supertable() {
+        let v = Value::VecValue(Arc::new(vec![]));
+        let st = SuperTable::try_from(v).expect("empty VecValue should coerce to empty SuperTable");
+        assert_eq!(st.len(), 0);
+    }
+
+    #[cfg(feature = "chunked")]
+    #[test]
+    fn try_from_vecvalue_supertable_wraps_without_realloc() {
+        let parts = vec![
+            val_table_one_col("t", &[1, 2]),
+            val_table_one_col("t", &[3]),
+            val_table_one_col("t", &[4, 5, 6]),
+        ];
+        let v = Value::VecValue(Arc::new(parts));
+        let st = SuperTable::try_from(v).expect("VecValue<Table> should wrap as SuperTable");
+        assert_eq!(st.n_batches(), 3, "chunk count preserved");
+        assert_eq!(st.n_rows, 6, "row total across chunks");
+    }
+
+    // ----- Wrong-typed VecValue paths -----
+
+    #[test]
+    fn try_from_vecvalue_array_rejects_unconvertible_inner() {
+        // SuperArray inside VecValue cannot become an Array; first conversion errors.
+        #[cfg(feature = "chunked")]
+        {
+            let inner = Value::SuperArray(Arc::new(SuperArray::new()));
+            let v = Value::VecValue(Arc::new(vec![inner]));
+            let res = Array::try_from(v);
+            assert!(res.is_err());
+        }
     }
 }

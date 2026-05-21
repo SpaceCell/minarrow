@@ -528,6 +528,9 @@ impl Consolidate for Vec<Value> {
                 let mut iter = self.into_iter();
                 let first = iter.next().unwrap();
                 iter.fold(first, |acc, val| {
+                    // Should only produce VecValue containing homogeneous Value
+                    // variants. The user-facing `TryFrom<Value::VecValue>` impls
+                    // surface this as a typed error instead of a panic.
                     acc.concat(val)
                         .expect("consolidate: all Values must be the same variant")
                 })
