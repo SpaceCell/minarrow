@@ -43,7 +43,9 @@ impl Float for f32 {}
 impl Float for f64 {}
 
 /// Trait for types valid as integer elements in columnar arrays.
-pub trait Integer: PrimInt + TryFrom<usize> + Default + Debug + ToPrimitive + 'static {
+pub trait Integer:
+    PrimInt + TryFrom<usize> + Default + Debug + ToPrimitive + std::hash::Hash + 'static
+{
     /// Lossless cast to `usize`
     fn to_usize(self) -> usize;
 

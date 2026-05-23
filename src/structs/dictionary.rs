@@ -26,7 +26,7 @@
 //!   Lock-free multi-reader and multi-writer; elements live at stable
 //!   heap addresses for the vector's lifetime, so `&String` borrows
 //!   survive concurrent appends.
-//! - `index: ShardedIndex<T>` - the reverse string-to-code lookup,
+//! - `index: ShardedIndex<T>` - the reverse hash-to-code lookup,
 //!   sharded across 64 `Mutex<HashMap>` slots. Distinct strings hash to
 //!   distinct shards and never contend; same-shard collisions briefly
 //!   serialise on that shard's mutex.
@@ -35,32 +35,62 @@
 //! updates with no fork on write.
 //!
 //! ## Intern flow
-//! 1. Hash the candidate string, pick a shard, take its mutex.
-//! 2. If already present, return existing code.
-//! 3. Otherwise, atomically reserve a slot in `AppendOnlyVec` via a
+//! 1. Hash the candidate string with the shared `ahash::RandomState`
+//!    (under `fast_dict`) or `DefaultHasher` (plain).
+//! 2. Mask the hash's low bits to pick a shard; take the shard mutex.
+//! 3. Probe the shard's `HashMap<String, T>` for the input string.
+//!    Under `fast_dict` the probe is `raw_entry_mut().from_hash(...)`
+//!    with the precomputed hash so the inner HashMap doesn't hash a
+//!    second time; under plain `shared_dict` it is the conventional
+//!    `HashMap::get` path.
+//! 4. If matched, return the existing code.
+//! 5. Otherwise, atomically reserve a slot in `AppendOnlyVec` via a
 //!    CAS-bounded push capped at `T::MAX + 1` (so narrow widths like
 //!    `u8` honour their 256-entry cap exactly, even under concurrent
 //!    writes from many threads).
-//! 4. Write the string into the slot, publish, insert the code into the
+//! 6. Write the string into the slot, publish, insert the code into the
 //!    shard's hashmap, release the mutex.
 //!
 //! ## Append-only invariant
 //! Once a string is interned and assigned a code, the mapping is
 //! permanent. Entries are never reordered, replaced, or removed.
 
+#[cfg(not(feature = "fast_dict"))]
 use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+#[cfg(not(feature = "fast_dict"))]
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ::vec64::Vec64;
 
 use ::vec64::AppendOnlyVec;
 use crate::traits::type_unions::Integer;
 
-#[cfg(feature = "fast_hash")]
+// Shard mutex. `fast_dict` swaps to `parking_lot::Mutex` for a
+// faster uncontended fast path (~5 ns vs std's ~15 ns) and no poison
+// handling on the call sites.
+#[cfg(feature = "fast_dict")]
+type ShardMutex<T> = parking_lot::Mutex<T>;
+#[cfg(not(feature = "fast_dict"))]
+type ShardMutex<T> = std::sync::Mutex<T>;
+
+// Inner per-shard hashmap. Stores `(String, T)` per entry. Both
+// configurations share this shape: the duplicate string in the
+// hashmap key keeps the eq check on the hot probe path to one
+// contiguous cache-line load, which matters at large dictionary
+// cardinality where the `AppendOnlyVec` storage spills past L3.
+//
+// `fast_dict` uses `hashbrown::HashMap` so the intern / lookup
+// paths can call `raw_entry_mut().from_hash(...)` with the
+// precomputed `ahash` hash and skip the inner map's hashing pass.
+// Plain `shared_dict` falls back to `std::HashMap` (or `ahash::AHashMap`
+// under `fast_hash`), which re-hashes the input string on lookup.
+#[cfg(feature = "fast_dict")]
+type IndexMap<T> = hashbrown::HashMap<String, T, ahash::RandomState>;
+#[cfg(all(not(feature = "fast_dict"), feature = "fast_hash"))]
 type IndexMap<T> = ahash::AHashMap<String, T>;
-#[cfg(not(feature = "fast_hash"))]
+#[cfg(all(not(feature = "fast_dict"), not(feature = "fast_hash")))]
 type IndexMap<T> = std::collections::HashMap<String, T>;
 
 /// Number of shards in the reverse string-to-code index. 64 means
@@ -91,35 +121,67 @@ impl fmt::Display for DictionaryError {
 impl std::error::Error for DictionaryError {}
 
 /// Sharded reverse index. Each shard holds its slice of strings under a
-/// `Mutex`, hashed-out via the high bits of `DefaultHasher`. Distinct
+/// `Mutex`, hashed-out via the high bits of a `BuildHasher`. Distinct
 /// novel strings hit distinct shards under uniform hashing and never
 /// serialise against each other.
+///
+/// Under `fast_dict` the shard-selection hasher is an
+/// `ahash::RandomState` shared across every shard's inner `HashMap`,
+/// so the hash bits used for shard selection are bit-identical to the
+/// hash bits the map would compute internally - letting `intern` /
+/// `lookup` reach the inner via `raw_entry_mut().from_hash(...)` with
+/// one hash pass instead of two.
 struct ShardedIndex<T: Integer> {
-    shards: Box<[Mutex<IndexMap<T>>; N_INDEX_SHARDS]>,
+    #[cfg(feature = "fast_dict")]
+    hasher: ahash::RandomState,
+    shards: Box<[ShardMutex<IndexMap<T>>; N_INDEX_SHARDS]>,
 }
 
 impl<T: Integer> Default for ShardedIndex<T> {
     fn default() -> Self {
-        let shards: [Mutex<IndexMap<T>>; N_INDEX_SHARDS] =
-            std::array::from_fn(|_| Mutex::new(IndexMap::default()));
-        Self {
-            shards: Box::new(shards),
+        #[cfg(feature = "fast_dict")]
+        {
+            // One `ahash::RandomState` per dictionary. It seeds both
+            // the outer shard-selection hash and every shard's inner
+            // HashMap, so the precomputed hash we pass to
+            // `raw_entry_mut().from_hash(...)` matches the bits the
+            // inner map would have computed on its own. The inner
+            // map's HashMap<String, T> rebuckets on resize via
+            // `hash(&String)` against this same seed - bit-identical
+            // to the external hash, so entries stay findable.
+            let hasher = ahash::RandomState::new();
+            let shards: [ShardMutex<IndexMap<T>>; N_INDEX_SHARDS] =
+                std::array::from_fn(|_| ShardMutex::new(IndexMap::with_hasher(hasher.clone())));
+            Self {
+                hasher,
+                shards: Box::new(shards),
+            }
+        }
+        #[cfg(not(feature = "fast_dict"))]
+        {
+            let shards: [ShardMutex<IndexMap<T>>; N_INDEX_SHARDS] =
+                std::array::from_fn(|_| ShardMutex::new(IndexMap::default()));
+            Self {
+                shards: Box::new(shards),
+            }
         }
     }
 }
 
 impl<T: Integer> ShardedIndex<T> {
+    /// Shard index for `s`. Used by the non-ultimate paths only - under
+    /// `fast_dict` the intern / lookup sites compute the
+    /// hash inline (so the same `u64` serves both shard selection and
+    /// the `raw_entry_mut().from_hash(...)` probe) and don't call this.
+    #[cfg(not(feature = "fast_dict"))]
     #[inline]
-    fn shard_for(s: &str) -> usize {
+    #[allow(clippy::unused_self)]
+    fn shard_for(&self, s: &str) -> usize {
         let mut h = DefaultHasher::new();
         s.hash(&mut h);
         (h.finish() as usize) % N_INDEX_SHARDS
     }
 
-    fn lookup(&self, s: &str) -> Option<T> {
-        let shard = &self.shards[Self::shard_for(s)];
-        shard.lock().expect("dictionary shard poisoned").get(s).copied()
-    }
 }
 
 /// Backing storage for a `Dictionary<T>`. Held behind the dictionary's
@@ -172,33 +234,66 @@ impl<T: Integer> Dictionary<T> {
         Self::default()
     }
 
-    /// Builds a dictionary from an ordered list of values. Input is
-    /// preserved verbatim and the reverse index is built from it. Panics
-    /// if the input length exceeds the capacity of `T`.
+    /// Builds a dictionary from an ordered list of values. Deduplicates
+    /// while preserving first-occurrence order, and builds the reverse
+    /// index alongside. Panics if the input contains more unique values
+    /// than the capacity of `T`.
     pub fn from_values(values: impl Into<Vec64<String>>) -> Self {
         let values: Vec64<String> = values.into();
         let d = Self::default();
         let cap = d.inner.values.capacity();
-        for (i, s) in values.into_iter().enumerate() {
-            assert!(
-                i < cap,
-                "Dictionary input length {} exceeds capacity of index type {}",
-                i + 1,
-                std::any::type_name::<T>()
-            );
-            // Inline the intern logic since we know each push is a novel
-            // value (de-duped in the construction loop below).
-            let shard = &d.inner.index.shards[ShardedIndex::<T>::shard_for(&s)];
-            let mut g = shard.lock().expect("dictionary shard poisoned");
-            if g.get(&s).is_some() {
-                continue;
+        for s in values {
+            #[cfg(feature = "fast_dict")]
+            {
+                use hashbrown::hash_map::RawEntryMut;
+                let values_ref = &d.inner.values;
+                let hash = d.inner.index.hasher.hash_one(&s);
+                let shard_idx = (hash as usize) & (N_INDEX_SHARDS - 1);
+                let shard = &d.inner.index.shards[shard_idx];
+                let mut g = shard.lock();
+                match g.raw_entry_mut().from_hash(hash, |k: &String| k.as_str() == s.as_str()) {
+                    RawEntryMut::Occupied(_) => continue,
+                    RawEntryMut::Vacant(vac) => {
+                        assert!(
+                            values_ref.count() < cap,
+                            "Dictionary input has more unique values than the capacity of {} ({})",
+                            std::any::type_name::<T>(),
+                            cap
+                        );
+                        // SAFETY: assert above guarantees `reserved < cap`
+                        // and we hold the shard mutex, so push is the
+                        // sole pending writer on this slot.
+                        let idx = unsafe { values_ref.push(s.clone()).unwrap_unchecked() };
+                        vac.insert_hashed_nocheck(hash, s, T::from_usize(idx));
+                    }
+                }
             }
-            let idx = d
-                .inner
-                .values
-                .push(s.clone())
-                .expect("checked cap above");
-            g.insert(s, T::from_usize(idx));
+            #[cfg(not(feature = "fast_dict"))]
+            {
+                let shard = &d.inner.index.shards[d.inner.index.shard_for(&s)];
+                // Suppress poison and clear the flag so later lock calls
+                // take the Ok path. Each critical section is a single
+                // hashmap+vec op, atomic at the data-structure level, so
+                // a previous panic cannot leave observable inconsistency.
+                let mut g = shard.lock().unwrap_or_else(|p| {
+                    shard.clear_poison();
+                    p.into_inner()
+                });
+                if g.get(&s).is_some() {
+                    continue;
+                }
+                assert!(
+                    d.inner.values.count() < cap,
+                    "Dictionary input has more unique values than the capacity of {} ({})",
+                    std::any::type_name::<T>(),
+                    cap
+                );
+                // SAFETY: assert above guarantees `reserved < cap` and we
+                // hold the shard mutex, so push is the sole pending
+                // writer on this slot.
+                let idx = unsafe { d.inner.values.push(s.clone()).unwrap_unchecked() };
+                g.insert(s, T::from_usize(idx));
+            }
         }
         d
     }
@@ -226,9 +321,38 @@ impl<T: Integer> Dictionary<T> {
     }
 
     /// Code for `s` if interned at the moment of the call, otherwise `None`.
-    #[inline]
     pub fn lookup(&self, s: &str) -> Option<T> {
-        self.inner.index.lookup(s)
+        #[cfg(feature = "fast_dict")]
+        {
+            let hash = self.inner.index.hasher.hash_one(s);
+            let shard_idx = (hash as usize) & (N_INDEX_SHARDS - 1);
+            let shard = &self.inner.index.shards[shard_idx];
+            let g = shard.lock();
+            // Probe with the precomputed hash so the inner map does
+            // not re-hash on the lookup. The eq callback compares the
+            // stored `String` against the input directly - one
+            // contiguous cache line on the hash-bucket entry.
+            g.raw_entry()
+                .from_hash(hash, |k: &String| k.as_str() == s)
+                .map(|(_, v)| *v)
+        }
+        #[cfg(not(feature = "fast_dict"))]
+        {
+            let shard = &self.inner.index.shards[self.inner.index.shard_for(s)];
+            // Suppress poison and clear the flag so later lock calls
+            // take the Ok path. Each critical section operates on the
+            // HashMap and the AppendOnlyVec atomically with respect to
+            // the data structures, so a panic in a previous holder
+            // cannot leave the inner state observably inconsistent.
+            shard
+                .lock()
+                .unwrap_or_else(|p| {
+                    shard.clear_poison();
+                    p.into_inner()
+                })
+                .get(s)
+                .copied()
+        }
     }
 
     /// Interns `s` atomically. Concurrent-safe via `&self`; distinct
@@ -237,19 +361,56 @@ impl<T: Integer> Dictionary<T> {
     /// cardinality would exceed the capacity of `T`, leaving the
     /// dictionary unchanged and no slot reserved.
     pub fn intern(&self, value: &str) -> Result<T, DictionaryError> {
-        let shard = &self.inner.index.shards[ShardedIndex::<T>::shard_for(value)];
-        let mut g = shard.lock().expect("dictionary shard poisoned");
-        if let Some(&code) = g.get(value) {
-            return Ok(code);
+        #[cfg(feature = "fast_dict")]
+        {
+            use hashbrown::hash_map::RawEntryMut;
+            let hash = self.inner.index.hasher.hash_one(value);
+            let shard_idx = (hash as usize) & (N_INDEX_SHARDS - 1);
+            let shard = &self.inner.index.shards[shard_idx];
+            let mut g = shard.lock();
+            // Probe with the precomputed hash so the inner map does
+            // not re-hash. The eq callback compares the stored `String`
+            // key directly against the input - one contiguous read on
+            // the hash-bucket entry.
+            match g.raw_entry_mut().from_hash(hash, |k: &String| k.as_str() == value) {
+                RawEntryMut::Occupied(e) => Ok(*e.get()),
+                RawEntryMut::Vacant(vac) => {
+                    // Allocate the owned string once and share between
+                    // the value-array push and the hashmap insert.
+                    let owned = value.to_owned();
+                    let idx = self
+                        .inner
+                        .values
+                        .push(owned.clone())
+                        .ok_or(DictionaryError::Overflow)?;
+                    let code = T::from_usize(idx);
+                    vac.insert_hashed_nocheck(hash, owned, code);
+                    Ok(code)
+                }
+            }
         }
-        let idx = self
-            .inner
-            .values
-            .push(value.to_owned())
-            .ok_or(DictionaryError::Overflow)?;
-        let code = T::from_usize(idx);
-        g.insert(value.to_owned(), code);
-        Ok(code)
+        #[cfg(not(feature = "fast_dict"))]
+        {
+            let shard = &self.inner.index.shards[self.inner.index.shard_for(value)];
+            let mut g = shard.lock().unwrap_or_else(|p| {
+                shard.clear_poison();
+                p.into_inner()
+            });
+            if let Some(&code) = g.get(value) {
+                return Ok(code);
+            }
+            // Non-ultimate path stores the string twice (once in the
+            // value array, once as the hashmap key) - the price of the
+            // simpler stable-std design without `raw_entry`.
+            let idx = self
+                .inner
+                .values
+                .push(value.to_owned())
+                .ok_or(DictionaryError::Overflow)?;
+            let code = T::from_usize(idx);
+            g.insert(value.to_owned(), code);
+            Ok(code)
+        }
     }
 
     /// Absorb `cat` into this sharing group. Interns every entry of
@@ -309,14 +470,37 @@ impl<T: Integer> Dictionary<T> {
     pub fn detach_to_owned(&mut self) {
         let fresh = Dictionary::<T>::default();
         for (_, s) in self.inner.values.iter() {
-            let shard = &fresh.inner.index.shards[ShardedIndex::<T>::shard_for(s)];
-            let mut g = shard.lock().expect("dictionary shard poisoned");
-            let idx = fresh
-                .inner
-                .values
-                .push(s.clone())
-                .expect("source dict already within cap");
-            g.insert(s.clone(), T::from_usize(idx));
+            #[cfg(feature = "fast_dict")]
+            {
+                use hashbrown::hash_map::RawEntryMut;
+                let values_ref = &fresh.inner.values;
+                let hash = fresh.inner.index.hasher.hash_one(s);
+                let shard_idx = (hash as usize) & (N_INDEX_SHARDS - 1);
+                let shard = &fresh.inner.index.shards[shard_idx];
+                let mut g = shard.lock();
+                // The source dictionary is deduplicated by construction,
+                // so every entry is novel against the fresh dict.
+                let vac = match g.raw_entry_mut().from_hash(hash, |k: &String| k.as_str() == s.as_str()) {
+                    RawEntryMut::Vacant(v) => v,
+                    RawEntryMut::Occupied(_) => continue,
+                };
+                // SAFETY: fresh dict's cap matches the source dict's cap
+                // and source is dedup'd, so push always succeeds.
+                let idx = unsafe { values_ref.push(s.clone()).unwrap_unchecked() };
+                vac.insert_hashed_nocheck(hash, s.clone(), T::from_usize(idx));
+            }
+            #[cfg(not(feature = "fast_dict"))]
+            {
+                let shard = &fresh.inner.index.shards[fresh.inner.index.shard_for(s)];
+                let mut g = shard.lock().unwrap_or_else(|p| {
+                    shard.clear_poison();
+                    p.into_inner()
+                });
+                // SAFETY: fresh dict's cap matches the source dict's cap
+                // and source is dedup'd, so push always succeeds.
+                let idx = unsafe { fresh.inner.values.push(s.clone()).unwrap_unchecked() };
+                g.insert(s.clone(), T::from_usize(idx));
+            }
         }
         self.inner = fresh.inner;
     }
@@ -381,7 +565,6 @@ const DEFAULT_WIDE_CAP: usize = 1 << 20;
 
 #[inline]
 fn max_cap<T: Integer>() -> usize {
-    use num_traits::Bounded;
     let type_max = T::max_value().to_usize().saturating_add(1);
     if type_max > DEFAULT_WIDE_CAP {
         DEFAULT_WIDE_CAP

@@ -65,8 +65,6 @@ use crate::{
     Array, Bitmask, BooleanArray, CategoricalArray, FloatArray, Integer, IntegerArray,
     NumericArray, StringArray, TextArray, Vec64,
 };
-#[cfg(feature = "shared_dict")]
-use crate::Dictionary;
 use num_traits::FromPrimitive;
 
 #[cfg(feature = "datetime")]

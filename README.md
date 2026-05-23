@@ -170,8 +170,8 @@ Enable what you need:
 | `parallel_proc` | Rayon parallel iterators |
 | `select` | Pandas-style `.c()` / `.r()` selection |
 | `broadcast` | Arithmetic broadcasting |
-| `shared_dict` | Cross-batch shared categorical dictionaries via `CategoryManager` |
-| `contended_dict` | `ArcSwap` writer backend for shared dictionaries (implies `shared_dict`) |
+| `shared_dict` | Cross-batch shared categorical dictionaries (lock-free reads, sharded multi-writer intern via `std::Mutex<HashMap>`) |
+| `fast_dict` | Higher-throughput variant of `shared_dict`. Pulls in `parking_lot`, `hashbrown`, and `ahash` for ~30 % faster concurrent intern under writer contention, plus single-storage hashmap entries that halve dict memory |
 
 ## Ecosystem
 
