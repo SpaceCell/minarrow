@@ -429,7 +429,29 @@ fn validate_temporal_field(array: &Array, dtype: &ArrowType) {
 }
 
 /// Exports a Minarrow array to Arrow C Data Interface pointers.
+///
+/// Equivalent to [`export_view_to_c`] with offset = 0 and length = `array.len()`.
 pub fn export_to_c(array: Arc<Array>, schema: Schema) -> (*mut ArrowArray, *mut ArrowSchema) {
+    let len = array.len() as i64;
+    export_view_to_c(array, schema, 0, len)
+}
+
+/// Exports a windowed view of a Minarrow array to Arrow C Data Interface pointers.
+///
+/// `offset` and `length` are applied at the Arrow C layer through
+/// `ArrowArray.offset` and `ArrowArray.length`. Buffer pointers always
+/// point at the start of the backing buffers; consumers read
+/// `length` elements starting at `offset` from each buffer
+/// (validity bitmap, primitive data or codes, string offsets/values).
+///
+/// The full backing [`Array`] is kept alive in the FFI holder, so the
+/// pointers remain valid for the lifetime of the exported `ArrowArray`.
+pub fn export_view_to_c(
+    array: Arc<Array>,
+    schema: Schema,
+    offset: i64,
+    length: i64,
+) -> (*mut ArrowArray, *mut ArrowSchema) {
     #[cfg(feature = "datetime")]
     {
         let field_ty = &schema.fields[0].dtype;
@@ -438,64 +460,57 @@ pub fn export_to_c(array: Arc<Array>, schema: Schema) -> (*mut ArrowArray, *mut 
     }
 
     match &*array {
-        Array::TextArray(TextArray::String32(s)) => {
-            export_string_array_to_c(&array, schema, s.len() as i64)
+        Array::TextArray(TextArray::String32(_)) => {
+            export_string_array_to_c(&array, schema, offset, length)
         }
         #[cfg(feature = "large_string")]
-        Array::TextArray(TextArray::String64(s)) => {
-            export_string_array_to_c(&array, schema, s.len() as i64)
+        Array::TextArray(TextArray::String64(_)) => {
+            export_string_array_to_c(&array, schema, offset, length)
         }
         #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-        Array::TextArray(TextArray::Categorical32(cat)) => export_categorical_array_to_c(
-            &array,
-            schema,
-            cat.data.len() as i64,
-            cat.unique_values(),
-            32,
-        ),
+        Array::TextArray(TextArray::Categorical32(cat)) => {
+            let uniques = cat.unique_values().to_vec();
+            export_categorical_array_to_c(&array, schema, offset, length, &uniques, 32)
+        }
         #[cfg(feature = "default_categorical_8")]
-        Array::TextArray(TextArray::Categorical8(cat)) => export_categorical_array_to_c(
-            &array,
-            schema,
-            cat.data.len() as i64,
-            cat.unique_values(),
-            8,
-        ),
+        Array::TextArray(TextArray::Categorical8(cat)) => {
+            let uniques = cat.unique_values().to_vec();
+            export_categorical_array_to_c(&array, schema, offset, length, &uniques, 8)
+        }
         #[cfg(feature = "extended_categorical")]
-        Array::TextArray(TextArray::Categorical16(cat)) => export_categorical_array_to_c(
-            &array,
-            schema,
-            cat.data.len() as i64,
-            cat.unique_values(),
-            16,
-        ),
+        Array::TextArray(TextArray::Categorical16(cat)) => {
+            let uniques = cat.unique_values().to_vec();
+            export_categorical_array_to_c(&array, schema, offset, length, &uniques, 16)
+        }
         #[cfg(feature = "extended_categorical")]
-        Array::TextArray(TextArray::Categorical64(cat)) => export_categorical_array_to_c(
-            &array,
-            schema,
-            cat.data.len() as i64,
-            cat.unique_values(),
-            64,
-        ),
+        Array::TextArray(TextArray::Categorical64(cat)) => {
+            let uniques = cat.unique_values().to_vec();
+            export_categorical_array_to_c(&array, schema, offset, length, &uniques, 64)
+        }
 
         _ => {
-            let (data_ptr, len, _) = array.data_ptr_and_byte_len();
+            let (data_ptr, _, _) = array.data_ptr_and_byte_len();
             let (mask_ptr, _) = array
                 .null_mask_ptr_and_byte_len()
                 .unwrap_or((ptr::null(), 0));
             let mut buf_ptrs = vec64![mask_ptr, data_ptr];
             let name_cstr = CString::new(schema.fields[0].name.clone()).unwrap();
-            check_alignment(&mut buf_ptrs, len as i64);
-            create_arrow_export(array, schema, buf_ptrs, 2, len as i64, name_cstr)
+            check_alignment(&mut buf_ptrs, length);
+            create_arrow_export(array, schema, buf_ptrs, 2, length, offset, name_cstr)
         }
     }
 }
 
 /// Exports a Utf8 or LargeUtf8 string array to Arrow C format.
+///
+/// Buffer pointers point at the start of the backing offsets/values buffers;
+/// the consumer applies `offset` via `ArrowArray.offset` to read
+/// `offsets[offset..offset+length+1]`.
 fn export_string_array_to_c(
     array: &Arc<Array>,
     schema: Schema,
-    len: i64,
+    offset: i64,
+    length: i64,
 ) -> (*mut ArrowArray, *mut ArrowSchema) {
     let (offsets_ptr, _) = array.offsets_ptr_and_len().unwrap();
     let (values_ptr, values_len, _) = array.data_ptr_and_byte_len();
@@ -511,15 +526,20 @@ fn export_string_array_to_c(
     };
     let mut buf_ptrs = vec64![null_ptr, offsets_ptr, values_buf_ptr];
     let name_cstr = CString::new(schema.fields[0].name.clone()).unwrap();
-    check_alignment(&mut buf_ptrs, len);
-    create_arrow_export(array.clone(), schema, buf_ptrs, 3, len, name_cstr)
+    check_alignment(&mut buf_ptrs, length);
+    create_arrow_export(array.clone(), schema, buf_ptrs, 3, length, offset, name_cstr)
 }
 
 /// Exports a categorical array and its dictionary in Arrow C format.
+///
+/// `offset` and `length` are applied to the codes buffer through
+/// `ArrowArray.offset`/`ArrowArray.length`. The dictionary values are
+/// exported in full and shared via Arrow's `ArrowArray.dictionary` field.
 fn export_categorical_array_to_c(
     array: &Arc<Array>,
     schema: Schema,
-    codes_len: i64,
+    offset: i64,
+    length: i64,
     unique_values: &[String],
     index_bits: usize,
 ) -> (*mut ArrowArray, *mut ArrowSchema) {
@@ -529,7 +549,7 @@ fn export_categorical_array_to_c(
         .map_or(ptr::null(), |(p, _)| p);
 
     let mut buf_ptrs = vec64![null_ptr, codes_ptr];
-    check_alignment(&mut buf_ptrs, codes_len);
+    check_alignment(&mut buf_ptrs, length);
 
     // Export dictionary as string array with correct buffer order
     let dict_offsets: Vec64<u32> = {
@@ -593,9 +613,9 @@ fn export_categorical_array_to_c(
         .unwrap_or(ptr::null());
 
     let arr = Box::new(ArrowArray {
-        length: codes_len,
+        length,
         null_count: if buf_ptrs[0].is_null() { 0 } else { -1 },
-        offset: 0,
+        offset,
         n_buffers: 2,
         n_children: 0,
         buffers: buf_ptrs.as_mut_ptr(),
@@ -1084,7 +1104,33 @@ unsafe fn import_array_zero_copy(
     }
 }
 
+/// Imports a null bitmap honouring an `ArrowArray.offset` bit window.
+///
+/// The Arrow C Data Interface stores the validity bitmap at the start of the
+/// parent buffer; consumers read `length` bits starting at bit `offset`.
+/// When `offset == 0` this is a straight copy; otherwise the source bits are
+/// realigned into a fresh `Bitmask`.
+///
+/// # Safety
+/// `ptr` must point to a bit-packed buffer of at least `(offset + len + 7) / 8` bytes.
+unsafe fn import_null_mask_offset(
+    ptr: *const u8,
+    offset: usize,
+    len: usize,
+) -> Bitmask {
+    if offset == 0 {
+        unsafe { Bitmask::from_raw_slice(ptr, len) }
+    } else {
+        let total_bits = offset + len;
+        let full = unsafe { Bitmask::from_raw_slice(ptr, total_bits) };
+        full.slice_clone(offset, len)
+    }
+}
+
 /// Imports an integer array from Arrow C format using the given constructor.
+///
+/// Honours `ArrowArray.offset`: buffer pointers are advanced by `offset`
+/// elements and the null bitmap is sliced at the bit level.
 ///
 /// # Arguments
 /// * `arr` - Reference to the ArrowArray containing the data
@@ -1101,13 +1147,14 @@ unsafe fn import_integer<T: Integer>(
     tag: fn(IntegerArray<T>) -> Array,
 ) -> Arc<Array> {
     let len = arr.length as usize;
+    let offset = arr.offset as usize;
     let buffers = unsafe { slice::from_raw_parts(arr.buffers, 2) };
-    let data_ptr = buffers[1] as *const T;
+    let data_ptr = unsafe { (buffers[1] as *const T).add(offset) };
     let data_len_bytes = len * std::mem::size_of::<T>();
 
-    // Null mask is always copied (small overhead)
+    // Null mask is always copied (small overhead). Honours bit-level offset.
     let null_mask = if !buffers[0].is_null() {
-        Some(unsafe { Bitmask::from_raw_slice(buffers[0], len) })
+        Some(unsafe { import_null_mask_offset(buffers[0], offset, len) })
     } else {
         None
     };
@@ -1156,13 +1203,14 @@ where
     FloatArray<T>: 'static,
 {
     let len = arr.length as usize;
+    let offset = arr.offset as usize;
     let buffers = unsafe { slice::from_raw_parts(arr.buffers, 2) };
-    let data_ptr = buffers[1] as *const T;
+    let data_ptr = unsafe { (buffers[1] as *const T).add(offset) };
     let data_len_bytes = len * std::mem::size_of::<T>();
 
-    // Null mask is always copied (small overhead)
+    // Null mask is always copied (small overhead). Honours bit-level offset.
     let null_mask = if !buffers[0].is_null() {
-        Some(unsafe { Bitmask::from_raw_slice(buffers[0], len) })
+        Some(unsafe { import_null_mask_offset(buffers[0], offset, len) })
     } else {
         None
     };
@@ -1202,37 +1250,53 @@ where
 /// Buffers must be correctly aligned and sized for the declared length.
 unsafe fn import_boolean(arr: &ArrowArray, ownership: Option<Box<ArrowArray>>) -> Arc<Array> {
     let len = arr.length as usize;
+    let offset = arr.offset as usize;
     let buffers = unsafe { slice::from_raw_parts(arr.buffers, 2) };
     let data_ptr = buffers[1];
     let data_len = (len + 7) / 8; // bytes needed for bit-packed data
 
-    // Null mask is always copied (small overhead)
+    // Null mask is always copied (small overhead). Honours bit-level offset.
     let null_mask = if !buffers[0].is_null() {
-        Some(unsafe { Bitmask::from_raw_slice(buffers[0], len) })
+        Some(unsafe { import_null_mask_offset(buffers[0], offset, len) })
     } else {
         None
     };
 
-    // For empty arrays, create an empty buffer directly rather than using sentinel pointers
-    let buffer: Buffer<u8> = if len == 0 {
-        Buffer::default()
-    } else if let Some(arr_box) = ownership {
-        // Zero-copy: wrap foreign buffer
-        let foreign = ForeignBuffer {
-            ptr: data_ptr as *const u8,
-            len: data_len,
-            array: Some(arr_box),
+    // For empty arrays, create an empty buffer directly rather than using sentinel pointers.
+    // When `offset == 0`, the buffer is byte-aligned with bit index 0, so the
+    // zero-copy path via ForeignBuffer applies. With a non-zero bit offset the
+    // bits must be realigned into a fresh Bitmask, dropping zero-copy on bool data.
+    let bool_mask = if len == 0 {
+        Bitmask::new(Buffer::default(), 0)
+    } else if offset == 0 {
+        let buffer: Buffer<u8> = if let Some(arr_box) = ownership {
+            let foreign = ForeignBuffer {
+                ptr: data_ptr as *const u8,
+                len: data_len,
+                array: Some(arr_box),
+            };
+            let shared = SharedBuffer::from_owner(foreign);
+            Buffer::from_shared(shared)
+        } else {
+            let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
+            Vec64::from(data).into()
         };
-        let shared = SharedBuffer::from_owner(foreign);
-        Buffer::from_shared(shared)
+        Bitmask::new(buffer, len)
     } else {
-        // Copy: dictionary arrays inside categoricals have their memory owned by the
-        // parent ArrowArray's release callback, so we can't take ownership of them
-        let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
-        Vec64::from(data).into()
+        // Bit-level realignment: copy the windowed bits into a new Bitmask.
+        let total_bits = offset + len;
+        let full = unsafe { Bitmask::from_raw_slice(data_ptr, total_bits) };
+        let sliced = full.slice_clone(offset, len);
+        // Once realigned, drop ownership: the foreign buffer is no longer
+        // referenced from the imported Bitmask, so release immediately.
+        if let Some(mut arr_box) = ownership {
+            if let Some(release) = arr_box.release {
+                unsafe { release(&mut *arr_box as *mut ArrowArray) };
+            }
+        }
+        sliced
     };
 
-    let bool_mask = Bitmask::new(buffer, len);
     let bool_arr = BooleanArray::new(bool_mask, null_mask);
     Arc::new(Array::BooleanArray(bool_arr.into()))
 }
@@ -1253,6 +1317,7 @@ unsafe fn import_utf8<T: Integer>(
     ownership: Option<Box<ArrowArray>>,
 ) -> Arc<Array> {
     let len = arr.length as usize;
+    let offset = arr.offset as usize;
 
     // For empty arrays, return an empty StringArray directly without touching sentinel pointers
     if len == 0 {
@@ -1275,58 +1340,69 @@ unsafe fn import_utf8<T: Integer>(
     let offsets_ptr = buffers[1];
     let values_ptr = buffers[2];
 
-    // Offsets - always read as slice for validation
-    let offsets_slice = unsafe { std::slice::from_raw_parts(offsets_ptr as *const T, len + 1) };
+    // Read offsets[offset..offset+len+1]; with offset=0 this matches the
+    // pre-existing behaviour. Validation walks the windowed range.
+    let offsets_slice = unsafe {
+        std::slice::from_raw_parts((offsets_ptr as *const T).add(offset), len + 1)
+    };
 
-    // --- BF-05: validate offsets monotonicity & bounds
     assert_eq!(
         offsets_slice.len(),
         len + 1,
         "UTF8: offsets length must be len+1"
     );
-    assert_eq!(
-        offsets_slice[0].to_usize(),
-        0,
-        "UTF8: first offset must be 0"
-    );
-    let mut prev = 0usize;
+    let base: usize = Integer::to_usize(offsets_slice[0]);
+    let mut prev = base;
     for (i, off) in offsets_slice.iter().enumerate().take(len + 1) {
-        let cur = off.to_usize().expect("Error: could not unwrap usize");
+        let cur: usize = Integer::to_usize(*off);
         assert!(
             cur >= prev,
             "UTF8: offsets not monotonically non-decreasing at {i}: {cur} < {prev}"
         );
         prev = cur;
     }
-    let data_len = offsets_slice[len].to_usize();
+    let values_end: usize = Integer::to_usize(offsets_slice[len]);
+    let data_len = values_end - base;
 
-    // Null mask - always copied (small overhead)
+    // Null mask - always copied. Honours bit-level offset.
     let null_mask = if !null_ptr.is_null() {
-        Some(unsafe { Bitmask::from_raw_slice(null_ptr, len) })
+        Some(unsafe { import_null_mask_offset(null_ptr, offset, len) })
     } else {
         None
     };
 
-    // Offsets - always copied (small: 4-8 bytes per string)
-    let offsets = Vec64::from(offsets_slice);
+    // Rebase offsets so the imported StringArray starts at 0.
+    // We currently do a full copy on the offsets buffer, at the cost of
+    // 4-8 bytes per string. A future revision could keep the offsets
+    // buffer foreign and carry the rebase as a logical adjustment.
+    let offsets: Vec64<T> = if offset == 0 && base == 0 {
+        Vec64::from(offsets_slice)
+    } else {
+        let mut out = Vec64::<T>::with_capacity(len + 1);
+        for off in offsets_slice {
+            let cur = Integer::to_usize(*off) - base;
+            out.push(T::from_usize(cur));
+        }
+        out
+    };
 
-    // Values - zero-copy if we own the ArrowArray, otherwise copy
+    // Values: zero-copy if we own the ArrowArray. The buffer pointer is
+    // advanced by `base` so it aligns with the rebased offsets.
     let values_buffer: Buffer<u8> = if data_len == 0 {
         // Empty values buffer - don't use sentinel pointer
         Buffer::default()
     } else if let Some(arr_box) = ownership {
-        // Zero-copy: wrap foreign buffer for the values
         let foreign = ForeignBuffer {
-            ptr: values_ptr as *const u8,
+            ptr: unsafe { (values_ptr as *const u8).add(base) },
             len: data_len,
             array: Some(arr_box),
         };
         let shared = SharedBuffer::from_owner(foreign);
         Buffer::from_shared(shared)
     } else {
-        // Copy: dictionary arrays inside categoricals have their memory owned by the
-        // parent ArrowArray's release callback, so we can't take ownership of them
-        let data = unsafe { std::slice::from_raw_parts(values_ptr, data_len) };
+        let data = unsafe {
+            std::slice::from_raw_parts((values_ptr as *const u8).add(base), data_len)
+        };
         Vec64::from(data).into()
     };
 
@@ -1473,6 +1549,7 @@ unsafe fn import_categorical(
 ) -> Arc<Array> {
     // buffers: [null, codes]
     let len = arr.length as usize;
+    let offset = arr.offset as usize;
     let buffers = unsafe { slice::from_raw_parts(arr.buffers, 2) };
     let null_ptr = buffers[0];
     let codes_ptr = buffers[1];
@@ -1512,29 +1589,34 @@ unsafe fn import_categorical(
             .collect(),
         _ => panic!("Expected String32 dictionary"),
     };
+    // Honours bit-level offset for the codes' validity bitmap.
     let null_mask = if !null_ptr.is_null() {
-        Some(unsafe { Bitmask::from_raw_slice(null_ptr, len) })
+        Some(unsafe { import_null_mask_offset(null_ptr, offset, len) })
     } else {
         None
     };
 
-    /// Builds a zero-copy or copied `Buffer<T>` for the codes.
+    /// Builds a zero-copy or copied `Buffer<T>` for the codes, applying `offset`
+    /// to advance the pointer / source slice into the windowed range.
     unsafe fn build_codes<T: Integer>(
         codes_ptr: *const u8,
+        offset: usize,
         len: usize,
         ownership: Option<Box<ArrowArray>>,
     ) -> Buffer<T> {
+        let typed_base = codes_ptr as *const T;
+        let typed_start = unsafe { typed_base.add(offset) };
         if let Some(arr_box) = ownership {
             let data_len_bytes = len * std::mem::size_of::<T>();
             let foreign = ForeignBuffer {
-                ptr: codes_ptr,
+                ptr: typed_start as *const u8,
                 len: data_len_bytes,
                 array: Some(arr_box),
             };
             let shared = SharedBuffer::from_owner(foreign);
             Buffer::from_shared(shared)
         } else {
-            let data = unsafe { slice::from_raw_parts(codes_ptr as *const T, len) };
+            let data = unsafe { slice::from_raw_parts(typed_start, len) };
             Vec64::from(data).into()
         }
     }
@@ -1543,25 +1625,25 @@ unsafe fn import_categorical(
     match index_type {
         #[cfg(feature = "default_categorical_8")]
         CategoricalIndexType::UInt8 => {
-            let codes_buf = unsafe { build_codes::<u8>(codes_ptr, len, ownership) };
+            let codes_buf = unsafe { build_codes::<u8>(codes_ptr, offset, len, ownership) };
             let arr = CategoricalArray::<u8>::new(codes_buf, dict_strings, null_mask);
             Arc::new(Array::TextArray(TextArray::Categorical8(Arc::new(arr))))
         }
         #[cfg(feature = "extended_categorical")]
         CategoricalIndexType::UInt16 => {
-            let codes_buf = unsafe { build_codes::<u16>(codes_ptr, len, ownership) };
+            let codes_buf = unsafe { build_codes::<u16>(codes_ptr, offset, len, ownership) };
             let arr = CategoricalArray::<u16>::new(codes_buf, dict_strings, null_mask);
             Arc::new(Array::TextArray(TextArray::Categorical16(Arc::new(arr))))
         }
         #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
         CategoricalIndexType::UInt32 => {
-            let codes_buf = unsafe { build_codes::<u32>(codes_ptr, len, ownership) };
+            let codes_buf = unsafe { build_codes::<u32>(codes_ptr, offset, len, ownership) };
             let arr = CategoricalArray::<u32>::new(codes_buf, dict_strings, null_mask);
             Arc::new(Array::TextArray(TextArray::Categorical32(Arc::new(arr))))
         }
         #[cfg(feature = "extended_categorical")]
         CategoricalIndexType::UInt64 => {
-            let codes_buf = unsafe { build_codes::<u64>(codes_ptr, len, ownership) };
+            let codes_buf = unsafe { build_codes::<u64>(codes_ptr, offset, len, ownership) };
             let arr = CategoricalArray::<u64>::new(codes_buf, dict_strings, null_mask);
             Arc::new(Array::TextArray(TextArray::Categorical64(Arc::new(arr))))
         }
@@ -1584,9 +1666,10 @@ unsafe fn import_categorical_narrow_to_u8(
     ownership: Option<Box<ArrowArray>>,
 ) -> Arc<Array> {
     let len = arr.length as usize;
+    let offset = arr.offset as usize;
     let buffers = unsafe { slice::from_raw_parts(arr.buffers, 2) };
     let null_ptr = buffers[0];
-    let codes_ptr = buffers[1];
+    let codes_ptr = unsafe { (buffers[1] as *const i32).add(offset) };
 
     // Import dictionary strings into Vec64<String>, same as import_categorical
     let synthetic_schema;
@@ -1619,13 +1702,13 @@ unsafe fn import_categorical_narrow_to_u8(
     };
 
     let null_mask = if !null_ptr.is_null() {
-        Some(unsafe { Bitmask::from_raw_slice(null_ptr, len) })
+        Some(unsafe { import_null_mask_offset(null_ptr, offset, len) })
     } else {
         None
     };
 
-    // Read i32 codes and narrow to u8
-    let i32_codes = unsafe { slice::from_raw_parts(codes_ptr as *const i32, len) };
+    // Read i32 codes and narrow to u8 (codes_ptr is already offset-adjusted).
+    let i32_codes = unsafe { slice::from_raw_parts(codes_ptr, len) };
     let mut u8_codes = Vec64::<u8>::with_capacity(len);
     for &code in i32_codes {
         assert!(
@@ -1666,13 +1749,14 @@ unsafe fn import_datetime<T: Integer>(
     unit: crate::TimeUnit,
 ) -> Arc<Array> {
     let len = arr.length as usize;
+    let offset = arr.offset as usize;
     let buffers = unsafe { std::slice::from_raw_parts(arr.buffers, 2) };
-    let data_ptr = buffers[1] as *const T;
+    let data_ptr = unsafe { (buffers[1] as *const T).add(offset) };
     let data_len_bytes = len * std::mem::size_of::<T>();
 
-    // Null mask is always copied (small overhead)
+    // Null mask is always copied (small overhead). Honours bit-level offset.
     let null_mask = if !buffers[0].is_null() {
-        Some(unsafe { Bitmask::from_raw_slice(buffers[0], len) })
+        Some(unsafe { import_null_mask_offset(buffers[0], offset, len) })
     } else {
         None
     };
@@ -1737,6 +1821,11 @@ fn check_alignment(buf_ptrs: &mut Vec64<*const u8>, length: i64) {
 }
 
 /// Builds and returns ArrowArray and ArrowSchema for export.
+///
+/// `offset` is written into `ArrowArray.offset`; the consumer slices each
+/// buffer via this offset to obtain the windowed range. Pass `0` for a
+/// full-array export.
+///
 /// # Safety
 /// Caller must ensure buffer pointers remain valid for the lifetime of the consumer.
 fn create_arrow_export(
@@ -1745,6 +1834,7 @@ fn create_arrow_export(
     mut buf_ptrs: Vec64<*const u8>,
     n_buffers: i64,
     length: i64,
+    offset: i64,
     name_cstr: CString,
 ) -> (*mut ArrowArray, *mut ArrowSchema) {
     let null_count = if buf_ptrs[0].is_null() { 0 } else { -1 };
@@ -1770,7 +1860,7 @@ fn create_arrow_export(
     let arr = Box::new(ArrowArray {
         length,
         null_count,
-        offset: 0,
+        offset,
         n_buffers,
         n_children: 0,
         buffers: buf_ptrs.as_mut_ptr(),
@@ -1911,6 +2001,85 @@ fn export_struct_to_c_inner(
 
     let format_cstr = CString::new("+s").unwrap();
     let name_cstr = CString::new("").unwrap();
+
+    let metadata_bytes = metadata.map(|m| encode_arrow_metadata(&m));
+    let metadata_ptr = metadata_bytes
+        .as_ref()
+        .map(|b| b.as_ptr() as *const c_char)
+        .unwrap_or(ptr::null());
+
+    let struct_holder = Box::new(StructSchemaHolder {
+        format_cstr,
+        name_cstr,
+        metadata_bytes,
+    });
+
+    let struct_sch = Box::new(ArrowSchema {
+        format: struct_holder.format_cstr.as_ptr(),
+        name: struct_holder.name_cstr.as_ptr(),
+        metadata: metadata_ptr,
+        flags: 0,
+        n_children: n_cols as i64,
+        children: children_sch_ptr,
+        dictionary: ptr::null_mut(),
+        release: Some(release_struct_schema),
+        private_data: Box::into_raw(struct_holder) as *mut c_void,
+    });
+
+    (Box::into_raw(struct_arr), Box::into_raw(struct_sch))
+}
+
+/// Exports a [`crate::TableV`] as an Arrow struct array + struct schema pair.
+///
+/// Each column is exported through [`export_view_to_c`] so the windowed
+/// `(offset, len)` is carried at the Arrow C layer without copying buffers.
+/// The parent struct ArrowArray uses `offset = 0` and `length = view.len()`,
+/// while each child carries its own `offset` matching the view.
+#[cfg(feature = "views")]
+pub fn export_table_view_to_c(
+    view: &crate::TableV,
+    metadata: Option<std::collections::BTreeMap<String, String>>,
+) -> (*mut ArrowArray, *mut ArrowSchema) {
+    let n_cols = view.cols.len();
+    let n_rows = view.len as i64;
+
+    let mut child_array_ptrs: Vec<*mut ArrowArray> = Vec::with_capacity(n_cols);
+    let mut child_schema_ptrs: Vec<*mut ArrowSchema> = Vec::with_capacity(n_cols);
+
+    for (field, col) in view.fields.iter().zip(view.cols.iter()) {
+        let col_schema = Schema::from(vec![(**field).clone()]);
+        let arr_arc = Arc::new(col.array.clone());
+        let (arr_ptr, sch_ptr) = export_view_to_c(
+            arr_arc,
+            col_schema,
+            col.offset as i64,
+            col.len() as i64,
+        );
+        child_array_ptrs.push(arr_ptr);
+        child_schema_ptrs.push(sch_ptr);
+    }
+
+    let children_arr_box = child_array_ptrs.into_boxed_slice();
+    let children_arr_ptr = Box::into_raw(children_arr_box) as *mut *mut ArrowArray;
+
+    let struct_arr = Box::new(ArrowArray {
+        length: n_rows,
+        null_count: 0,
+        offset: 0,
+        n_buffers: 1, // struct arrays have a single null bitmap buffer
+        n_children: n_cols as i64,
+        buffers: Box::into_raw(Box::new(ptr::null::<u8>())) as *mut *const u8,
+        children: children_arr_ptr,
+        dictionary: ptr::null_mut(),
+        release: Some(release_struct_array),
+        private_data: ptr::null_mut(),
+    });
+
+    let children_sch_box = child_schema_ptrs.into_boxed_slice();
+    let children_sch_ptr = Box::into_raw(children_sch_box) as *mut *mut ArrowSchema;
+
+    let format_cstr = CString::new("+s").unwrap();
+    let name_cstr = CString::new(view.name.clone()).unwrap_or_default();
 
     let metadata_bytes = metadata.map(|m| encode_arrow_metadata(&m));
     let metadata_ptr = metadata_bytes
@@ -2364,6 +2533,332 @@ unsafe extern "C" fn arr_stream_release(stream: *mut ArrowArrayStream) {
     }
     let _ = unsafe { Box::from_raw((*stream).private_data as *mut ArrayStreamHolder) };
     unsafe { ptr::write_bytes(stream, 0, 1) };
+}
+
+// ── Stream export: view variants ────────────────────────────────────────
+//
+// Mirror of the owned `ArrayStreamHolder` / `RecordBatchStreamHolder` flow,
+// but each chunk/batch carries a windowed `(offset, len)` that is propagated
+// to the per-chunk ArrowArray through `export_view_to_c`. No buffer copies
+// occur for primitive, string, datetime, or boolean data.
+
+/// Private holder for plain-array view streams (one [`crate::ArrayV`] per chunk).
+#[cfg(feature = "views")]
+struct ArrayViewStreamHolder {
+    field: crate::Field,
+    slices: Vec<crate::ArrayV>,
+    cursor: usize,
+    last_error: Option<CString>,
+}
+
+#[cfg(feature = "views")]
+impl HasLastError for ArrayViewStreamHolder {
+    fn last_error(&self) -> Option<&CString> {
+        self.last_error.as_ref()
+    }
+}
+
+/// Creates an ArrowArrayStream that yields one Arrow array per [`crate::ArrayV`] slice.
+///
+/// Used to export a windowed [`crate::SuperArrayV`] or any sequence of
+/// `ArrayV` chunks without materialising them. Each slice's `(offset, len)`
+/// is conveyed at the Arrow C layer.
+#[cfg(feature = "views")]
+pub fn export_array_view_stream(
+    slices: Vec<crate::ArrayV>,
+    field: crate::Field,
+) -> Box<ArrowArrayStream> {
+    let holder = Box::new(ArrayViewStreamHolder {
+        field,
+        slices,
+        cursor: 0,
+        last_error: None,
+    });
+
+    Box::new(ArrowArrayStream {
+        get_schema: Some(arr_view_stream_get_schema),
+        get_next: Some(arr_view_stream_get_next),
+        get_last_error: Some(stream_get_last_error::<ArrayViewStreamHolder>),
+        release: Some(arr_view_stream_release),
+        private_data: Box::into_raw(holder) as *mut c_void,
+    })
+}
+
+#[cfg(feature = "views")]
+unsafe extern "C" fn arr_view_stream_get_schema(
+    stream: *mut ArrowArrayStream,
+    out: *mut ArrowSchema,
+) -> i32 {
+    let holder = unsafe { &*((*stream).private_data as *const ArrayViewStreamHolder) };
+    let field = &holder.field;
+
+    let format_cstr = fmt_c(field.dtype.clone());
+    let name_cstr = CString::new(field.name.clone()).unwrap_or_default();
+    let flags = if field.nullable { 2 } else { 0 };
+
+    let schema_holder = Box::new(StructSchemaHolder {
+        format_cstr,
+        name_cstr,
+        metadata_bytes: None,
+    });
+
+    let schema = ArrowSchema {
+        format: schema_holder.format_cstr.as_ptr(),
+        name: schema_holder.name_cstr.as_ptr(),
+        metadata: ptr::null(),
+        flags,
+        n_children: 0,
+        children: ptr::null_mut(),
+        dictionary: ptr::null_mut(),
+        release: Some(release_struct_schema),
+        private_data: Box::into_raw(schema_holder) as *mut c_void,
+    };
+
+    unsafe { ptr::write(out, schema) };
+    0
+}
+
+#[cfg(feature = "views")]
+unsafe extern "C" fn arr_view_stream_get_next(
+    stream: *mut ArrowArrayStream,
+    out: *mut ArrowArray,
+) -> i32 {
+    let holder = unsafe { &mut *((*stream).private_data as *mut ArrayViewStreamHolder) };
+
+    if holder.cursor >= holder.slices.len() {
+        unsafe { ptr::write(out, ArrowArray::empty()) };
+        return 0;
+    }
+
+    let slice = holder.slices[holder.cursor].clone();
+    holder.cursor += 1;
+
+    let schema = Schema::from(vec![holder.field.clone()]);
+    let arr_arc = Arc::new(slice.array.clone());
+    let (arr_ptr, sch_ptr) =
+        export_view_to_c(arr_arc, schema, slice.offset as i64, slice.len() as i64);
+
+    unsafe {
+        ptr::write(out, ptr::read(arr_ptr));
+        std::alloc::dealloc(arr_ptr as *mut u8, std::alloc::Layout::for_value(&*arr_ptr));
+    }
+
+    unsafe {
+        if let Some(release) = (*sch_ptr).release {
+            release(sch_ptr);
+        }
+        let _ = Box::from_raw(sch_ptr);
+    }
+
+    0
+}
+
+#[cfg(feature = "views")]
+unsafe extern "C" fn arr_view_stream_release(stream: *mut ArrowArrayStream) {
+    if stream.is_null() || (unsafe { &*stream }).release.is_none() {
+        return;
+    }
+    let _ = unsafe { Box::from_raw((*stream).private_data as *mut ArrayViewStreamHolder) };
+    unsafe { ptr::write_bytes(stream, 0, 1) };
+}
+
+/// Private holder for record-batch view streams (one [`crate::TableV`] per batch).
+#[cfg(feature = "views")]
+struct RecordBatchViewStreamHolder {
+    fields: Vec<crate::Field>,
+    batches: Vec<crate::TableV>,
+    cursor: usize,
+    last_error: Option<CString>,
+    schema_metadata: Option<Vec<u8>>,
+}
+
+#[cfg(feature = "views")]
+impl HasLastError for RecordBatchViewStreamHolder {
+    fn last_error(&self) -> Option<&CString> {
+        self.last_error.as_ref()
+    }
+}
+
+/// Creates an ArrowArrayStream that yields one struct array per [`crate::TableV`] batch.
+///
+/// Each batch is exported through [`export_table_view_to_c`], so the
+/// per-column `(offset, len)` propagates to each child ArrowArray without
+/// copying buffers. The top-level struct schema mirrors `fields`.
+#[cfg(feature = "views")]
+pub fn export_record_batch_view_stream(
+    batches: Vec<crate::TableV>,
+    fields: Vec<crate::Field>,
+    metadata: Option<std::collections::BTreeMap<String, String>>,
+) -> Box<ArrowArrayStream> {
+    let schema_metadata = metadata.map(|m| encode_arrow_metadata(&m));
+    let holder = Box::new(RecordBatchViewStreamHolder {
+        fields,
+        batches,
+        cursor: 0,
+        last_error: None,
+        schema_metadata,
+    });
+
+    Box::new(ArrowArrayStream {
+        get_schema: Some(rb_view_stream_get_schema),
+        get_next: Some(rb_view_stream_get_next),
+        get_last_error: Some(stream_get_last_error::<RecordBatchViewStreamHolder>),
+        release: Some(rb_view_stream_release),
+        private_data: Box::into_raw(holder) as *mut c_void,
+    })
+}
+
+#[cfg(feature = "views")]
+unsafe extern "C" fn rb_view_stream_get_schema(
+    stream: *mut ArrowArrayStream,
+    out: *mut ArrowSchema,
+) -> i32 {
+    let holder = unsafe { &*((*stream).private_data as *const RecordBatchViewStreamHolder) };
+
+    let n_fields = holder.fields.len();
+    let mut child_schemas: Vec<*mut ArrowSchema> = Vec::with_capacity(n_fields);
+
+    for field in &holder.fields {
+        let format_cstr = fmt_c(field.dtype.clone());
+        let name_cstr = CString::new(field.name.clone()).unwrap_or_default();
+        let flags = if field.nullable { 2 } else { 0 };
+
+        let metadata_bytes = if field.metadata.is_empty() {
+            None
+        } else {
+            Some(encode_arrow_metadata(&field.metadata))
+        };
+        let metadata_ptr = metadata_bytes
+            .as_ref()
+            .map(|b| b.as_ptr() as *const c_char)
+            .unwrap_or(ptr::null());
+
+        let child_holder = Box::new(StructSchemaHolder {
+            format_cstr,
+            name_cstr,
+            metadata_bytes,
+        });
+
+        let child = Box::new(ArrowSchema {
+            format: child_holder.format_cstr.as_ptr(),
+            name: child_holder.name_cstr.as_ptr(),
+            metadata: metadata_ptr,
+            flags,
+            n_children: 0,
+            children: ptr::null_mut(),
+            dictionary: ptr::null_mut(),
+            release: Some(release_struct_schema),
+            private_data: Box::into_raw(child_holder) as *mut c_void,
+        });
+
+        child_schemas.push(Box::into_raw(child));
+    }
+
+    let children_box = child_schemas.into_boxed_slice();
+    let children_ptr = Box::into_raw(children_box) as *mut *mut ArrowSchema;
+
+    let format_cstr = CString::new("+s").unwrap();
+    let name_cstr = CString::new("").unwrap();
+
+    let metadata_bytes = holder.schema_metadata.clone();
+    let metadata_ptr = metadata_bytes
+        .as_ref()
+        .map(|b| b.as_ptr() as *const c_char)
+        .unwrap_or(ptr::null());
+
+    let schema_holder = Box::new(StructSchemaHolder {
+        format_cstr,
+        name_cstr,
+        metadata_bytes,
+    });
+
+    let struct_schema = ArrowSchema {
+        format: schema_holder.format_cstr.as_ptr(),
+        name: schema_holder.name_cstr.as_ptr(),
+        metadata: metadata_ptr,
+        flags: 0,
+        n_children: n_fields as i64,
+        children: children_ptr,
+        dictionary: ptr::null_mut(),
+        release: Some(release_struct_schema),
+        private_data: Box::into_raw(schema_holder) as *mut c_void,
+    };
+
+    unsafe { ptr::write(out, struct_schema) };
+    0
+}
+
+#[cfg(feature = "views")]
+unsafe extern "C" fn rb_view_stream_get_next(
+    stream: *mut ArrowArrayStream,
+    out: *mut ArrowArray,
+) -> i32 {
+    let holder = unsafe { &mut *((*stream).private_data as *mut RecordBatchViewStreamHolder) };
+
+    if holder.cursor >= holder.batches.len() {
+        unsafe { ptr::write(out, ArrowArray::empty()) };
+        return 0;
+    }
+
+    let batch = holder.batches[holder.cursor].clone();
+    holder.cursor += 1;
+
+    let (arr_ptr, sch_ptr) = export_table_view_to_c(&batch, None);
+
+    unsafe {
+        ptr::write(out, ptr::read(arr_ptr));
+        std::alloc::dealloc(arr_ptr as *mut u8, std::alloc::Layout::for_value(&*arr_ptr));
+    }
+
+    unsafe {
+        if let Some(release) = (*sch_ptr).release {
+            release(sch_ptr);
+        }
+        let _ = Box::from_raw(sch_ptr);
+    }
+
+    0
+}
+
+#[cfg(feature = "views")]
+unsafe extern "C" fn rb_view_stream_release(stream: *mut ArrowArrayStream) {
+    if stream.is_null() || (unsafe { &*stream }).release.is_none() {
+        return;
+    }
+    let _ = unsafe { Box::from_raw((*stream).private_data as *mut RecordBatchViewStreamHolder) };
+    unsafe { ptr::write_bytes(stream, 0, 1) };
+}
+
+/// Exports a [`crate::SuperArrayV`] as an `ArrowArrayStream` capsule-ready box.
+///
+/// One Arrow array is yielded per underlying [`crate::ArrayV`] slice. Each
+/// slice's window is conveyed through `ArrowArray.offset`/`length` rather
+/// than materialised.
+#[cfg(all(feature = "views", feature = "chunked"))]
+pub fn export_super_array_view_stream(view: &crate::SuperArrayV) -> Box<ArrowArrayStream> {
+    let field = (*view.field).clone();
+    export_array_view_stream(view.slices.clone(), field)
+}
+
+/// Exports a [`crate::SuperTableV`] as an `ArrowArrayStream` capsule-ready box.
+///
+/// One struct array is yielded per underlying [`crate::TableV`] batch. Per-column
+/// windowed `(offset, len)` is propagated zero-copy.
+#[cfg(all(feature = "views", feature = "chunked"))]
+pub fn export_super_table_view_stream(
+    view: &crate::SuperTableV,
+    metadata: Option<std::collections::BTreeMap<String, String>>,
+) -> Box<ArrowArrayStream> {
+    let fields: Vec<crate::Field> = if view.slices.is_empty() {
+        Vec::new()
+    } else {
+        view.slices[0]
+            .fields
+            .iter()
+            .map(|f| (**f).clone())
+            .collect()
+    };
+    export_record_batch_view_stream(view.slices.clone(), fields, metadata)
 }
 
 /// Generic get_last_error implementation for stream holders.
@@ -3287,5 +3782,203 @@ mod tests {
         );
         assert_eq!(table.metadata(), &table_meta);
         assert_eq!(table.n_rows(), 3);
+    }
+
+    // ─── View export round-trip tests ──────────────────────────────────
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn test_view_export_int32_window() {
+        use super::{export_view_to_c, import_from_c};
+        use crate::ArrayV;
+
+        let mut arr = IntegerArray::<i32>::default();
+        for v in [10, 20, 30, 40, 50, 60, 70, 80] {
+            arr.push(v);
+        }
+        let array = Arc::new(Array::from_int32(arr));
+        let view = ArrayV::new((*array).clone(), 2, 4); // 30,40,50,60
+
+        let schema = schema_for("x", ArrowType::Int32, false);
+        let (arr_ptr, sch_ptr) =
+            export_view_to_c(array.clone(), schema, view.offset as i64, view.len() as i64);
+
+        unsafe {
+            assert_eq!((*arr_ptr).length, 4);
+            assert_eq!((*arr_ptr).offset, 2);
+
+            // Importer applies offset; result must equal the windowed values.
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            let inner = (*imported).clone().num().i32().unwrap();
+            assert_eq!(inner.data.as_slice(), &[30, 40, 50, 60]);
+
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn test_view_export_string_window() {
+        use super::{export_view_to_c, import_from_c};
+        use crate::ArrayV;
+
+        let mut utf = StringArray::<u32>::default();
+        utf.push_str("alpha");
+        utf.push_str("beta");
+        utf.push_str("gamma");
+        utf.push_str("delta");
+
+        let array = Arc::new(Array::from_string32(utf));
+        let view = ArrayV::new((*array).clone(), 1, 2); // beta, gamma
+
+        let schema = schema_for("s", ArrowType::String, false);
+        let (arr_ptr, sch_ptr) =
+            export_view_to_c(array.clone(), schema, view.offset as i64, view.len() as i64);
+
+        unsafe {
+            assert_eq!((*arr_ptr).length, 2);
+            assert_eq!((*arr_ptr).offset, 1);
+
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            if let Array::TextArray(crate::TextArray::String32(s)) = imported.as_ref() {
+                assert_eq!(s.len(), 2);
+                assert_eq!(s.get_str(0), Some("beta"));
+                assert_eq!(s.get_str(1), Some("gamma"));
+            } else {
+                panic!("Expected String32 array");
+            }
+
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn test_view_export_full_array_matches_owned() {
+        use super::{export_to_c, export_view_to_c};
+
+        let mut arr = IntegerArray::<i32>::default();
+        for v in 0..5 {
+            arr.push(v);
+        }
+        let array = Arc::new(Array::from_int32(arr));
+
+        let schema_a = schema_for("x", ArrowType::Int32, false);
+        let schema_b = schema_for("x", ArrowType::Int32, false);
+
+        let (owned_ptr, owned_sch) = export_to_c(array.clone(), schema_a);
+        let (view_ptr, view_sch) = export_view_to_c(array.clone(), schema_b, 0, 5);
+
+        unsafe {
+            assert_eq!((*owned_ptr).length, (*view_ptr).length);
+            assert_eq!((*owned_ptr).offset, (*view_ptr).offset);
+            ((*owned_ptr).release.unwrap())(owned_ptr);
+            ((*owned_sch).release.unwrap())(owned_sch);
+            ((*view_ptr).release.unwrap())(view_ptr);
+            ((*view_sch).release.unwrap())(view_sch);
+        }
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn test_table_view_export_round_trip() {
+        use super::{export_table_view_to_c, import_record_batch_stream_with_metadata,
+                    export_record_batch_view_stream};
+        use crate::{Table, TableV};
+
+        let mut a = IntegerArray::<i32>::default();
+        for v in 0..6 {
+            a.push(v);
+        }
+        let mut b = FloatArray::<f64>::default();
+        for v in 0..6 {
+            b.push(v as f64 * 0.5);
+        }
+
+        let fa_a = crate::FieldArray::new(
+            Field::new("a", ArrowType::Int32, false, None),
+            Array::from_int32(a),
+        );
+        let fa_b = crate::FieldArray::new(
+            Field::new("b", ArrowType::Float64, false, None),
+            Array::from_float64(b),
+        );
+        let table = Table::new("t".to_string(), Some(vec![fa_a, fa_b]));
+
+        // Window rows 2..5
+        let view = TableV::from_table(table, 2, 3);
+
+        // Export through stream and re-import
+        let fields: Vec<Field> = view.fields.iter().map(|f| (**f).clone()).collect();
+        let stream = export_record_batch_view_stream(vec![view.clone()], fields, None);
+        let stream_ptr = Box::into_raw(stream);
+        let (batches, _meta) =
+            unsafe { import_record_batch_stream_with_metadata(stream_ptr) };
+
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 2);
+
+        let (col_a, _) = &batches[0][0];
+        let (col_b, _) = &batches[0][1];
+
+        let inner_a = (**col_a).clone().num().i32().unwrap();
+        let inner_b = (**col_b).clone().num().f64().unwrap();
+        assert_eq!(inner_a.data.as_slice(), &[2, 3, 4]);
+        assert_eq!(inner_b.data.as_slice(), &[1.0, 1.5, 2.0]);
+
+        // Direct struct export path
+        let (arr_ptr, sch_ptr) = export_table_view_to_c(&view, None);
+        unsafe {
+            assert_eq!((*arr_ptr).length, 3);
+            assert_eq!((*arr_ptr).n_children, 2);
+            // Each child carries its own offset
+            let child0 = &**((*arr_ptr).children.add(0));
+            assert_eq!(child0.offset, 2);
+            assert_eq!(child0.length, 3);
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    #[cfg(all(feature = "views", feature = "chunked"))]
+    #[test]
+    fn test_super_array_view_stream_round_trip() {
+        use super::{export_super_array_view_stream, import_array_stream};
+        use crate::{ArrayV, SuperArrayV};
+
+        // Two backing arrays, each contributing a window
+        let mut a1 = IntegerArray::<i32>::default();
+        for v in [1, 2, 3, 4, 5] {
+            a1.push(v);
+        }
+        let mut a2 = IntegerArray::<i32>::default();
+        for v in [10, 20, 30, 40, 50] {
+            a2.push(v);
+        }
+        let arr1 = Array::from_int32(a1);
+        let arr2 = Array::from_int32(a2);
+
+        // Window: take 3..5 of arr1 (4,5), then 0..2 of arr2 (10,20)
+        let v1 = ArrayV::new(arr1, 3, 2);
+        let v2 = ArrayV::new(arr2, 0, 2);
+        let field = Arc::new(Field::new("x", ArrowType::Int32, false, None));
+        let super_view = SuperArrayV {
+            slices: vec![v1, v2],
+            len: 4,
+            field: field.clone(),
+        };
+
+        let stream = export_super_array_view_stream(&super_view);
+        let stream_ptr = Box::into_raw(stream);
+
+        let (arrays, _field) = unsafe { import_array_stream(stream_ptr) };
+        assert_eq!(arrays.len(), 2);
+
+        let inner0 = (*arrays[0]).clone().num().i32().unwrap();
+        let inner1 = (*arrays[1]).clone().num().i32().unwrap();
+        assert_eq!(inner0.data.as_slice(), &[4, 5]);
+        assert_eq!(inner1.data.as_slice(), &[10, 20]);
     }
 }

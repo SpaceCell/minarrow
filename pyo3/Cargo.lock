@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "minarrow"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "libc",
  "log",
@@ -229,6 +229,6 @@ checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
 
 [[package]]
 name = "vec64"
-version = "0.4.3"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab11c17e084a1c1852fadc336d5388a85ce66aed2a37fc07345e8d587688b23e"
+checksum = "7dbcec2954f646b356349abc2bc9fb825029a00ac85ea5e96e5cf86c468d798b"

@@ -17,7 +17,10 @@
 //! Provides transparent wrapper types around MinArrow types that implement
 //! PyO3 conversion traits for seamless Python interoperability.
 
-use minarrow::{Array, Field, FieldArray, SuperArray, SuperTable, Table};
+use minarrow::{
+    Array, ArrayV, Field, FieldArray, SuperArray, SuperArrayV, SuperTable, SuperTableV, Table,
+    TableV,
+};
 use pyo3::prelude::*;
 use std::sync::Arc;
 
@@ -395,5 +398,181 @@ impl<'py> IntoPyObject<'py> for PyChunkedArray {
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         to_py::super_array_to_py(&self.0, py)
+    }
+}
+
+// ── View wrappers (zero-copy windowed export) ──────────────────────────
+//
+// Mirror of the owned wrappers above, but each exports through Arrow C's
+// `offset`/`length` so no buffer is copied when handing data to PyArrow,
+// Polars, or any other Arrow PyCapsule consumer.
+
+/// Transparent wrapper around a MinArrow [`ArrayV`] paired with a [`Field`].
+///
+/// Enables zero-copy export of a windowed view to PyArrow. The window is
+/// conveyed at the Arrow C layer via `ArrowArray.offset` and
+/// `ArrowArray.length`; no buffer is copied.
+///
+/// Export-only: there is no inbound `FromPyObject` impl. To bring a
+/// PyArrow array into Rust, use [`PyArray`].
+#[derive(Debug, Clone)]
+pub struct PyArrayView {
+    pub field: Field,
+    pub view: ArrayV,
+}
+
+impl PyArrayView {
+    /// Creates a new PyArrayView from a Field and ArrayV.
+    pub fn new(field: Field, view: ArrayV) -> Self {
+        Self { field, view }
+    }
+
+    /// Returns a reference to the inner ArrayV.
+    pub fn inner(&self) -> &ArrayV {
+        &self.view
+    }
+
+    /// Returns a reference to the Field metadata.
+    pub fn field(&self) -> &Field {
+        &self.field
+    }
+}
+
+impl<'py> IntoPyObject<'py> for PyArrayView {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        to_py::array_view_to_py(&self.view, &self.field, py)
+    }
+}
+
+/// Transparent wrapper around a MinArrow [`TableV`].
+///
+/// Exports as a PyArrow `RecordBatch`. Per-column window offsets are
+/// propagated at the Arrow C layer, so no buffer is copied.
+#[derive(Debug, Clone)]
+pub struct PyRecordBatchView(pub TableV);
+
+impl PyRecordBatchView {
+    pub fn new(view: TableV) -> Self {
+        Self(view)
+    }
+    pub fn inner(&self) -> &TableV {
+        &self.0
+    }
+    pub fn into_inner(self) -> TableV {
+        self.0
+    }
+}
+
+impl From<TableV> for PyRecordBatchView {
+    fn from(view: TableV) -> Self {
+        Self(view)
+    }
+}
+
+impl From<PyRecordBatchView> for TableV {
+    fn from(value: PyRecordBatchView) -> Self {
+        value.0
+    }
+}
+
+impl AsRef<TableV> for PyRecordBatchView {
+    fn as_ref(&self) -> &TableV {
+        &self.0
+    }
+}
+
+impl<'py> IntoPyObject<'py> for PyRecordBatchView {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        to_py::table_view_to_py(&self.0, py)
+    }
+}
+
+/// Transparent wrapper around a MinArrow [`SuperTableV`].
+///
+/// Exports as a PyArrow `Table`. Per-column window offsets are propagated
+/// zero-copy across all batches.
+#[derive(Debug, Clone)]
+pub struct PyTableView(pub SuperTableV);
+
+impl PyTableView {
+    pub fn new(view: SuperTableV) -> Self {
+        Self(view)
+    }
+    pub fn inner(&self) -> &SuperTableV {
+        &self.0
+    }
+    pub fn into_inner(self) -> SuperTableV {
+        self.0
+    }
+}
+
+impl From<SuperTableV> for PyTableView {
+    fn from(view: SuperTableV) -> Self {
+        Self(view)
+    }
+}
+
+impl AsRef<SuperTableV> for PyTableView {
+    fn as_ref(&self) -> &SuperTableV {
+        &self.0
+    }
+}
+
+impl<'py> IntoPyObject<'py> for PyTableView {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        to_py::super_table_view_to_py(&self.0, py)
+    }
+}
+
+/// Transparent wrapper around a MinArrow [`SuperArrayV`].
+///
+/// Exports as a PyArrow `ChunkedArray`. Per-slice window offsets are
+/// propagated zero-copy.
+#[derive(Debug, Clone)]
+pub struct PyChunkedArrayView(pub SuperArrayV);
+
+impl PyChunkedArrayView {
+    pub fn new(view: SuperArrayV) -> Self {
+        Self(view)
+    }
+    pub fn inner(&self) -> &SuperArrayV {
+        &self.0
+    }
+    pub fn into_inner(self) -> SuperArrayV {
+        self.0
+    }
+}
+
+impl From<SuperArrayV> for PyChunkedArrayView {
+    fn from(view: SuperArrayV) -> Self {
+        Self(view)
+    }
+}
+
+impl AsRef<SuperArrayV> for PyChunkedArrayView {
+    fn as_ref(&self) -> &SuperArrayV {
+        &self.0
+    }
+}
+
+impl<'py> IntoPyObject<'py> for PyChunkedArrayView {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        to_py::super_array_view_to_py(&self.0, py)
     }
 }

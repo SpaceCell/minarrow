@@ -24,14 +24,18 @@
 //!    by any Python library supporting the Arrow PyCapsule Interface
 
 use minarrow::ffi::arrow_c_ffi::{
-    export_array_stream, export_record_batch_stream_with_metadata, export_to_c, ArrowArray,
-    ArrowArrayStream, ArrowSchema,
+    export_array_stream, export_record_batch_stream_with_metadata,
+    export_record_batch_view_stream, export_super_array_view_stream,
+    export_super_table_view_stream, export_to_c, export_view_to_c, ArrowArray, ArrowArrayStream,
+    ArrowSchema,
 };
 use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 #[cfg(feature = "datetime")]
 use minarrow::enums::time_units::TimeUnit;
 use minarrow::ffi::schema::Schema;
-use minarrow::{Array, Field, SuperArray, SuperTable, Table};
+use minarrow::{
+    Array, ArrayV, Field, SuperArray, SuperArrayV, SuperTable, SuperTableV, Table, TableV,
+};
 use pyo3::ffi::Py_uintptr_t;
 use pyo3::prelude::*;
 use pyo3::types::{IntoPyDict, PyList};
@@ -617,6 +621,368 @@ pub fn super_table_to_stream_capsule<'py>(
 
     let metadata = build_stream_metadata(&super_table.batches[0]);
     let stream = export_record_batch_stream_with_metadata(batches, fields, metadata);
+    let stream_ptr = Box::into_raw(stream);
+
+    let name = c"arrow_array_stream";
+    let capsule = unsafe {
+        let cap = pyo3::ffi::PyCapsule_New(
+            stream_ptr as *mut std::ffi::c_void,
+            name.as_ptr(),
+            Some(arrow_stream_capsule_destructor),
+        );
+        if cap.is_null() {
+            let s = &mut *stream_ptr;
+            if let Some(release) = s.release {
+                release(stream_ptr);
+            }
+            let _ = Box::from_raw(stream_ptr);
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Failed to create stream PyCapsule",
+            ));
+        }
+        Bound::from_owned_ptr(py, cap)
+    };
+
+    Ok(capsule.unbind())
+}
+
+// ── Zero-Copy View export ─────────────────────────
+//
+// Mirror of the owned export helpers above, but each entry point keeps the
+// caller's view window as `(offset, len)` and lets Arrow C carry it
+// through `ArrowArray.offset`/`ArrowArray.length`.
+
+/// Converts a MinArrow [`ArrayV`] to a PyArrow Array via the Arrow C Data
+/// Interface, preserving the window through `ArrowArray.offset`.
+///
+/// The buffers underlying the view are shared with PyArrow (zero-copy);
+/// PyArrow constructs its `pa.Array` metadata over those same pointers.
+pub fn array_view_to_py<'py>(
+    view: &ArrayV,
+    field: &Field,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let pyarrow = py.import("pyarrow")?;
+
+    let schema = Schema::from(vec![field.clone()]);
+    let array = Arc::new(view.array.clone());
+    let (arr_ptr, sch_ptr) =
+        export_view_to_c(array, schema, view.offset as i64, view.len() as i64);
+
+    let result = pyarrow
+        .getattr("Array")?
+        .call_method1(
+            "_import_from_c",
+            (arr_ptr as Py_uintptr_t, sch_ptr as Py_uintptr_t),
+        )
+        .map_err(|e| {
+            PyMinarrowError::PyArrow(format!("Failed to import view into PyArrow: {}", e))
+        });
+
+    // Same cleanup pattern as `array_to_py`.
+    unsafe {
+        if let Some(release) = (*sch_ptr).release {
+            release(sch_ptr);
+        }
+        let _ = Box::from_raw(sch_ptr);
+        if let Some(release) = (*arr_ptr).release {
+            release(arr_ptr);
+        }
+        let _ = Box::from_raw(arr_ptr);
+    }
+
+    result.map_err(|e| e.into())
+}
+
+/// Converts a MinArrow [`TableV`] to a PyArrow RecordBatch, with each
+/// column transferred zero-copy via [`array_view_to_py`].
+pub fn table_view_to_py<'py>(
+    view: &TableV,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let pyarrow = py.import("pyarrow")?;
+
+    let mut py_fields = Vec::with_capacity(view.cols.len());
+    let mut py_arrays = Vec::with_capacity(view.cols.len());
+
+    for (field, col) in view.fields.iter().zip(view.cols.iter()) {
+        let py_array = array_view_to_py(col, field, py)?;
+        let py_field = pyarrow.call_method1(
+            "field",
+            (field.name.clone(), py_array.getattr("type")?),
+        )?;
+        py_fields.push(py_field);
+        py_arrays.push(py_array);
+    }
+
+    let py_fields_list = PyList::new(py, &py_fields)?;
+
+    let mut schema = pyarrow.call_method1("schema", (py_fields_list,))?;
+    if !view.name.is_empty() {
+        let metadata = [(TABLE_NAME_KEY, &view.name)].into_py_dict(py)?;
+        schema = schema.call_method1("with_metadata", (metadata,))?;
+    }
+
+    let py_arrays_list = PyList::new(py, py_arrays)?;
+    let kwargs = [("schema", schema)].into_py_dict(py)?;
+    pyarrow
+        .getattr("RecordBatch")?
+        .call_method("from_arrays", (py_arrays_list,), Some(&kwargs))
+        .map_err(|e| {
+            PyMinarrowError::PyArrow(format!(
+                "Failed to create PyArrow RecordBatch from TableV: {}",
+                e
+            ))
+            .into()
+        })
+}
+
+/// Converts a MinArrow [`SuperTableV`] to a PyArrow Table by assembling
+/// one RecordBatch per [`TableV`] slice. Per-column window offsets are
+/// preserved zero-copy.
+pub fn super_table_view_to_py<'py>(
+    view: &SuperTableV,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let pyarrow = py.import("pyarrow")?;
+
+    if view.slices.is_empty() {
+        return Err(PyMinarrowError::PyArrow(
+            "Cannot convert empty SuperTableV to PyArrow Table".into(),
+        )
+        .into());
+    }
+
+    let mut py_batches = Vec::with_capacity(view.slices.len());
+    for batch in &view.slices {
+        py_batches.push(table_view_to_py(batch, py)?);
+    }
+
+    let py_batches_list = PyList::new(py, py_batches)?;
+    pyarrow
+        .getattr("Table")?
+        .call_method1("from_batches", (py_batches_list,))
+        .map_err(|e| {
+            PyMinarrowError::PyArrow(format!(
+                "Failed to create PyArrow Table from SuperTableV: {}",
+                e
+            ))
+            .into()
+        })
+}
+
+/// Converts a MinArrow [`SuperArrayV`] to a PyArrow ChunkedArray by
+/// assembling one Array per [`ArrayV`] slice. Per-slice window offsets
+/// are preserved zero-copy.
+pub fn super_array_view_to_py<'py>(
+    view: &SuperArrayV,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let pyarrow = py.import("pyarrow")?;
+    let field = &*view.field;
+
+    if view.slices.is_empty() {
+        let pa_type = arrow_type_to_pyarrow(&field.dtype, py)?;
+        let empty_list = PyList::empty(py);
+        let kwargs = [("type", pa_type)].into_py_dict(py)?;
+        return pyarrow
+            .call_method("chunked_array", (empty_list,), Some(&kwargs))
+            .map_err(|e| {
+                PyMinarrowError::PyArrow(format!(
+                    "Failed to create empty PyArrow ChunkedArray from SuperArrayV: {}",
+                    e
+                ))
+                .into()
+            });
+    }
+
+    let mut py_arrays = Vec::with_capacity(view.slices.len());
+    for slice in &view.slices {
+        py_arrays.push(array_view_to_py(slice, field, py)?);
+    }
+
+    let py_arrays_list = PyList::new(py, py_arrays)?;
+    pyarrow
+        .call_method1("chunked_array", (py_arrays_list,))
+        .map_err(|e| {
+            PyMinarrowError::PyArrow(format!(
+                "Failed to create PyArrow ChunkedArray from SuperArrayV: {}",
+                e
+            ))
+            .into()
+        })
+}
+
+/// Exports a MinArrow [`ArrayV`] as a pair of PyCapsules (schema, array).
+///
+/// Uses `ArrowArray.offset` to convey the window, so no primary buffer copies
+/// occur for primitive, string, datetime, boolean, or categorical-codes data.
+pub fn array_view_to_capsules<'py>(
+    view: &ArrayV,
+    field: &Field,
+    py: Python<'py>,
+) -> PyResult<(PyObject, PyObject)> {
+    let schema = Schema::from(vec![field.clone()]);
+    let array = Arc::new(view.array.clone());
+    let (arr_ptr, sch_ptr) =
+        export_view_to_c(array, schema, view.offset as i64, view.len() as i64);
+
+    let schema_name = c"arrow_schema";
+    let schema_capsule = unsafe {
+        let cap = pyo3::ffi::PyCapsule_New(
+            sch_ptr as *mut std::ffi::c_void,
+            schema_name.as_ptr(),
+            Some(arrow_schema_capsule_destructor),
+        );
+        if cap.is_null() {
+            let s = &mut *sch_ptr;
+            if let Some(release) = s.release {
+                release(sch_ptr);
+            }
+            let _ = Box::from_raw(sch_ptr);
+            let a = &mut *arr_ptr;
+            if let Some(release) = a.release {
+                release(arr_ptr);
+            }
+            let _ = Box::from_raw(arr_ptr);
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Failed to create schema PyCapsule",
+            ));
+        }
+        Bound::from_owned_ptr(py, cap)
+    };
+
+    let array_name = c"arrow_array";
+    let array_capsule = unsafe {
+        let cap = pyo3::ffi::PyCapsule_New(
+            arr_ptr as *mut std::ffi::c_void,
+            array_name.as_ptr(),
+            Some(arrow_array_capsule_destructor),
+        );
+        if cap.is_null() {
+            let a = &mut *arr_ptr;
+            if let Some(release) = a.release {
+                release(arr_ptr);
+            }
+            let _ = Box::from_raw(arr_ptr);
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Failed to create array PyCapsule",
+            ));
+        }
+        Bound::from_owned_ptr(py, cap)
+    };
+
+    Ok((schema_capsule.unbind(), array_capsule.unbind()))
+}
+
+/// Exports a MinArrow [`TableV`] as an `ArrowArrayStream` PyCapsule.
+///
+/// The stream yields one struct array, with each column carrying its
+/// windowed `(offset, len)` at the Arrow C layer.
+pub fn table_view_to_stream_capsule<'py>(
+    view: &TableV,
+    py: Python<'py>,
+) -> PyResult<PyObject> {
+    let fields: Vec<Field> = view.fields.iter().map(|f| (**f).clone()).collect();
+
+    let metadata = if view.name.is_empty() {
+        None
+    } else {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(TABLE_NAME_KEY.to_string(), view.name.clone());
+        Some(m)
+    };
+
+    let stream = export_record_batch_view_stream(vec![view.clone()], fields, metadata);
+    let stream_ptr = Box::into_raw(stream);
+
+    let name = c"arrow_array_stream";
+    let capsule = unsafe {
+        let cap = pyo3::ffi::PyCapsule_New(
+            stream_ptr as *mut std::ffi::c_void,
+            name.as_ptr(),
+            Some(arrow_stream_capsule_destructor),
+        );
+        if cap.is_null() {
+            let s = &mut *stream_ptr;
+            if let Some(release) = s.release {
+                release(stream_ptr);
+            }
+            let _ = Box::from_raw(stream_ptr);
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Failed to create stream PyCapsule",
+            ));
+        }
+        Bound::from_owned_ptr(py, cap)
+    };
+
+    Ok(capsule.unbind())
+}
+
+/// Exports a MinArrow [`SuperTableV`] as an `ArrowArrayStream` PyCapsule.
+///
+/// The stream yields one struct array per underlying [`TableV`] batch,
+/// preserving per-column window offsets.
+pub fn super_table_view_to_stream_capsule<'py>(
+    view: &SuperTableV,
+    py: Python<'py>,
+) -> PyResult<PyObject> {
+    if view.slices.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Cannot export empty SuperTableV as stream capsule",
+        ));
+    }
+
+    let first_name = &view.slices[0].name;
+    let metadata = if first_name.is_empty() {
+        None
+    } else {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(TABLE_NAME_KEY.to_string(), first_name.clone());
+        Some(m)
+    };
+
+    let stream = export_super_table_view_stream(view, metadata);
+    let stream_ptr = Box::into_raw(stream);
+
+    let name = c"arrow_array_stream";
+    let capsule = unsafe {
+        let cap = pyo3::ffi::PyCapsule_New(
+            stream_ptr as *mut std::ffi::c_void,
+            name.as_ptr(),
+            Some(arrow_stream_capsule_destructor),
+        );
+        if cap.is_null() {
+            let s = &mut *stream_ptr;
+            if let Some(release) = s.release {
+                release(stream_ptr);
+            }
+            let _ = Box::from_raw(stream_ptr);
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Failed to create stream PyCapsule",
+            ));
+        }
+        Bound::from_owned_ptr(py, cap)
+    };
+
+    Ok(capsule.unbind())
+}
+
+/// Exports a MinArrow [`SuperArrayV`] as an `ArrowArrayStream` PyCapsule.
+///
+/// The stream yields one plain array per underlying [`ArrayV`] slice. Each
+/// slice's window is carried zero-copy via `ArrowArray.offset`/`length`.
+pub fn super_array_view_to_stream_capsule<'py>(
+    view: &SuperArrayV,
+    py: Python<'py>,
+) -> PyResult<PyObject> {
+    if view.slices.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Cannot export empty SuperArrayV as stream capsule",
+        ));
+    }
+
+    let stream = export_super_array_view_stream(view);
     let stream_ptr = Box::into_raw(stream);
 
     let name = c"arrow_array_stream";

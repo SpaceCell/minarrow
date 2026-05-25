@@ -115,7 +115,10 @@ pub mod types;
 
 // Re-export the main types for ease of use
 pub use error::{PyMinarrowError, PyMinarrowResult};
-pub use types::{PyArray, PyChunkedArray, PyField, PyRecordBatch, PyTable};
+pub use types::{
+    PyArray, PyArrayView, PyChunkedArray, PyChunkedArrayView, PyField, PyRecordBatch,
+    PyRecordBatchView, PyTable, PyTableView,
+};
 
 // Re-export minarrow types that users might need
 pub use minarrow::{Array, Field, FieldArray, MaskedArray, NumericArray, SuperArray, SuperTable, Table, TextArray};
