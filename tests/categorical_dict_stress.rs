@@ -131,7 +131,7 @@ fn new_array_for_thread(
     shared: &Dictionary<u32>,
 ) -> CategoricalArray<u32> {
     use vec64::Vec64;
-    CategoricalArray::<u32>::new_via_dict(
+    CategoricalArray::<u32>::new_existing_dict(
         Vec64::<u32>::with_capacity(capacity),
         shared.clone(),
         None,

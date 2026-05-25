@@ -110,11 +110,11 @@ pub struct SuperArray {
     pub field: Option<Arc<Field>>,
     /// Optional null counts per chunk. If present, must have same length as `chunks`.
     pub null_counts: Option<Vec<usize>>,
-    /// `CategoryManager` for this column when its type is categorical and
-    /// `shared_dict` is enabled. Owns the dictionary that every chunk's
-    /// `Dictionary::Shared` snapshot points at. New values are added by
-    /// calling `intern` on the typed manager reached via
-    /// `category_manager()`; this is safe to call from multiple threads.
+    /// Shared category dictionary for this column when its type is
+    /// categorical and the `shared_dict` feature is on. Sibling chunks
+    /// pushed into the same `SuperArray` all share this manager's
+    /// dictionary, so codes are mutually meaningful across them. New
+    /// values arrive via `push(chunk)`.
     #[cfg(feature = "shared_dict")]
     pub(crate) category_manager: Option<CategoryManagerT>,
 }
@@ -1785,11 +1785,11 @@ mod tests {
     }
 
     /// Pushing categorical chunks into a SuperArray installs the shared
-    /// dictionary on the first push and absorbs subsequent chunks
-    /// against it. Every chunk holds a clone of the same `Dictionary`
-    /// handle (Arc-shared), so a `shares_with` check is true across
-    /// them, and growth observed at any one chunk is immediately
-    /// visible at all others (single atomic store).
+    /// dictionary on the first push and merges subsequent chunks into
+    /// it. Every chunk holds a clone of the same `Dictionary` handle
+    /// (Arc-shared), so a `shares_with` check is true across them, and
+    /// growth observed at any one chunk is immediately visible at all
+    /// others (single atomic store).
     #[cfg(all(
         feature = "shared_dict",
         any(not(feature = "default_categorical_8"), feature = "extended_categorical")

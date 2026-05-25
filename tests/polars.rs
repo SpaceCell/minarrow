@@ -1028,8 +1028,8 @@ fn rt_polars_super_table_shared_categorical32() {
     assert_eq!(strings_before, strings_after);
 
     // If polars produced Categorical32 batches, confirm the chunks
-    // share the same dictionary handle (Arc bumped at absorb time)
-    // and both see the union of all interned strings.
+    // share the same dictionary handle (Arc bumped at push time) and
+    // both see the union of all added strings.
     if let (
         Array::TextArray(TextArray::Categorical32(_)),
         Array::TextArray(TextArray::Categorical32(_)),

@@ -893,7 +893,7 @@ fn rt_arrow_super_table_shared_categorical32() {
 
     // Both rebuilt chunks are Shared, and the first batch's dictionary is a
     // Rebuilt batches share the same dictionary handle (Arc bumped at
-    // absorb time); both observe the union of all interned strings.
+    // push time); both observe the union of all added strings.
     let d0 = match &back.batches[0].cols[0].array {
         MArray::TextArray(TextArray::Categorical32(c)) => c.dictionary.clone(),
         _ => unreachable!(),

@@ -189,7 +189,7 @@ impl<T: Integer> CategoricalArray<T> {
     /// dictionaries upstream.
     #[cfg(feature = "shared_dict")]
     #[inline]
-    pub fn new_via_dict(
+    pub fn new_existing_dict(
         data: impl Into<Buffer<T>>,
         dictionary: Dictionary<T>,
         null_mask: Option<Bitmask>,
@@ -361,18 +361,15 @@ impl<T: Integer> CategoricalArray<T> {
 
     /// Returns a mutable iterator over dictionary values.
     ///
-    /// # Warning
-    /// The dictionary's append-only invariant means existing entries are
-    /// never reordered or replaced in normal use. Mutating an existing value
-    /// at position `k` will silently invalidate every code `k` already
-    /// assigned against this array's data buffer. Use only when you understand
-    /// that consequence; prefer `push_str` for adding new values.
+    /// Mutating an existing entry replaces the string that every code
+    /// assigned at that position decodes to; codes against the old value
+    /// no longer mean what they previously meant. For adding new values,
+    /// `push_str` is the append-only path.
     ///
-    /// Under `shared_dict` the dictionary is Arc-shared across every clone
-    /// in the sharing group, so in-place mutation through this method would
-    /// corrupt sibling chunks. The method panics in that mode; call
-    /// `Dictionary::detach_to_owned` first to break out of the group, or use
-    /// the without-feature build for in-place dictionary editing.
+    /// Under `shared_dict` this categorical's dictionary is detached
+    /// from its sharing group first, so sibling chunks and any parent
+    /// `SuperArray` / `SuperTable` manager keep pointing at the
+    /// original dictionary.
     pub fn values_iter_mut(&mut self) -> IterMut<'_, String> {
         #[cfg(not(feature = "shared_dict"))]
         {
@@ -380,11 +377,10 @@ impl<T: Integer> CategoricalArray<T> {
         }
         #[cfg(feature = "shared_dict")]
         {
-            panic!(
-                "values_iter_mut: dictionary is Arc-shared under `shared_dict` and \
-                 cannot be mutated in place. Detach the dictionary first via \
-                 `Dictionary::detach_to_owned`, or use the without-feature build."
-            )
+            self.dictionary.detach_to_owned();
+            self.dictionary
+                .try_values_iter_mut()
+                .expect("detach_to_owned just left this Arc unique")
         }
     }
 
@@ -514,7 +510,7 @@ impl<T: Integer> CategoricalArray<T> {
             if self.is_null(idx) {
                 None
             } else {
-                Some(self.unique_values[dict_idx.to_usize()].as_str())
+                Some(self.unique_values()[dict_idx.to_usize()].as_str())
             }
         })
     }
@@ -550,7 +546,7 @@ impl<T: Integer> CategoricalArray<T> {
                 if self.is_null(idx) {
                     None
                 } else {
-                    Some(self.unique_values[dict_idx.to_usize()].as_str())
+                    Some(self.unique_values()[dict_idx.to_usize()].as_str())
                 }
             })
     }
@@ -661,7 +657,7 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
         }
 
         let dict_idx = self.data[idx].to_usize();
-        Some(&self.unique_values[dict_idx])
+        Some(&self.unique_values()[dict_idx])
     }
 
     /// Sets the value at `idx`. Marks as valid.
@@ -687,7 +683,7 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
         }
 
         let dict_idx = unsafe { self.data.get_unchecked(idx).to_usize().unwrap() };
-        Some(unsafe { self.unique_values.get_unchecked(dict_idx).as_str() })
+        Some(unsafe { self.unique_values().get_unchecked(dict_idx).as_str() })
     }
 
     /// Like `set`, but skips all bounds checks.
@@ -723,7 +719,7 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
             if self.is_null(idx) {
                 ""
             } else {
-                self.unique_values[dict_idx.to_usize()].as_str()
+                self.unique_values()[dict_idx.to_usize()].as_str()
             }
         })
     }
@@ -737,7 +733,7 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
             if self.is_null(idx) {
                 None
             } else {
-                Some(self.unique_values[dict_idx.to_usize()].as_str())
+                Some(self.unique_values()[dict_idx.to_usize()].as_str())
             }
         })
     }
@@ -754,7 +750,7 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
                 if self.is_null(idx) {
                     ""
                 } else {
-                    self.unique_values[dict_idx.to_usize()].as_str()
+                    self.unique_values()[dict_idx.to_usize()].as_str()
                 }
             })
     }
@@ -774,7 +770,7 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
                 if self.is_null(idx) {
                     None
                 } else {
-                    Some(self.unique_values[dict_idx.to_usize()].as_str())
+                    Some(self.unique_values()[dict_idx.to_usize()].as_str())
                 }
             })
     }
@@ -1345,7 +1341,7 @@ impl<'a, T: Integer> crate::traits::consolidate::Consolidate
                 // `Dictionary` is always Arc-backed under `shared_dict`;
                 // clone bumps the Arc to join the same sharing group.
                 let dict_handle = first_dict.clone();
-                return CategoricalArray::<T>::new_via_dict(
+                return CategoricalArray::<T>::new_existing_dict(
                     result_data,
                     dict_handle,
                     result_mask,

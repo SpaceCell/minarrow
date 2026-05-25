@@ -1,6 +1,6 @@
 [package]
 name = "minarrow"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 authors = ['Peter G. Bower']
 build = "build.rs"
@@ -51,7 +51,7 @@ ahash = { version = "0.8.12", optional = true }
 hashbrown = { version = "0.15", optional = true }
 parking_lot = { version = "0.12", optional = true }
 regex = { version = "1.12.3", optional = true }
-vec64 = { version = "0.4.5", path = "../../vec64" }
+vec64 = { version = "0.4.6" }
 log = "0.4.29"
 
 [dev-dependencies]
@@ -216,13 +216,13 @@ shared_dict = ["chunked", "vec64/append_only_vec"]
 #   Interns: 2m
 #   Threads: 4
 #   Iterations: 1 (i.e., indicative, subject to noise)
-#   
+#
 #   Max categories:         10      100     1000    10,000      100,000
-#   Shared dict:        
+#   Shared dict:
 #       Total (ms):         68.4    54.8    62.8    61.2        85.7
 #       Per Intern (ns):    34.2    27.4    31.4    30.6        42.9
-#                       
-#   Scalable dict:             
+#
+#   Scalable dict:
 #       Total (ms):         50.3    52.3    48.4    62.9        84.9
 #       Per Intern (ns):    25.2    26.2    24.2    31.5        42.5
 #

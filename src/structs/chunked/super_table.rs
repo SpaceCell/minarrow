@@ -92,11 +92,11 @@ pub struct SuperTable {
     pub schema: Vec<Arc<Field>>,
     pub n_rows: usize,
     pub name: String,
-    /// One `CategoryManager` per column, present only for columns whose type
-    /// is categorical. Owns the dictionary that every batch's
-    /// `Dictionary::Shared` snapshot points at. New values are added by
-    /// calling the manager's `intern` method, which is safe to call from
-    /// multiple threads at once. Available with the `shared_dict` feature.
+    /// One shared category dictionary per column, present only when the
+    /// `shared_dict` feature is on and the column type is categorical.
+    /// Sibling batches pushed into the same `SuperTable` all share each
+    /// column's dictionary, so codes are mutually meaningful across them.
+    /// New values arrive via `push(batch)`.
     #[cfg(feature = "shared_dict")]
     pub(crate) category_managers: Vec<Option<CategoryManagerT>>,
 }

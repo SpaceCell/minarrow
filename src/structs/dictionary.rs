@@ -12,48 +12,50 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! # **Dictionary Module** - *Append-only Shared String Dictionary for Categorical Arrays*
+//! # **Dictionary Module** - *Append-only shared string dictionary for categorical arrays*
 //!
-//! Gated at the module level under the `shared_dict` feature. Without
-//! the feature `CategoricalArray<T>` carries `unique_values: Vec64<String>`
-//! directly and there is no dictionary type.
+//! This module is available behind the `shared_dict` feature. Without
+//! that feature, `CategoricalArray<T>` stores its unique values directly
+//! as `unique_values: Vec64<String>` and no shared dictionary is used.
 //!
-//! ## Shape
-//! `Dictionary<T>` is a handle around `Arc<DictionaryInner<T>>`. The
-//! inner holds two pieces:
+//! ## Structure
+//! `Dictionary<T>` is a lightweight handle around `Arc<DictionaryInner<T>>`.
+//! Cloning a dictionary is therefore just an `Arc` bump: every clone
+//! points at the same underlying storage and observes the same updates.
+//!
+//! The inner dictionary contains two data structures:
 //!
 //! - `values: AppendOnlyVec<String>` - the code-indexed value array.
-//!   Lock-free multi-reader and multi-writer; elements live at stable
-//!   heap addresses for the vector's lifetime, so `&String` borrows
-//!   survive concurrent appends.
-//! - `index: ShardedIndex<T>` - the reverse hash-to-code lookup,
-//!   sharded across 64 `Mutex<HashMap>` slots. Distinct strings hash to
-//!   distinct shards and never contend; same-shard collisions briefly
-//!   serialise on that shard's mutex.
+//!   Values are stored in a fixed contiguous allocation that is never
+//!   reallocated, so published entries have stable addresses for the
+//!   lifetime of the dictionary. Readers access the published prefix
+//!   without taking a lock. Appenders reserve slots concurrently, then
+//!   publish in order so the readable prefix always remains contiguous.
 //!
-//! Cloning the dictionary is an Arc bump; every clone observes the same
-//! updates with no fork on write.
+//! - `index: ShardedIndex<T>` - the reverse string-to-code lookup.
+//!   The index is split across 64 `Mutex<HashMap<_, _>>` shards, using
+//!   the candidate string's hash to select a shard and spread contention
+//!   across independent locks.
 //!
 //! ## Intern flow
-//! 1. Hash the candidate string with the shared `ahash::RandomState`
-//!    (under `fast_dict`) or `DefaultHasher` (plain).
-//! 2. Mask the hash's low bits to pick a shard; take the shard mutex.
-//! 3. Probe the shard's `HashMap<String, T>` for the input string.
-//!    Under `fast_dict` the probe is `raw_entry_mut().from_hash(...)`
-//!    with the precomputed hash so the inner HashMap doesn't hash a
-//!    second time; under plain `shared_dict` it is the conventional
-//!    `HashMap::get` path.
-//! 4. If matched, return the existing code.
-//! 5. Otherwise, atomically reserve a slot in `AppendOnlyVec` via a
-//!    CAS-bounded push capped at `T::MAX + 1` (so narrow widths like
-//!    `u8` honour their 256-entry cap exactly, even under concurrent
-//!    writes from many threads).
-//! 6. Write the string into the slot, publish, insert the code into the
-//!    shard's hashmap, release the mutex.
+//! 1. Hash the candidate string using the shared `ahash::RandomState`
+//!    when `fast_dict` is enabled, otherwise use `DefaultHasher`.
+//! 2. Use the low bits of the hash to select an index shard, then take
+//!    that shard's mutex.
+//! 3. Probe the shard's `HashMap<String, T>` for the candidate string.
+//!    With `fast_dict`, this uses `raw_entry_mut().from_hash(...)` and
+//!    the precomputed hash to avoid hashing the string a second time.
+//!    Without `fast_dict`, this uses the standard `HashMap::get` path.
+//! 4. If the string is already present, return its existing code.
+//! 5. Otherwise, append the string to `values`. The append path reserves
+//!    a slot with a cap-bounded CAS loop, so the dictionary's configured
+//!    capacity is honoured exactly even under concurrent writers.
+//! 6. Publish the new value, insert the string-to-code mapping into the
+//!    shard's `HashMap`, release the mutex, and return the new code.
 //!
 //! ## Append-only invariant
-//! Once a string is interned and assigned a code, the mapping is
-//! permanent. Entries are never reordered, replaced, or removed.
+//! Once a string has been assigned a code, that mapping is permanent.
+//! Entries are never reordered, replaced, or removed.
 
 #[cfg(not(feature = "fast_dict"))]
 use std::collections::hash_map::DefaultHasher;
@@ -68,8 +70,7 @@ use ::vec64::AppendOnlyVec;
 use crate::traits::type_unions::Integer;
 
 // Shard mutex. `fast_dict` swaps to `parking_lot::Mutex` for a
-// faster uncontended fast path (~5 ns vs std's ~15 ns) and no poison
-// handling on the call sites.
+// faster uncontended fast path (~5 ns vs std's ~15 ns).
 #[cfg(feature = "fast_dict")]
 type ShardMutex<T> = parking_lot::Mutex<T>;
 #[cfg(not(feature = "fast_dict"))]
@@ -81,7 +82,7 @@ type ShardMutex<T> = std::sync::Mutex<T>;
 // contiguous cache-line load, which matters at large dictionary
 // cardinality where the `AppendOnlyVec` storage spills past L3.
 //
-// `fast_dict` uses `hashbrown::HashMap` so the intern / lookup
+// `fast_dict` uses `hashbrown::HashMap` so the `add_cat` / `lookup`
 // paths can call `raw_entry_mut().from_hash(...)` with the
 // precomputed `ahash` hash and skip the inner map's hashing pass.
 // Plain `shared_dict` falls back to `std::HashMap` (or `ahash::AHashMap`
@@ -121,14 +122,14 @@ impl fmt::Display for DictionaryError {
 impl std::error::Error for DictionaryError {}
 
 /// Sharded reverse index. Each shard holds its slice of strings under a
-/// `Mutex`, hashed-out via the high bits of a `BuildHasher`. Distinct
-/// novel strings hit distinct shards under uniform hashing and never
-/// serialise against each other.
+/// `Mutex`, selected via the low bits of a `BuildHasher` hash so
+/// contention is spread across shards rather than serialising on a
+/// single mutex.
 ///
 /// Under `fast_dict` the shard-selection hasher is an
 /// `ahash::RandomState` shared across every shard's inner `HashMap`,
 /// so the hash bits used for shard selection are bit-identical to the
-/// hash bits the map would compute internally - letting `intern` /
+/// hash bits the map would compute internally - letting `add_cat` /
 /// `lookup` reach the inner via `raw_entry_mut().from_hash(...)` with
 /// one hash pass instead of two.
 struct ShardedIndex<T: Integer> {
@@ -170,7 +171,7 @@ impl<T: Integer> Default for ShardedIndex<T> {
 
 impl<T: Integer> ShardedIndex<T> {
     /// Shard index for `s`. Used by the paths that don't have the
-    /// `fast_dict` feature; with `fast_dict`, `intern` and `lookup`
+    /// `fast_dict` feature; with `fast_dict`, `add_cat` and `lookup`
     /// compute the hash inline so the same `u64` serves both shard
     /// selection and the `raw_entry_mut().from_hash(...)` probe.
     #[cfg(not(feature = "fast_dict"))]
@@ -185,8 +186,9 @@ impl<T: Integer> ShardedIndex<T> {
 }
 
 /// Backing storage for a `Dictionary<T>`. Held behind the dictionary's
-/// `Arc`. Reads of the value array via `values()` are lock-free; intern
-/// briefly takes a per-shard mutex for the check-and-insert step.
+/// `Arc`. Reads of the value array via `values()` are lock-free;
+/// `add_cat` briefly takes a per-shard mutex for the check-and-insert
+/// step.
 pub struct DictionaryInner<T: Integer> {
     /// Code-indexed string array. Lock-free reads; lock-free multi-writer
     /// `push_bounded` under the categorical's width cap.
@@ -200,7 +202,7 @@ impl<T: Integer> Default for DictionaryInner<T> {
         // Pre-allocate the value array to the type's natural cap.
         // The cap is fixed for the dictionary's lifetime (the
         // `AppendOnlyVec` never reallocates); `push` returns `None`
-        // when the cap is reached, which `intern` surfaces as
+        // when the cap is reached, which `add_cat` surfaces as
         // `DictionaryError::Overflow`.
         Self {
             values: AppendOnlyVec::with_capacity(max_cap::<T>()),
@@ -211,7 +213,7 @@ impl<T: Integer> Default for DictionaryInner<T> {
 
 /// Append-only string dictionary backing `CategoricalArray<T>` under
 /// `shared_dict`. Cloning a `Dictionary` is an Arc bump on the underlying
-/// inner; both clones observe the same updates immediately. `intern`
+/// inner; both clones observe the same updates immediately. `add_cat`
 /// takes `&self` and is concurrent-safe across many writers without
 /// global serialisation.
 #[derive(Clone)]
@@ -320,7 +322,7 @@ impl<T: Integer> Dictionary<T> {
         self.len() == 0
     }
 
-    /// Code for `s` if interned at the moment of the call, otherwise `None`.
+    /// Code for `s` if present at the moment of the call, otherwise `None`.
     pub fn lookup(&self, s: &str) -> Option<T> {
         #[cfg(feature = "fast_dict")]
         {
@@ -355,11 +357,11 @@ impl<T: Integer> Dictionary<T> {
         }
     }
 
-    /// Interns `s` atomically. Concurrent-safe via `&self`; distinct
-    /// novel strings spread across the index's shards and never block
-    /// each other. Returns `Err(DictionaryError::Overflow)` if the new
-    /// cardinality would exceed the capacity of `T`, leaving the
-    /// dictionary unchanged and no slot reserved.
+    /// Adds `value` to the dictionary atomically and returns its code.
+    /// Concurrent-safe via `&self`. Returns
+    /// `Err(DictionaryError::Overflow)` if the new cardinality would
+    /// exceed the capacity of `T`, leaving the dictionary unchanged and
+    /// no slot reserved.
     pub fn add_cat(&self, value: &str) -> Result<T, DictionaryError> {
         #[cfg(feature = "fast_dict")]
         {
@@ -503,6 +505,22 @@ impl<T: Integer> Dictionary<T> {
             }
         }
         self.inner = fresh.inner;
+    }
+
+    /// Mutable iteration over the dictionary's values when this handle
+    /// has exclusive ownership of its inner allocation (Arc refcount 1).
+    /// Returns `None` when other Arc clones still exist; callers in
+    /// that situation must explicitly `detach_to_owned` first, accepting
+    /// that the resulting handle is decoupled from the sharing group.
+    ///
+    /// Mutating an existing entry replaces the string that every code
+    /// assigned at that position decodes to; codes against the old value
+    /// no longer mean what they previously meant. For adding new values,
+    /// `add_cat` is the append-only path.
+    pub fn try_values_iter_mut(
+        &mut self,
+    ) -> Option<std::slice::IterMut<'_, String>> {
+        Arc::get_mut(&mut self.inner).map(|inner| inner.values.iter_mut())
     }
 }
 
@@ -659,8 +677,8 @@ impl CategoryManagerT {
     ///
     /// If `slot` is `None`, the first categorical chunk seeds it via
     /// `install_from`. Subsequent chunks are merged through
-    /// `add_remap_cat`, which interns each chunk's dictionary into the
-    /// shared store and remaps codes if the union shifted them.
+    /// `add_remap_cat`, which adds each chunk's dictionary values into
+    /// the shared store and remaps codes if the union shifted them.
     /// Non-categorical chunks are skipped.
     ///
     /// This is the entry point for parent containers (`SuperTable`,
@@ -766,8 +784,8 @@ mod tests {
     }
 
     /// Many threads concurrently interning into the same u8 dictionary
-    /// must collectively succeed exactly 256 times and never exceed the
-    /// cap. No leaked slots, no double-assigned codes.
+    /// must collectively succeed 256 times and not exceed the
+    /// cap. No leaked slots or double-assigned codes.
     #[test]
     fn concurrent_intern_under_u8_cap_no_leaks() {
         use std::sync::Arc;
@@ -802,7 +820,7 @@ mod tests {
     }
 
     /// Many threads interning distinct novel strings into a wide dict;
-    /// every string ends up represented exactly once.
+    /// every string ends up represented once.
     #[test]
     fn concurrent_intern_distinct_strings_no_duplicates() {
         use std::sync::Arc;
