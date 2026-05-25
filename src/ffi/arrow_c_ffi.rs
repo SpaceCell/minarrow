@@ -3981,4 +3981,259 @@ mod tests {
         assert_eq!(inner0.data.as_slice(), &[4, 5]);
         assert_eq!(inner1.data.as_slice(), &[10, 20]);
     }
+
+    #[cfg(all(feature = "views", feature = "chunked"))]
+    #[test]
+    fn test_super_table_view_stream_round_trip() {
+        use super::{export_super_table_view_stream, import_record_batch_stream_with_metadata};
+        use crate::{SuperTableV, Table, TableV};
+
+        // Two backing tables. Each TableV picks a different row window.
+        // Layout: schema = (a: i32, b: f64)
+        let mut a1 = IntegerArray::<i32>::default();
+        for v in 0..6 {
+            a1.push(v);
+        }
+        let mut b1 = FloatArray::<f64>::default();
+        for v in 0..6 {
+            b1.push(v as f64);
+        }
+        let t1 = Table::new(
+            "t1".to_string(),
+            Some(vec![
+                crate::FieldArray::new(
+                    Field::new("a", ArrowType::Int32, false, None),
+                    Array::from_int32(a1),
+                ),
+                crate::FieldArray::new(
+                    Field::new("b", ArrowType::Float64, false, None),
+                    Array::from_float64(b1),
+                ),
+            ]),
+        );
+
+        let mut a2 = IntegerArray::<i32>::default();
+        for v in 100..108 {
+            a2.push(v);
+        }
+        let mut b2 = FloatArray::<f64>::default();
+        for v in 100..108 {
+            b2.push(v as f64);
+        }
+        let t2 = Table::new(
+            "t2".to_string(),
+            Some(vec![
+                crate::FieldArray::new(
+                    Field::new("a", ArrowType::Int32, false, None),
+                    Array::from_int32(a2),
+                ),
+                crate::FieldArray::new(
+                    Field::new("b", ArrowType::Float64, false, None),
+                    Array::from_float64(b2),
+                ),
+            ]),
+        );
+
+        // Windows: rows 1..4 of t1 (3 rows), rows 5..7 of t2 (2 rows)
+        let v1 = TableV::from_table(t1, 1, 3);
+        let v2 = TableV::from_table(t2, 5, 2);
+        let super_view = SuperTableV {
+            slices: vec![v1, v2],
+            len: 5,
+        };
+
+        let stream = export_super_table_view_stream(&super_view, None);
+        let stream_ptr = Box::into_raw(stream);
+
+        let (batches, _meta) =
+            unsafe { import_record_batch_stream_with_metadata(stream_ptr) };
+        assert_eq!(batches.len(), 2);
+
+        // Batch 0: a=[1,2,3], b=[1.0,2.0,3.0]
+        let (col_a0, _) = &batches[0][0];
+        let (col_b0, _) = &batches[0][1];
+        assert_eq!(
+            (**col_a0).clone().num().i32().unwrap().data.as_slice(),
+            &[1, 2, 3]
+        );
+        assert_eq!(
+            (**col_b0).clone().num().f64().unwrap().data.as_slice(),
+            &[1.0, 2.0, 3.0]
+        );
+
+        // Batch 1: a=[105,106], b=[105.0,106.0]
+        let (col_a1, _) = &batches[1][0];
+        let (col_b1, _) = &batches[1][1];
+        assert_eq!(
+            (**col_a1).clone().num().i32().unwrap().data.as_slice(),
+            &[105, 106]
+        );
+        assert_eq!(
+            (**col_b1).clone().num().f64().unwrap().data.as_slice(),
+            &[105.0, 106.0]
+        );
+    }
+
+    /// Exercises `import_null_mask_offset`: a windowed view that spans
+    /// across byte boundaries in the validity bitmap (offset=3, len=7),
+    /// with nulls at non-aligned positions.
+    #[cfg(feature = "views")]
+    #[test]
+    fn test_view_export_with_nulls_offset() {
+        use super::{export_view_to_c, import_from_c};
+        use crate::ArrayV;
+
+        // 10 elements. Nulls at indices 1, 4, 7 in the parent array.
+        let mut arr = IntegerArray::<i32>::default();
+        for v in 0..10 {
+            arr.push(v);
+        }
+        arr.set_null(1);
+        arr.set_null(4);
+        arr.set_null(7);
+
+        let array = Arc::new(Array::from_int32(arr));
+        // Window indices 3..10. Parent nulls at 4 and 7 fall inside it,
+        // which become positions 1 and 4 of the view.
+        let view = ArrayV::new((*array).clone(), 3, 7);
+
+        let schema = schema_for("x", ArrowType::Int32, true);
+        let (arr_ptr, sch_ptr) =
+            export_view_to_c(array.clone(), schema, view.offset as i64, view.len() as i64);
+
+        unsafe {
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            let inner = (*imported).clone().num().i32().unwrap();
+            assert_eq!(inner.data.as_slice(), &[3, 4, 5, 6, 7, 8, 9]);
+
+            let mask = inner.null_mask.expect("null mask must survive offset");
+            // Indices in the imported array: 1 (was parent index 4) and
+            // 4 (was parent index 7) should read as null; everything else valid.
+            for i in 0..7 {
+                let is_set = mask.get(i);
+                let expected_valid = !(i == 1 || i == 4);
+                assert_eq!(
+                    is_set, expected_valid,
+                    "mask bit {i} expected valid={expected_valid} got set={is_set}"
+                );
+            }
+
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn test_view_export_boolean_window() {
+        use super::{export_view_to_c, import_from_c};
+        use crate::ArrayV;
+
+        // 11 bools across two bytes. Window crosses the byte boundary
+        // so the bit-level realignment path in `import_boolean` runs.
+        let mut barr = BooleanArray::default();
+        let values = [
+            true, false, true, true, false, true, false, false, true, false, true,
+        ];
+        for v in values {
+            barr.push(v);
+        }
+        let array = Arc::new(Array::BooleanArray(barr.into()));
+        let view = ArrayV::new((*array).clone(), 3, 6); // bits 3..9 -> crosses byte 0/1
+
+        let schema = schema_for("b", ArrowType::Boolean, false);
+        let (arr_ptr, sch_ptr) =
+            export_view_to_c(array.clone(), schema, view.offset as i64, view.len() as i64);
+
+        unsafe {
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            if let Array::BooleanArray(b) = imported.as_ref() {
+                assert_eq!(b.len(), 6);
+                for (i, expected) in values[3..9].iter().enumerate() {
+                    assert_eq!(b.get(i), Some(*expected), "bool index {i}");
+                }
+            } else {
+                panic!("Expected BooleanArray");
+            }
+
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    #[cfg(all(feature = "views", feature = "datetime"))]
+    #[test]
+    fn test_view_export_datetime_window() {
+        use super::{export_view_to_c, import_from_c};
+        use crate::{ArrayV, TimeUnit};
+
+        let mut dt = DatetimeArray::<i64>::default();
+        for v in [1_000, 2_000, 3_000, 4_000, 5_000, 6_000] {
+            dt.push(v);
+        }
+        dt.time_unit = TimeUnit::Milliseconds;
+
+        let array = Arc::new(Array::from_datetime_i64(dt));
+        let view = ArrayV::new((*array).clone(), 2, 3); // [3_000, 4_000, 5_000]
+
+        let schema = schema_for("ts", ArrowType::Date64, false);
+        let (arr_ptr, sch_ptr) =
+            export_view_to_c(array.clone(), schema, view.offset as i64, view.len() as i64);
+
+        unsafe {
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            if let Array::TemporalArray(crate::TemporalArray::Datetime64(d)) = imported.as_ref() {
+                assert_eq!(d.data.as_slice(), &[3_000, 4_000, 5_000]);
+                assert_eq!(d.time_unit, TimeUnit::Milliseconds);
+            } else {
+                panic!("Expected Datetime64 array");
+            }
+
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    /// Exercises offset propagation through `import_categorical`: codes
+    /// buffer is windowed via `ArrowArray.offset`, dictionary stays full.
+    #[cfg(all(
+        feature = "views",
+        any(not(feature = "default_categorical_8"), feature = "extended_categorical")
+    ))]
+    #[test]
+    fn test_view_export_categorical_window() {
+        use super::{export_view_to_c, import_from_c};
+        use crate::{ArrayV, CategoricalArray};
+
+        // Dictionary: ["apple", "banana", "cherry"]. Codes drawn from those.
+        let mut cat = CategoricalArray::<u32>::default();
+        for s in ["apple", "banana", "apple", "cherry", "banana", "cherry"] {
+            cat.push_str(s);
+        }
+        let array = Arc::new(Array::from_categorical32(cat));
+        let view = ArrayV::new((*array).clone(), 2, 3); // apple, cherry, banana
+
+        let schema = schema_for(
+            "c",
+            ArrowType::Dictionary(crate::ffi::arrow_dtype::CategoricalIndexType::UInt32),
+            false,
+        );
+        let (arr_ptr, sch_ptr) =
+            export_view_to_c(array.clone(), schema, view.offset as i64, view.len() as i64);
+
+        unsafe {
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            if let Array::TextArray(crate::TextArray::Categorical32(c)) = imported.as_ref() {
+                assert_eq!(c.data.len(), 3);
+                assert_eq!(c.get_str(0), Some("apple"));
+                assert_eq!(c.get_str(1), Some("cherry"));
+                assert_eq!(c.get_str(2), Some("banana"));
+            } else {
+                panic!("Expected Categorical32 array");
+            }
+
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
 }
