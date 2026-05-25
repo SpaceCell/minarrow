@@ -519,7 +519,10 @@ macro_rules! string_to_cat {
 
                 Ok(CategoricalArray {
                     data: codes.into(),
+                    #[cfg(not(feature = "shared_dict"))]
                     unique_values: uniq,
+                    #[cfg(feature = "shared_dict")]
+                    dictionary: $crate::Dictionary::from(uniq),
                     null_mask: src.null_mask.clone(),
                 })
             }
@@ -561,7 +564,7 @@ macro_rules! cat_to_string {
 
                 for &code in &src.data {
                     let idx = code.to_usize();
-                    let s = &src.unique_values[idx];
+                    let s = &src.unique_values()[idx];
                     let bytes = s.as_bytes();
                     data.extend_from_slice(bytes);
 
@@ -654,9 +657,13 @@ macro_rules! cat_to_cat_widen {
         impl From<&CategoricalArray<$src>> for CategoricalArray<$dst> {
             fn from(src: &CategoricalArray<$src>) -> Self {
                 let data = src.data.iter().map(|&x| x as $dst).collect();
+                let values: Vec<String> = src.unique_values().to_vec();
                 CategoricalArray {
                     data,
-                    unique_values: src.unique_values.clone(),
+                    #[cfg(not(feature = "shared_dict"))]
+                    unique_values: $crate::Vec64::from(values),
+                    #[cfg(feature = "shared_dict")]
+                    dictionary: $crate::Dictionary::<$dst>::from(values),
                     null_mask: src.null_mask.clone(),
                 }
             }
@@ -677,9 +684,13 @@ macro_rules! cat_to_cat_narrow {
                         target: stringify!($dst),
                     })?);
                 }
+                let values: Vec<String> = src.unique_values().to_vec();
                 Ok(CategoricalArray {
                     data: data.into(),
-                    unique_values: src.unique_values.clone(),
+                    #[cfg(not(feature = "shared_dict"))]
+                    unique_values: $crate::Vec64::from(values),
+                    #[cfg(feature = "shared_dict")]
+                    dictionary: $crate::Dictionary::<$dst>::from(values),
                     null_mask: src.null_mask.clone(),
                 })
             }

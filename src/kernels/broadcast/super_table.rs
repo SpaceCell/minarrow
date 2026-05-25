@@ -322,12 +322,10 @@ pub fn broadcast_superarray_to_supertable(
         result_tables.push(Arc::new(broadcasted));
     }
 
-    Ok(SuperTable {
-        batches: result_tables,
-        schema: super_table.schema.clone(),
-        n_rows: super_table.n_rows,
-        name: super_table.name.clone(),
-    })
+    Ok(SuperTable::from_batches(
+        result_tables,
+        Some(super_table.name.clone()),
+    ))
 }
 
 /// Broadcast SuperTable to SuperArray - chunks must align (reverse order)
@@ -354,12 +352,10 @@ pub fn broadcast_supertable_to_superarray(
         result_tables.push(Arc::new(broadcasted));
     }
 
-    Ok(SuperTable {
-        batches: result_tables,
-        schema: super_table.schema.clone(),
-        n_rows: super_table.n_rows,
-        name: super_table.name.clone(),
-    })
+    Ok(SuperTable::from_batches(
+        result_tables,
+        Some(super_table.name.clone()),
+    ))
 }
 
 /// Broadcast SuperArray to SuperTableView - chunks must align
@@ -389,12 +385,10 @@ pub fn broadcast_superarray_to_supertableview(
         result_tables.push(Arc::new(broadcasted));
     }
 
-    Ok(SuperTable {
-        batches: result_tables,
-        schema: vec![], // Would need to infer schema from first table
-        n_rows: super_table_view.len,
-        name: "broadcasted".to_string(),
-    })
+    Ok(SuperTable::from_batches(
+        result_tables,
+        Some("broadcasted".to_string()),
+    ))
 }
 
 /// Broadcast SuperTableView to SuperArray - chunks must align (reverse order)
@@ -422,12 +416,10 @@ pub fn broadcast_supertableview_to_superarray(
         result_tables.push(Arc::new(broadcasted));
     }
 
-    Ok(SuperTable {
-        batches: result_tables,
-        schema: vec![],
-        n_rows: super_table_view.len,
-        name: "broadcasted".to_string(),
-    })
+    Ok(SuperTable::from_batches(
+        result_tables,
+        Some("broadcasted".to_string()),
+    ))
 }
 
 /// Broadcast SuperArrayView to SuperTable - chunks must align
@@ -455,12 +447,10 @@ pub fn broadcast_superarrayview_to_supertable(
         result_tables.push(Arc::new(broadcasted));
     }
 
-    Ok(SuperTable {
-        batches: result_tables,
-        schema: super_table.schema.clone(),
-        n_rows: super_table.n_rows,
-        name: super_table.name.clone(),
-    })
+    Ok(SuperTable::from_batches(
+        result_tables,
+        Some(super_table.name.clone()),
+    ))
 }
 
 /// Broadcast SuperTable to SuperArrayView - chunks must align (reverse order)
@@ -488,12 +478,10 @@ pub fn broadcast_supertable_to_superarrayview(
         result_tables.push(Arc::new(broadcasted));
     }
 
-    Ok(SuperTable {
-        batches: result_tables,
-        schema: super_table.schema.clone(),
-        n_rows: super_table.n_rows,
-        name: super_table.name.clone(),
-    })
+    Ok(SuperTable::from_batches(
+        result_tables,
+        Some(super_table.name.clone()),
+    ))
 }
 
 /// Broadcast SuperArrayView to SuperTableView - chunks must align
@@ -522,12 +510,10 @@ pub fn broadcast_superarrayview_to_supertableview(
         result_tables.push(Arc::new(broadcasted));
     }
 
-    Ok(SuperTable {
-        batches: result_tables,
-        schema: vec![],
-        n_rows: super_table_view.len,
-        name: "broadcasted".to_string(),
-    })
+    Ok(SuperTable::from_batches(
+        result_tables,
+        Some("broadcasted".to_string()),
+    ))
 }
 
 /// Broadcast SuperTableView to SuperArrayView - chunks must align (reverse order)
@@ -556,12 +542,10 @@ pub fn broadcast_supertableview_to_superarrayview(
         result_tables.push(Arc::new(broadcasted));
     }
 
-    Ok(SuperTable {
-        batches: result_tables,
-        schema: vec![],
-        n_rows: super_table_view.len,
-        name: "broadcasted".to_string(),
-    })
+    Ok(SuperTable::from_batches(
+        result_tables,
+        Some("broadcasted".to_string()),
+    ))
 }
 
 /// Helper function for TableView-SuperTable broadcasting - convert TableView to Table then to SuperTable

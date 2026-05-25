@@ -421,7 +421,7 @@ fn rt_polars_categorical32_element_equal() {
     // type depending on CompatLevel and version; compare values either way.
     let back_strings: Vec<String> = match &back {
         Array::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
-            .map(|i| c.unique_values[c.data[i] as usize].clone())
+            .map(|i| c.dictionary.values()[c.data[i] as usize].clone())
             .collect(),
         Array::TextArray(_) => arr_strings_back(&back),
         _ => panic!("unexpected back type: {:?}", back),
@@ -944,5 +944,106 @@ fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
             assert_eq!(d.data[2], 1_000_000_000); // 1_000_000 us -> 1e9 ns
         }
         other => panic!("expected Datetime64, got {:?}", other),
+    }
+}
+
+// ----- Cross-batch shared categorical dictionary roundtrip -----
+
+/// Build a SuperTable with two batches sharing a categorical column.
+/// Round-trip through polars `DataFrame` and verify decoded strings match
+/// pre/post and the rebuilt structure preserves the append-only invariant
+/// (later batch's dictionary is a superset of earlier).
+#[cfg(all(
+    feature = "shared_dict",
+    any(not(feature = "default_categorical_8"), feature = "extended_categorical")
+))]
+#[test]
+fn rt_polars_super_table_shared_categorical32() {
+    use minarrow::structs::dictionary::Dictionary;
+    use minarrow::{CategoricalArray, SuperTable};
+
+    let cat_a = Arc::new(CategoricalArray::<u32>::from_slices(
+        &[0u32, 1, 0],
+        &["a".to_string(), "b".to_string()],
+    ));
+    let cat_b = Arc::new(CategoricalArray::<u32>::from_slices(
+        &[1u32, 2, 0],
+        &["a".to_string(), "b".to_string(), "c".to_string()],
+    ));
+
+    let mk_fa = |arc: Arc<CategoricalArray<u32>>| {
+        FieldArray::new(
+            Field::new(
+                "cat",
+                ArrowType::Dictionary(minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt32),
+                false,
+                None,
+            ),
+            Array::TextArray(TextArray::Categorical32(arc)),
+        )
+    };
+    let tbl_a = Table::new("t".into(), Some(vec![mk_fa(cat_a)]));
+    let tbl_b = Table::new("t".into(), Some(vec![mk_fa(cat_b)]));
+
+    let mut st = SuperTable::new("st".into());
+    st.push(Arc::new(tbl_a));
+    st.push(Arc::new(tbl_b));
+
+    let strings_before: Vec<Vec<String>> = st
+        .batches
+        .iter()
+        .map(|b| match &b.cols[0].array {
+            Array::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
+                .map(|i| c.dictionary.values()[c.data[i] as usize].clone())
+                .collect(),
+            _ => panic!("expected Categorical32"),
+        })
+        .collect();
+
+    let df = st.to_polars();
+    let back = SuperTable::from_polars(&df);
+
+    // Decoded strings must survive verbatim across the round-trip.
+    // Polars may return categorical or string-backed columns; in either
+    // case the decoded value sequence must match.
+    let strings_after: Vec<Vec<String>> = back
+        .batches
+        .iter()
+        .map(|b| match &b.cols[0].array {
+            Array::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
+                .map(|i| c.dictionary.values()[c.data[i] as usize].clone())
+                .collect(),
+            Array::TextArray(TextArray::String32(s)) => (0..s.len())
+                .map(|i| {
+                    let bytes = s.offsets[i] as usize;
+                    let end = s.offsets[i + 1] as usize;
+                    std::str::from_utf8(&s.data.as_slice()[bytes..end])
+                        .unwrap()
+                        .to_string()
+                })
+                .collect(),
+            _ => panic!("unexpected back type: {:?}", b.cols[0].array),
+        })
+        .collect();
+    assert_eq!(strings_before, strings_after);
+
+    // If polars produced Categorical32 batches, confirm the chunks
+    // share the same dictionary handle (Arc bumped at push time) and
+    // both see the union of all added strings.
+    if let (
+        Array::TextArray(TextArray::Categorical32(_)),
+        Array::TextArray(TextArray::Categorical32(_)),
+    ) = (&back.batches[0].cols[0].array, &back.batches[1].cols[0].array)
+    {
+        let d0 = match &back.batches[0].cols[0].array {
+            Array::TextArray(TextArray::Categorical32(c)) => c.dictionary.clone(),
+            _ => unreachable!(),
+        };
+        let d1 = match &back.batches[1].cols[0].array {
+            Array::TextArray(TextArray::Categorical32(c)) => c.dictionary.clone(),
+            _ => unreachable!(),
+        };
+        assert!(d0.shares_with(&d1));
+        assert_eq!(d0.values(), d1.values());
     }
 }

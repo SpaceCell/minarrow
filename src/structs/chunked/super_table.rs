@@ -50,6 +50,8 @@ use std::sync::Arc;
 
 use crate::enums::{error::MinarrowError, shape_dim::ShapeDim};
 use crate::structs::chunked::super_array::RechunkStrategy;
+#[cfg(feature = "shared_dict")]
+use crate::structs::dictionary::CategoryManagerT;
 use crate::structs::field::Field;
 use crate::structs::field_array::FieldArray;
 use crate::structs::table::Table;
@@ -84,12 +86,29 @@ use crate::{SuperTableV, TableV};
 /// - Reading multiple Arrow IPC/memory-mapped files as one dataset.
 /// - Parallel or windowed in-memory analytics.
 /// - Incremental table construction where batches arrive over time.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct SuperTable {
     pub batches: Vec<Arc<Table>>,
     pub schema: Vec<Arc<Field>>,
     pub n_rows: usize,
     pub name: String,
+    /// One shared category dictionary per column, present only when the
+    /// `shared_dict` feature is on and the column type is categorical.
+    /// Sibling batches pushed into the same `SuperTable` all share each
+    /// column's dictionary, so codes are mutually meaningful across them.
+    /// New values arrive via `push(batch)`.
+    #[cfg(feature = "shared_dict")]
+    pub(crate) category_managers: Vec<Option<CategoryManagerT>>,
+}
+
+impl PartialEq for SuperTable {
+    /// Equality compares the table elements minus the category manager.
+    fn eq(&self, other: &Self) -> bool {
+        self.batches == other.batches
+            && self.schema == other.schema
+            && self.n_rows == other.n_rows
+            && self.name == other.name
+    }
 }
 
 impl SuperTable {
@@ -100,6 +119,8 @@ impl SuperTable {
             schema: Vec::new(),
             n_rows: 0,
             name,
+            #[cfg(feature = "shared_dict")]
+            category_managers: Vec::new(),
         }
     }
 
@@ -134,20 +155,34 @@ impl SuperTable {
             total_rows += batch.n_rows;
         }
 
-        Self {
+        #[cfg_attr(not(feature = "shared_dict"), allow(unused_mut))]
+        let mut st = Self {
             batches,
             schema,
             n_rows: total_rows,
             name,
-        }
+            #[cfg(feature = "shared_dict")]
+            category_managers: Vec::new(),
+        };
+        #[cfg(feature = "shared_dict")]
+        st.rebuild_category_managers();
+        st
     }
 
-    /// Append a new Table batch.
+    /// Append a new Table batch. Panics on schema mismatch.
     ///
-    /// Panics on schema mismatch.
+    /// When the `shared_dict` feature is on, each categorical column is
+    /// routed through this SuperTable's `CategoryManagerT` for that
+    /// column. The first batch seeds the manager from its own dictionary;
+    /// subsequent batches merge their values into the existing manager and
+    /// rebind their dictionaries to the resulting shared snapshot.
     pub fn push(&mut self, batch: Arc<Table>) {
         if self.batches.is_empty() {
             self.schema = batch.cols.iter().map(|fa| fa.field.clone()).collect();
+            #[cfg(feature = "shared_dict")]
+            {
+                self.category_managers = vec![None; self.schema.len()];
+            }
         }
         let n_cols = self.schema.len();
         assert_eq!(batch.n_cols(), n_cols, "Pushed batch column-count mismatch");
@@ -159,8 +194,66 @@ impl SuperTable {
                 "Pushed batch col {col_idx} schema mismatch"
             );
         }
+
+        #[cfg_attr(not(feature = "shared_dict"), allow(unused_mut))]
+        let mut batch = batch;
+        #[cfg(feature = "shared_dict")]
+        self.add_dict_categories(&mut batch);
+
         self.n_rows += batch.n_rows;
         self.batches.push(batch);
+    }
+
+    /// Borrow the column's `CategoryManagerT`, or `None` if the column
+    /// is not categorical or `col_idx` is out of bounds.
+    ///
+    /// This accessor is for sharing-association: two `CategoricalArray`s
+    /// whose dictionaries point at the same `Arc<DictionaryInner>` (check
+    /// via `Dictionary::shares_with`) are in the same sharing group.
+    /// New values arrive through `push(batch)`, not through this borrow.
+    #[cfg(feature = "shared_dict")]
+    #[inline]
+    pub fn category_manager(&self, col_idx: usize) -> Option<&CategoryManagerT> {
+        self.category_managers.get(col_idx)?.as_ref()
+    }
+
+    /// Rebuild every column's category manager from the current batches.
+    /// The first batch's dictionary seeds each manager; subsequent batches
+    /// are merged in by the same logic as `push`.
+    #[cfg(feature = "shared_dict")]
+    pub(crate) fn rebuild_category_managers(&mut self) {
+        if self.batches.is_empty() {
+            self.category_managers.clear();
+            return;
+        }
+        let n_cols = self.schema.len();
+        self.category_managers = vec![None; n_cols];
+
+        let batches = std::mem::take(&mut self.batches);
+        let mut rebuilt: Vec<Arc<Table>> = Vec::with_capacity(batches.len());
+        for batch in batches {
+            let mut batch = batch;
+            self.add_dict_categories(&mut batch);
+            rebuilt.push(batch);
+        }
+        self.batches = rebuilt;
+    }
+
+    /// Route each categorical column in the incoming batch through this
+    /// SuperTable's column manager: merge codes, remap if shifted, and
+    /// rebind the batch's dictionary to the shared snapshot.
+    #[cfg(feature = "shared_dict")]
+    fn add_dict_categories(&mut self, incoming: &mut Arc<Table>) {
+        let table = Arc::make_mut(incoming);
+        if self.category_managers.len() < table.cols.len() {
+            self.category_managers.resize_with(table.cols.len(), || None);
+        }
+        for (col_idx, fa) in table.cols.iter_mut().enumerate() {
+            CategoryManagerT::add_remap_cats(
+                &mut self.category_managers[col_idx],
+                std::iter::once(&mut fa.array),
+            );
+        }
     }
 
     /// Inserts rows from another SuperTable (or Table) at the specified index.
@@ -418,12 +511,18 @@ impl SuperTable {
             batches.push(table.into());
         }
         let schema = slices[0].fields.iter().cloned().collect();
-        Self {
+        #[cfg_attr(not(feature = "shared_dict"), allow(unused_mut))]
+        let mut st = Self {
             batches,
             schema,
             n_rows: total_rows,
             name,
-        }
+            #[cfg(feature = "shared_dict")]
+            category_managers: Vec::new(),
+        };
+        #[cfg(feature = "shared_dict")]
+        st.rebuild_category_managers();
+        st
     }
 
     /// Rechunks the table according to the specified strategy.
@@ -848,12 +947,18 @@ impl Concatenate for SuperTable {
         result_batches.extend(other.batches);
         let total_rows = self.n_rows + other.n_rows;
 
-        Ok(SuperTable {
+        #[cfg_attr(not(feature = "shared_dict"), allow(unused_mut))]
+        let mut st = SuperTable {
             batches: result_batches,
             schema: self.schema,
             n_rows: total_rows,
             name: format!("{}+{}", self.name, other.name),
-        })
+            #[cfg(feature = "shared_dict")]
+            category_managers: Vec::new(),
+        };
+        #[cfg(feature = "shared_dict")]
+        st.rebuild_category_managers();
+        Ok(st)
     }
 }
 
@@ -1101,7 +1206,9 @@ impl From<SuperTableV> for SuperTable {
 mod tests {
     use super::*;
     use crate::ffi::arrow_dtype::ArrowType;
-    use crate::{fa_bool, fa_cat32, fa_f64, fa_i32, fa_i64, fa_str32};
+    use crate::{fa_bool, fa_f64, fa_i32, fa_i64, fa_str32};
+    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    use crate::fa_cat32;
     use crate::{Array, Field, FieldArray, MaskedArray, NumericArray, Table};
 
     fn table(cols: Vec<FieldArray>) -> Table {

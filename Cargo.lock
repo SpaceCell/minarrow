@@ -1671,17 +1671,19 @@ dependencies = [
 
 [[package]]
 name = "minarrow"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "ahash",
  "arrow",
  "arrow-schema",
  "cc",
  "criterion",
+ "hashbrown 0.15.5",
  "libc",
  "log",
  "memchr",
  "num-traits",
+ "parking_lot",
  "phf 0.13.1",
  "polars",
  "polars-arrow",
@@ -3699,9 +3701,9 @@ dependencies = [
 
 [[package]]
 name = "vec64"
-version = "0.4.4"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f4b3719a6d8f5829b7c49b086cf56e6319b35c867b9e7f075e37975720546ee"
+checksum = "7dbcec2954f646b356349abc2bc9fb825029a00ac85ea5e96e5cf86c468d798b"
 dependencies = [
  "libc",
 ]

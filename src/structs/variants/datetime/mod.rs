@@ -462,6 +462,55 @@ impl<T: Integer> Shape for DatetimeArray<T> {
     }
 }
 
+#[cfg(feature = "chunked")]
+impl<'a, T: Integer> crate::traits::consolidate::Consolidate
+    for Vec<crate::aliases::DatetimeAVT<'a, T>>
+{
+    type Output = DatetimeArray<T>;
+
+    /// Consolidate a vector of `(DatetimeArray<T>, offset, len)` view
+    /// tuples into one contiguous `DatetimeArray<T>`. Reads each window
+    /// directly from the source buffer. The `time_unit` is taken from
+    /// the first chunk.
+    fn consolidate(self) -> DatetimeArray<T> {
+        use crate::structs::bitmask::Bitmask;
+        use crate::traits::consolidate::extend_null_mask;
+        use crate::traits::masked_array::MaskedArray;
+
+        assert!(!self.is_empty(), "consolidate() called on empty Vec<DatetimeAVT>");
+
+        let total_len: usize = self.iter().map(|(_, _, len)| *len).sum();
+        let has_nulls = self.iter().any(|(arr, _, _)| arr.null_mask.is_some());
+        let time_unit = self[0].0.time_unit.clone();
+
+        let mut result = DatetimeArray::<T>::with_capacity(total_len, has_nulls, Some(time_unit));
+        let mut result_mask: Option<Bitmask> = if has_nulls {
+            Some(Bitmask::default())
+        } else {
+            None
+        };
+        let mut current_len = 0;
+
+        for (arr, offset, len) in &self {
+            let data: &[T] = &arr.data[*offset..*offset + *len];
+            result.extend_from_slice(data);
+            extend_null_mask(
+                &mut result_mask,
+                current_len,
+                arr.null_mask(),
+                *offset,
+                *len,
+            );
+            current_len += *len;
+        }
+
+        if let Some(mask) = result_mask {
+            result.set_null_mask(Some(mask));
+        }
+        result
+    }
+}
+
 impl<T: Integer> Concatenate for DatetimeArray<T> {
     fn concat(
         mut self,

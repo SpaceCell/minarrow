@@ -803,3 +803,106 @@ fn arr_i32_like(vals: &[i32]) -> MArray {
     for v in vals { a.push(*v); }
     MArray::from_int32(a)
 }
+
+// ----- Cross-batch shared categorical dictionary roundtrip -----
+
+/// Build a SuperTable with two batches that share a categorical column.
+/// Round-trip through arrow-rs `RecordBatch` and verify decoded strings are
+/// identical pre/post, that the rebuilt SuperTable's chunks point at a
+/// coherent shared dictionary (later snapshot is a superset of earlier),
+/// and that codes assigned in the first batch still decode the same in
+/// the rebuilt structure.
+#[cfg(all(
+    feature = "shared_dict",
+    any(not(feature = "default_categorical_8"), feature = "extended_categorical")
+))]
+#[test]
+fn rt_arrow_super_table_shared_categorical32() {
+    use minarrow::structs::dictionary::Dictionary;
+    use minarrow::{CategoricalArray, SuperTable};
+
+    // Two batches, each Categorical32. The second batch introduces a value
+    // ("c") not present in the first, exercising the manager's grow path.
+    let cat_a = Arc::new(CategoricalArray::<u32>::from_slices(
+        &[0u32, 1, 0],
+        &["a".to_string(), "b".to_string()],
+    ));
+    let cat_b = Arc::new(CategoricalArray::<u32>::from_slices(
+        &[1u32, 2, 0],
+        &["a".to_string(), "b".to_string(), "c".to_string()],
+    ));
+
+    let fa_a = FieldArray::new(
+        Field::new(
+            "cat",
+            ArrowType::Dictionary(minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt32),
+            false,
+            None,
+        ),
+        MArray::TextArray(TextArray::Categorical32(cat_a)),
+    );
+    let fa_b = FieldArray::new(
+        Field::new(
+            "cat",
+            ArrowType::Dictionary(minarrow::ffi::arrow_dtype::CategoricalIndexType::UInt32),
+            false,
+            None,
+        ),
+        MArray::TextArray(TextArray::Categorical32(cat_b)),
+    );
+
+    let tbl_a = Table::new("t".into(), Some(vec![fa_a]));
+    let tbl_b = Table::new("t".into(), Some(vec![fa_b]));
+
+    let mut st = SuperTable::new("st".into());
+    st.push(Arc::new(tbl_a));
+    st.push(Arc::new(tbl_b));
+
+    // Capture the decoded strings pre-export for later comparison.
+    let strings_before: Vec<Vec<String>> = st
+        .batches
+        .iter()
+        .map(|b| match &b.cols[0].array {
+            MArray::TextArray(TextArray::Categorical32(c)) => {
+                (0..c.data.len()).map(|i| c.dictionary.values()[c.data[i] as usize].clone()).collect()
+            }
+            _ => panic!("expected Categorical32"),
+        })
+        .collect();
+    assert_eq!(strings_before[0], vec!["a", "b", "a"]);
+    assert_eq!(strings_before[1], vec!["b", "c", "a"]);
+
+    // Round-trip.
+    let rbs = st.to_apache_arrow();
+    assert_eq!(rbs.len(), 2);
+    let back = SuperTable::from_apache_arrow(&rbs);
+    assert_eq!(back.n_batches(), 2);
+
+    // Verify decoded strings match per row, per batch.
+    let strings_after: Vec<Vec<String>> = back
+        .batches
+        .iter()
+        .map(|b| match &b.cols[0].array {
+            MArray::TextArray(TextArray::Categorical32(c)) => {
+                (0..c.data.len()).map(|i| c.dictionary.values()[c.data[i] as usize].clone()).collect()
+            }
+            _ => panic!("expected Categorical32"),
+        })
+        .collect();
+    assert_eq!(strings_before, strings_after);
+
+    // Both rebuilt chunks are Shared, and the first batch's dictionary is a
+    // Rebuilt batches share the same dictionary handle (Arc bumped at
+    // push time); both observe the union of all added strings.
+    let d0 = match &back.batches[0].cols[0].array {
+        MArray::TextArray(TextArray::Categorical32(c)) => c.dictionary.clone(),
+        _ => unreachable!(),
+    };
+    let d1 = match &back.batches[1].cols[0].array {
+        MArray::TextArray(TextArray::Categorical32(c)) => c.dictionary.clone(),
+        _ => unreachable!(),
+    };
+    assert!(d0.shares_with(&d1));
+    assert_eq!(d0.values(), &["a", "b", "c"]);
+    assert_eq!(d1.values(), &["a", "b", "c"]);
+}

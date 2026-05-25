@@ -104,240 +104,159 @@ pub fn extend_null_mask(
     }
 }
 
-/// Macro for consolidating integer array slices by variant.
-/// Directly extends from raw data buffers.
-#[macro_export]
-macro_rules! consolidate_int_variant {
-    ($slices:expr, $variant:ident, $ty:ty) => {{
+// Top-level Consolidate impl over `ArrayVT` view tuples.
+//
+// Exhaustively matches on the first chunk's `Array` variant, gathers
+// every chunk into the matching typed AVT view tuple, then calls
+// `.consolidate()` on it. The typed impl lives on the typed array's
+// module and owns the per-width buffer-extension logic, reading from
+// each window without materialising an owned typed sub-array.
+
+#[cfg(feature = "chunked")]
+impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
+    type Output = crate::enums::array::Array;
+
+    fn consolidate(self) -> Self::Output {
+        use crate::enums::array::Array;
+        use crate::enums::collections::numeric_array::NumericArray;
+        use crate::enums::collections::text_array::TextArray;
+        #[cfg(feature = "datetime")]
+        use crate::enums::collections::temporal_array::TemporalArray;
         use std::sync::Arc;
-        use $crate::enums::array::Array;
-        use $crate::enums::collections::numeric_array::NumericArray;
-        use $crate::structs::bitmask::Bitmask;
-        use $crate::structs::variants::integer::IntegerArray;
-        use $crate::traits::consolidate::extend_null_mask;
-        use $crate::traits::masked_array::MaskedArray;
 
-        let total_len: usize = $slices.iter().map(|s| s.len()).sum();
-        let has_nulls = $slices.iter().any(|s| {
-            if let Array::NumericArray(NumericArray::$variant(arr)) = &s.array {
-                arr.null_mask().is_some()
-            } else {
-                false
-            }
-        });
+        assert!(!self.is_empty(), "consolidate() called on empty Vec<ArrayVT>");
 
-        let mut result = IntegerArray::<$ty>::with_capacity(total_len, has_nulls);
-        let mut result_mask: Option<Bitmask> = if has_nulls {
-            Some(Bitmask::default())
-        } else {
-            None
-        };
-        let mut current_len = 0;
-
-        for slice in $slices {
-            if let Array::NumericArray(NumericArray::$variant(arr)) = &slice.array {
-                let data: &[$ty] = &arr.data[slice.offset..slice.offset + slice.len()];
-                result.extend_from_slice(data);
-                extend_null_mask(
-                    &mut result_mask,
-                    current_len,
-                    arr.null_mask(),
-                    slice.offset,
-                    slice.len(),
-                );
-                current_len += slice.len();
-            }
+        // Gather typed AVT tuples for the matching variant. Every chunk
+        // must share the same width as the first; mismatches are a
+        // schema violation by the caller and panic.
+        macro_rules! gather_numeric {
+            ($variant:ident, $T:ty) => {{
+                let views: Vec<crate::aliases::IntegerAVT<'a, $T>> = self
+                    .iter()
+                    .map(|(arr, off, len)| match arr {
+                        Array::NumericArray(NumericArray::$variant(a)) => (a.as_ref(), *off, *len),
+                        _ => panic!(
+                            "inconsistent NumericArray variants in chunk vector"
+                        ),
+                    })
+                    .collect();
+                Array::NumericArray(NumericArray::$variant(Arc::new(views.consolidate())))
+            }};
         }
 
-        if let Some(mask) = result_mask {
-            result.set_null_mask(Some(mask));
+        macro_rules! gather_float {
+            ($variant:ident, $T:ty) => {{
+                let views: Vec<crate::aliases::FloatAVT<'a, $T>> = self
+                    .iter()
+                    .map(|(arr, off, len)| match arr {
+                        Array::NumericArray(NumericArray::$variant(a)) => (a.as_ref(), *off, *len),
+                        _ => panic!(
+                            "inconsistent NumericArray variants in chunk vector"
+                        ),
+                    })
+                    .collect();
+                Array::NumericArray(NumericArray::$variant(Arc::new(views.consolidate())))
+            }};
         }
-        Array::NumericArray(NumericArray::$variant(Arc::new(result)))
-    }};
+
+        macro_rules! gather_string {
+            ($variant:ident, $T:ty) => {{
+                let views: Vec<crate::aliases::StringAVT<'a, $T>> = self
+                    .iter()
+                    .map(|(arr, off, len)| match arr {
+                        Array::TextArray(TextArray::$variant(a)) => (a.as_ref(), *off, *len),
+                        _ => panic!(
+                            "inconsistent TextArray variants in chunk vector"
+                        ),
+                    })
+                    .collect();
+                Array::TextArray(TextArray::$variant(Arc::new(views.consolidate())))
+            }};
+        }
+
+        macro_rules! gather_categorical {
+            ($variant:ident, $T:ty) => {{
+                let views: Vec<crate::aliases::CategoricalAVT<'a, $T>> = self
+                    .iter()
+                    .map(|(arr, off, len)| match arr {
+                        Array::TextArray(TextArray::$variant(a)) => (a.as_ref(), *off, *len),
+                        _ => panic!(
+                            "inconsistent TextArray variants in chunk vector"
+                        ),
+                    })
+                    .collect();
+                Array::TextArray(TextArray::$variant(Arc::new(views.consolidate())))
+            }};
+        }
+
+        #[cfg(feature = "datetime")]
+        macro_rules! gather_datetime {
+            ($variant:ident, $T:ty) => {{
+                let views: Vec<crate::aliases::DatetimeAVT<'a, $T>> = self
+                    .iter()
+                    .map(|(arr, off, len)| match arr {
+                        Array::TemporalArray(TemporalArray::$variant(a)) => {
+                            (a.as_ref(), *off, *len)
+                        }
+                        _ => panic!(
+                            "inconsistent TemporalArray variants in chunk vector"
+                        ),
+                    })
+                    .collect();
+                Array::TemporalArray(TemporalArray::$variant(Arc::new(views.consolidate())))
+            }};
+        }
+
+        match self[0].0 {
+            Array::NumericArray(NumericArray::Int32(_)) => gather_numeric!(Int32, i32),
+            Array::NumericArray(NumericArray::Int64(_)) => gather_numeric!(Int64, i64),
+            Array::NumericArray(NumericArray::UInt32(_)) => gather_numeric!(UInt32, u32),
+            Array::NumericArray(NumericArray::UInt64(_)) => gather_numeric!(UInt64, u64),
+            Array::NumericArray(NumericArray::Float32(_)) => gather_float!(Float32, f32),
+            Array::NumericArray(NumericArray::Float64(_)) => gather_float!(Float64, f64),
+            #[cfg(feature = "extended_numeric_types")]
+            Array::NumericArray(NumericArray::Int8(_)) => gather_numeric!(Int8, i8),
+            #[cfg(feature = "extended_numeric_types")]
+            Array::NumericArray(NumericArray::Int16(_)) => gather_numeric!(Int16, i16),
+            #[cfg(feature = "extended_numeric_types")]
+            Array::NumericArray(NumericArray::UInt8(_)) => gather_numeric!(UInt8, u8),
+            #[cfg(feature = "extended_numeric_types")]
+            Array::NumericArray(NumericArray::UInt16(_)) => gather_numeric!(UInt16, u16),
+            Array::NumericArray(NumericArray::Null) => Array::Null,
+
+            Array::TextArray(TextArray::String32(_)) => gather_string!(String32, u32),
+            #[cfg(feature = "large_string")]
+            Array::TextArray(TextArray::String64(_)) => gather_string!(String64, u64),
+            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            Array::TextArray(TextArray::Categorical32(_)) => gather_categorical!(Categorical32, u32),
+            #[cfg(feature = "default_categorical_8")]
+            Array::TextArray(TextArray::Categorical8(_)) => gather_categorical!(Categorical8, u8),
+            #[cfg(feature = "extended_categorical")]
+            Array::TextArray(TextArray::Categorical16(_)) => gather_categorical!(Categorical16, u16),
+            #[cfg(feature = "extended_categorical")]
+            Array::TextArray(TextArray::Categorical64(_)) => gather_categorical!(Categorical64, u64),
+            Array::TextArray(TextArray::Null) => Array::Null,
+
+            Array::BooleanArray(_) => {
+                let views: Vec<crate::aliases::BooleanAVT<'a, ()>> = self
+                    .iter()
+                    .map(|(arr, off, len)| match arr {
+                        Array::BooleanArray(a) => (a.as_ref(), *off, *len),
+                        _ => panic!("inconsistent Array variants in chunk vector"),
+                    })
+                    .collect();
+                Array::BooleanArray(Arc::new(views.consolidate()))
+            }
+
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(TemporalArray::Datetime32(_)) => gather_datetime!(Datetime32, i32),
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(TemporalArray::Datetime64(_)) => gather_datetime!(Datetime64, i64),
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(TemporalArray::Null) => Array::Null,
+
+            Array::Null => Array::Null,
+        }
+    }
 }
 
-/// Macro for consolidating float array slices by variant.
-/// Directly extends from raw data buffers.
-#[macro_export]
-macro_rules! consolidate_float_variant {
-    ($slices:expr, $variant:ident, $ty:ty) => {{
-        use std::sync::Arc;
-        use $crate::enums::array::Array;
-        use $crate::enums::collections::numeric_array::NumericArray;
-        use $crate::structs::bitmask::Bitmask;
-        use $crate::structs::variants::float::FloatArray;
-        use $crate::traits::consolidate::extend_null_mask;
-        use $crate::traits::masked_array::MaskedArray;
-
-        let total_len: usize = $slices.iter().map(|s| s.len()).sum();
-        let has_nulls = $slices.iter().any(|s| {
-            if let Array::NumericArray(NumericArray::$variant(arr)) = &s.array {
-                arr.null_mask().is_some()
-            } else {
-                false
-            }
-        });
-
-        let mut result = FloatArray::<$ty>::with_capacity(total_len, has_nulls);
-        let mut result_mask: Option<Bitmask> = if has_nulls {
-            Some(Bitmask::default())
-        } else {
-            None
-        };
-        let mut current_len = 0;
-
-        for slice in $slices {
-            if let Array::NumericArray(NumericArray::$variant(arr)) = &slice.array {
-                let data: &[$ty] = &arr.data[slice.offset..slice.offset + slice.len()];
-                result.extend_from_slice(data);
-                extend_null_mask(
-                    &mut result_mask,
-                    current_len,
-                    arr.null_mask(),
-                    slice.offset,
-                    slice.len(),
-                );
-                current_len += slice.len();
-            }
-        }
-
-        if let Some(mask) = result_mask {
-            result.set_null_mask(Some(mask));
-        }
-        Array::NumericArray(NumericArray::$variant(Arc::new(result)))
-    }};
-}
-
-/// Macro for consolidating string array slices by variant.
-/// Directly copies offsets and data buffers.
-#[macro_export]
-macro_rules! consolidate_string_variant {
-    ($slices:expr, $variant:ident, $offset_ty:ty) => {{
-        use std::sync::Arc;
-        use $crate::Vec64;
-        use $crate::enums::array::Array;
-        use $crate::enums::collections::text_array::TextArray;
-        use $crate::structs::bitmask::Bitmask;
-        use $crate::structs::variants::string::StringArray;
-        use $crate::traits::consolidate::extend_null_mask;
-        use $crate::traits::masked_array::MaskedArray;
-
-        let total_len: usize = $slices.iter().map(|s| s.len()).sum();
-
-        let has_nulls = $slices.iter().any(|s| {
-            if let Array::TextArray(TextArray::$variant(arr)) = &s.array {
-                arr.null_mask().is_some()
-            } else {
-                false
-            }
-        });
-
-        let mut result_offsets: Vec64<$offset_ty> = Vec64::with_capacity(total_len + 1);
-        let mut result_data: Vec64<u8> = Vec64::new();
-        let mut result_mask: Option<Bitmask> = if has_nulls {
-            Some(Bitmask::default())
-        } else {
-            None
-        };
-        let mut current_len = 0;
-
-        result_offsets.push(0 as $offset_ty);
-
-        for slice in $slices {
-            if let Array::TextArray(TextArray::$variant(arr)) = &slice.array {
-                let offsets: &[$offset_ty] = arr.offsets.as_slice();
-                let data: &[u8] = arr.data.as_slice();
-
-                let start_idx = slice.offset;
-                let end_idx = slice.offset + slice.len();
-
-                let byte_start = offsets[start_idx] as usize;
-                let byte_end = offsets[end_idx] as usize;
-                let current_data_len = *result_offsets.last().unwrap();
-
-                result_data.extend_from_slice(&data[byte_start..byte_end]);
-
-                for i in (start_idx + 1)..=end_idx {
-                    let adjusted_offset = (offsets[i] - offsets[start_idx]) + current_data_len;
-                    result_offsets.push(adjusted_offset);
-                }
-
-                extend_null_mask(
-                    &mut result_mask,
-                    current_len,
-                    arr.null_mask(),
-                    slice.offset,
-                    slice.len(),
-                );
-                current_len += slice.len();
-            }
-        }
-
-        let result =
-            StringArray::<$offset_ty>::from_parts(result_offsets, result_data, result_mask);
-        Array::TextArray(TextArray::$variant(Arc::new(result)))
-    }};
-}
-
-/// Macro for consolidating temporal (datetime) array slices by variant.
-/// Directly extends from raw data buffers.
-/// Preserves the time_unit from the first slice.
-#[cfg(feature = "datetime")]
-#[macro_export]
-macro_rules! consolidate_temporal_variant {
-    ($slices:expr, $variant:ident, $ty:ty) => {{
-        use std::sync::Arc;
-        use $crate::enums::array::Array;
-        use $crate::enums::collections::temporal_array::TemporalArray;
-        use $crate::structs::bitmask::Bitmask;
-        use $crate::structs::variants::datetime::DatetimeArray;
-        use $crate::traits::consolidate::extend_null_mask;
-        use $crate::traits::masked_array::MaskedArray;
-
-        let total_len: usize = $slices.iter().map(|s| s.len()).sum();
-
-        // Extract time_unit from first slice
-        let time_unit =
-            if let Array::TemporalArray(TemporalArray::$variant(arr)) = &$slices[0].array {
-                arr.time_unit.clone()
-            } else {
-                panic!("Expected TemporalArray::{}", stringify!($variant))
-            };
-
-        let has_nulls = $slices.iter().any(|s| {
-            if let Array::TemporalArray(TemporalArray::$variant(arr)) = &s.array {
-                arr.null_mask().is_some()
-            } else {
-                false
-            }
-        });
-
-        let mut result = DatetimeArray::<$ty>::with_capacity(total_len, has_nulls, Some(time_unit));
-        let mut result_mask: Option<Bitmask> = if has_nulls {
-            Some(Bitmask::default())
-        } else {
-            None
-        };
-        let mut current_len = 0;
-
-        for slice in $slices {
-            if let Array::TemporalArray(TemporalArray::$variant(arr)) = &slice.array {
-                let data: &[$ty] = &arr.data[slice.offset..slice.offset + slice.len()];
-                result.extend_from_slice(data);
-                extend_null_mask(
-                    &mut result_mask,
-                    current_len,
-                    arr.null_mask(),
-                    slice.offset,
-                    slice.len(),
-                );
-                current_len += slice.len();
-            }
-        }
-
-        if let Some(mask) = result_mask {
-            result.set_null_mask(Some(mask));
-        }
-        Array::TemporalArray(TemporalArray::$variant(Arc::new(result)))
-    }};
-}

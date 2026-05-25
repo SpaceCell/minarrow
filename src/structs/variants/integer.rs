@@ -166,6 +166,53 @@ impl<T: Integer> Shape for IntegerArray<T> {
     }
 }
 
+#[cfg(feature = "chunked")]
+impl<'a, T: Integer> crate::traits::consolidate::Consolidate
+    for Vec<crate::aliases::IntegerAVT<'a, T>>
+{
+    type Output = IntegerArray<T>;
+
+    /// Consolidate a vector of `(IntegerArray<T>, offset, len)` view
+    /// tuples into one contiguous `IntegerArray<T>`. Reads each window
+    /// directly from the source buffer - no intermediate copy.
+    fn consolidate(self) -> IntegerArray<T> {
+        use crate::structs::bitmask::Bitmask;
+        use crate::traits::consolidate::extend_null_mask;
+        use crate::traits::masked_array::MaskedArray;
+
+        assert!(!self.is_empty(), "consolidate() called on empty Vec<IntegerAVT>");
+
+        let total_len: usize = self.iter().map(|(_, _, len)| *len).sum();
+        let has_nulls = self.iter().any(|(arr, _, _)| arr.null_mask.is_some());
+
+        let mut result = IntegerArray::<T>::with_capacity(total_len, has_nulls);
+        let mut result_mask: Option<Bitmask> = if has_nulls {
+            Some(Bitmask::default())
+        } else {
+            None
+        };
+        let mut current_len = 0;
+
+        for (arr, offset, len) in &self {
+            let data: &[T] = &arr.data[*offset..*offset + *len];
+            result.data.extend_from_slice(data);
+            extend_null_mask(
+                &mut result_mask,
+                current_len,
+                arr.null_mask(),
+                *offset,
+                *len,
+            );
+            current_len += *len;
+        }
+
+        if let Some(mask) = result_mask {
+            result.set_null_mask(Some(mask));
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

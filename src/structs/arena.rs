@@ -1003,7 +1003,7 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     .collect();
                 let aa = arena.write_slices::<u32>(&slices, n_rows, has_nulls);
                 let dict = if let Array::TextArray(TextArray::Categorical32(c)) = first {
-                    c.unique_values.clone()
+                    Vec64::from(c.unique_values().to_vec())
                 } else {
                     unreachable!()
                 };
@@ -1031,7 +1031,7 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     .collect();
                 let aa = arena.write_slices::<u8>(&slices, n_rows, has_nulls);
                 let dict = if let Array::TextArray(TextArray::Categorical8(c)) = first {
-                    c.unique_values.clone()
+                    Vec64::from(c.unique_values().to_vec())
                 } else {
                     unreachable!()
                 };
@@ -1059,7 +1059,7 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     .collect();
                 let aa = arena.write_slices::<u16>(&slices, n_rows, has_nulls);
                 let dict = if let Array::TextArray(TextArray::Categorical16(c)) = first {
-                    c.unique_values.clone()
+                    Vec64::from(c.unique_values().to_vec())
                 } else {
                     unreachable!()
                 };
@@ -1087,7 +1087,7 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     .collect();
                 let aa = arena.write_slices::<u64>(&slices, n_rows, has_nulls);
                 let dict = if let Array::TextArray(TextArray::Categorical64(c)) = first {
-                    c.unique_values.clone()
+                    Vec64::from(c.unique_values().to_vec())
                 } else {
                     unreachable!()
                 };
@@ -1407,7 +1407,7 @@ pub(crate) fn consolidate_tables_arena(
                     let dict = if let Array::TextArray(TextArray::Categorical32(a)) =
                         &tables[0].cols[col_idx].array
                     {
-                        a.unique_values.clone()
+                        Vec64::from(a.unique_values().to_vec())
                     } else {
                         unreachable!()
                     };
@@ -1439,7 +1439,7 @@ pub(crate) fn consolidate_tables_arena(
                     let dict = if let Array::TextArray(TextArray::Categorical8(a)) =
                         &tables[0].cols[col_idx].array
                     {
-                        a.unique_values.clone()
+                        Vec64::from(a.unique_values().to_vec())
                     } else {
                         unreachable!()
                     };
@@ -1471,7 +1471,7 @@ pub(crate) fn consolidate_tables_arena(
                     let dict = if let Array::TextArray(TextArray::Categorical16(a)) =
                         &tables[0].cols[col_idx].array
                     {
-                        a.unique_values.clone()
+                        Vec64::from(a.unique_values().to_vec())
                     } else {
                         unreachable!()
                     };
@@ -1503,7 +1503,7 @@ pub(crate) fn consolidate_tables_arena(
                     let dict = if let Array::TextArray(TextArray::Categorical64(a)) =
                         &tables[0].cols[col_idx].array
                     {
-                        a.unique_values.clone()
+                        Vec64::from(a.unique_values().to_vec())
                     } else {
                         unreachable!()
                     };

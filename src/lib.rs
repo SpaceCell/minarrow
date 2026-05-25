@@ -175,6 +175,8 @@ pub mod structs {
     pub mod bitmask;
     pub mod buffer;
     pub mod column;
+    #[cfg(feature = "shared_dict")]
+    pub mod dictionary;
     #[cfg(feature = "cube")]
     pub mod cube;
     pub mod field;
@@ -267,6 +269,8 @@ pub use structs::views::collections::text_array_view::TextArrayV;
 
 pub use ffi::arrow_dtype::ArrowType;
 pub use structs::column::{Column, column};
+#[cfg(feature = "shared_dict")]
+pub use structs::dictionary::Dictionary;
 #[cfg(feature = "cube")]
 pub use structs::cube::Cube;
 pub use structs::field::Field;

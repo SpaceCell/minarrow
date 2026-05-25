@@ -40,6 +40,8 @@ use std::collections::HashMap;
 
 use crate::enums::error::{KernelError, log_length_mismatch};
 use crate::kernels::bitmask::merge_bitmasks_to_new;
+#[cfg(feature = "shared_dict")]
+use crate::structs::dictionary::Dictionary;
 use crate::structs::variants::categorical::CategoricalArray;
 #[cfg(feature = "str_arithmetic")]
 use memchr::memmem::Finder;
@@ -447,7 +449,7 @@ fn apply_dict_dict_impl<T: Integer>(
 
     // Build unique dictionary for the output, initially union of both inputs
     let mut uniq: Vec64<String> = Vec64::with_capacity(
-        lhs_array.unique_values.len() + rhs_array.unique_values.len() + lhs_logical_len,
+        lhs_array.unique_values().len() + rhs_array.unique_values().len() + lhs_logical_len,
     );
 
     #[cfg(feature = "fast_hash")]
@@ -457,9 +459,9 @@ fn apply_dict_dict_impl<T: Integer>(
     let mut dict: HashMap<String, T> = HashMap::with_capacity(uniq.capacity());
 
     for v in lhs_array
-        .unique_values
+        .unique_values()
         .iter()
-        .chain(rhs_array.unique_values.iter())
+        .chain(rhs_array.unique_values().iter())
     {
         if !dict.contains_key(v) {
             let idx = T::from_usize(uniq.len());
@@ -610,7 +612,10 @@ fn apply_dict_dict_impl<T: Integer>(
 
     Ok(CategoricalArray {
         data: out_data.into(),
+        #[cfg(not(feature = "shared_dict"))]
         unique_values: uniq,
+        #[cfg(feature = "shared_dict")]
+        dictionary: Dictionary::from(uniq),
         null_mask: Some(out_mask),
     })
 }
@@ -885,8 +890,8 @@ where
     let mut out_null = Bitmask::new_set_all(total_out, false);
 
     // Prepare dictionary and unique values (for this slice)
-    let mut uniq: Vec64<String> = Vec64::with_capacity(larr.unique_values.len() + llen);
-    uniq.extend(larr.unique_values.iter().cloned());
+    let mut uniq: Vec64<String> = Vec64::with_capacity(larr.unique_values().len() + llen);
+    uniq.extend(larr.unique_values().iter().cloned());
 
     #[cfg(feature = "fast_hash")]
     let mut dict: AHashMap<String, u32> = AHashMap::with_capacity(uniq.len());
@@ -993,7 +998,10 @@ where
 
     Ok(CategoricalArray {
         data: out_data.into(),
+        #[cfg(not(feature = "shared_dict"))]
         unique_values: uniq,
+        #[cfg(feature = "shared_dict")]
+        dictionary: Dictionary::from(uniq),
         null_mask: Some(out_null),
     })
 }
@@ -1237,7 +1245,10 @@ where
 
     Ok(CategoricalArray {
         data: data.into(),
+        #[cfg(not(feature = "shared_dict"))]
         unique_values,
+        #[cfg(feature = "shared_dict")]
+        dictionary: Dictionary::from(unique_values),
         null_mask: out_mask,
     })
 }
@@ -1531,7 +1542,7 @@ mod tests {
         )
         .unwrap()
         .to_categorical_array();
-        assert_eq!(added.unique_values, expected_cat.unique_values);
+        assert_eq!(added.unique_values(), expected_cat.unique_values());
         assert_eq!(added.data, expected_cat.data);
 
         // Divide: Use slices
@@ -1544,7 +1555,7 @@ mod tests {
         )
         .unwrap()
         .to_categorical_array();
-        assert_eq!(divided.unique_values, expected_div.unique_values);
+        assert_eq!(divided.unique_values(), expected_div.unique_values());
         assert_eq!(divided.data, expected_div.data);
     }
 
@@ -1565,7 +1576,7 @@ mod tests {
         )
         .unwrap()
         .to_categorical_array();
-        assert_eq!(added.unique_values, expected_cat.unique_values);
+        assert_eq!(added.unique_values(), expected_cat.unique_values());
         assert_eq!(added.data, expected_cat.data);
 
         // Divide
@@ -1578,7 +1589,7 @@ mod tests {
         )
         .unwrap()
         .to_categorical_array();
-        assert_eq!(divided.unique_values, expected_div.unique_values);
+        assert_eq!(divided.unique_values(), expected_div.unique_values());
         assert_eq!(divided.data, expected_div.data);
     }
 

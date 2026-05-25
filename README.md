@@ -170,6 +170,8 @@ Enable what you need:
 | `parallel_proc` | Rayon parallel iterators |
 | `select` | Pandas-style `.c()` / `.r()` selection |
 | `broadcast` | Arithmetic broadcasting |
+| `shared_dict` | Cross-batch shared categorical dictionaries. |
+| `fast_dict` | ~30% faster variant of `shared_dict`, at the cost of 3 dependencies.  |
 
 ## Ecosystem
 

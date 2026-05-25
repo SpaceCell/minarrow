@@ -27,6 +27,9 @@
 use std::error::Error;
 use std::fmt;
 
+#[cfg(feature = "shared_dict")]
+use crate::structs::dictionary::DictionaryError;
+
 /// Catch all error types for `Minarrow`
 #[derive(Debug, PartialEq)]
 pub enum MinarrowError {
@@ -72,6 +75,18 @@ pub enum MinarrowError {
         source: &'static str,
         message: String,
     },
+    /// Raised when a categorical operation would exceed the index type's
+    /// cardinality, e.g. a 257th unique value on a `u8` categorical.
+    DictionaryOverflow,
+}
+
+#[cfg(feature = "shared_dict")]
+impl From<DictionaryError> for MinarrowError {
+    fn from(source: DictionaryError) -> Self {
+        match source {
+            DictionaryError::Overflow => MinarrowError::DictionaryOverflow,
+        }
+    }
 }
 
 impl fmt::Display for MinarrowError {
@@ -153,6 +168,12 @@ impl fmt::Display for MinarrowError {
             }
             MinarrowError::BridgeError { source, message } => {
                 write!(f, "Bridge error ({}): {}", source, message)
+            }
+            MinarrowError::DictionaryOverflow => {
+                write!(
+                    f,
+                    "Categorical dictionary overflow: new value would exceed the index type's cardinality"
+                )
             }
         }
     }
