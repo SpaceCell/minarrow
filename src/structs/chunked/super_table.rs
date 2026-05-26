@@ -1202,6 +1202,52 @@ impl From<SuperTableV> for SuperTable {
     }
 }
 
+/// Ergonomic constructor for a [`SuperTable`] from named table batches.
+///
+/// Each batch argument may be a `Table` or `Arc<Table>`; both flow
+/// through `.into()` into the required `Arc<Table>`. When the first
+/// argument is a string literal it becomes the SuperTable name;
+/// otherwise the first batch's name is used.
+///
+/// # Forms
+/// - `st!("name", batch1, batch2, ...)` - named SuperTable from batches.
+/// - `st!(batch1, batch2, ...)` - name derived from the first batch.
+/// - `st!("name")` - empty SuperTable with the supplied name.
+///
+/// # Example
+/// ```
+/// use minarrow::{fa_i32, st, tbl};
+///
+/// let a = tbl!("batch", fa_i32!("x", 1, 2));
+/// let b = tbl!("batch", fa_i32!("x", 3, 4));
+/// let s = st!("rolling", a, b);
+/// assert_eq!(s.name, "rolling");
+/// assert_eq!(s.n_rows, 4);
+/// ```
+///
+/// # Note
+/// The named form requires a string literal for the name. For a
+/// dynamic `String` name use `SuperTable::from_batches(..., Some(name))`
+/// directly.
+#[macro_export]
+macro_rules! st {
+    ($name:literal, $($t:expr),+ $(,)?) => {
+        $crate::SuperTable::from_batches(
+            ::std::vec::Vec::from([$(::std::convert::Into::<::std::sync::Arc<$crate::Table>>::into($t)),+]),
+            ::std::option::Option::Some(::std::string::String::from($name)),
+        )
+    };
+    ($name:literal) => {
+        $crate::SuperTable::new(::std::string::String::from($name))
+    };
+    ($($t:expr),+ $(,)?) => {
+        $crate::SuperTable::from_batches(
+            ::std::vec::Vec::from([$(::std::convert::Into::<::std::sync::Arc<$crate::Table>>::into($t)),+]),
+            ::std::option::Option::None,
+        )
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2011,5 +2057,69 @@ mod tests {
             }
             _ => panic!("Expected Datetime64"),
         }
+    }
+}
+
+#[cfg(test)]
+mod st_macro_tests {
+    use std::sync::Arc;
+
+    use crate::{fa_i32, tbl, SuperTable, Table};
+
+    fn make_batch(name: &str, ids: &[i32]) -> Table {
+        tbl!("batch", fa_i32!(name, @slice ids))
+    }
+
+    #[test]
+    fn st_named_from_tables() {
+        let a = make_batch("x", &[1, 2]);
+        let b = make_batch("x", &[3, 4, 5]);
+        let st: SuperTable = st!("rolling", a, b);
+        assert_eq!(st.name, "rolling");
+        assert_eq!(st.batches.len(), 2);
+        assert_eq!(st.n_rows, 5);
+    }
+
+    #[test]
+    fn st_auto_name_uses_first_batch_name() {
+        let a = make_batch("x", &[1, 2]);
+        let b = make_batch("x", &[3]);
+        let st: SuperTable = st!(a, b);
+        assert_eq!(st.name, "batch");
+        assert_eq!(st.batches.len(), 2);
+        assert_eq!(st.n_rows, 3);
+    }
+
+    #[test]
+    fn st_accepts_arc_table() {
+        let a: Arc<Table> = Arc::new(make_batch("x", &[1, 2]));
+        let b: Arc<Table> = Arc::new(make_batch("x", &[3, 4]));
+        let st: SuperTable = st!("arc", a, b);
+        assert_eq!(st.name, "arc");
+        assert_eq!(st.n_rows, 4);
+    }
+
+    #[test]
+    fn st_name_only_builds_empty_supertable() {
+        let st: SuperTable = st!("scratch");
+        assert_eq!(st.name, "scratch");
+        assert_eq!(st.batches.len(), 0);
+        assert_eq!(st.n_rows, 0);
+    }
+
+    #[test]
+    fn st_single_batch_named() {
+        let a = make_batch("x", &[7, 8, 9]);
+        let st: SuperTable = st!("solo", a);
+        assert_eq!(st.batches.len(), 1);
+        assert_eq!(st.n_rows, 3);
+    }
+
+    #[test]
+    fn st_trailing_comma_accepted() {
+        let a = make_batch("x", &[1]);
+        let b = make_batch("x", &[2]);
+        let st: SuperTable = st!("trail", a, b,);
+        assert_eq!(st.batches.len(), 2);
     }
 }

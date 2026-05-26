@@ -722,10 +722,25 @@ impl RowSelection for FieldArray {
 #[cfg(feature = "extended_numeric_types")]
 #[macro_export]
 macro_rules! fa_i8 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i8!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i8!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i8!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i8!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_i8!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i8!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_i8!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -741,10 +756,25 @@ macro_rules! fa_i8 {
 #[cfg(feature = "extended_numeric_types")]
 #[macro_export]
 macro_rules! fa_i16 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i16!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i16!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i16!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i16!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_i16!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i16!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_i16!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -759,10 +789,25 @@ macro_rules! fa_i16 {
 
 #[macro_export]
 macro_rules! fa_i32 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i32!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i32!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i32!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i32!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_i32!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i32!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_i32!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -777,10 +822,25 @@ macro_rules! fa_i32 {
 
 #[macro_export]
 macro_rules! fa_i64 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i64!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i64!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i64!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i64!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_i64!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_i64!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_i64!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -796,10 +856,25 @@ macro_rules! fa_i64 {
 #[cfg(feature = "extended_numeric_types")]
 #[macro_export]
 macro_rules! fa_u8 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u8!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u8!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u8!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u8!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_u8!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u8!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_u8!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -815,10 +890,25 @@ macro_rules! fa_u8 {
 #[cfg(feature = "extended_numeric_types")]
 #[macro_export]
 macro_rules! fa_u16 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u16!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u16!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u16!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u16!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_u16!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u16!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_u16!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -833,10 +923,25 @@ macro_rules! fa_u16 {
 
 #[macro_export]
 macro_rules! fa_u32 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u32!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u32!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u32!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u32!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_u32!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u32!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_u32!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -851,10 +956,25 @@ macro_rules! fa_u32 {
 
 #[macro_export]
 macro_rules! fa_u64 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u64!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u64!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u64!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u64!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_u64!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_u64!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_u64!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -871,10 +991,25 @@ macro_rules! fa_u64 {
 
 #[macro_export]
 macro_rules! fa_f32 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_f32!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_f32!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_f32!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_f32!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_f32!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_f32!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_f32!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -889,10 +1024,25 @@ macro_rules! fa_f32 {
 
 #[macro_export]
 macro_rules! fa_f64 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_f64!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_f64!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_f64!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_f64!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_f64!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_f64!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_f64!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -909,10 +1059,25 @@ macro_rules! fa_f64 {
 
 #[macro_export]
 macro_rules! fa_bool {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_bool!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_bool!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_bool!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_bool!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_bool!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_bool!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_bool!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -929,10 +1094,25 @@ macro_rules! fa_bool {
 
 #[macro_export]
 macro_rules! fa_str32 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_str32!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_str32!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_str32!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_str32!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_str32!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_str32!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_str32!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -948,10 +1128,25 @@ macro_rules! fa_str32 {
 #[cfg(feature = "large_string")]
 #[macro_export]
 macro_rules! fa_str64 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_str64!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_str64!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_str64!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_str64!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_str64!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_str64!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_str64!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -969,10 +1164,25 @@ macro_rules! fa_str64 {
 #[cfg(feature = "default_categorical_8")]
 #[macro_export]
 macro_rules! fa_cat8 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat8!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat8!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat8!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat8!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_cat8!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat8!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_cat8!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -988,10 +1198,25 @@ macro_rules! fa_cat8 {
 #[cfg(feature = "extended_categorical")]
 #[macro_export]
 macro_rules! fa_cat16 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat16!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat16!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat16!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat16!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_cat16!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat16!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_cat16!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -1007,10 +1232,25 @@ macro_rules! fa_cat16 {
 #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
 #[macro_export]
 macro_rules! fa_cat32 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat32!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat32!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat32!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat32!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_cat32!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat32!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_cat32!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -1026,10 +1266,25 @@ macro_rules! fa_cat32 {
 #[cfg(feature = "extended_categorical")]
 #[macro_export]
 macro_rules! fa_cat64 {
+    ($name:expr, @vec64 $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat64!($v; $mask))
+    };
+    ($name:expr, @slice $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat64!($v; $mask))
+    };
+    ($name:expr, $v:expr; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat64!($v; $mask))
+    };
+    ($name:expr, $first:expr, $($rest:expr),+ ; $mask:expr) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat64!($first, $($rest),+ ; $mask))
+    };
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_cat64!($first, $($rest),+))
     };
     ($name:expr, @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_cat64!($v))
+    };
+    ($name:expr, @slice $v:expr $(,)?) => {
         $crate::FieldArray::from_arr($name, $crate::arr_cat64!($v))
     };
     ($name:expr, $v:expr $(,)?) => {{
@@ -1783,5 +2038,84 @@ mod fa_macro_tests {
         let fa = fa_i32!("data", 5, 6, 7,);
         assert_eq!(fa.field.name, "data");
         assert_eq!(fa.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod fa_macro_extensions_tests {
+    use crate::{Array, Bitmask, NumericArray, Vec64, vec64};
+
+    fn f64_values_and_mask(fa: &crate::FieldArray) -> (Vec<f64>, Option<Bitmask>) {
+        match &fa.array {
+            Array::NumericArray(NumericArray::Float64(a)) => {
+                (a.data.as_slice().to_vec(), a.null_mask.clone())
+            }
+            _ => panic!("expected Float64 FieldArray"),
+        }
+    }
+
+    #[test]
+    fn fa_f64_vec64_marker_with_mask() {
+        let v: Vec64<f64> = vec64![1.0, 2.0, 3.0];
+        let m = Bitmask::from_bools(&[true, false, true]);
+        let fa = fa_f64!("a", @vec64 v; m);
+        assert_eq!(fa.field.name, "a");
+        let (data, mask) = f64_values_and_mask(&fa);
+        assert_eq!(data, vec![1.0, 2.0, 3.0]);
+        assert_eq!(mask.expect("expected mask").get(1), false);
+    }
+
+    #[test]
+    fn fa_f64_slice_marker_with_mask() {
+        let s: &[f64] = &[1.0, 2.0, 3.0];
+        let m = Bitmask::from_bools(&[false, true, true]);
+        let fa = fa_f64!("a", @slice s; m);
+        let (data, mask) = f64_values_and_mask(&fa);
+        assert_eq!(data, vec![1.0, 2.0, 3.0]);
+        assert_eq!(mask.expect("expected mask").get(0), false);
+    }
+
+    #[test]
+    fn fa_f64_bare_values_with_mask() {
+        let s: &[f64] = &[10.0, 20.0, 30.0];
+        let m = Bitmask::from_bools(&[true, true, false]);
+        let fa = fa_f64!("a", s; m);
+        let (data, mask) = f64_values_and_mask(&fa);
+        assert_eq!(data, vec![10.0, 20.0, 30.0]);
+        assert_eq!(mask.expect("expected mask").get(2), false);
+    }
+
+    #[test]
+    fn fa_f64_literal_multi_with_mask() {
+        let m = Bitmask::from_bools(&[true, false, true]);
+        let fa = fa_f64!("a", 1.0, 2.0, 3.0 ; m);
+        let (data, mask) = f64_values_and_mask(&fa);
+        assert_eq!(data, vec![1.0, 2.0, 3.0]);
+        assert_eq!(mask.expect("expected mask").get(1), false);
+    }
+
+    #[test]
+    fn fa_f64_slice_marker_no_mask() {
+        let s: &[f64] = &[1.0, 2.0];
+        let fa = fa_f64!("a", @slice s);
+        let (data, mask) = f64_values_and_mask(&fa);
+        assert_eq!(data, vec![1.0, 2.0]);
+        assert!(mask.is_none());
+    }
+
+    #[test]
+    fn fa_f64_existing_forms_unchanged() {
+        let single = fa_f64!("a", 42.0);
+        assert_eq!(single.len(), 1);
+
+        let multi = fa_f64!("a", 1.0, 2.0, 3.0);
+        assert_eq!(multi.len(), 3);
+
+        let v: Vec64<f64> = vec64![5.0, 6.0];
+        let from_vec = fa_f64!("a", @vec64 v);
+        assert_eq!(from_vec.len(), 2);
+
+        let empty = fa_f64!("a");
+        assert_eq!(empty.len(), 0);
     }
 }

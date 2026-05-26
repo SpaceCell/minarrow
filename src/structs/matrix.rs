@@ -872,6 +872,51 @@ impl IntoIterator for Matrix {
     }
 }
 
+/// Ergonomic constructor for a [`Matrix`] from `f64` column data.
+///
+/// Both forms build through [`Matrix::try_from_cols`] and unwrap the
+/// result, so a length mismatch panics with the same error shape as the
+/// underlying call.
+///
+/// # Forms
+/// - Literal columns: `mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]` produces
+///   a 3-row, 2-column matrix.
+/// - Slice-of-slices expression: `mat!(&[&[1.0, 2.0, 3.0][..], &[4.0, 5.0, 6.0][..]])`
+///   produces the equivalent matrix from an existing `&[&[f64]]` value.
+///
+/// # Example
+/// ```
+/// use minarrow::mat;
+/// let m = mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+/// assert_eq!((m.n_rows, m.n_cols), (3, 2));
+/// ```
+#[cfg(feature = "matrix")]
+#[macro_export]
+macro_rules! mat {
+    // Literal column form: one or more bracketed column literals.
+    ($([ $($x:expr),+ $(,)? ]),+ $(,)?) => {{
+        $crate::Matrix::try_from_cols(
+            &[
+                $( $crate::FloatArray::<f64>::from_slice(&[$($x),+]) ),+
+            ][..],
+            None,
+        ).unwrap()
+    }};
+
+    // Slice-of-slices form: a single expression evaluating to `&[&[f64]]`.
+    ($cols:expr $(,)?) => {{
+        let cols_ref: &[&[f64]] = $cols;
+        $crate::Matrix::try_from_cols(
+            cols_ref
+                .iter()
+                .map(|c| $crate::FloatArray::<f64>::from_slice(*c))
+                .collect::<::std::vec::Vec<_>>()
+                .as_slice(),
+            None,
+        ).unwrap()
+    }};
+}
+
 #[cfg(all(test, feature = "views"))]
 mod try_as_matrix_zc_tests {
     use super::*;
@@ -1071,5 +1116,43 @@ mod try_as_matrix_zc_tests {
         let view = TableV::from_table(table, 0, 3);
         let err = view.try_as_matrix().expect_err("non-f64 column must reject");
         assert!(matches!(err, MinarrowError::TypeError { .. }));
+    }
+}
+
+#[cfg(test)]
+mod mat_macro_tests {
+    #[test]
+    fn literal_columns_form_builds_3x2() {
+        let m = mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        assert_eq!(m.n_rows, 3);
+        assert_eq!(m.n_cols, 2);
+        assert_eq!(m.col(0), &[1.0, 2.0, 3.0]);
+        assert_eq!(m.col(1), &[4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn slice_of_slices_form_builds_equivalent_matrix() {
+        let cols: &[&[f64]] = &[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]];
+        let m = mat!(cols);
+        let expected = mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+
+        assert_eq!(m.n_rows, expected.n_rows);
+        assert_eq!(m.n_cols, expected.n_cols);
+        for c in 0..m.n_cols {
+            assert_eq!(m.col(c), expected.col(c));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "ColumnLengthMismatch")]
+    fn literal_columns_length_mismatch_panics() {
+        let _ = mat![[1.0, 2.0, 3.0], [4.0, 5.0]];
+    }
+
+    #[test]
+    #[should_panic(expected = "ColumnLengthMismatch")]
+    fn slice_of_slices_length_mismatch_panics() {
+        let cols: &[&[f64]] = &[&[1.0, 2.0, 3.0], &[4.0, 5.0]];
+        let _ = mat!(cols);
     }
 }

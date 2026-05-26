@@ -1211,6 +1211,37 @@ impl RowSelection for Table {
     }
 }
 
+/// Ergonomic constructor for a [`Table`] from named columns.
+///
+/// The first argument is the table name. Subsequent arguments are
+/// `FieldArray` columns, comma-separated. An empty table is built when
+/// only a name is provided.
+///
+/// # Example
+/// ```
+/// use minarrow::{fa_f64, fa_i32, tbl};
+///
+/// let t = tbl!("orders",
+///     fa_i32!("id", 1, 2, 3),
+///     fa_f64!("qty", 10.0, 20.0, 30.0),
+/// );
+/// assert_eq!(t.name, "orders");
+/// assert_eq!(t.cols.len(), 2);
+/// assert_eq!(t.n_rows, 3);
+/// ```
+#[macro_export]
+macro_rules! tbl {
+    ($name:expr, $($col:expr),+ $(,)?) => {
+        $crate::Table::new(
+            ::std::string::String::from($name),
+            ::std::option::Option::Some(::std::vec::Vec::from([$($col),+])),
+        )
+    };
+    ($name:expr) => {
+        $crate::Table::new(::std::string::String::from($name), ::std::option::Option::None)
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1863,5 +1894,55 @@ mod parallel_column_tests {
         let mut names: Vec<&str> = table.par_iter().map(|fa| fa.field.name.as_str()).collect();
         names.sort_unstable(); // Ensure deterministic order for assert
         assert_eq!(names, vec!["flag", "id"]);
+    }
+}
+
+#[cfg(test)]
+mod tbl_macro_tests {
+    use crate::{fa_f64, fa_i32};
+
+    #[test]
+    fn tbl_builds_two_column_table() {
+        let t = tbl!("orders",
+            fa_i32!("id", 1, 2, 3),
+            fa_f64!("qty", 10.0, 20.0, 30.0),
+        );
+        assert_eq!(t.name, "orders");
+        assert_eq!(t.cols.len(), 2);
+        assert_eq!(t.n_rows, 3);
+        assert_eq!(t.cols[0].field.name, "id");
+        assert_eq!(t.cols[1].field.name, "qty");
+    }
+
+    #[test]
+    fn tbl_accepts_string_name() {
+        let name: String = "owned".into();
+        let t = tbl!(name, fa_i32!("x", 1, 2));
+        assert_eq!(t.name, "owned");
+        assert_eq!(t.cols.len(), 1);
+    }
+
+    #[test]
+    fn tbl_name_only_builds_empty_table() {
+        let t = tbl!("scratch");
+        assert_eq!(t.name, "scratch");
+        assert_eq!(t.cols.len(), 0);
+        assert_eq!(t.n_rows, 0);
+    }
+
+    #[test]
+    fn tbl_trailing_comma_accepted() {
+        let t = tbl!("orders",
+            fa_i32!("id", 1, 2),
+            fa_f64!("qty", 5.0, 6.0),
+        );
+        assert_eq!(t.cols.len(), 2);
+    }
+
+    #[test]
+    fn tbl_single_column() {
+        let t = tbl!("single", fa_i32!("x", 1, 2, 3));
+        assert_eq!(t.cols.len(), 1);
+        assert_eq!(t.n_rows, 3);
     }
 }
