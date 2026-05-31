@@ -202,6 +202,7 @@ pub mod ffi {
 pub mod traits {
     #[cfg(feature = "size")]
     pub mod byte_size;
+    pub mod combine;
     pub mod concatenate;
     #[cfg(feature = "chunked")]
     pub mod consolidate;
@@ -290,6 +291,7 @@ pub use structs::variants::string::StringArray;
 pub use structs::views::table_view::TableV;
 #[cfg(feature = "size")]
 pub use traits::byte_size::ByteSize;
+pub use traits::combine::Combine;
 pub use traits::concatenate::Concatenate;
 #[cfg(feature = "chunked")]
 pub use traits::consolidate::Consolidate;
