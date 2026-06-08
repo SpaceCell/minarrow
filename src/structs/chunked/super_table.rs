@@ -792,8 +792,20 @@ impl Consolidate for SuperTable {
     /// Without the `arena` feature, falls back to per-column concat.
     ///
     /// # Panics
-    /// Panics if the SuperTable is empty.
+    /// A zero-batch SuperTable consolidates to a zero-row Table carrying
+    /// the declared schema; an empty schema yields a column-less Table.
     fn consolidate(self) -> Table {
+        if self.batches.is_empty() {
+            let cols: Vec<FieldArray> = self
+                .schema
+                .iter()
+                .map(|field| {
+                    let array = crate::Array::from_arrow_dtype(&field.dtype);
+                    FieldArray::new_arc(field.clone(), array)
+                })
+                .collect();
+            return Table::build(cols, 0, self.name);
+        }
         #[cfg(feature = "arena")]
         {
             self.consolidate_arena()
@@ -807,12 +819,9 @@ impl Consolidate for SuperTable {
 
 impl SuperTable {
     /// Concat-based consolidation: appends batches per column via `concat_array`.
+    /// The zero-batch path is handled at the trait wrapper above.
     #[cfg_attr(feature = "arena", allow(dead_code))]
     fn consolidate_concat(self) -> Table {
-        assert!(
-            !self.batches.is_empty(),
-            "consolidate() called on empty SuperTable"
-        );
         let n_cols = self.schema.len();
         let mut unified_cols = Vec::with_capacity(n_cols);
 
@@ -841,14 +850,10 @@ impl SuperTable {
 
     /// Arena-based consolidation: writes all column buffers into a single
     /// allocation, then slices typed views from the frozen SharedBuffer.
-    /// Reduces allocation count from O(columns) to O(1).
+    /// Reduces allocation count from O(columns) to O(1). The zero-batch
+    /// path is handled at the trait wrapper above.
     #[cfg(feature = "arena")]
     fn consolidate_arena(self) -> Table {
-        assert!(
-            !self.batches.is_empty(),
-            "consolidate() called on empty SuperTable"
-        );
-
         // Fast path: single batch, no copying needed
         if self.batches.len() == 1 {
             let batch = self.batches.into_iter().next().unwrap();

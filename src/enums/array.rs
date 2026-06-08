@@ -2110,6 +2110,88 @@ impl Array {
         }
     }
 
+    /// Zero-row Array of the given ArrowType, built from each variant's Default.
+    pub fn from_arrow_dtype(dtype: &ArrowType) -> Array {
+        match dtype {
+            ArrowType::Null => Array::Null,
+            ArrowType::Boolean => Array::BooleanArray(Arc::new(BooleanArray::<()>::default())),
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::Int8 => Array::from_int8(IntegerArray::<i8>::default()),
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::Int16 => Array::from_int16(IntegerArray::<i16>::default()),
+            ArrowType::Int32 => Array::from_int32(IntegerArray::<i32>::default()),
+            ArrowType::Int64 => Array::from_int64(IntegerArray::<i64>::default()),
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::UInt8 => Array::NumericArray(NumericArray::UInt8(Arc::new(
+                IntegerArray::<u8>::default(),
+            ))),
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::UInt16 => Array::NumericArray(NumericArray::UInt16(Arc::new(
+                IntegerArray::<u16>::default(),
+            ))),
+            ArrowType::UInt32 => Array::NumericArray(NumericArray::UInt32(Arc::new(
+                IntegerArray::<u32>::default(),
+            ))),
+            ArrowType::UInt64 => Array::NumericArray(NumericArray::UInt64(Arc::new(
+                IntegerArray::<u64>::default(),
+            ))),
+            ArrowType::Float32 => Array::NumericArray(NumericArray::Float32(Arc::new(
+                FloatArray::<f32>::default(),
+            ))),
+            ArrowType::Float64 => Array::from_float64(FloatArray::<f64>::default()),
+            ArrowType::String | ArrowType::Utf8View => {
+                Array::from_string32(StringArray::<u32>::default())
+            }
+            #[cfg(feature = "large_string")]
+            ArrowType::LargeString => Array::TextArray(TextArray::String64(Arc::new(
+                StringArray::<u64>::default(),
+            ))),
+            ArrowType::Dictionary(cat_idx) => match cat_idx {
+                #[cfg(feature = "default_categorical_8")]
+                CategoricalIndexType::UInt8 => Array::TextArray(TextArray::Categorical8(
+                    Arc::new(CategoricalArray::<u8>::default()),
+                )),
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                CategoricalIndexType::UInt32 => Array::TextArray(TextArray::Categorical32(
+                    Arc::new(CategoricalArray::<u32>::default()),
+                )),
+                #[cfg(feature = "extended_categorical")]
+                CategoricalIndexType::UInt16 => Array::TextArray(TextArray::Categorical16(
+                    Arc::new(CategoricalArray::<u16>::default()),
+                )),
+                #[cfg(feature = "extended_categorical")]
+                CategoricalIndexType::UInt64 => Array::TextArray(TextArray::Categorical64(
+                    Arc::new(CategoricalArray::<u64>::default()),
+                )),
+                #[allow(unreachable_patterns)]
+                _ => Array::Null,
+            },
+            #[cfg(feature = "datetime")]
+            ArrowType::Date32 | ArrowType::Time32(_) | ArrowType::Duration32(_) => {
+                Array::TemporalArray(crate::TemporalArray::Datetime32(Arc::new(
+                    crate::DatetimeArray::<i32>::default(),
+                )))
+            }
+            #[cfg(feature = "datetime")]
+            ArrowType::Date64
+            | ArrowType::Time64(_)
+            | ArrowType::Duration64(_)
+            | ArrowType::Timestamp(_, _) => Array::TemporalArray(crate::TemporalArray::Datetime64(
+                Arc::new(crate::DatetimeArray::<i64>::default()),
+            )),
+            #[cfg(feature = "datetime")]
+            ArrowType::Interval(crate::IntervalUnit::YearMonth) => {
+                Array::TemporalArray(crate::TemporalArray::Datetime32(Arc::new(
+                    crate::DatetimeArray::<i32>::default(),
+                )))
+            }
+            #[cfg(feature = "datetime")]
+            ArrowType::Interval(_) => Array::TemporalArray(crate::TemporalArray::Datetime64(
+                Arc::new(crate::DatetimeArray::<i64>::default()),
+            )),
+        }
+    }
+
     /// Build an array from a slice of Scalars.
     ///
     /// All scalars must be the same type. The type is inferred from the first

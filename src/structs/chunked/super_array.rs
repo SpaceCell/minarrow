@@ -1104,9 +1104,15 @@ impl Consolidate for SuperArray {
     ///
     /// Without the `arena` feature, falls back to concat fold.
     ///
-    /// # Panics
-    /// Panics if the SuperArray is empty.
+    /// A zero-chunk SuperArray consolidates to a zero-row Array of the
+    /// declared field's dtype, or `Array::Null` when no field is set.
     fn consolidate(self) -> Array {
+        if self.chunks.is_empty() {
+            return match self.field.as_ref() {
+                Some(f) => Array::from_arrow_dtype(&f.dtype),
+                None => Array::Null,
+            };
+        }
         #[cfg(feature = "arena")]
         {
             self.consolidate_arena()
@@ -1119,14 +1125,10 @@ impl Consolidate for SuperArray {
 }
 
 impl SuperArray {
-    /// Concat-based consolidation: folds chunks via `Array::concat`.
+    /// Concat-based consolidation: folds chunks via `Array::concat`. The
+    /// zero-chunk path is handled at the trait wrapper above.
     #[cfg_attr(feature = "arena", allow(dead_code))]
     fn consolidate_concat(self) -> Array {
-        assert!(
-            !self.chunks.is_empty(),
-            "consolidate() called on empty SuperArray"
-        );
-
         self.chunks
             .into_iter()
             .reduce(|acc, arr| acc.concat(arr).expect("Failed to concatenate arrays"))
@@ -1135,13 +1137,9 @@ impl SuperArray {
 
     /// Arena-based consolidation: writes all buffers into a single
     /// allocation, then slices typed views from the frozen SharedBuffer.
+    /// The zero-chunk path is handled at the trait wrapper above.
     #[cfg(feature = "arena")]
     fn consolidate_arena(self) -> Array {
-        assert!(
-            !self.chunks.is_empty(),
-            "consolidate() called on empty SuperArray"
-        );
-
         if self.chunks.len() == 1 {
             return self.chunks.into_iter().next().unwrap();
         }
