@@ -23,7 +23,7 @@
 //! - **Null-aware operations**: Arrow-compatible null mask propagation and handling
 //! - **Build-time SIMD lanes**: Lane counts determined at build time based on target architecture
 //!
-//! ## Supported Operations  
+//! ## Supported Operations
 //! - **Basic arithmetic**: Add, subtract, multiply, divide, remainder, power
 //! - **Fused multiply-add (FMA)**: Hardware-accelerated `a * b + c` operations for floats
 //! - **Datetime arithmetic**: Temporal operations with integer kernel delegation
@@ -132,6 +132,71 @@ macro_rules! impl_apply_int {
     };
 }
 
+/// Destination-passing sibling of `impl_apply_int`. Writes the result into
+/// the caller-provided `out` slice; the masked path also writes into a
+/// caller-provided `out_mask`.
+///
+/// Uses the same SIMD/scalar dispatch and alignment rules as `impl_apply_int`. The
+/// difference is buffer ownership, as here the caller owns it.
+macro_rules! impl_apply_int_into {
+    ($fn_name:ident, $ty:ty, $lanes:expr) => {
+        #[doc = concat!(
+            "Destination-passing variant of `apply_int_", stringify!($ty), "`. Writes the \
+            element-wise integer `ArithmeticOperator` result directly into `out: &mut [", stringify!($ty),
+            "]`. SIMD-accelerated using ", stringify!($lanes), " lanes when both inputs are \
+            64-byte aligned; falls back to scalar otherwise. Returns `Ok(())` on success."
+        )]
+        #[inline(always)]
+        pub fn $fn_name(
+            lhs: &[$ty],
+            rhs: &[$ty],
+            op: ArithmeticOperator,
+            mask: Option<&Bitmask>,
+            out: &mut [$ty],
+            out_mask: Option<&mut Bitmask>,
+        ) -> Result<(), KernelError> {
+            let len = lhs.len();
+            confirm_equal_len("apply numeric: length mismatch", len, rhs.len())?;
+            confirm_equal_len("apply numeric: out length mismatch", len, out.len())?;
+
+            #[cfg(feature = "simd")]
+            {
+                if is_simd_aligned(lhs) && is_simd_aligned(rhs) {
+                    match (mask, out_mask) {
+                        (Some(mask), Some(out_mask)) => {
+                            int_masked_body_simd::<$ty, $lanes>(op, lhs, rhs, mask, out, out_mask);
+                            return Ok(());
+                        }
+                        (None, _) => {
+                            int_dense_body_simd::<$ty, $lanes>(op, lhs, rhs, out);
+                            return Ok(());
+                        }
+                        (Some(_), None) => {
+                            return Err(KernelError::InvalidArguments(
+                                "apply_int_into: input mask supplied without an output mask".to_string()
+                            ));
+                        }
+                    }
+                }
+            }
+
+            match (mask, out_mask) {
+                (Some(mask), Some(out_mask)) => {
+                    int_masked_body_std::<$ty>(op, lhs, rhs, mask, out, out_mask);
+                    Ok(())
+                }
+                (None, _) => {
+                    int_dense_body_std::<$ty>(op, lhs, rhs, out);
+                    Ok(())
+                }
+                (Some(_), None) => Err(KernelError::InvalidArguments(
+                    "apply_int_into: input mask supplied without an output mask".to_string()
+                )),
+            }
+        }
+    };
+}
+
 /// Generates element-wise floating-point arithmetic functions with SIMD/scalar dispatch.
 /// Creates functions that operate on `&[T]` slices, returning `FloatArray<T>` with proper null handling.
 /// Supports hardware-accelerated operations including FMA when available.
@@ -200,6 +265,68 @@ macro_rules! impl_apply_float {
                         null_mask: None,
                     })
                 }
+            }
+        }
+    };
+}
+
+/// Destination-passing sibling of `impl_apply_float`. Writes the result into
+/// the caller-provided `out` slice; the masked path also writes into a
+/// caller-provided `out_mask`.
+macro_rules! impl_apply_float_into {
+    ($fn_name:ident, $ty:ty, $lanes:expr, $dense_body_simd:ident, $masked_body_simd:ident) => {
+        #[doc = concat!(
+            "Destination-passing variant of `apply_float_", stringify!($ty), "`. Writes the \
+            element-wise float `ArithmeticOperator` result directly into `out: &mut [", stringify!($ty),
+            "]`. SIMD-accelerated using ", stringify!($lanes), " lanes when both inputs are \
+            64-byte aligned; falls back to scalar otherwise. Returns `Ok(())` on success."
+        )]
+        #[inline(always)]
+        pub fn $fn_name(
+            lhs: &[$ty],
+            rhs: &[$ty],
+            op: ArithmeticOperator,
+            mask: Option<&Bitmask>,
+            out: &mut [$ty],
+            out_mask: Option<&mut Bitmask>,
+        ) -> Result<(), KernelError> {
+            let len = lhs.len();
+            confirm_equal_len("apply numeric: length mismatch", len, rhs.len())?;
+            confirm_equal_len("apply numeric: out length mismatch", len, out.len())?;
+
+            #[cfg(feature = "simd")]
+            {
+                if is_simd_aligned(lhs) && is_simd_aligned(rhs) {
+                    match (mask, out_mask) {
+                        (Some(mask), Some(out_mask)) => {
+                            $masked_body_simd::<$lanes>(op, lhs, rhs, mask, out, out_mask);
+                            return Ok(());
+                        }
+                        (None, _) => {
+                            $dense_body_simd::<$lanes>(op, lhs, rhs, out);
+                            return Ok(());
+                        }
+                        (Some(_), None) => {
+                            return Err(KernelError::InvalidArguments(
+                                "apply_float_into: input mask supplied without an output mask".to_string()
+                            ));
+                        }
+                    }
+                }
+            }
+
+            match (mask, out_mask) {
+                (Some(mask), Some(out_mask)) => {
+                    float_masked_body_std::<$ty>(op, lhs, rhs, mask, out, out_mask);
+                    Ok(())
+                }
+                (None, _) => {
+                    float_dense_body_std::<$ty>(op, lhs, rhs, out);
+                    Ok(())
+                }
+                (Some(_), None) => Err(KernelError::InvalidArguments(
+                    "apply_float_into: input mask supplied without an output mask".to_string()
+                )),
             }
         }
     };
@@ -386,6 +513,19 @@ impl_apply_int!(apply_int_i8, i8, W8);
 #[cfg(feature = "extended_numeric_types")]
 impl_apply_int!(apply_int_u8, u8, W8);
 
+impl_apply_int_into!(apply_int_i32_into, i32, W32);
+impl_apply_int_into!(apply_int_u32_into, u32, W32);
+impl_apply_int_into!(apply_int_i64_into, i64, W64);
+impl_apply_int_into!(apply_int_u64_into, u64, W64);
+#[cfg(feature = "extended_numeric_types")]
+impl_apply_int_into!(apply_int_i16_into, i16, W16);
+#[cfg(feature = "extended_numeric_types")]
+impl_apply_int_into!(apply_int_u16_into, u16, W16);
+#[cfg(feature = "extended_numeric_types")]
+impl_apply_int_into!(apply_int_i8_into, i8, W8);
+#[cfg(feature = "extended_numeric_types")]
+impl_apply_int_into!(apply_int_u8_into, u8, W8);
+
 impl_apply_float!(
     apply_float_f32,
     f32,
@@ -395,6 +535,21 @@ impl_apply_float!(
 );
 impl_apply_float!(
     apply_float_f64,
+    f64,
+    W64,
+    float_dense_body_f64_simd,
+    float_masked_body_f64_simd
+);
+
+impl_apply_float_into!(
+    apply_float_f32_into,
+    f32,
+    W32,
+    float_dense_body_f32_simd,
+    float_masked_body_f32_simd
+);
+impl_apply_float_into!(
+    apply_float_f64_into,
     f64,
     W64,
     float_dense_body_f64_simd,

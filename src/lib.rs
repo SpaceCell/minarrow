@@ -125,6 +125,7 @@ pub mod kernels {
     pub mod bitmask;
     #[cfg(feature = "broadcast")]
     pub mod broadcast;
+    pub mod output_buffer;
     #[cfg(feature = "views")]
     pub mod routing;
     pub mod string;
@@ -246,6 +247,7 @@ pub use enums::value::Value;
 pub use structs::arena::{AAMaker, Arena, ArenaRegion};
 pub use structs::bitmask::Bitmask;
 pub use structs::buffer::Buffer;
+pub use kernels::output_buffer::OutputBuffer;
 #[cfg(feature = "chunked")]
 pub use structs::chunked::{
     super_array::{RechunkStrategy, SuperArray},
