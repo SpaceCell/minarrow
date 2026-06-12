@@ -51,7 +51,7 @@ ahash = { version = "0.8.12", optional = true }
 hashbrown = { version = "0.15", optional = true }
 parking_lot = { version = "0.12", optional = true }
 regex = { version = "1.12.3", optional = true }
-vec64 = { version = "0.4.6" }
+vec64 = { version = "0.4.7" }
 log = "0.4.29"
 
 [dev-dependencies]
