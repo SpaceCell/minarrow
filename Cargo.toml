@@ -273,6 +273,15 @@ vmap64 = ["vec64/mmap"]
 # Switches `Bitmask::len` from a plain field to an `AtomicUsize`, allowing
 # the bit count to be published via Release on write and observed via
 # Acquire on read. Composes with `Storage::LBuffer`-backed buffers.
+#
+# LBuffer notably breaks Arrow invariants that a buffer does not change size after
+# being allocated, and thus one should be very careful when working in any
+# shared memory and/or FFI contexts, that would require additional sychronisation
+# primitives Minarrow does not provide. Within a single rust process, Minarrow
+# arrays backed by buffer handle it within standard rust semantics.
+#
+# Caution: lbuffer experimental feature and is not currently recommended
+# for production workloads.
 lbuffer = []
 
 default = [
@@ -382,22 +391,10 @@ name = "test_selection"
 path = "tests/test_selection.rs"
 required-features = ["select", "views"]
 
-# LBuffer feed example
-[[example]]
-name = "lbuffer_feed"
-path = "examples/lbuffer_feed.rs"
-required-features = ["lbuffer"]
-
 # LBuffer concurrent stress test
 [[test]]
 name = "lbuffer_stress"
 path = "tests/lbuffer_stress.rs"
-required-features = ["lbuffer"]
-
-# LBuffer producer/consumer benchmark
-[[bench]]
-name = "lbuffer"
-harness = false
 required-features = ["lbuffer"]
 
 [[bench]]

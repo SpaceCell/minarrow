@@ -471,25 +471,12 @@ impl<T> Buffer<T> {
         self.as_slice().len()
     }
 
-    /// Returns the number of elements in the buffer.
+    /// Returns the number of elements in the buffer. For an LBuffer-backed
+    /// buffer this is the producer's currently published length, including the
+    /// trailing validity byte when the backing is a mask buffer.
     #[cfg(feature = "lbuffer")]
     #[inline]
     pub fn len(&self) -> usize {
-        match &self.storage {
-            Storage::Owned(vec) => vec.len(),
-            Storage::Shared { len, .. } => *len,
-            // LBuffer-backed: follow llen().
-            Storage::LBuffer(_) => self.llen(),
-        }
-    }
-
-    /// Length following the LBuffer backing. Matches [`len`](Self::len) for
-    /// owned and shared storage. For an LBuffer-backed buffer it reads the
-    /// producer's currently published length, including the trailing validity
-    /// byte when the backing is a mask buffer.
-    #[cfg(feature = "lbuffer")]
-    #[inline]
-    pub fn llen(&self) -> usize {
         match &self.storage {
             Storage::Owned(vec) => vec.len(),
             Storage::Shared { len, .. } => *len,
@@ -497,24 +484,15 @@ impl<T> Buffer<T> {
         }
     }
 
-    /// A consistent read of the mask state when this buffer is LBuffer-backed
-    /// by a mask buffer; `None` otherwise. See [`LBufferV::mask_state`].
+    /// The backing [`LBufferV`] when this buffer is LBuffer-backed; `None`
+    /// for owned or shared storage.
     #[cfg(feature = "lbuffer")]
     #[inline]
-    pub(crate) fn lbuffer_mask_state(&self) -> Option<(*const u8, usize, usize, bool)> {
+    pub(crate) fn lbuffer_view(&self) -> Option<&LBufferV<T>> {
         match &self.storage {
-            Storage::LBuffer(view) => view.mask_state(),
+            Storage::LBuffer(view) => Some(view),
             _ => None,
         }
-    }
-
-    /// Published bit count when this buffer is LBuffer-backed by a mask buffer;
-    /// `None` otherwise.
-    #[cfg(feature = "lbuffer")]
-    #[inline]
-    pub(crate) fn lbuffer_mask_bits(&self) -> Option<usize> {
-        let (_, settled, filled, _) = self.lbuffer_mask_state()?;
-        Some(settled * 8 + filled)
     }
 
     /// Returns true if the buffer is empty.

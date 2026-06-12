@@ -14,32 +14,32 @@
 
 //! # Concurrent correctness stress for LBuffer-backed columns
 //!
-//! A single producer fills a window, seals it, and rolls a fresh one
-//! continuously for a wall-clock duration. Each reader thread tails the live
-//! window the whole time. There is no shared mutable structure and no lock: the
-//! per-tick column growth is published through the atomic length, and the only
-//! cross-thread handoff is the rolled window, broadcast to each reader over its
-//! own channel. Readers tail the current window lock-free and pick up the next
-//! when it arrives.
+//! A single writer fills a fixed-capacity window, seals it, and opens a
+//! fresh one continuously for a wall-clock duration. Reader threads read
+//! the current window throughout. There is no shared mutable structure and
+//! no lock: column growth is published through the atomic length, and the
+//! only cross-thread handoff is the replaced window, broadcast to each
+//! reader over its own channel. Readers access the current window
+//! lock-free and pick up the next when it arrives.
 //!
-//! This validates correctness, not throughput - readers deliberately re-read
-//! `n_rows()` every iteration to maximise contention and expose ordering bugs.
-//! For throughput see `benches/lbuffer.rs`.
+//! This validates correctness, not throughput - readers deliberately
+//! re-read `n_rows()` every iteration to maximise contention and expose
+//! ordering bugs.
 //!
-//! The producer writes a known function of the global row index, so any reader
-//! can verify every value it observes; a torn read, a stale base, or an
-//! uninitialised slot would mismatch.
+//! The writer stores a known function of the global row index, so any
+//! reader can verify every value it observes; a torn read, a stale base,
+//! or an uninitialised slot would mismatch.
 //!
-//! Build and run:
+//! Run:
 //!
 //! ```ignore
 //! cargo test --release --features lbuffer --test lbuffer_stress -- --nocapture
 //! ```
 //!
-//! ## Knobs
+//! ## Configuration
 //!
-//! - `STRESS_SECS=N`    - wall-clock seconds the producer runs (default 2).
-//! - `STRESS_WINDOW=N`  - rows per window before a roll (default 1_000_000).
+//! - `STRESS_SECS=N`    - wall-clock seconds the writer runs (default 2).
+//! - `STRESS_WINDOW=N`  - rows per window (default 1_000_000).
 //! - `STRESS_READERS=N` - concurrent reader threads (default 4).
 //!
 //! ## Under ThreadSanitizer
@@ -68,13 +68,13 @@ use std::time::{Duration, Instant};
 
 use minarrow::{Array, FieldArray, FloatArray, IntegerArray, LBuffer, Table};
 
-/// Producer's value function for the price column, keyed by global row index.
+/// Writer's value function for the price column, keyed by global row index.
 #[inline]
 fn price_at(row: usize) -> f64 {
     (row as f64) * 0.5 + 100.0
 }
 
-/// Producer's value function for the volume column, keyed by global row index.
+/// Writer's value function for the volume column, keyed by global row index.
 #[inline]
 fn volume_at(row: usize) -> i64 {
     (row as i64) * 7 + 3
@@ -89,7 +89,7 @@ fn env_or<T: FromStr>(key: &str, default: T) -> T {
 }
 
 /// Builds a two-column `Table` backed by `LBuffer`s and returns it with the
-/// producer handles that feed its columns.
+/// writer handles for its columns.
 fn open_window(window: usize) -> (LBuffer<f64>, LBuffer<i64>, Arc<Table>) {
     let price = LBuffer::<f64>::with_capacity(window);
     let volume = LBuffer::<i64>::with_capacity(window);
@@ -115,8 +115,8 @@ fn open_window(window: usize) -> (LBuffer<f64>, LBuffer<i64>, Arc<Table>) {
     (price, volume, table)
 }
 
-/// Verifies a window's columns against the producer's functions over the global
-/// range `[start, start + n)`.
+/// Verifies a window's columns against the writer's value functions over the
+/// global range `[start, start + n)`.
 fn verify_window(table: &Table, start: usize, n: usize) {
     let price = table.cols[0].array.num_ref().unwrap().f64_ref().unwrap();
     let volume = table.cols[1].array.num_ref().unwrap().i64_ref().unwrap();
@@ -150,14 +150,14 @@ fn lbuffer_table_min_floor_is_deterministic() {
 }
 
 #[test]
-fn lbuffer_concurrent_lock_free_tailing() {
+fn lbuffer_concurrent_lock_free_reads() {
     let secs = env_or("STRESS_SECS", 2u64);
     let window = env_or("STRESS_WINDOW", 1_000_000usize);
     let readers = env_or("STRESS_READERS", 4usize);
 
     let done = Arc::new(AtomicBool::new(false));
 
-    // One channel per reader carries each rolled window, with the global row
+    // One channel per reader carries each new window, with the global row
     // index its first row maps to.
     let mut senders = Vec::with_capacity(readers);
     let mut reader_handles = Vec::with_capacity(readers);
@@ -179,9 +179,9 @@ fn lbuffer_concurrent_lock_free_tailing() {
                         let volume = table.cols[1].array.num_ref().unwrap().i64_ref().unwrap();
                         let price_slice = price.data.as_slice();
                         let volume_slice = volume.data.as_slice();
-                        assert!(price_slice.len() >= n, "reader {reader_id}: price trailed the floor");
-                        assert!(volume_slice.len() >= n, "reader {reader_id}: volume trailed the floor");
-                        // Hot-check the newest row - the slot most exposed to a
+                        assert!(price_slice.len() >= n, "reader {reader_id}: price below the row floor");
+                        assert!(volume_slice.len() >= n, "reader {reader_id}: volume below the row floor");
+                        // Check the newest row - the slot most exposed to a
                         // torn read - plus the head row.
                         let last = start + n - 1;
                         assert_eq!(price_slice[n - 1], price_at(last), "reader {reader_id}: torn price");
@@ -200,7 +200,8 @@ fn lbuffer_concurrent_lock_free_tailing() {
         }));
     }
 
-    // Producer: roll windows continuously for the configured duration.
+    // Writer fills and replaces windows continuously for the configured
+    // duration.
     let (mut price, mut volume, mut table) = open_window(window);
     for tx in &senders {
         tx.send((0, Arc::clone(&table))).unwrap();
@@ -210,7 +211,7 @@ fn lbuffer_concurrent_lock_free_tailing() {
     let start = Instant::now();
     let duration = Duration::from_secs(secs);
 
-    'feed: loop {
+    'fill: loop {
         if start.elapsed() >= duration {
             break;
         }
@@ -226,8 +227,8 @@ fn lbuffer_concurrent_lock_free_tailing() {
             }
         }
         if filled < window {
-            // Timed out mid-window: keep it as the final live tail.
-            break 'feed;
+            // Timed out mid-window: keep it as the final window.
+            break 'fill;
         }
         price.seal();
         volume.seal();
@@ -252,29 +253,29 @@ fn lbuffer_concurrent_lock_free_tailing() {
         assert!(max_global <= total, "reader observed more rows than produced");
     }
 
-    // Authoritative reconciliation on the final live window.
+    // Reconcile the window.
     let n = table.n_rows();
     verify_window(&table, chunk_start, n);
     assert_eq!(chunk_start + n, total, "final window does not reconcile with produced rows");
     assert!(total > 0, "stress produced no rows");
 
-    println!("verified {total} rows across the live tail with {readers} readers, no torn reads");
+    println!("verified {total} rows with {readers} readers, no torn reads");
 }
 
-/// Null-ness of a row, keyed by global index, so any reader can verify it.
+/// Whether the row at global index `i` is null, so any reader can verify it.
 #[inline]
 fn is_null_row(i: usize) -> bool {
     i % 7 == 0 || i % 13 == 0
 }
 
 #[test]
-fn masked_concurrent_validity_tailing() {
+fn masked_concurrent_validity_reads() {
     let secs = env_or("STRESS_SECS", 2u64);
     let cap = env_or("STRESS_WINDOW", 8_000_000usize);
     let readers = env_or("STRESS_READERS", 4usize);
 
-    // One masked window. Readers tail the value buffer and the validity mask,
-    // both LBuffer-backed views over the same producer.
+    // One masked window. Readers share the value buffer and the validity
+    // mask, both LBuffer-backed views over the same writer.
     let mut buf = LBuffer::<i64>::with_capacity_masked(cap);
     let mask = buf.as_bitmask();
     let data = buf.as_buffer();
@@ -289,8 +290,8 @@ fn masked_concurrent_validity_tailing() {
             let mut max_seen = 0usize;
             loop {
                 // The value length is the authoritative row count: the mask
-                // tail advances before the value length is published, so the
-                // mask always covers `[0, n)`.
+                // cursor advances before the value length is published, so
+                // the mask always covers `[0, n)`.
                 let n = data.len();
                 assert!(n >= max_seen, "reader {reader_id}: rows went backwards");
                 if n > 0 {
@@ -340,7 +341,7 @@ fn masked_concurrent_validity_tailing() {
         assert!(observed <= produced, "reader observed more rows than produced");
     }
 
-    // Authoritative reconciliation on the sealed window.
+    // Reconcile the window.
     assert_eq!(mask.len(), produced);
     assert_eq!(data.len(), produced);
     let mut nulls = 0usize;
@@ -357,5 +358,5 @@ fn masked_concurrent_validity_tailing() {
     assert_eq!(mask.count_zeros(), nulls, "null count mismatch");
     assert!(produced > 0, "stress produced no rows");
 
-    println!("verified {produced} rows ({nulls} nulls) across the lmask with {readers} readers, no torn validity");
+    println!("verified {produced} rows ({nulls} nulls) with {readers} readers, no torn validity");
 }

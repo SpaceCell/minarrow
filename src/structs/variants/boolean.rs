@@ -114,13 +114,13 @@ pub struct BooleanArray<T> {
     pub null_mask: Option<Bitmask>,
     /// Number of logically populated bits.
     ///
-    /// For an owned BooleanArray this is the canonical element count - it
+    /// For an owned BooleanArray this is the element count - it
     /// can be less than `data.len()` when the underlying [`Bitmask`] was
     /// created with reserved capacity (e.g. via `with_capacity`). For an
-    /// LBuffer-backed BooleanArray the live count is the underlying
+    /// LBuffer-backed BooleanArray the count is the underlying
     /// Bitmask's published bit count, read via [`len`](Self::len). The
     /// field is private under the `lbuffer` feature so callers go through
-    /// the method and observe the live value.
+    /// the method and observe the current value.
     #[cfg(not(feature = "lbuffer"))]
     pub len: usize,
     #[cfg(feature = "lbuffer")]
@@ -139,7 +139,7 @@ impl<T> BooleanArray<T> {
     #[inline]
     pub fn len(&self) -> usize {
         #[cfg(feature = "lbuffer")]
-        if self.data.bits.lbuffer_mask_state().is_some() {
+        if self.data.is_lbuffer_backed() {
             return self.data.len();
         }
         self.len
@@ -401,12 +401,12 @@ impl MaskedArray for BooleanArray<()> {
     }
 
     fn len(&self) -> usize {
-        // For an LBuffer-backed BooleanArray the live element count is the
+        // For an LBuffer-backed BooleanArray the element count is the
         // underlying Bitmask's published bit count. For an owned array the
-        // stored `self.len` is the canonical populated-bit count, which can
-        // differ from `data.len()` after `with_capacity`.
+        // stored `self.len` is the populated-bit count, which can differ
+        // from `data.len()` after `with_capacity`.
         #[cfg(feature = "lbuffer")]
-        if self.data.bits.lbuffer_mask_state().is_some() {
+        if self.data.is_lbuffer_backed() {
             return self.data.len();
         }
         self.len

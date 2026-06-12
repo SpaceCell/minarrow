@@ -132,12 +132,8 @@ macro_rules! impl_apply_int {
     };
 }
 
-/// Destination-passing sibling of `impl_apply_int`. Writes the result into
-/// the caller-provided `out` slice; the masked path also writes into a
-/// caller-provided `out_mask`.
-///
-/// Uses the same SIMD/scalar dispatch and alignment rules as `impl_apply_int`. The
-/// difference is buffer ownership, as here the caller owns it.
+/// `into` apply variant that writes the result into the caller-provided `out` slice
+/// to avoid allocation overhead. The null mask path writes into a caller-provided `out_mask`.
 macro_rules! impl_apply_int_into {
     ($fn_name:ident, $ty:ty, $lanes:expr) => {
         #[doc = concat!(
@@ -270,9 +266,8 @@ macro_rules! impl_apply_float {
     };
 }
 
-/// Destination-passing sibling of `impl_apply_float`. Writes the result into
-/// the caller-provided `out` slice; the masked path also writes into a
-/// caller-provided `out_mask`.
+/// `into` apply variant that writes the result into the caller-provided `out` slice
+/// to avoid allocation overhead. The null mask path writes into a caller-provided `out_mask`.
 macro_rules! impl_apply_float_into {
     ($fn_name:ident, $ty:ty, $lanes:expr, $dense_body_simd:ident, $masked_body_simd:ident) => {
         #[doc = concat!(

@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        config: [default, no-default-features, all-features]
+        config: [default, no-default-features, all-features, lbuffer]
     env:
       # Each config builds the full Polars/arrow-rs tree into every example
       # binary; trimming debug info keeps the target dir within disk limits.
@@ -51,6 +51,7 @@ jobs:
             default)             echo "args=" >> "$GITHUB_OUTPUT" ;;
             no-default-features) echo "args=--no-default-features" >> "$GITHUB_OUTPUT" ;;
             all-features)        echo "args=--all-features" >> "$GITHUB_OUTPUT" ;;
+            lbuffer)             echo "args=--features lbuffer" >> "$GITHUB_OUTPUT" ;;
           esac
 
       - run: cargo +nightly test ${{ steps.flags.outputs.args }} -- --quiet
@@ -65,7 +66,7 @@ jobs:
         target:
           - aarch64-unknown-linux-gnu
           - armv7-unknown-linux-gnueabihf
-        config: [default, no-default-features, all-features]
+        config: [default, no-default-features, all-features, lbuffer]
         include:
           - target: aarch64-unknown-linux-gnu
             apt_pkg: gcc-aarch64-linux-gnu
@@ -108,6 +109,7 @@ jobs:
             default)             echo "args=" >> "$GITHUB_OUTPUT" ;;
             no-default-features) echo "args=--no-default-features" >> "$GITHUB_OUTPUT" ;;
             all-features)        echo "args=--all-features" >> "$GITHUB_OUTPUT" ;;
+            lbuffer)             echo "args=--features lbuffer" >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: cargo check (${{ matrix.target }})

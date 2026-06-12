@@ -21,21 +21,19 @@
 
 use crate::enums::time_units::TimeUnit;
 
-/// Reads two ASCII digits at `at` as an integer.
+/// Reads `width` ASCII decimal digits at `at` as an integer, returning `None`
+/// if any byte in the range is not a digit.
 #[inline(always)]
-fn two_digits(bytes: &[u8], at: usize) -> Option<i64> {
-    let d0 = bytes[at].wrapping_sub(b'0');
-    let d1 = bytes[at + 1].wrapping_sub(b'0');
-    if d0 > 9 || d1 > 9 {
-        return None;
+fn ascii_decimal(bytes: &[u8], at: usize, width: usize) -> Option<i64> {
+    let mut value = 0;
+    for &byte in &bytes[at..at + width] {
+        let digit = byte.wrapping_sub(b'0');
+        if digit > 9 {
+            return None;
+        }
+        value = value * 10 + digit as i64;
     }
-    Some(d0 as i64 * 10 + d1 as i64)
-}
-
-/// Reads four ASCII digits at `at` as an integer.
-#[inline(always)]
-fn four_digits(bytes: &[u8], at: usize) -> Option<i64> {
-    Some(two_digits(bytes, at)? * 100 + two_digits(bytes, at + 2)?)
+    Some(value)
 }
 
 /// Days from the Unix epoch to the given civil date, via Howard Hinnant's
@@ -84,27 +82,27 @@ pub fn parse_iso8601_utc_ns(s: &str) -> Option<i64> {
         return None;
     }
 
-    let year = four_digits(bytes, 0)?;
+    let year = ascii_decimal(bytes, 0, 4)?;
     if bytes[4] != b'-' {
         return None;
     }
-    let month = two_digits(bytes, 5)?;
+    let month = ascii_decimal(bytes, 5, 2)?;
     if bytes[7] != b'-' {
         return None;
     }
-    let day = two_digits(bytes, 8)?;
+    let day = ascii_decimal(bytes, 8, 2)?;
     if !matches!(bytes[10], b'T' | b't' | b' ') {
         return None;
     }
-    let hour = two_digits(bytes, 11)?;
+    let hour = ascii_decimal(bytes, 11, 2)?;
     if bytes[13] != b':' {
         return None;
     }
-    let minute = two_digits(bytes, 14)?;
+    let minute = ascii_decimal(bytes, 14, 2)?;
     if bytes[16] != b':' {
         return None;
     }
-    let second = two_digits(bytes, 17)?;
+    let second = ascii_decimal(bytes, 17, 2)?;
 
     // Leap seconds arrive as :60 on the wire and roll into the next
     // minute through the epoch arithmetic below.
@@ -150,8 +148,8 @@ pub fn parse_iso8601_utc_ns(s: &str) -> Option<i64> {
             if cursor + 6 != bytes.len() || bytes[cursor + 3] != b':' {
                 return None;
             }
-            let offset_hour = two_digits(bytes, cursor + 1)?;
-            let offset_minute = two_digits(bytes, cursor + 4)?;
+            let offset_hour = ascii_decimal(bytes, cursor + 1, 2)?;
+            let offset_minute = ascii_decimal(bytes, cursor + 4, 2)?;
             if offset_hour > 23 || offset_minute > 59 {
                 return None;
             }

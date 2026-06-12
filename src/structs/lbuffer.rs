@@ -12,47 +12,52 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! # **LBuffer Module** - *Single-producer, multi-reader, append-only typed buffer*
+//! # **LBuffer Module** - *Single-writer, multi-reader, append-only typed buffer*
 //!
-//! `LBuffer<T>` is the producer-side handle on a fixed-capacity, stable-base
-//! typed buffer. [`LBufferV`] is the consumer-side live view: it tails the
-//! producer's published state via an `Acquire`-loaded length on each call,
-//! with no atomics on the indexed access path itself.
+//! `LBuffer<T>` is the writer-side handle on a fixed-capacity typed buffer
+//! with a stable base address. [`LBufferV`] is the shared read view: each
+//! call reads the published length with one `Acquire` load, and indexed
+//! access carries no atomics at all.
 //!
-//! ## Producer / consumer split
+//! ## Design
 //!
-//! `LBuffer` is created via [`LBuffer::with_capacity`] and is the sole writer.
-//! `push` is `&mut self`, so the single-producer invariant is compile-enforced.
-//! Any number of [`LBufferV`] handles can be obtained from a `LBuffer` via
-//! [`LBuffer::view`]; they share the underlying allocation through an `Arc`
-//! and outlive the producer if needed.
+//! - One contiguous allocation, fixed capacity, stable base address for the
+//!   buffer's lifetime. `LBuffer` never reallocates; `push` returns
+//!   `Err(value)` once at capacity.
+//! - `push` is `&mut self`, so the single-writer invariant is
+//!   compile-enforced.
+//! - Any number of [`LBufferV`] handles can be created via
+//!   [`LBuffer::view`]. They share the allocation through an `Arc` and may
+//!   outlive the `LBuffer`.
 //!
 //! ## Memory model
 //!
-//! The buffer holds one allocation with a stable base for its lifetime. The
-//! producer writes elements into `[len, capacity)` through the base pointer,
-//! then publishes the new element via a `Release` store on the atomic length.
+//! The writer fills `[len, capacity)` through the base pointer, then
+//! publishes each element with a `Release` store on the atomic length.
 //! Readers `Acquire`-load the length and access `[0, len)` through the same
-//! stable base. The two regions are disjoint by construction. The atomic
-//! length carries happens-before from each write to any reader that observes
-//! it.
+//! stable base. The two regions are disjoint by construction, and the
+//! atomic length carries happens-before from every write to any reader
+//! that observes it.
 //!
-//! Growth of total system data lives one layer up: a higher type, typically
-//! [`crate::SuperArray`] or [`crate::SuperTable`], holds a sequence of rolled
-//! `LBuffer`s as historical chunks and starts a fresh live `LBuffer` when the
-//! current one nears capacity. `LBuffer` itself never reallocates; `push`
-//! returns `Err(value)` once at capacity, and the caller is responsible for
-//! rolling before that point in steady operation.
+//! The published length is monotonically non-decreasing: a view created at
+//! any point observes elements appended afterwards, and any length a reader
+//! has observed remains a valid bound for the buffer's lifetime.
 //!
-//! ## End of stream
+//! ## Sealing
 //!
-//! [`LBuffer::seal`] flips an atomic flag on the shared cell, marking that
-//! no further writes will occur. After seal, `push` returns `Err(value)` and
-//! the published length is final. Consumers detect end of stream via
-//! [`LBufferV::is_sealed`]. The producer also auto-seals on `Drop`: if the
-//! producer handle goes away without an explicit seal, the flag is set so
-//! consumers still see a clean end-of-stream signal. Allocation cleanup
-//! happens through the shared `Arc` once the producer and all views drop.
+//! [`LBuffer::seal`] flips an atomic flag marking the contents final. After
+//! seal, `push` returns `Err(value)` and the published length no longer
+//! changes. Views observe the flag via [`LBufferV::is_sealed`]. Dropping
+//! the `LBuffer` also seals, so views see the flag even when the writer
+//! drops without calling `seal`. The allocation is released through the
+//! shared `Arc` once the `LBuffer` and all views drop.
+//!
+//! ## Validity masks
+//!
+//! [`LBuffer::with_capacity_masked`] pairs the value buffer with a
+//! bit-packed validity buffer. [`LBuffer::push`] and
+//! [`LBuffer::push_null`] keep the two in step, and
+//! [`LBuffer::as_bitmask`] shares the validity as a [`crate::Bitmask`].
 //!
 //! ## Allocation
 //!
@@ -61,13 +66,11 @@
 //! the mmap path and pick up `MADV_HUGEPAGE` automatically; smaller
 //! allocations use the 64-byte aligned heap path.
 //!
-//! ## Hot-path API
+//! ## Access pattern
 //!
-//! The recommended consumer pattern caches the length once via
-//! [`LBufferV::len`] (or via [`LBufferV::as_slice`], which carries it in the
-//! slice header) and indexes the buffer without further atomics. The
-//! published length is monotonically non-decreasing, so any observed bound
-//! remains a valid upper bound for the buffer's lifetime.
+//! For tight loops, capture the length once via [`LBufferV::len`] (or via
+//! [`LBufferV::as_slice`], which carries it in the slice header) and index
+//! without further atomics:
 //!
 //! ```
 //! # use minarrow::LBuffer;
@@ -75,7 +78,7 @@
 //! for i in 0..100u64 { buf.push(i).unwrap(); }
 //! let v = buf.view();
 //!
-//! // Pattern B: cache the bound once, then index with no atomics.
+//! // Capture the bound once, then index with no atomics.
 //! let n = v.len();                            // one Acquire load
 //! let mut sum = 0u64;
 //! for i in 0..n {
@@ -98,39 +101,37 @@ use crate::{Bitmask, Buffer, Vec64Alloc};
 
 /// # LBuffer
 ///
-/// Producer-side handle on a single-producer, multi-reader, append-only
+/// Writer-side handle on a single-writer, multi-reader, append-only
 /// typed buffer.
 ///
-/// One contiguous allocation, fixed capacity, stable base for the buffer's
-/// lifetime. `push` is `&mut self`, so there is one producer; views obtained
-/// via [`view`](Self::view) tail the producer's published state.
+/// One contiguous allocation, fixed capacity, stable base address for the
+/// buffer's lifetime. `push` is `&mut self`, so there is one writer; views
+/// created via [`view`](Self::view) read its published state.
 ///
-/// Dropping the `LBuffer` auto-seals: even when the producer doesn't call
-/// [`seal`](Self::seal) explicitly, the act of releasing the producer
-/// handle marks the buffer as sealed so consumers detect end of stream.
+/// Dropping the `LBuffer` seals it, so views report sealed via
+/// [`LBufferV::is_sealed`] even when [`seal`](Self::seal) was never called.
 pub struct LBuffer<T, const MASK: bool = false> {
     inner: Arc<LBufferInner<T>>,
     /// Validity buffer for a masked column. `Some` only when `MASK` is true.
-    /// Holds the committed bit-packed validity bytes plus the in-flight
-    /// [`LMaskTail`], and is shared with any [`Bitmask`] taken through
-    /// [`as_bitmask`](LBuffer::as_bitmask). `None` for an ordinary buffer,
-    /// which carries no validity and emits no mask code on its push path.
+    /// Holds the bit-packed validity bytes plus the [`LMaskTail`] fill
+    /// cursor, and is shared with any [`Bitmask`] created through
+    /// [`as_bitmask`](LBuffer::as_bitmask). `None` for an unmasked buffer.
     mask: Option<Arc<LBufferInner<u8>>>,
 }
 
-/// Shared cell between the producer and any outstanding views.
+/// Shared cell between the writer and any outstanding views.
 struct LBufferInner<T> {
     /// Stable base of the backing allocation. Set at construction, never
     /// changes for the cell's lifetime.
     base: NonNull<T>,
     /// Fixed element capacity.
     capacity: usize,
-    /// Published element count. Producer `Release`-stores after each
-    /// element write; readers `Acquire`-load to see new rows.
+    /// Published element count. The writer `Release`-stores after each
+    /// element write; readers `Acquire`-load to see new elements.
     len: AtomicUsize,
-    /// Sealed flag. Producer `Release`-stores `true` once no further
-    /// writes will occur; readers `Acquire`-load to detect end of stream.
-    /// After seal the published length is fixed and `push` returns `Err`.
+    /// Sealed flag. The writer `Release`-stores `true` once no further
+    /// writes will occur; readers `Acquire`-load it. After seal the
+    /// published length is fixed and `push` returns `Err`.
     sealed: AtomicBool,
     /// Fill position of a mask buffer. `Some` only on the cell of a validity
     /// buffer; `None` on a value buffer. All the validity bytes - settled and
@@ -174,7 +175,7 @@ impl LMaskTail {
         ((index as u64) << Self::INDEX_SHIFT) | count as u64
     }
 
-    /// Load `(byte_index, filled)`. The `Acquire` pairs with the producer's
+    /// Load `(byte_index, filled)`. The `Acquire` pairs with the writer's
     /// `Release` in [`publish`](Self::publish), carrying the last byte's
     /// writes to the reader.
     #[inline]
@@ -183,27 +184,27 @@ impl LMaskTail {
         ((v >> Self::INDEX_SHIFT) as usize, (v & Self::COUNT_MASK) as usize)
     }
 
-    /// Producer-side load of its own cursor. `Relaxed` is sound: the producer
-    /// is the sole writer (enforced by `&mut self` on push), so single-location
-    /// coherence makes it observe its own most recent store.
+    /// Writer-side load of its own cursor. `Relaxed` is sound: the writer
+    /// is the sole mutator (enforced by `&mut self` on push), so
+    /// single-location coherence makes it observe its own most recent store.
     #[inline]
     fn load_relaxed(&self) -> (usize, usize) {
         let v = self.cell.load(Ordering::Relaxed);
         ((v >> Self::INDEX_SHIFT) as usize, (v & Self::COUNT_MASK) as usize)
     }
 
-    /// Publish the cursor with `Release`, after the frontier byte's writes.
+    /// Publish the cursor with `Release`, after the last byte's writes.
     #[inline]
     fn publish(&self, index: usize, count: usize) {
         self.cell.store(Self::pack(index, count), Ordering::Release);
     }
 }
 
-// Safety: the producer writes to `[len, capacity)` through `base`;
+// Safety: the writer writes to `[len, capacity)` through `base`;
 // readers access `[0, len)` through `base`. The two regions are
 // disjoint by construction because `len` advances only after a write.
 // `base` is stable for the cell's lifetime. The atomic `len` and
-// `sealed` carry happens-before from the producer to any consumer
+// `sealed` carry happens-before from the writer to any reader
 // that observes them via `Acquire`.
 unsafe impl<T: Send + Sync> Send for LBufferInner<T> {}
 unsafe impl<T: Send + Sync> Sync for LBufferInner<T> {}
@@ -282,18 +283,17 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
     /// Append a value. Returns `Err(value)` when the buffer is sealed or
     /// at capacity.
     ///
-    /// The single-producer invariant is enforced by `&mut self`. A roll at
-    /// the higher level (sealing this `LBuffer` and starting a fresh one)
-    /// is the intended response to nearing capacity; `Err` is the honest
-    /// signal when the caller missed that boundary.
+    /// Writes the element into the slot at the current length, then
+    /// publishes it with a `Release` store on the atomic length. The
+    /// single-writer invariant is enforced by `&mut self`.
     pub fn push(&mut self, value: T) -> Result<(), T> {
-        // Reject pushes after seal. Same producer thread does seal and
+        // Reject pushes after seal. The same writer thread does seal and
         // push so Relaxed would suffice for self-observation, but Acquire
-        // keeps the ordering uniform with consumer-side reads of `sealed`.
+        // keeps the ordering uniform with reader-side loads of `sealed`.
         if self.inner.sealed.load(Ordering::Acquire) {
             return Err(value);
         }
-        // Single producer reads its own length with Relaxed.
+        // The sole writer reads its own length with Relaxed.
         let n = self.inner.len.load(Ordering::Relaxed);
         if n == self.inner.capacity {
             return Err(value);
@@ -390,7 +390,7 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         // atomically while it is the one a reader may still be tailing.
         // SAFETY: the value buffer's capacity check bounds the row count, so
         // `index < ceil(capacity / 8)` and `base + index` is within the
-        // validity allocation. The producer (`&mut self`) is the sole writer,
+        // validity allocation. The writer (`&mut self`) is the sole mutator,
         // and readers touch this byte only atomically while it is being
         // filled, so atomic access here races nothing.
         let byte = unsafe { AtomicU8::from_ptr(mask.base.as_ptr().add(index)) };
@@ -402,8 +402,9 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
             byte.fetch_and(!(1u8 << count), Ordering::Relaxed);
         }
         // Publish the new fill position. Release pairs with the reader's
-        // Acquire, carrying the byte write above. A full byte rolls the index;
-        // it is already in place, so no copy and nothing settles separately.
+        // Acquire, carrying the byte write above. A full byte advances the
+        // index; it is already in place, so no copy and nothing settles
+        // separately.
         if count + 1 == 8 {
             tail.publish(index + 1, 0);
         } else {
@@ -421,8 +422,7 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         self.inner.capacity
     }
 
-    /// `true` once the buffer is at capacity. The caller is expected to
-    /// roll before reaching this state in steady operation.
+    /// `true` once the buffer is at capacity. Further pushes return `Err`.
     pub fn is_full(&self) -> bool {
         self.len() == self.inner.capacity
     }
@@ -432,28 +432,25 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         self.len() == 0
     }
 
-    /// Take a consumer-side live view. One `Arc` clone, no atomic.
+    /// Create a read view of this buffer. One `Arc` clone, no atomic.
     pub fn view(&self) -> LBufferV<T> {
         LBufferV {
             inner: Arc::clone(&self.inner),
         }
     }
 
-    /// Wrap a fresh consumer view as a [`Buffer<T>`].
+    /// Wrap a fresh read view as a [`Buffer<T>`].
     /// Shortcut to achieve `Buffer::from_lbuffer(self.view())`.
     pub fn as_buffer(&self) -> Buffer<T> {
         Buffer::from_lbuffer(self.view())
     }
 
     /// Mark this buffer as sealed. After this call, [`push`](Self::push)
-    /// returns `Err(value)` and the published length is fixed at whatever
-    /// the final write reached. Consumers detect end of stream via
-    /// [`is_sealed`](Self::is_sealed) or [`LBufferV::is_sealed`].
+    /// returns `Err(value)` and the published length is final. Views
+    /// observe the flag via [`LBufferV::is_sealed`].
     ///
-    /// The producer continues to own the `LBuffer` after sealing; this is
-    /// a flag flip, not a consumption. Dropping the `LBuffer` later still
-    /// behaves correctly (it would auto-seal an already-sealed buffer,
-    /// which is idempotent).
+    /// Sealing is idempotent and does not consume the `LBuffer`; dropping
+    /// it later seals again with the same result.
     pub fn seal(&mut self) {
         self.inner.sealed.store(true, Ordering::Release);
         if MASK {
@@ -464,9 +461,10 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         }
     }
 
-    /// Clear the padding bits above the fill position in the last byte, so the
-    /// sealed mask is contiguous and Arrow-clean and the last byte can join
-    /// [`Bitmask::as_slice`]. A no-op when the last byte is empty or full.
+    /// Clear the padding bits above the fill position in the last byte, so
+    /// the sealed mask is contiguous, Arrow-compliant, and the last byte can
+    /// join [`Bitmask::as_slice`]. A no-op when the last byte is empty or
+    /// full.
     #[inline]
     fn finalise_mask_byte(&self, mask: &Arc<LBufferInner<u8>>) {
         let tail = mask
@@ -490,18 +488,17 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
     }
 
     /// Append every element of `values` in one batch, then publish via a
-    /// single `Release` store on `committed`.
+    /// single `Release` store on the atomic length.
     ///
     /// Equivalent to calling [`push`](Self::push) in a loop, but with one
-    /// atomic store at the end instead of one per element. Powers the
-    /// string-data write path - where a row's bytes go in as a block
-    /// then one offset write publishes the row - and any other bulk-push
-    /// consumer that doesn't need per-element publication.
+    /// atomic store at the end instead of one per element. Suits any bulk
+    /// write that doesn't need per-element publication, e.g. a block of
+    /// string bytes published by a single offset.
     ///
     /// Returns `Err(())` when the buffer is sealed or when the batch
     /// would exceed capacity. All-or-nothing: a failing call writes no
-    /// elements and leaves `committed` unchanged. The caller still owns
-    /// the input slice; rolling and retrying is the intended response.
+    /// elements and leaves the published length unchanged. The caller
+    /// still owns the input slice.
     pub fn push_slice(&mut self, values: &[T]) -> Result<(), ()>
     where
         T: Copy,
@@ -519,7 +516,7 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         }
         // Bulk copy into the spare-capacity region. `copy_nonoverlapping`
         // is sound: `values` is borrowed (so disjoint from our heap), and
-        // dst points into our owned allocation past the committed region.
+        // dst points into our owned allocation past the published region.
         unsafe {
             let dst = self.inner.base.as_ptr().add(n);
             std::ptr::copy_nonoverlapping(values.as_ptr(), dst, take);
@@ -537,43 +534,44 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         Ok(())
     }
 
-    /// Producer-only mutation of an element that has already been pushed.
+    /// Writer-only mutation of an element that has already been pushed.
     ///
-    /// Powers the bit-packed Boolean push path: a fresh zero byte is
+    /// Serves the bit-packed Boolean push path: a fresh zero byte is
     /// pushed when crossing an 8-bit boundary, then the relevant bit is
     /// set in that byte via this method. The sibling publication on the
     /// wrapping array layer (e.g. `BooleanArray`'s bit-count atomic) is
-    /// what makes the change visible to consumers; mutations through
-    /// this method are not themselves a publication.
+    /// what makes the change visible to readers; mutations through this
+    /// method are not themselves a publication.
     ///
     /// # Safety
     /// The caller must ensure all of:
-    /// - `idx < committed`, so the slot at `idx` is initialised.
+    /// - `idx` is less than the published length, so the slot at `idx` is
+    ///   initialised.
     /// - No reader has yet been told to observe `idx` via the sibling
     ///   publication mechanism the caller controls. The simplest way to
-    ///   guarantee this is to mutate only the slot at the current
-    ///   in-flight boundary - any index that the sibling atomic has not
-    ///   yet been Released past.
-    /// - The single-producer invariant on this `LBuffer` holds (already
+    ///   guarantee this is to mutate only the slot the sibling atomic has
+    ///   not yet been `Release`d past.
+    /// - The single-writer invariant on this `LBuffer` holds (already
     ///   enforced by `&mut self`).
     pub unsafe fn modify_at_unchecked<F: FnOnce(&mut T)>(&mut self, idx: usize, f: F) {
-        // SAFETY: by caller invariant, idx < committed, so base+idx points
-        // at an initialised slot we wrote earlier. `&mut self` precludes
-        // concurrent producer mutation. Consumer visibility is governed by
-        // the caller's sibling publication mechanism.
+        // SAFETY: by caller invariant, idx is below the published length,
+        // so base+idx points at an initialised slot written earlier.
+        // `&mut self` precludes concurrent writer mutation. Reader
+        // visibility is governed by the caller's sibling publication
+        // mechanism.
         unsafe { f(&mut *self.inner.base.as_ptr().add(idx)) }
     }
 }
 
 impl<T> LBuffer<T, true> {
-    /// Take the validity as a [`Bitmask`]. The returned mask shares the
-    /// committed validity bytes and the trailing [`LMaskTail`] through an
-    /// `Arc`, so it tails the producer the way
-    /// [`as_buffer`](LBuffer::as_buffer) does for the values. Drops into an
-    /// array's `null_mask` field directly.
+    /// The validity as a [`Bitmask`]. The returned mask shares the validity
+    /// bytes and the [`LMaskTail`] cursor through an `Arc`, the way
+    /// [`as_buffer`](LBuffer::as_buffer) shares the values, so it covers
+    /// every published element. Suits an array's `null_mask` field
+    /// directly.
     ///
-    /// Call it once and store the result; the mask grows as rows are pushed
-    /// and settles once the producer seals.
+    /// Call it once and store the result; the mask spans elements pushed
+    /// afterwards and is final once sealed.
     pub fn as_bitmask(&self) -> Bitmask {
         let mask = self
             .mask
@@ -587,12 +585,12 @@ impl<T> LBuffer<T, true> {
 
 impl<T, const MASK: bool> Drop for LBuffer<T, MASK> {
     fn drop(&mut self) {
-        // Auto-seal so consumers detect end of stream even if the
-        // producer didn't call seal() explicitly. Idempotent: an already
-        // sealed buffer ends up with the same value.
+        // Seal on drop so views observe the flag even when the writer
+        // never called seal(). Idempotent: an already sealed buffer ends
+        // up with the same value.
         //
-        // Allocation cleanup happens through Arc on `inner` (and `mask` for
-        // a masked buffer): when the last reference - producer or any
+        // Allocation cleanup happens through Arc on `inner` (and `mask`
+        // for a masked buffer): when the last reference - writer or any
         // outstanding view - drops, LBufferInner::drop returns the
         // allocation through vec64's deallocate path.
         self.inner.sealed.store(true, Ordering::Release);
@@ -624,21 +622,19 @@ impl<T> Drop for LBufferInner<T> {
 
 /// # LBufferV
 ///
-/// Consumer-side live view of an [`LBuffer`].
+/// Shared read view of an [`LBuffer`].
 ///
 /// Holds the inner cell alive via `Arc` for the view's lifetime; the
-/// underlying allocation stays mapped even after the producer-side
-/// `LBuffer` has dropped. Each access reads the latest published length
-/// via `Acquire`; indexed access against the cell's stable base is plain
-/// pointer math with no atomics on the access path itself.
+/// underlying allocation stays valid even after the `LBuffer` has
+/// dropped. Each access reads the latest published length via `Acquire`;
+/// indexed access against the cell's stable base is plain pointer
+/// arithmetic with no atomics on the access path itself.
 ///
-/// ## Recommended hot-loop pattern
-///
-/// Cache the length once with [`len`](Self::len) (or via
-/// [`as_slice`](Self::as_slice), which carries it in the slice header)
-/// and access the buffer without further atomics. The published length
-/// is monotonic, so any observed bound stays valid for the buffer's
-/// lifetime.
+/// For tight loops, capture the length once with [`len`](Self::len) (or
+/// via [`as_slice`](Self::as_slice), which carries it in the slice
+/// header) and access the buffer without further atomics. The published
+/// length is monotonic, so any observed bound stays valid for the
+/// buffer's lifetime.
 pub struct LBufferV<T> {
     inner: Arc<LBufferInner<T>>,
 }
@@ -651,11 +647,18 @@ impl<T> LBufferV<T> {
         self.inner.len.load(Ordering::Acquire)
     }
 
+    /// Published bit count of a mask buffer, or `None` for a value buffer.
+    /// One `Acquire` load of the fill cursor.
+    pub(crate) fn mask_bits(&self) -> Option<usize> {
+        let (settled, filled) = self.inner.mask_tail.as_ref()?.load();
+        Some(settled * 8 + filled)
+    }
+
     /// A consistent read of a mask buffer's state for a [`Bitmask`], or `None`
     /// for a value buffer. Returns `(base, settled_bytes, filled_bits, sealed)`:
-    /// the allocation base, the count of settled (frozen) bytes, the bits set
-    /// in the byte being filled, and whether the producer has sealed. The
-    /// logical bit-length is `settled_bytes * 8 + filled_bits`.
+    /// the allocation base, the count of settled bytes, the bits set in the
+    /// byte being filled, and whether the buffer is sealed. The logical
+    /// bit-length is `settled_bytes * 8 + filled_bits`.
     pub(crate) fn mask_state(&self) -> Option<(*const u8, usize, usize, bool)> {
         let tail = self.inner.mask_tail.as_ref()?;
         let (settled, filled) = tail.load();
@@ -674,10 +677,9 @@ impl<T> LBufferV<T> {
         self.inner.capacity
     }
 
-    /// `true` once the producer has sealed the buffer (explicitly via
-    /// [`LBuffer::seal`] or implicitly by dropping the producer handle).
-    /// Once sealed, no further writes occur and the published length is
-    /// final.
+    /// `true` once the buffer is sealed, whether through [`LBuffer::seal`]
+    /// or by the `LBuffer` dropping. Once sealed, no further writes occur
+    /// and the published length is final.
     pub fn is_sealed(&self) -> bool {
         self.inner.sealed.load(Ordering::Acquire)
     }
@@ -692,7 +694,7 @@ impl<T> LBufferV<T> {
             return None;
         }
         // SAFETY: i < n, where n was observed via Acquire and the
-        // producer Released past index i, so the write at base+i is
+        // writer Released past index i, so the write at base+i is
         // visible. base is stable; [0, len) is never overwritten.
         unsafe { Some(&*self.inner.base.as_ptr().add(i)) }
     }
@@ -714,7 +716,7 @@ impl<T> LBufferV<T> {
     /// load captures the length; iteration of the resulting slice is
     /// plain pointer math with no atomics.
     ///
-    /// The slice is valid for the view's lifetime: the producer never
+    /// The slice is valid for the view's lifetime: the writer never
     /// writes into `[0, n)`, and the `Arc` keeps the cell's allocation
     /// alive.
     pub fn as_slice(&self) -> &[T] {
@@ -772,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn view_tails_the_latest_length() {
+    fn view_observes_the_latest_length() {
         let mut buf = LBuffer::<u64>::with_capacity(1024);
         let v = buf.view();
         assert_eq!(v.len(), 0);
@@ -785,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn views_outlive_producer() {
+    fn views_outlive_writer() {
         let v = {
             let mut buf = LBuffer::<u64>::with_capacity(64);
             for i in 0..10u64 {
@@ -793,8 +795,8 @@ mod tests {
             }
             buf.view()
         };
-        // Producer dropped; Arc keeps the cell alive for the view.
-        // Drop also auto-sealed it.
+        // Writer dropped; Arc keeps the cell alive for the view.
+        // Drop also sealed it.
         assert_eq!(v.len(), 10);
         assert!(v.is_sealed());
         assert_eq!(v.get(9).copied(), Some(9));
@@ -807,7 +809,7 @@ mod tests {
             buf.push(i).unwrap();
         }
         let v = buf.view();
-        // Pattern B: cache n once, iterate with no atomic in the hot loop.
+        // Capture n once, then iterate with no atomic in the loop.
         let n = v.len();
         let sum: u64 = (0..n).map(|i| unsafe { *v.get_unchecked(i) }).sum();
         assert_eq!(sum, (0..50u64).sum::<u64>());
@@ -943,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn dropping_producer_auto_seals_for_consumers() {
+    fn dropping_writer_seals_for_views() {
         let v = {
             let mut buf = LBuffer::<u32>::with_capacity(16);
             for i in 0..5u32 {
@@ -953,8 +955,8 @@ mod tests {
             assert!(!v.is_sealed());
             v
         };
-        // Producer was not explicitly sealed; the Drop on LBuffer flipped
-        // the flag so the view sees end of stream.
+        // seal() was never called; the Drop on LBuffer flipped the flag
+        // so the view reports sealed.
         assert!(v.is_sealed());
         assert_eq!(v.len(), 5);
         assert_eq!(v.as_slice(), &[0, 1, 2, 3, 4]);
@@ -1007,7 +1009,8 @@ mod tests {
         let mut buf = LBuffer::<u8>::with_capacity(8);
         buf.push_slice(&[0u8; 4]).unwrap();
         // Caller invariant: the sibling publication (here, just our own
-        // local logic) has not yet revealed bit-level state; idx < committed.
+        // local logic) has not yet revealed bit-level state; idx is below
+        // the published length.
         unsafe {
             buf.modify_at_unchecked(0, |b| *b |= 0b0000_0001);
             buf.modify_at_unchecked(1, |b| *b |= 0b1000_0000);
@@ -1019,7 +1022,7 @@ mod tests {
     #[test]
     fn allocation_freed_when_last_handle_drops() {
         // The allocation is owned by LBufferInner via vec64's allocator.
-        // Through Arc, it stays alive while any handle (producer or view)
+        // Through Arc, it stays alive while any handle (writer or view)
         // exists. Once all drop, LBufferInner::drop runs and returns the
         // allocation. We verify this via element destructors firing.
         #[derive(Debug)]
@@ -1036,7 +1039,7 @@ mod tests {
                 buf.push(DropTracker(Arc::clone(&counter))).unwrap();
             }
             buf.view()
-            // Producer drops here; view still holds Arc, inner stays alive.
+            // Writer drops here; view still holds Arc, inner stays alive.
         };
         assert_eq!(counter.load(Ordering::SeqCst), 0, "view keeps cell alive");
         drop(view);
@@ -1064,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn masked_bitmask_tracks_producer() {
+    fn masked_bitmask_tracks_writer() {
         // Bitmask taken before any push still sees subsequent writes.
         let mut buf = LBuffer::<i64>::with_capacity_masked(64);
         let mask = buf.as_bitmask();
@@ -1079,8 +1082,8 @@ mod tests {
     }
 
     #[test]
-    fn masked_crossover_committed_and_trailing() {
-        // Window 16, nulls at 3, 7, 10. Rows 0-7 fill byte 0 (committed once
+    fn masked_crossover_settled_and_trailing() {
+        // Window 16, nulls at 3, 7, 10. Rows 0-7 fill byte 0 (settled once
         // the 8th bit lands); rows 8-11 stay in the trailing byte.
         let mut buf = LBuffer::<i64>::with_capacity_masked(16);
         for i in 0..12i64 {
@@ -1154,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn masked_as_slice_is_settled_while_live_then_complete_on_seal() {
+    fn masked_as_slice_is_settled_while_unsealed_then_complete_on_seal() {
         // 10 rows, nulls at 3 and 9. Byte 0 (rows 0-7) settles; byte 1 holds
         // rows 8-9 and is the one still being filled.
         let mut buf = LBuffer::<i64>::with_capacity_masked(64);
@@ -1166,7 +1169,7 @@ mod tests {
             }
         }
 
-        // While live, as_slice is the settled bytes only - byte 0. The byte
+        // Before seal, as_slice is the settled bytes only - byte 0. The byte
         // still being filled (byte 1) is excluded; the bit API still sees it.
         let mask = buf.as_bitmask();
         assert_eq!(mask.len(), 10);
@@ -1185,9 +1188,9 @@ mod tests {
     }
 
     #[test]
-    fn masked_byte_and_unchecked_accessors_route_while_live() {
+    fn masked_byte_and_unchecked_accessors_route_while_unsealed() {
         // The byte accessors and the unchecked/iter/Display paths must reflect
-        // a live mask, not the empty stored buffer.
+        // an unsealed mask, not the empty stored buffer.
         let mut buf = LBuffer::<i64>::with_capacity_masked(64);
         for i in 0..10i64 {
             if i == 3 || i == 9 {
@@ -1213,15 +1216,15 @@ mod tests {
         // iter_cleared sees the nulls in both the settled and the filling byte.
         assert_eq!(mask.iter_cleared().collect::<Vec<_>>(), vec![3, 9]);
 
-        // Display reflects the live length, not zero.
+        // Display reflects the published length, not zero.
         assert!(format!("{mask}").contains("10 bits"));
     }
 
     #[test]
-    fn kernel_validity_merge_over_live_masks() {
+    fn kernel_validity_merge_over_unsealed_masks() {
         use crate::kernels::bitmask::merge_bitmasks_to_new;
 
-        // Two live-masked columns, nulls at different rows.
+        // Two unsealed masked columns, nulls at different rows.
         let mut a = LBuffer::<f64>::with_capacity_masked(64);
         let mut b = LBuffer::<f64>::with_capacity_masked(64);
         for i in 0..20i64 {
@@ -1240,14 +1243,15 @@ mod tests {
         let b_mask = b.as_bitmask();
 
         // The exact validity merge the arithmetic/comparison kernels run,
-        // reading the live masks via get() and bounded by the live length.
+        // reading the unsealed masks via get(), bounded by the published
+        // length.
         let merged = merge_bitmasks_to_new(Some(&a_mask), Some(&b_mask), 20).unwrap();
         for i in 0..20usize {
             let want = !(i % 5 == 0 || i % 7 == 0);
             assert_eq!(merged.get(i), want, "row {i}");
         }
 
-        // The value path the SIMD body reads: the committed slice, length-bounded.
+        // The value path the SIMD body reads: the published slice, length-bounded.
         let a_vals = a.as_buffer();
         assert_eq!(a_vals.len(), 20);
         assert_eq!(a_vals.as_slice()[6], 6.0);

@@ -74,9 +74,10 @@ pub struct Bitmask {
     /// Owned bit count.
     ///
     /// For an LBuffer-backed bitmask this stays at 0; the live published bit
-    /// count is read via [`len`](Self::len) (which routes through
-    /// [`llen`](Self::llen)). The field is private under the `lbuffer`
-    /// feature so callers go through the method and observe the live value.
+    /// count is read via [`len`](Self::len). The `len` field is pub for
+    /// backwards compatibility reasons and users are encouraged to use `len()`
+    /// for portability. When the lbuffer feature is active callers go through
+    /// the `len()` method to observe the current value.
     #[cfg(not(feature = "lbuffer"))]
     pub len: usize,
     #[cfg(feature = "lbuffer")]
@@ -191,29 +192,21 @@ impl Bitmask {
     /// Returns the logical length of the bitmask
     ///
     /// *Excludes padding*
-    #[cfg(not(feature = "lbuffer"))]
     #[inline]
     pub fn len(&self) -> usize {
+        // An LBuffer-backed mask reports the published bit count.
+        #[cfg(feature = "lbuffer")]
+        if let Some(view) = self.bits.lbuffer_view() {
+            return view.mask_bits().unwrap_or(self.len);
+        }
         self.len
     }
 
-    /// Returns the logical length of the bitmask, following the LBuffer
-    /// backing when present.
-    ///
-    /// *Excludes padding*
+    /// `true` when this bitmask is backed by an [`LBufferV`].
     #[cfg(feature = "lbuffer")]
     #[inline]
-    pub fn len(&self) -> usize {
-        self.llen()
-    }
-
-    /// Logical length following the LBuffer backing. For an LBuffer-backed
-    /// mask this returns the producer's currently published bit count;
-    /// otherwise the stored length.
-    #[cfg(feature = "lbuffer")]
-    #[inline]
-    pub fn llen(&self) -> usize {
-        self.bits.lbuffer_mask_bits().unwrap_or(self.len)
+    pub(crate) fn is_lbuffer_backed(&self) -> bool {
+        self.bits.lbuffer_view().is_some()
     }
 
     /// Return logical number of bits (slots).
@@ -252,7 +245,9 @@ impl Bitmask {
         // Copy the settled bytes plus the byte being filled into an owned
         // contiguous buffer.
         #[cfg(feature = "lbuffer")]
-        if let Some((base, settled, filled, _)) = self.bits.lbuffer_mask_state() {
+        if let Some(view) = self.bits.lbuffer_view()
+            && let Some((base, settled, filled, _)) = view.mask_state()
+        {
             let bit_len = settled * 8 + filled;
             let mut data = Vec64::<u8>::with_capacity((bit_len + 7) / 8);
             for b in 0..settled {
@@ -280,14 +275,16 @@ impl Bitmask {
         }
     }
 
-    /// Returns bit *idx*.  
-    /// - If `idx ≥ self.len` but still inside the physical buffer, returns `false`.  
+    /// Returns bit *idx*.
+    /// - If `idx ≥ self.len` but still inside the physical buffer, returns `false`.
     /// Panics only when `idx` exceeds the physical capacity.
     #[inline]
     pub fn get(&self, idx: usize) -> bool {
-        // Settled byte read plain; the byte being filled read atomically.
+        // The settled byte is read plain. The byte being filled read atomically.
         #[cfg(feature = "lbuffer")]
-        if let Some((base, settled, filled, _)) = self.bits.lbuffer_mask_state() {
+        if let Some(view) = self.bits.lbuffer_view()
+            && let Some((base, settled, filled, _)) = view.mask_state()
+        {
             if idx >= settled * 8 + filled {
                 return false;
             }
@@ -449,7 +446,7 @@ impl Bitmask {
     #[inline]
     pub fn all_true(&self) -> bool {
         #[cfg(feature = "lbuffer")]
-        if self.bits.lbuffer_mask_state().is_some() {
+        if self.is_lbuffer_backed() {
             return self.count_ones() == self.len();
         }
         if self.len == 0 {
@@ -472,7 +469,7 @@ impl Bitmask {
     #[inline]
     pub fn all_false(&self) -> bool {
         #[cfg(feature = "lbuffer")]
-        if self.bits.lbuffer_mask_state().is_some() {
+        if self.is_lbuffer_backed() {
             return self.count_ones() == 0;
         }
         if self.len == 0 {
@@ -515,7 +512,7 @@ impl Bitmask {
     #[inline]
     pub fn has_nulls(&self) -> bool {
         #[cfg(feature = "lbuffer")]
-        if self.bits.lbuffer_mask_state().is_some() {
+        if self.is_lbuffer_backed() {
             return self.count_zeros() > 0;
         }
         !self.all_true()
@@ -544,7 +541,9 @@ impl Bitmask {
     pub fn count_ones(&self) -> usize {
         // Popcount the settled bytes and the filled bits of the last byte.
         #[cfg(feature = "lbuffer")]
-        if let Some((base, settled, filled, _)) = self.bits.lbuffer_mask_state() {
+        if let Some(view) = self.bits.lbuffer_view()
+            && let Some((base, settled, filled, _)) = view.mask_state()
+        {
             let mut ones = 0usize;
             for b in 0..settled {
                 // SAFETY: b < settled, within the allocation and frozen.
@@ -788,7 +787,9 @@ impl Bitmask {
     #[inline]
     pub fn as_slice(&self) -> &[u8] {
         #[cfg(feature = "lbuffer")]
-        if let Some((base, settled, filled, sealed)) = self.bits.lbuffer_mask_state() {
+        if let Some(view) = self.bits.lbuffer_view()
+            && let Some((base, settled, filled, sealed)) = view.mask_state()
+        {
             let n = if sealed && filled > 0 { settled + 1 } else { settled };
             // SAFETY: those `n` bytes are within the allocation and frozen - the
             // settled bytes always, and the last byte too once sealed (the
@@ -894,13 +895,67 @@ impl Bitmask {
     }
 
     /// Iterator over all indices with set bits (valid).
+    ///
+    /// Under the `lbuffer` feature an LBuffer-backed mask reads each bit
+    /// through [`get`](Self::get) for a consistent view of the producer's
+    /// published bits. Any other storage takes the plain byte scan, so a
+    /// non-LBuffer-backed mask pays nothing for the feature being enabled.
     pub fn iter_set(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.len()).filter(move |&i| self.get(i))
+        #[cfg(feature = "lbuffer")]
+        if self.is_lbuffer_backed() {
+            return Box::new((0..self.len()).filter(move |&i| self.get(i)))
+                as Box<dyn Iterator<Item = usize> + '_>;
+        }
+
+        let n = self.len();
+        let scan = self.bits.iter().enumerate().flat_map(move |(byte_i, &b)| {
+            let base = byte_i * 8;
+            (0..8).filter_map(move |bit| {
+                let idx = base + bit;
+                if idx < n && ((b >> bit) & 1) != 0 {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+        });
+
+        #[cfg(feature = "lbuffer")]
+        return Box::new(scan) as Box<dyn Iterator<Item = usize> + '_>;
+        #[cfg(not(feature = "lbuffer"))]
+        return scan;
     }
 
     /// Iterator over all indices with cleared bits (nulls).
+    ///
+    /// Under the `lbuffer` feature an LBuffer-backed mask reads each bit
+    /// through [`get`](Self::get) for a consistent view of the producer's
+    /// published bits. Any other storage takes the plain byte scan, so a
+    /// non-LBuffer-backed mask pays nothing for the feature being enabled.
     pub fn iter_cleared(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.len()).filter(move |&i| !self.get(i))
+        #[cfg(feature = "lbuffer")]
+        if self.is_lbuffer_backed() {
+            return Box::new((0..self.len()).filter(move |&i| !self.get(i)))
+                as Box<dyn Iterator<Item = usize> + '_>;
+        }
+
+        let n = self.len();
+        let scan = self.bits.iter().enumerate().flat_map(move |(byte_i, &b)| {
+            let base = byte_i * 8;
+            (0..8).filter_map(move |bit| {
+                let idx = base + bit;
+                if idx < n && ((b >> bit) & 1) == 0 {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+        });
+
+        #[cfg(feature = "lbuffer")]
+        return Box::new(scan) as Box<dyn Iterator<Item = usize> + '_>;
+        #[cfg(not(feature = "lbuffer"))]
+        return scan;
     }
 
     /// Set all bits to set/cleared.
@@ -932,7 +987,9 @@ impl Bitmask {
     pub unsafe fn get_unchecked_byte(&self, byte_idx: usize) -> u8 {
         // Settled byte read plain; the byte being filled read atomically.
         #[cfg(feature = "lbuffer")]
-        if let Some((base, settled, _filled, _)) = self.bits.lbuffer_mask_state() {
+        if let Some(view) = self.bits.lbuffer_view()
+            && let Some((base, settled, _filled, _)) = view.mask_state()
+        {
             return if byte_idx < settled {
                 // SAFETY: byte_idx < settled, within the allocation and frozen.
                 unsafe { *base.add(byte_idx) }
