@@ -19,16 +19,41 @@
 //! Built for those who like it fast and simple.
 //!
 //! ## Key Features
-//! - **Fast compile times** – typically <1.5s for standard builds, <0.15s for rebuilds.
+//! - **Fast compile times** – typically <2s for standard builds, <0.15s for rebuilds.
 //! - **64-byte SIMD alignment** for optimal CPU utilisation.
 //! - **High runtime performance** – see benchmarks below.
+//! - **Typed enum accessors** - `arr.num().f64()` returns a shared handle,
+//!   an Arc bump when the variant matches. `try_` variants return `Result`.
 //! - Cohesive, well-documented API with extensive coverage.
 //! - Built-in FFI with simple `to_apache_arrow()` and `to_polars()` conversions.
 //! - Apache-2.0 Licensed.
 //!
-//! ## Upcoming Additions
-//! 1. **Lightstream-IO** – IPC streaming and Tokio async integration.
-//! 2. **SIMD Kernels** – Large library of pre-optimised computation kernels.
+//! ## Quick Start
+//! ```rust
+//! use minarrow::{MaskedArray, Print, arr_f64, fa_i32, fa_str32, tbl};
+//!
+//! // Create arrays with macros
+//! let prices = arr_f64![10.5, 20.0, 15.75];
+//!
+//! // Direct typed access - no downcasting
+//! assert_eq!(prices.num().f64().get(0), Some(10.5));
+//!
+//! // Build tables via FieldArrays with constructor macros
+//! let table = tbl!(
+//!     "users",
+//!     fa_i32!("id", 1, 2, 3),
+//!     fa_str32!("name", "alice", "bob", "charlie"),
+//! );
+//! table.print();
+//! ```
+//!
+//! ## Ecosystem
+//! - [`lightstream`](https://crates.io/crates/lightstream) – zero-copy Arrow IPC streaming
+//!   with SIMD-aligned I/O over Tokio, TCP, QUIC, WebSocket, Unix sockets, and Stdio.
+//! - `minarrow-pyo3` – zero-copy Python interop via PyArrow.
+//! - [`vec64`](https://crates.io/crates/vec64) – the 64-byte aligned Vec backing every buffer.
+//! - [Lightning Analytics Engine](https://spacecell.com) – sub-millisecond, zero-config
+//!   live streaming engine with statistical modelling and data processing, built on Minarrow.
 //!
 //! ## Compatibility
 //! Implements Apache Arrow’s documented memory layouts while simplifying some APIs.
@@ -117,9 +142,7 @@ pub mod enums {
     pub mod shape_dim;
 }
 
-/// Contains SIMD-accelerated kernels for the 'essentials' that are highly coupled to this crate
-/// The extensive set is available downstream in the simd-kernels crate, including a full
-/// set of univariate distributions.
+/// Contains SIMD-accelerated kernels for standard arithmetic, string, bitmask and logical operations.
 pub mod kernels {
     pub mod arithmetic;
     pub mod bitmask;
