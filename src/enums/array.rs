@@ -263,350 +263,39 @@ impl Array {
     // Each accessor provides zero-copy for the already native type(s), conversion paths
     // for non-native (e.g., *bool -> integer* ), whilst propagating nulls for rarer nonsensical casts.
 
-    /// Returns a reference to the inner `NumericArray` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn num_ref(&self) -> Result<&NumericArray, MinarrowError> {
-        match self {
-            Array::NumericArray(arr) => Ok(arr),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "NumericArray",
-                message: Some("variant is not NumericArray, use num() to convert".to_string()),
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `TextArray` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn str_ref(&self) -> Result<&TextArray, MinarrowError> {
-        match self {
-            Array::TextArray(arr) => Ok(arr),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "TextArray",
-                message: Some("variant is not TextArray, use str() to convert".to_string()),
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `BooleanArray` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn bool_ref(&self) -> Result<&BooleanArray<()>, MinarrowError> {
-        match self {
-            Array::BooleanArray(arr) => Ok(arr.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "BooleanArray",
-                message: Some("variant is not BooleanArray, use bool() to convert".to_string()),
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `TemporalArray` if the variant matches.
-    /// No conversion or cloning is performed.
-    #[cfg(feature = "datetime")]
-    pub fn dt_ref(&self) -> Result<&TemporalArray, MinarrowError> {
-        match self {
-            Array::TemporalArray(arr) => Ok(arr),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "TemporalArray",
-                message: Some("variant is not TemporalArray, use dt() to convert".to_string()),
-            }),
-        }
-    }
-
-    // ── Typed inner-array accessors ──────────────────────────────────
-    //
-    // Each method collapses the two-level match (outer Array variant +
-    // inner category variant) into a single call returning
-    // Result<&ConcreteType, MinarrowError>.
-
-    /// Returns a reference to the inner `IntegerArray<i32>`.
-    pub fn try_i32_ref(&self) -> Result<&IntegerArray<i32>, MinarrowError> {
-        match self {
-            Array::NumericArray(NumericArray::Int32(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "IntegerArray<i32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `IntegerArray<i64>`.
-    pub fn try_i64_ref(&self) -> Result<&IntegerArray<i64>, MinarrowError> {
-        match self {
-            Array::NumericArray(NumericArray::Int64(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "IntegerArray<i64>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `IntegerArray<u32>`.
-    pub fn try_u32_ref(&self) -> Result<&IntegerArray<u32>, MinarrowError> {
-        match self {
-            Array::NumericArray(NumericArray::UInt32(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "IntegerArray<u32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `IntegerArray<u64>`.
-    pub fn try_u64_ref(&self) -> Result<&IntegerArray<u64>, MinarrowError> {
-        match self {
-            Array::NumericArray(NumericArray::UInt64(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "IntegerArray<u64>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `FloatArray<f32>`.
-    pub fn try_f32_ref(&self) -> Result<&FloatArray<f32>, MinarrowError> {
-        match self {
-            Array::NumericArray(NumericArray::Float32(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "FloatArray<f32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `FloatArray<f64>`.
-    pub fn try_f64_ref(&self) -> Result<&FloatArray<f64>, MinarrowError> {
-        match self {
-            Array::NumericArray(NumericArray::Float64(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "FloatArray<f64>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `IntegerArray<i8>`.
-    #[cfg(feature = "extended_numeric_types")]
-    pub fn try_i8_ref(&self) -> Result<&IntegerArray<i8>, MinarrowError> {
-        match self {
-            Array::NumericArray(NumericArray::Int8(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "IntegerArray<i8>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `IntegerArray<i16>`.
-    #[cfg(feature = "extended_numeric_types")]
-    pub fn try_i16_ref(&self) -> Result<&IntegerArray<i16>, MinarrowError> {
-        match self {
-            Array::NumericArray(NumericArray::Int16(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "IntegerArray<i16>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `IntegerArray<u8>`.
-    #[cfg(feature = "extended_numeric_types")]
-    pub fn try_u8_ref(&self) -> Result<&IntegerArray<u8>, MinarrowError> {
-        match self {
-            Array::NumericArray(NumericArray::UInt8(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "IntegerArray<u8>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `IntegerArray<u16>`.
-    #[cfg(feature = "extended_numeric_types")]
-    pub fn try_u16_ref(&self) -> Result<&IntegerArray<u16>, MinarrowError> {
-        match self {
-            Array::NumericArray(NumericArray::UInt16(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "IntegerArray<u16>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `StringArray<u32>`.
-    pub fn try_str32_ref(&self) -> Result<&StringArray<u32>, MinarrowError> {
-        match self {
-            Array::TextArray(TextArray::String32(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "StringArray<u32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `StringArray<u64>`.
-    #[cfg(feature = "large_string")]
-    pub fn try_str64_ref(&self) -> Result<&StringArray<u64>, MinarrowError> {
-        match self {
-            Array::TextArray(TextArray::String64(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "StringArray<u64>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `CategoricalArray<u32>`.
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-    pub fn try_cat32_ref(&self) -> Result<&CategoricalArray<u32>, MinarrowError> {
-        match self {
-            Array::TextArray(TextArray::Categorical32(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "CategoricalArray<u32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `CategoricalArray<u8>`.
-    #[cfg(feature = "default_categorical_8")]
-    pub fn try_cat8_ref(&self) -> Result<&CategoricalArray<u8>, MinarrowError> {
-        match self {
-            Array::TextArray(TextArray::Categorical8(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "CategoricalArray<u8>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `CategoricalArray<u16>`.
-    #[cfg(feature = "extended_categorical")]
-    pub fn try_cat16_ref(&self) -> Result<&CategoricalArray<u16>, MinarrowError> {
-        match self {
-            Array::TextArray(TextArray::Categorical16(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "CategoricalArray<u16>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `CategoricalArray<u64>`.
-    #[cfg(feature = "extended_categorical")]
-    pub fn try_cat64_ref(&self) -> Result<&CategoricalArray<u64>, MinarrowError> {
-        match self {
-            Array::TextArray(TextArray::Categorical64(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "CategoricalArray<u64>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `DatetimeArray<i32>`.
-    #[cfg(feature = "datetime")]
-    pub fn try_dt32_ref(&self) -> Result<&DatetimeArray<i32>, MinarrowError> {
-        match self {
-            Array::TemporalArray(TemporalArray::Datetime32(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "DatetimeArray<i32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `DatetimeArray<i64>`.
-    #[cfg(feature = "datetime")]
-    pub fn try_dt64_ref(&self) -> Result<&DatetimeArray<i64>, MinarrowError> {
-        match self {
-            Array::TemporalArray(TemporalArray::Datetime64(arc)) => Ok(arc.as_ref()),
-            Array::Null => Err(MinarrowError::NullError { message: None }),
-            other => Err(MinarrowError::TypeError {
-                from: array_category_name(other),
-                to: "DatetimeArray<i64>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns an inner `NumericArray`, consuming self.
-    /// - If already a `NumericArray`, consumes and returns the inner value with no clone.
+    /// Returns an inner `NumericArray`.
+    /// - If already a `NumericArray`, returns the inner value as a shared handle with no data copy.
     /// - Other types: casts and copies.
-    pub fn num(self) -> NumericArray {
+    /// - Panics on `Null`. Consider the try variant for a safe alternative.
+    pub fn num(&self) -> NumericArray {
         match self {
-            Array::NumericArray(arr) => arr,
+            Array::NumericArray(arr) => arr.clone(),
 
-            Array::BooleanArray(mut arr) => {
-                // If the Arc<BooleanArray> is not unique, clone here
-                let arr_mut = Arc::make_mut(&mut arr);
-                let n = arr_mut.len();
+            Array::BooleanArray(arr) => {
+                let n = arr.len();
                 let mut out = Vec64::with_capacity(n);
                 for i in 0..n {
-                    let v = match arr_mut.get(i) {
+                    let v = match arr.get(i) {
                         Some(true) => 1,
                         Some(false) => 0,
                         None => 0,
                     };
                     out.push(v);
                 }
-                let null_mask = arr_mut.null_mask.take();
+                let null_mask = arr.null_mask.clone();
                 NumericArray::Int32(Arc::new(IntegerArray::<i32>::from_vec64(out, null_mask)))
             }
 
             #[cfg(feature = "datetime")]
             Array::TemporalArray(arr) => match arr {
-                TemporalArray::Datetime32(mut arc_dt) => {
-                    let dt = Arc::make_mut(&mut arc_dt);
+                TemporalArray::Datetime32(dt) => {
                     let data = Vec64::from_slice(&dt.data);
-                    let null_mask = dt.null_mask.take();
+                    let null_mask = dt.null_mask.clone();
                     NumericArray::Int32(Arc::new(IntegerArray::<i32>::from_vec64(data, null_mask)))
                 }
-                TemporalArray::Datetime64(mut arc_dt) => {
-                    let dt = Arc::make_mut(&mut arc_dt);
+                TemporalArray::Datetime64(dt) => {
                     let data = Vec64::from_slice(&dt.data);
-                    let null_mask = dt.null_mask.take();
+                    let null_mask = dt.null_mask.clone();
                     NumericArray::Int64(Arc::new(IntegerArray::<i64>::from_vec64(data, null_mask)))
                 }
                 TemporalArray::Null => NumericArray::Null,
@@ -791,16 +480,27 @@ impl Array {
                 TextArray::Null => NumericArray::Null,
             },
 
-            Array::Null => NumericArray::Null,
+            Array::Null => panic!("Array::num: array is Null"),
         }
     }
 
-    /// Returns an inner `TextArray`, consuming self.
-    /// - If already a `TextArray`, consumes and returns the inner value with no clone.
-    /// - Other types: casts *(to string)* and copies.
-    pub fn str(self) -> TextArray {
+    /// Returns an inner `NumericArray`, with `Err` on `Null`.
+    /// - If already a `NumericArray`, returns the inner value as a shared handle with no data copy.
+    /// - Other types: casts and copies.
+    pub fn try_num(&self) -> Result<NumericArray, MinarrowError> {
         match self {
-            Array::TextArray(arr) => arr,
+            Array::Null => Err(MinarrowError::NullError { message: None }),
+            _ => Ok(self.num()),
+        }
+    }
+
+    /// Returns an inner `TextArray`.
+    /// - If already a `TextArray`, returns the inner value as a shared handle with no data copy.
+    /// - Other types: casts *(to string)* and copies.
+    /// - Panics on `Null`. Consider the try variant for a safe alternative.
+    pub fn str(&self) -> TextArray {
+        match self {
+            Array::TextArray(arr) => arr.clone(),
 
             Array::BooleanArray(arr) => {
                 let n = arr.len();
@@ -818,19 +518,18 @@ impl Array {
             }
 
             Array::NumericArray(arr) => match arr {
-                NumericArray::Int32(a) => int_to_text_array::<i32>(&a),
-                NumericArray::Int64(a) => int_to_text_array::<i64>(&a),
-                NumericArray::UInt32(a) => int_to_text_array::<u32>(&a),
-                NumericArray::UInt64(a) => int_to_text_array::<u64>(&a),
-                NumericArray::Float32(a) => float_to_text_array::<f32>(&a),
-                NumericArray::Float64(a) => float_to_text_array::<f64>(&a),
+                NumericArray::Int32(a) => int_to_text_array::<i32>(a),
+                NumericArray::Int64(a) => int_to_text_array::<i64>(a),
+                NumericArray::UInt32(a) => int_to_text_array::<u32>(a),
+                NumericArray::UInt64(a) => int_to_text_array::<u64>(a),
+                NumericArray::Float32(a) => float_to_text_array::<f32>(a),
+                NumericArray::Float64(a) => float_to_text_array::<f64>(a),
                 _ => TextArray::Null,
             },
 
             #[cfg(feature = "datetime")]
             Array::TemporalArray(arr) => match arr {
-                TemporalArray::Datetime32(mut arc_dt) => {
-                    let dt = Arc::make_mut(&mut arc_dt);
+                TemporalArray::Datetime32(dt) => {
                     let mut strings = Vec::with_capacity(dt.len());
                     for i in 0..dt.len() {
                         if dt.is_null(i) {
@@ -843,8 +542,7 @@ impl Array {
                         &strings.iter().map(String::as_str).collect::<Vec<_>>(),
                     )))
                 }
-                TemporalArray::Datetime64(mut arc_dt) => {
-                    let dt = Arc::make_mut(&mut arc_dt);
+                TemporalArray::Datetime64(dt) => {
                     let mut strings = Vec::with_capacity(dt.len());
                     for i in 0..dt.len() {
                         if dt.is_null(i) {
@@ -860,17 +558,28 @@ impl Array {
                 _ => TextArray::Null,
             },
 
-            Array::Null => TextArray::Null,
+            Array::Null => panic!("Array::str: array is Null"),
         }
     }
 
-    /// Returns the inner `BooleanArray`, consuming self.
-    /// - If already a `BooleanArray`, consumes and returns the inner value with no clone.
+    /// Returns an inner `TextArray`, with `Err` on `Null`.
+    /// - If already a `TextArray`, returns the inner value as a shared handle with no data copy.
+    /// - Other types: casts *(to string)* and copies.
+    pub fn try_str(&self) -> Result<TextArray, MinarrowError> {
+        match self {
+            Array::Null => Err(MinarrowError::NullError { message: None }),
+            _ => Ok(self.str()),
+        }
+    }
+
+    /// Returns the inner `BooleanArray`.
+    /// - If already a `BooleanArray`, returns the inner value as a shared handle with no data copy.
     /// - Other types: calculates the boolean mask based on whether the value is present, and non-zero,
     ///  and copies. In these cases, any null mask is preserved, rather than becoming `false`.
-    pub fn bool(self) -> Arc<BooleanArray<()>> {
+    /// - Panics on `Null`. Consider the try variant for a safe alternative.
+    pub fn bool(&self) -> Arc<BooleanArray<()>> {
         match self {
-            Array::BooleanArray(arr) => arr,
+            Array::BooleanArray(arr) => arr.clone(),
             Array::NumericArray(arr) => {
                 macro_rules! to_bool {
                     ($a:expr, $t:ty) => {{
@@ -966,13 +675,24 @@ impl Array {
                 }
                 _ => BooleanArray::default().into(),
             },
-            Array::Null => BooleanArray::default().into(),
+            Array::Null => panic!("Array::bool: array is Null"),
         }
     }
 
-    /// Returns the inner `TemporalArray`, consuming self.
-    /// - If already a `TemporalArray`, consumes and returns the inner value with no clone.
-    /// - Other types: casts and (often) copies using clone on write.
+    /// Returns the inner `BooleanArray`, with `Err` on `Null`.
+    /// - If already a `BooleanArray`, returns the inner value as a shared handle with no data copy.
+    /// - Other types: calculates the boolean mask based on whether the value is present, and non-zero,
+    ///  and copies. In these cases, any null mask is preserved, rather than becoming `false`.
+    pub fn try_bool(&self) -> Result<Arc<BooleanArray<()>>, MinarrowError> {
+        match self {
+            Array::Null => Err(MinarrowError::NullError { message: None }),
+            _ => Ok(self.bool()),
+        }
+    }
+
+    /// Returns the inner `TemporalArray`.
+    /// - If already a `TemporalArray`, returns the inner value as a shared handle with no data copy.
+    /// - Other types: casts and (often) copies.
     ///
     /// ### Datetime conversions
     /// - **String** parses a timestamp in milliseconds since the Unix epoch.
@@ -982,57 +702,53 @@ impl Array {
     /// - **Integer** becomes *milliseconds since epoch*.
     /// - **Floats** round as integers to *milliseconds since epoch*.
     /// - **Boolean** returns `TemporalArray::Null`.
+    ///
+    /// Panics on `Null`. Consider the try variant for a safe alternative.
     #[cfg(feature = "datetime")]
-    pub fn dt(self) -> TemporalArray {
+    pub fn dt(&self) -> TemporalArray {
         use crate::enums::time_units::TimeUnit;
         match self {
-            Array::TemporalArray(arr) => arr, // move, not clone
+            Array::TemporalArray(arr) => arr.clone(),
             Array::NumericArray(arr) => match arr {
-                NumericArray::Int32(mut a) => {
-                    let a_mut = Arc::make_mut(&mut a);
+                NumericArray::Int32(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
-                        a_mut.data.iter().map(|v| *v as i64).collect(),
-                        a_mut.null_mask.take(),
+                        a.data.iter().map(|v| *v as i64).collect(),
+                        a.null_mask.clone(),
                         Some(TimeUnit::Milliseconds),
                     )))
                 }
-                NumericArray::Int64(mut a) => {
-                    let a_mut = Arc::make_mut(&mut a);
+                NumericArray::Int64(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
-                        a_mut.data.iter().copied().collect(),
-                        a_mut.null_mask.take(),
+                        a.data.iter().copied().collect(),
+                        a.null_mask.clone(),
                         Some(TimeUnit::Milliseconds),
                     )))
                 }
-                NumericArray::UInt32(mut a) => {
-                    let a_mut = Arc::make_mut(&mut a);
+                NumericArray::UInt32(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
-                        a_mut.data.iter().map(|v| *v as i64).collect(),
-                        a_mut.null_mask.take(),
+                        a.data.iter().map(|v| *v as i64).collect(),
+                        a.null_mask.clone(),
                         Some(TimeUnit::Milliseconds),
                     )))
                 }
-                NumericArray::UInt64(mut a) => {
-                    let a_mut = Arc::make_mut(&mut a);
+                NumericArray::UInt64(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
-                        a_mut.data.iter().map(|v| *v as i64).collect(),
-                        a_mut.null_mask.take(),
+                        a.data.iter().map(|v| *v as i64).collect(),
+                        a.null_mask.clone(),
                         Some(TimeUnit::Milliseconds),
                     )))
                 }
-                NumericArray::Float32(mut a) => {
-                    let a_mut = Arc::make_mut(&mut a);
+                NumericArray::Float32(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
-                        a_mut.data.iter().map(|v| *v as i64).collect(),
-                        a_mut.null_mask.take(),
+                        a.data.iter().map(|v| *v as i64).collect(),
+                        a.null_mask.clone(),
                         Some(TimeUnit::Milliseconds),
                     )))
                 }
-                NumericArray::Float64(mut a) => {
-                    let a_mut = Arc::make_mut(&mut a);
+                NumericArray::Float64(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
-                        a_mut.data.iter().map(|v| *v as i64).collect(),
-                        a_mut.null_mask.take(),
+                        a.data.iter().map(|v| *v as i64).collect(),
+                        a.null_mask.clone(),
                         Some(TimeUnit::Milliseconds),
                     )))
                 }
@@ -1071,7 +787,18 @@ impl Array {
                 }
                 _ => TemporalArray::Null,
             },
-            Array::Null => TemporalArray::Null,
+            Array::Null => panic!("Array::dt: array is Null"),
+        }
+    }
+
+    /// Returns the inner `TemporalArray`, with `Err` on `Null`.
+    /// - If already a `TemporalArray`, returns the inner value as a shared handle with no data copy.
+    /// - Other types: casts and (often) copies. See `dt` for the conversion rules.
+    #[cfg(feature = "datetime")]
+    pub fn try_dt(&self) -> Result<TemporalArray, MinarrowError> {
+        match self {
+            Array::Null => Err(MinarrowError::NullError { message: None }),
+            _ => Ok(self.dt()),
         }
     }
 
@@ -4817,68 +4544,74 @@ mod tests {
     #[test]
     fn test_null_cases() {
         let array = Array::Null;
-        assert_eq!(array.clone().num(), NumericArray::Null);
-        assert_eq!(array.clone().str(), TextArray::Null);
-        assert_eq!(array.clone().bool(), BooleanArray::default().into());
+        assert!(array.try_num().is_err());
+        assert!(array.try_str().is_err());
+        assert!(array.try_bool().is_err());
         #[cfg(feature = "datetime")]
-        assert_eq!(array.dt(), TemporalArray::Null);
+        assert!(array.try_dt().is_err());
     }
 
-    // ── try_*_ref tests ──────────────────────────────────────────────
+    // ── typed accessor tests ─────────────────────────────────────────
 
     #[test]
-    fn test_try_i32_ref_success() {
+    fn test_num_i32_accessor() {
         let mut arr = IntegerArray::<i32>::default();
         arr.push(10);
         let array = Array::from_int32(arr);
-        let inner = array.try_i32_ref().unwrap();
+        let inner = array.num().i32();
         assert_eq!(inner.data[0], 10);
     }
 
     #[test]
-    fn test_try_i32_ref_type_error() {
-        let arr = Array::from_float64(FloatArray::<f64>::default());
-        assert!(arr.try_i32_ref().is_err());
+    fn test_num_try_i32_converts_float() {
+        let mut arr = FloatArray::<f64>::default();
+        arr.push(3.0);
+        let array = Array::from_float64(arr);
+        let inner = array.num().try_i32().unwrap();
+        assert_eq!(inner.data[0], 3);
     }
 
     #[test]
-    fn test_try_f64_ref_success() {
+    fn test_num_f64_accessor() {
         let mut arr = FloatArray::<f64>::default();
         arr.push(3.14);
         let array = Array::from_float64(arr);
-        let inner = array.try_f64_ref().unwrap();
+        let inner = array.num().f64();
         assert!((inner.data[0] - 3.14).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_try_str32_ref_success() {
+    fn test_str_str32_accessor() {
         let arr = StringArray::<u32>::from_slice(&["hello", "world"]);
         let array = Array::from_string32(arr);
-        let inner = array.try_str32_ref().unwrap();
+        let inner = array.str().str32();
         assert_eq!(inner.get_str(0), Some("hello"));
     }
 
     #[test]
-    fn test_try_str32_ref_type_error() {
-        let array = Array::from_int32(IntegerArray::<i32>::default());
-        assert!(array.try_str32_ref().is_err());
+    fn test_str_try_str32_converts_int() {
+        let mut arr = IntegerArray::<i32>::default();
+        arr.push(42);
+        let array = Array::from_int32(arr);
+        let inner = array.str().try_str32().unwrap();
+        assert_eq!(inner.get_str(0), Some("42"));
     }
 
     #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
     #[test]
-    fn test_try_cat32_ref_success() {
+    fn test_str_cat32_accessor() {
         let arr = CategoricalArray::<u32>::from_vec(vec!["a", "b", "a"], None);
         let array = Array::from_categorical32(arr);
-        let inner = array.try_cat32_ref().unwrap();
+        let inner = array.str().cat32();
         assert_eq!(inner.get_str(0), Some("a"));
     }
 
     #[test]
-    fn test_try_ref_null_array() {
+    fn test_try_accessors_null_array() {
         let array = Array::Null;
-        assert!(array.try_i32_ref().is_err());
-        assert!(array.try_f64_ref().is_err());
-        assert!(array.try_str32_ref().is_err());
+        assert!(array.try_num().is_err());
+        assert!(array.try_str().is_err());
+        assert!(array.try_bool().is_err());
     }
 
     // ── value_to_string tests ─────────────────────────────────────────

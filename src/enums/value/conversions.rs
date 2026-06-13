@@ -2150,7 +2150,7 @@ mod vecvalue_terminal_coercion_tests {
         let arr = Array::try_from(v).expect("multi VecValue<Array> should concat-fold");
         assert_eq!(arr.len(), 6);
         // Row order must be preserved across fan-out gather (invariant I5).
-        let na = arr.num().i32().unwrap();
+        let na = arr.num().i32();
         assert_eq!(&na.data[..], &[1, 2, 3, 4, 5, 6]);
     }
 

@@ -323,235 +323,187 @@ impl TextArray {
         }
     }
 
-    /// Returns a reference to the inner `StringArray<u32>` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn str32_ref(&self) -> Result<&StringArray<u32>, MinarrowError> {
-        match self {
-            TextArray::String32(arr) => Ok(arr),
-            TextArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "TextArray",
-                to: "StringArray<u32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `StringArray<u64>` if the variant matches.
-    /// No conversion or cloning is performed.
-    #[cfg(feature = "large_string")]
-    pub fn str64_ref(&self) -> Result<&StringArray<u64>, MinarrowError> {
-        match self {
-            TextArray::String64(arr) => Ok(arr),
-            TextArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "TextArray",
-                to: "StringArray<u64>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `CategoricalArray<u32>` if the variant matches.
-    /// No conversion or cloning is performed.
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-    pub fn cat32_ref(&self) -> Result<&CategoricalArray<u32>, MinarrowError> {
-        match self {
-            TextArray::Categorical32(arr) => Ok(arr),
-            TextArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "TextArray",
-                to: "CategoricalArray<u32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `CategoricalArray<u64>` if the variant matches.
-    /// No conversion or cloning is performed.
-    #[cfg(feature = "extended_categorical")]
-    pub fn cat64_ref(&self) -> Result<&CategoricalArray<u64>, MinarrowError> {
-        match self {
-            TextArray::Categorical64(arr) => Ok(arr),
-            TextArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "TextArray",
-                to: "CategoricalArray<u64>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `CategoricalArray<u8>` if the variant matches.
-    /// No conversion or cloning is performed.
-    #[cfg(feature = "default_categorical_8")]
-    pub fn cat8_ref(&self) -> Result<&CategoricalArray<u8>, MinarrowError> {
-        match self {
-            TextArray::Categorical8(arr) => Ok(arr),
-            TextArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "TextArray",
-                to: "CategoricalArray<u8>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `CategoricalArray<u16>` if the variant matches.
-    /// No conversion or cloning is performed.
-    #[cfg(feature = "extended_categorical")]
-    pub fn cat16_ref(&self) -> Result<&CategoricalArray<u16>, MinarrowError> {
-        match self {
-            TextArray::Categorical16(arr) => Ok(arr),
-            TextArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "TextArray",
-                to: "CategoricalArray<u16>",
-                message: None,
-            }),
-        }
+    /// Returns the inner array as `Arc<StringArray<u32>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn str32(&self) -> Arc<StringArray<u32>> {
+        self.try_str32().unwrap()
     }
 
     /// Casts to StringArray<u32>
     ///
     /// - Converts via TryFrom,
-    /// - Uses *CloneOnWrite (COW)* when it's already a `String32`.
-    pub fn str32(self) -> Result<StringArray<u32>, MinarrowError> {
+    /// - The matching variant returns as a shared handle without copying data.
+    pub fn try_str32(&self) -> Result<Arc<StringArray<u32>>, MinarrowError> {
         match self {
-            TextArray::String32(arr) => match Arc::try_unwrap(arr) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
+            TextArray::String32(arr) => Ok(arr.clone()),
             #[cfg(feature = "large_string")]
-            TextArray::String64(arr) => Ok(StringArray::<u32>::try_from(&*arr)?),
+            TextArray::String64(arr) => Ok(Arc::new(StringArray::<u32>::try_from(&**arr)?)),
             #[cfg(feature = "default_categorical_8")]
-            TextArray::Categorical8(arr) => Ok(StringArray::<u32>::try_from(&*arr)?),
+            TextArray::Categorical8(arr) => Ok(Arc::new(StringArray::<u32>::try_from(&**arr)?)),
             #[cfg(feature = "extended_categorical")]
-            TextArray::Categorical16(arr) => Ok(StringArray::<u32>::try_from(&*arr)?),
+            TextArray::Categorical16(arr) => Ok(Arc::new(StringArray::<u32>::try_from(&**arr)?)),
             #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-            TextArray::Categorical32(arr) => Ok(StringArray::<u32>::try_from(&*arr)?),
+            TextArray::Categorical32(arr) => Ok(Arc::new(StringArray::<u32>::try_from(&**arr)?)),
             #[cfg(feature = "extended_categorical")]
-            TextArray::Categorical64(arr) => Ok(StringArray::<u32>::try_from(&*arr)?),
+            TextArray::Categorical64(arr) => Ok(Arc::new(StringArray::<u32>::try_from(&**arr)?)),
             TextArray::Null => Err(MinarrowError::NullError { message: None }),
         }
+    }
+
+    /// Returns the inner array as `Arc<StringArray<u64>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[cfg(feature = "large_string")]
+    #[inline]
+    pub fn str64(&self) -> Arc<StringArray<u64>> {
+        self.try_str64().unwrap()
     }
 
     /// Casts to StringArray<u64>
     ///
     /// - Converts via `From` or `TryFrom`, depending on the inner type
-    /// - Uses *CloneOnWrite (COW)* when it's already a `String64`.
+    /// - The matching variant returns as a shared handle without copying data.
     #[cfg(feature = "large_string")]
-    pub fn str64(self) -> Result<StringArray<u64>, MinarrowError> {
+    pub fn try_str64(&self) -> Result<Arc<StringArray<u64>>, MinarrowError> {
         match self {
-            TextArray::String64(arr) => match Arc::try_unwrap(arr) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            TextArray::String32(arr) => Ok(StringArray::<u64>::from(&*arr)),
+            TextArray::String64(arr) => Ok(arr.clone()),
+            TextArray::String32(arr) => Ok(Arc::new(StringArray::<u64>::from(&**arr))),
             #[cfg(feature = "default_categorical_8")]
-            TextArray::Categorical8(arr) => Ok(StringArray::<u64>::try_from(&*arr)?),
+            TextArray::Categorical8(arr) => Ok(Arc::new(StringArray::<u64>::try_from(&**arr)?)),
             #[cfg(feature = "extended_categorical")]
-            TextArray::Categorical16(arr) => Ok(StringArray::<u64>::try_from(&*arr)?),
+            TextArray::Categorical16(arr) => Ok(Arc::new(StringArray::<u64>::try_from(&**arr)?)),
             #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-            TextArray::Categorical32(arr) => Ok(StringArray::<u64>::try_from(&*arr)?),
+            TextArray::Categorical32(arr) => Ok(Arc::new(StringArray::<u64>::try_from(&**arr)?)),
             #[cfg(feature = "extended_categorical")]
-            TextArray::Categorical64(arr) => Ok(StringArray::<u64>::try_from(&*arr)?),
+            TextArray::Categorical64(arr) => Ok(Arc::new(StringArray::<u64>::try_from(&**arr)?)),
             TextArray::Null => Err(MinarrowError::NullError { message: None }),
         }
+    }
+
+    /// Returns the inner array as `Arc<CategoricalArray<u32>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[inline]
+    pub fn cat32(&self) -> Arc<CategoricalArray<u32>> {
+        self.try_cat32().unwrap()
     }
 
     /// Casts to CategoricalArray<u32>
     ///
     /// - Converts via `From` or `TryFrom`, depending on the inner type
-    /// - Uses *CloneOnWrite (COW)* when it's already a `Categorical32`.
+    /// - The matching variant returns as a shared handle without copying data.
     #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-    pub fn cat32(self) -> Result<CategoricalArray<u32>, MinarrowError> {
+    pub fn try_cat32(&self) -> Result<Arc<CategoricalArray<u32>>, MinarrowError> {
         match self {
-            TextArray::Categorical32(arr) => match Arc::try_unwrap(arr) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            TextArray::String32(arr) => Ok(CategoricalArray::<u32>::try_from(&*arr)?),
+            TextArray::Categorical32(arr) => Ok(arr.clone()),
+            TextArray::String32(arr) => Ok(Arc::new(CategoricalArray::<u32>::try_from(&**arr)?)),
             #[cfg(feature = "large_string")]
-            TextArray::String64(arr) => Ok(CategoricalArray::<u32>::try_from(&*arr)?),
+            TextArray::String64(arr) => Ok(Arc::new(CategoricalArray::<u32>::try_from(&**arr)?)),
             #[cfg(feature = "default_categorical_8")]
-            TextArray::Categorical8(arr) => Ok(CategoricalArray::<u32>::from(&*arr)),
+            TextArray::Categorical8(arr) => Ok(Arc::new(CategoricalArray::<u32>::from(&**arr))),
             #[cfg(feature = "extended_categorical")]
-            TextArray::Categorical16(arr) => Ok(CategoricalArray::<u32>::from(&*arr)),
+            TextArray::Categorical16(arr) => Ok(Arc::new(CategoricalArray::<u32>::from(&**arr))),
             #[cfg(feature = "extended_categorical")]
-            TextArray::Categorical64(arr) => Ok(CategoricalArray::<u32>::try_from(&*arr)?),
+            TextArray::Categorical64(arr) => Ok(Arc::new(CategoricalArray::<u32>::try_from(&**arr)?)),
             TextArray::Null => Err(MinarrowError::NullError { message: None }),
         }
+    }
+
+    /// Returns the inner array as `Arc<CategoricalArray<u64>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[cfg(feature = "extended_categorical")]
+    #[inline]
+    pub fn cat64(&self) -> Arc<CategoricalArray<u64>> {
+        self.try_cat64().unwrap()
     }
 
     /// Casts to CategoricalArray<u64>
     ///
     /// - Converts via `From` or `TryFrom`, depending on the inner type
-    /// - Uses *CloneOnWrite (COW)* when it's already a `Categorical32`.
+    /// - The matching variant returns as a shared handle without copying data.
     #[cfg(feature = "extended_categorical")]
-    pub fn cat64(self) -> Result<CategoricalArray<u64>, MinarrowError> {
+    pub fn try_cat64(&self) -> Result<Arc<CategoricalArray<u64>>, MinarrowError> {
         match self {
-            TextArray::Categorical64(arr) => match Arc::try_unwrap(arr) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            TextArray::String32(arr) => Ok(CategoricalArray::<u64>::try_from(&*arr)?),
+            TextArray::Categorical64(arr) => Ok(arr.clone()),
+            TextArray::String32(arr) => Ok(Arc::new(CategoricalArray::<u64>::try_from(&**arr)?)),
             #[cfg(feature = "large_string")]
-            TextArray::String64(arr) => Ok(CategoricalArray::<u64>::try_from(&*arr)?),
+            TextArray::String64(arr) => Ok(Arc::new(CategoricalArray::<u64>::try_from(&**arr)?)),
             #[cfg(feature = "default_categorical_8")]
-            TextArray::Categorical8(arr) => Ok(CategoricalArray::<u64>::from(&*arr)),
+            TextArray::Categorical8(arr) => Ok(Arc::new(CategoricalArray::<u64>::from(&**arr))),
             #[cfg(feature = "extended_categorical")]
-            TextArray::Categorical16(arr) => Ok(CategoricalArray::<u64>::from(&*arr)),
+            TextArray::Categorical16(arr) => Ok(Arc::new(CategoricalArray::<u64>::from(&**arr))),
             #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-            TextArray::Categorical32(arr) => Ok(CategoricalArray::<u64>::from(&*arr)),
+            TextArray::Categorical32(arr) => Ok(Arc::new(CategoricalArray::<u64>::from(&**arr))),
             TextArray::Null => Err(MinarrowError::NullError { message: None }),
         }
+    }
+
+    /// Returns the inner array as `Arc<CategoricalArray<u8>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[cfg(feature = "default_categorical_8")]
+    #[inline]
+    pub fn cat8(&self) -> Arc<CategoricalArray<u8>> {
+        self.try_cat8().unwrap()
     }
 
     /// Casts to CategoricalArray<u8>.
     ///
     /// - Converts via `From` or `TryFrom`, depending on the inner type
-    /// - Uses *CloneOnWrite (COW)* when it's already a `Categorical8`.
+    /// - The matching variant returns as a shared handle without copying data.
     #[cfg(feature = "default_categorical_8")]
-    pub fn cat8(self) -> Result<CategoricalArray<u8>, MinarrowError> {
+    pub fn try_cat8(&self) -> Result<Arc<CategoricalArray<u8>>, MinarrowError> {
         match self {
-            TextArray::Categorical8(arr) => match Arc::try_unwrap(arr) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            TextArray::String32(arr) => Ok(CategoricalArray::<u8>::try_from(&*arr)?),
+            TextArray::Categorical8(arr) => Ok(arr.clone()),
+            TextArray::String32(arr) => Ok(Arc::new(CategoricalArray::<u8>::try_from(&**arr)?)),
             #[cfg(feature = "large_string")]
-            TextArray::String64(arr) => Ok(CategoricalArray::<u8>::try_from(&*arr)?),
+            TextArray::String64(arr) => Ok(Arc::new(CategoricalArray::<u8>::try_from(&**arr)?)),
             #[cfg(feature = "extended_categorical")]
-            TextArray::Categorical16(arr) => Ok(CategoricalArray::<u8>::try_from(&*arr)?),
+            TextArray::Categorical16(arr) => Ok(Arc::new(CategoricalArray::<u8>::try_from(&**arr)?)),
             #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-            TextArray::Categorical32(arr) => Ok(CategoricalArray::<u8>::try_from(&*arr)?),
+            TextArray::Categorical32(arr) => Ok(Arc::new(CategoricalArray::<u8>::try_from(&**arr)?)),
             #[cfg(feature = "extended_categorical")]
-            TextArray::Categorical64(arr) => Ok(CategoricalArray::<u8>::try_from(&*arr)?),
+            TextArray::Categorical64(arr) => Ok(Arc::new(CategoricalArray::<u8>::try_from(&**arr)?)),
             TextArray::Null => Err(MinarrowError::NullError { message: None }),
         }
+    }
+
+    /// Returns the inner array as `Arc<CategoricalArray<u16>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[cfg(feature = "extended_categorical")]
+    #[inline]
+    pub fn cat16(&self) -> Arc<CategoricalArray<u16>> {
+        self.try_cat16().unwrap()
     }
 
     /// Casts to CategoricalArray<u16>.
     ///
     /// - Converts via `From` or `TryFrom`, depending on the inner type
-    /// - Uses *CloneOnWrite (COW)* when it's already a `Categorical16`.
+    /// - The matching variant returns as a shared handle without copying data.
     #[cfg(feature = "extended_categorical")]
-    pub fn cat16(self) -> Result<CategoricalArray<u16>, MinarrowError> {
+    pub fn try_cat16(&self) -> Result<Arc<CategoricalArray<u16>>, MinarrowError> {
         match self {
-            TextArray::Categorical16(arr) => match Arc::try_unwrap(arr) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            TextArray::String32(arr) => Ok(CategoricalArray::<u16>::try_from(&*arr)?),
+            TextArray::Categorical16(arr) => Ok(arr.clone()),
+            TextArray::String32(arr) => Ok(Arc::new(CategoricalArray::<u16>::try_from(&**arr)?)),
             #[cfg(feature = "large_string")]
-            TextArray::String64(arr) => Ok(CategoricalArray::<u16>::try_from(&*arr)?),
+            TextArray::String64(arr) => Ok(Arc::new(CategoricalArray::<u16>::try_from(&**arr)?)),
             #[cfg(feature = "default_categorical_8")]
-            TextArray::Categorical8(arr) => Ok(CategoricalArray::<u16>::from(&*arr)),
+            TextArray::Categorical8(arr) => Ok(Arc::new(CategoricalArray::<u16>::from(&**arr))),
             #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-            TextArray::Categorical32(arr) => Ok(CategoricalArray::<u16>::try_from(&*arr)?),
+            TextArray::Categorical32(arr) => Ok(Arc::new(CategoricalArray::<u16>::try_from(&**arr)?)),
             #[cfg(feature = "extended_categorical")]
-            TextArray::Categorical64(arr) => Ok(CategoricalArray::<u16>::try_from(&*arr)?),
+            TextArray::Categorical64(arr) => Ok(Arc::new(CategoricalArray::<u16>::try_from(&**arr)?)),
             TextArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }

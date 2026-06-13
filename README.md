@@ -13,7 +13,7 @@ Minarrow gives you typed columnar arrays that compile in ~1.5 seconds, run with 
 ## Quick Start
 
 ```rust
-use minarrow::{arr_i32, arr_f64, arr_str32, arr_bool};
+use minarrow::{arr_i32, arr_f64, arr_str32, arr_bool, MaskedArray};
 
 // Create arrays with macros
 let ids = arr_i32![1, 2, 3, 4];
@@ -23,7 +23,7 @@ let flags = arr_bool![true, false, true];
 
 // Direct typed access - no downcasting
 assert_eq!(ids.len(), 4);
-assert_eq!(prices.get(0), Some(10.5));
+assert_eq!(prices.num().f64().get(0), Some(10.5));
 ```
 
 ```rust

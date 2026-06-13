@@ -3809,7 +3809,7 @@ mod tests {
 
             // Importer applies offset; result must equal the windowed values.
             let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
-            let inner = (*imported).clone().num().i32().unwrap();
+            let inner = imported.num().i32();
             assert_eq!(inner.data.as_slice(), &[30, 40, 50, 60]);
 
             ((*arr_ptr).release.unwrap())(arr_ptr);
@@ -3923,8 +3923,8 @@ mod tests {
         let (col_a, _) = &batches[0][0];
         let (col_b, _) = &batches[0][1];
 
-        let inner_a = (**col_a).clone().num().i32().unwrap();
-        let inner_b = (**col_b).clone().num().f64().unwrap();
+        let inner_a = col_a.num().i32();
+        let inner_b = col_b.num().f64();
         assert_eq!(inner_a.data.as_slice(), &[2, 3, 4]);
         assert_eq!(inner_b.data.as_slice(), &[1.0, 1.5, 2.0]);
 
@@ -3976,8 +3976,8 @@ mod tests {
         let (arrays, _field) = unsafe { import_array_stream(stream_ptr) };
         assert_eq!(arrays.len(), 2);
 
-        let inner0 = (*arrays[0]).clone().num().i32().unwrap();
-        let inner1 = (*arrays[1]).clone().num().i32().unwrap();
+        let inner0 = arrays[0].num().i32();
+        let inner1 = arrays[1].num().i32();
         assert_eq!(inner0.data.as_slice(), &[4, 5]);
         assert_eq!(inner1.data.as_slice(), &[10, 20]);
     }
@@ -4053,11 +4053,11 @@ mod tests {
         let (col_a0, _) = &batches[0][0];
         let (col_b0, _) = &batches[0][1];
         assert_eq!(
-            (**col_a0).clone().num().i32().unwrap().data.as_slice(),
+            col_a0.num().i32().data.as_slice(),
             &[1, 2, 3]
         );
         assert_eq!(
-            (**col_b0).clone().num().f64().unwrap().data.as_slice(),
+            col_b0.num().f64().data.as_slice(),
             &[1.0, 2.0, 3.0]
         );
 
@@ -4065,11 +4065,11 @@ mod tests {
         let (col_a1, _) = &batches[1][0];
         let (col_b1, _) = &batches[1][1];
         assert_eq!(
-            (**col_a1).clone().num().i32().unwrap().data.as_slice(),
+            col_a1.num().i32().data.as_slice(),
             &[105, 106]
         );
         assert_eq!(
-            (**col_b1).clone().num().f64().unwrap().data.as_slice(),
+            col_b1.num().f64().data.as_slice(),
             &[105.0, 106.0]
         );
     }
@@ -4103,10 +4103,10 @@ mod tests {
 
         unsafe {
             let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
-            let inner = (*imported).clone().num().i32().unwrap();
+            let inner = imported.num().i32();
             assert_eq!(inner.data.as_slice(), &[3, 4, 5, 6, 7, 8, 9]);
 
-            let mask = inner.null_mask.expect("null mask must survive offset");
+            let mask = inner.null_mask.clone().expect("null mask must survive offset");
             // Indices in the imported array: 1 (was parent index 4) and
             // 4 (was parent index 7) should read as null; everything else valid.
             for i in 0..7 {

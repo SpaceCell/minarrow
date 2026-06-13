@@ -3701,9 +3701,9 @@ dependencies = [
 
 [[package]]
 name = "vec64"
-version = "0.4.6"
+version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dbcec2954f646b356349abc2bc9fb825029a00ac85ea5e96e5cf86c468d798b"
+checksum = "e14d6d15c0dbb3d2929a916fe20a15e7d04e787c9fbc29b3940e0654b11482c6"
 dependencies = [
  "libc",
 ]

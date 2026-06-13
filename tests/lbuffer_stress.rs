@@ -118,8 +118,8 @@ fn open_window(window: usize) -> (LBuffer<f64>, LBuffer<i64>, Arc<Table>) {
 /// Verifies a window's columns against the writer's value functions over the
 /// global range `[start, start + n)`.
 fn verify_window(table: &Table, start: usize, n: usize) {
-    let price = table.cols[0].array.num_ref().unwrap().f64_ref().unwrap();
-    let volume = table.cols[1].array.num_ref().unwrap().i64_ref().unwrap();
+    let price = table.cols[0].array.num().f64();
+    let volume = table.cols[1].array.num().i64();
     let price_rows = &price.data.as_slice()[..n];
     let volume_rows = &volume.data.as_slice()[..n];
     for i in 0..n {
@@ -175,8 +175,8 @@ fn lbuffer_concurrent_lock_free_reads() {
                 if let Some((start, table)) = current.as_ref() {
                     let n = table.n_rows();
                     if n > 0 {
-                        let price = table.cols[0].array.num_ref().unwrap().f64_ref().unwrap();
-                        let volume = table.cols[1].array.num_ref().unwrap().i64_ref().unwrap();
+                        let price = table.cols[0].array.num().f64();
+                        let volume = table.cols[1].array.num().i64();
                         let price_slice = price.data.as_slice();
                         let volume_slice = volume.data.as_slice();
                         assert!(price_slice.len() >= n, "reader {reader_id}: price below the row floor");

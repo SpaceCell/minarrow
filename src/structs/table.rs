@@ -307,8 +307,8 @@ impl Table {
     pub fn col_numeric(&self, name: &str) -> Result<NumericArrayV, MinarrowError> {
         let idx = self.col_name_index(name)
             .ok_or_else(|| MinarrowError::IndexError(format!("column '{}' not found", name)))?;
-        let num = self.cols[idx].array.num_ref()?;
-        Ok(NumericArrayV::from(num.clone()))
+        let num = self.cols[idx].array.try_num()?;
+        Ok(NumericArrayV::from(num))
     }
 
     /// Resolve a named column to a `TextArrayV`.
@@ -316,8 +316,8 @@ impl Table {
     pub fn col_text(&self, name: &str) -> Result<TextArrayV, MinarrowError> {
         let idx = self.col_name_index(name)
             .ok_or_else(|| MinarrowError::IndexError(format!("column '{}' not found", name)))?;
-        let ta = self.cols[idx].array.str_ref()?;
-        Ok(TextArrayV::from(ta.clone()))
+        let ta = self.cols[idx].array.try_str()?;
+        Ok(TextArrayV::from(ta))
     }
 
     /// Resolve a named column to a `BitmaskV`.
@@ -325,7 +325,7 @@ impl Table {
     pub fn col_bitmask(&self, name: &str) -> Result<BitmaskV, MinarrowError> {
         let idx = self.col_name_index(name)
             .ok_or_else(|| MinarrowError::IndexError(format!("column '{}' not found", name)))?;
-        let ba = self.cols[idx].array.bool_ref()?;
+        let ba = self.cols[idx].array.try_bool()?;
         Ok(BitmaskV::new(ba.data.clone(), 0, ba.len()))
     }
 

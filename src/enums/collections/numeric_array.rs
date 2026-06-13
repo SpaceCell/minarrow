@@ -395,206 +395,162 @@ impl NumericArray {
         }
     }
 
-    /// Returns a reference to the inner `IntegerArray<i32>` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn i32_ref(&self) -> Result<&IntegerArray<i32>, MinarrowError> {
-        match self {
-            NumericArray::Int32(a) => Ok(a),
-            NumericArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "NumericArray",
-                to: "IntegerArray<i32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `IntegerArray<i64>` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn i64_ref(&self) -> Result<&IntegerArray<i64>, MinarrowError> {
-        match self {
-            NumericArray::Int64(a) => Ok(a),
-            NumericArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "NumericArray",
-                to: "IntegerArray<i64>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `IntegerArray<u32>` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn u32_ref(&self) -> Result<&IntegerArray<u32>, MinarrowError> {
-        match self {
-            NumericArray::UInt32(a) => Ok(a),
-            NumericArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "NumericArray",
-                to: "IntegerArray<u32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `IntegerArray<u64>` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn u64_ref(&self) -> Result<&IntegerArray<u64>, MinarrowError> {
-        match self {
-            NumericArray::UInt64(a) => Ok(a),
-            NumericArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "NumericArray",
-                to: "IntegerArray<u64>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `FloatArray<f32>` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn f32_ref(&self) -> Result<&FloatArray<f32>, MinarrowError> {
-        match self {
-            NumericArray::Float32(a) => Ok(a),
-            NumericArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "NumericArray",
-                to: "FloatArray<f32>",
-                message: None,
-            }),
-        }
-    }
-
-    /// Returns a reference to the inner `FloatArray<f64>` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn f64_ref(&self) -> Result<&FloatArray<f64>, MinarrowError> {
-        match self {
-            NumericArray::Float64(a) => Ok(a),
-            NumericArray::Null => Err(MinarrowError::NullError { message: None }),
-            _ => Err(MinarrowError::TypeError {
-                from: "NumericArray",
-                to: "FloatArray<f64>",
-                message: None,
-            }),
-        }
+    /// Returns the inner array as `Arc<IntegerArray<i32>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn i32(&self) -> Arc<IntegerArray<i32>> {
+        self.try_i32().unwrap()
     }
 
     /// Convert to IntegerArray<i32> using From/TryFrom as appropriate per conversion.
-    pub fn i32(self) -> Result<IntegerArray<i32>, MinarrowError> {
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    pub fn try_i32(&self) -> Result<Arc<IntegerArray<i32>>, MinarrowError> {
         match self {
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int8(a) => Ok(IntegerArray::<i32>::from(&*a)),
+            NumericArray::Int8(a) => Ok(Arc::new(IntegerArray::<i32>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int16(a) => Ok(IntegerArray::<i32>::from(&*a)),
-            NumericArray::Int32(a) => match Arc::try_unwrap(a) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            NumericArray::Int64(a) => Ok(IntegerArray::<i32>::try_from(&*a)?),
+            NumericArray::Int16(a) => Ok(Arc::new(IntegerArray::<i32>::from(&**a))),
+            NumericArray::Int32(a) => Ok(a.clone()),
+            NumericArray::Int64(a) => Ok(Arc::new(IntegerArray::<i32>::try_from(&**a)?)),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt8(a) => Ok(IntegerArray::<i32>::from(&*a)),
+            NumericArray::UInt8(a) => Ok(Arc::new(IntegerArray::<i32>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt16(a) => Ok(IntegerArray::<i32>::from(&*a)),
-            NumericArray::UInt32(a) => Ok(IntegerArray::<i32>::try_from(&*a)?),
-            NumericArray::UInt64(a) => Ok(IntegerArray::<i32>::try_from(&*a)?),
-            NumericArray::Float32(a) => Ok(IntegerArray::<i32>::try_from(&*a)?),
-            NumericArray::Float64(a) => Ok(IntegerArray::<i32>::try_from(&*a)?),
+            NumericArray::UInt16(a) => Ok(Arc::new(IntegerArray::<i32>::from(&**a))),
+            NumericArray::UInt32(a) => Ok(Arc::new(IntegerArray::<i32>::try_from(&**a)?)),
+            NumericArray::UInt64(a) => Ok(Arc::new(IntegerArray::<i32>::try_from(&**a)?)),
+            NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<i32>::try_from(&**a)?)),
+            NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<i32>::try_from(&**a)?)),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
+    }
+
+    /// Returns the inner array as `Arc<IntegerArray<i64>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn i64(&self) -> Arc<IntegerArray<i64>> {
+        self.try_i64().unwrap()
     }
 
     /// Convert to IntegerArray<i64> using From/TryFrom as appropriate per conversion.
-    pub fn i64(self) -> Result<IntegerArray<i64>, MinarrowError> {
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    pub fn try_i64(&self) -> Result<Arc<IntegerArray<i64>>, MinarrowError> {
         match self {
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int8(a) => Ok(IntegerArray::<i64>::from(&*a)),
+            NumericArray::Int8(a) => Ok(Arc::new(IntegerArray::<i64>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int16(a) => Ok(IntegerArray::<i64>::from(&*a)),
-            NumericArray::Int32(a) => Ok(IntegerArray::<i64>::from(&*a)),
-            NumericArray::Int64(a) => match Arc::try_unwrap(a) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
+            NumericArray::Int16(a) => Ok(Arc::new(IntegerArray::<i64>::from(&**a))),
+            NumericArray::Int32(a) => Ok(Arc::new(IntegerArray::<i64>::from(&**a))),
+            NumericArray::Int64(a) => Ok(a.clone()),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt8(a) => Ok(IntegerArray::<i64>::from(&*a)),
+            NumericArray::UInt8(a) => Ok(Arc::new(IntegerArray::<i64>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt16(a) => Ok(IntegerArray::<i64>::from(&*a)),
-            NumericArray::UInt32(a) => Ok(IntegerArray::<i64>::from(&*a)),
-            NumericArray::UInt64(a) => Ok(IntegerArray::<i64>::try_from(&*a)?),
-            NumericArray::Float32(a) => Ok(IntegerArray::<i64>::try_from(&*a)?),
-            NumericArray::Float64(a) => Ok(IntegerArray::<i64>::try_from(&*a)?),
+            NumericArray::UInt16(a) => Ok(Arc::new(IntegerArray::<i64>::from(&**a))),
+            NumericArray::UInt32(a) => Ok(Arc::new(IntegerArray::<i64>::from(&**a))),
+            NumericArray::UInt64(a) => Ok(Arc::new(IntegerArray::<i64>::try_from(&**a)?)),
+            NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<i64>::try_from(&**a)?)),
+            NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<i64>::try_from(&**a)?)),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
+    }
+
+    /// Returns the inner array as `Arc<IntegerArray<u32>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn u32(&self) -> Arc<IntegerArray<u32>> {
+        self.try_u32().unwrap()
     }
 
     /// Convert to IntegerArray<u32> using From/TryFrom as appropriate per conversion.
-    pub fn u32(self) -> Result<IntegerArray<u32>, MinarrowError> {
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    pub fn try_u32(&self) -> Result<Arc<IntegerArray<u32>>, MinarrowError> {
         match self {
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int8(a) => Ok(IntegerArray::<u32>::from(&*a)),
+            NumericArray::Int8(a) => Ok(Arc::new(IntegerArray::<u32>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int16(a) => Ok(IntegerArray::<u32>::from(&*a)),
-            NumericArray::Int32(a) => Ok(IntegerArray::<u32>::try_from(&*a)?),
-            NumericArray::Int64(a) => Ok(IntegerArray::<u32>::try_from(&*a)?),
+            NumericArray::Int16(a) => Ok(Arc::new(IntegerArray::<u32>::from(&**a))),
+            NumericArray::Int32(a) => Ok(Arc::new(IntegerArray::<u32>::try_from(&**a)?)),
+            NumericArray::Int64(a) => Ok(Arc::new(IntegerArray::<u32>::try_from(&**a)?)),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt8(a) => Ok(IntegerArray::<u32>::from(&*a)),
+            NumericArray::UInt8(a) => Ok(Arc::new(IntegerArray::<u32>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt16(a) => Ok(IntegerArray::<u32>::from(&*a)),
-            NumericArray::UInt32(a) => match Arc::try_unwrap(a) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            NumericArray::UInt64(a) => Ok(IntegerArray::<u32>::try_from(&*a)?),
-            NumericArray::Float32(a) => Ok(IntegerArray::<u32>::try_from(&*a)?),
-            NumericArray::Float64(a) => Ok(IntegerArray::<u32>::try_from(&*a)?),
+            NumericArray::UInt16(a) => Ok(Arc::new(IntegerArray::<u32>::from(&**a))),
+            NumericArray::UInt32(a) => Ok(a.clone()),
+            NumericArray::UInt64(a) => Ok(Arc::new(IntegerArray::<u32>::try_from(&**a)?)),
+            NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<u32>::try_from(&**a)?)),
+            NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<u32>::try_from(&**a)?)),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
+    }
+
+    /// Returns the inner array as `Arc<IntegerArray<u64>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn u64(&self) -> Arc<IntegerArray<u64>> {
+        self.try_u64().unwrap()
     }
 
     /// Convert to IntegerArray<u64> using From/TryFrom as appropriate per conversion.
-    pub fn u64(self) -> Result<IntegerArray<u64>, MinarrowError> {
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    pub fn try_u64(&self) -> Result<Arc<IntegerArray<u64>>, MinarrowError> {
         match self {
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int8(a) => Ok(IntegerArray::<u64>::from(&*a)),
+            NumericArray::Int8(a) => Ok(Arc::new(IntegerArray::<u64>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int16(a) => Ok(IntegerArray::<u64>::from(&*a)),
-            NumericArray::Int32(a) => Ok(IntegerArray::<u64>::from(&*a)),
-            NumericArray::Int64(a) => Ok(IntegerArray::<u64>::try_from(&*a)?),
+            NumericArray::Int16(a) => Ok(Arc::new(IntegerArray::<u64>::from(&**a))),
+            NumericArray::Int32(a) => Ok(Arc::new(IntegerArray::<u64>::from(&**a))),
+            NumericArray::Int64(a) => Ok(Arc::new(IntegerArray::<u64>::try_from(&**a)?)),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt8(a) => Ok(IntegerArray::<u64>::from(&*a)),
+            NumericArray::UInt8(a) => Ok(Arc::new(IntegerArray::<u64>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt16(a) => Ok(IntegerArray::<u64>::from(&*a)),
-            NumericArray::UInt32(a) => Ok(IntegerArray::<u64>::from(&*a)),
-            NumericArray::UInt64(a) => match Arc::try_unwrap(a) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            NumericArray::Float32(a) => Ok(IntegerArray::<u64>::try_from(&*a)?),
-            NumericArray::Float64(a) => Ok(IntegerArray::<u64>::try_from(&*a)?),
+            NumericArray::UInt16(a) => Ok(Arc::new(IntegerArray::<u64>::from(&**a))),
+            NumericArray::UInt32(a) => Ok(Arc::new(IntegerArray::<u64>::from(&**a))),
+            NumericArray::UInt64(a) => Ok(a.clone()),
+            NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<u64>::try_from(&**a)?)),
+            NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<u64>::try_from(&**a)?)),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
 
+    /// Returns the inner array as `Arc<FloatArray<f32>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn f32(&self) -> Arc<FloatArray<f32>> {
+        self.try_f32().unwrap()
+    }
+
     /// Convert to FloatArray<f32> using From.
-    pub fn f32(self) -> Result<FloatArray<f32>, MinarrowError> {
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    pub fn try_f32(&self) -> Result<Arc<FloatArray<f32>>, MinarrowError> {
         match self {
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int8(a) => Ok(FloatArray::<f32>::from(&*a)),
+            NumericArray::Int8(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int16(a) => Ok(FloatArray::<f32>::from(&*a)),
-            NumericArray::Int32(a) => Ok(FloatArray::<f32>::from(&*a)),
-            NumericArray::Int64(a) => Ok(FloatArray::<f32>::from(&*a)),
+            NumericArray::Int16(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
+            NumericArray::Int32(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
+            NumericArray::Int64(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt8(a) => Ok(FloatArray::<f32>::from(&*a)),
+            NumericArray::UInt8(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt16(a) => Ok(FloatArray::<f32>::from(&*a)),
-            NumericArray::UInt32(a) => Ok(FloatArray::<f32>::from(&*a)),
-            NumericArray::UInt64(a) => Ok(FloatArray::<f32>::from(&*a)),
-            NumericArray::Float32(a) => match Arc::try_unwrap(a) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            NumericArray::Float64(a) => Ok(FloatArray::<f32>::from(&*a)),
+            NumericArray::UInt16(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
+            NumericArray::UInt32(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
+            NumericArray::UInt64(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
+            NumericArray::Float32(a) => Ok(a.clone()),
+            NumericArray::Float64(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -647,72 +603,98 @@ impl NumericArray {
         }
     }
 
+    /// Returns the inner array as `Arc<FloatArray<f64>>`, converting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn f64(&self) -> Arc<FloatArray<f64>> {
+        self.try_f64().unwrap()
+    }
+
     /// Convert to FloatArray<f64> using From.
-    pub fn f64(self) -> Result<FloatArray<f64>, MinarrowError> {
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    pub fn try_f64(&self) -> Result<Arc<FloatArray<f64>>, MinarrowError> {
         match self {
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int8(a) => Ok(FloatArray::<f64>::from(&*a)),
+            NumericArray::Int8(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int16(a) => Ok(FloatArray::<f64>::from(&*a)),
-            NumericArray::Int32(a) => Ok(FloatArray::<f64>::from(&*a)),
-            NumericArray::Int64(a) => Ok(FloatArray::<f64>::from(&*a)),
+            NumericArray::Int16(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
+            NumericArray::Int32(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
+            NumericArray::Int64(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt8(a) => Ok(FloatArray::<f64>::from(&*a)),
+            NumericArray::UInt8(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt16(a) => Ok(FloatArray::<f64>::from(&*a)),
-            NumericArray::UInt32(a) => Ok(FloatArray::<f64>::from(&*a)),
-            NumericArray::UInt64(a) => Ok(FloatArray::<f64>::from(&*a)),
-            NumericArray::Float32(a) => Ok(FloatArray::<f64>::from(&*a)),
-            NumericArray::Float64(a) => match Arc::try_unwrap(a) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
+            NumericArray::UInt16(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
+            NumericArray::UInt32(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
+            NumericArray::UInt64(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
+            NumericArray::Float32(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
+            NumericArray::Float64(a) => Ok(a.clone()),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
+    }
+
+    /// Returns the array as `Arc<BooleanArray<u8>>`.
+    ///
+    /// - All non-zero values become `true`, but the null mask is preserved.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn bool(&self) -> Arc<BooleanArray<u8>> {
+        self.try_bool().unwrap()
     }
 
     /// Converts to BooleanArray<u8>.
     ///
     /// All non-zero values become `true`, but the null mask is preserved.
-    pub fn bool(self) -> Result<BooleanArray<u8>, MinarrowError> {
+    pub fn try_bool(&self) -> Result<Arc<BooleanArray<u8>>, MinarrowError> {
         match self {
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int8(a) => Ok(BooleanArray::<u8>::from(&*a)),
+            NumericArray::Int8(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int16(a) => Ok(BooleanArray::<u8>::from(&*a)),
-            NumericArray::Int32(a) => Ok(BooleanArray::<u8>::from(&*a)),
-            NumericArray::Int64(a) => Ok(BooleanArray::<u8>::from(&*a)),
+            NumericArray::Int16(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
+            NumericArray::Int32(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
+            NumericArray::Int64(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt8(a) => Ok(BooleanArray::<u8>::from(&*a)),
+            NumericArray::UInt8(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt16(a) => Ok(BooleanArray::<u8>::from(&*a)),
-            NumericArray::UInt32(a) => Ok(BooleanArray::<u8>::from(&*a)),
-            NumericArray::UInt64(a) => Ok(BooleanArray::<u8>::from(&*a)),
-            NumericArray::Float32(a) => Ok(BooleanArray::<u8>::from(&*a)),
-            NumericArray::Float64(a) => Ok(BooleanArray::<u8>::from(&*a)),
+            NumericArray::UInt16(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
+            NumericArray::UInt32(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
+            NumericArray::UInt64(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
+            NumericArray::Float32(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
+            NumericArray::Float64(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
+    }
+
+    /// Returns the array as `Arc<StringArray<u32>>`, formatting each value as string.
+    ///
+    /// - Preserves Null mask.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn str(&self) -> Arc<StringArray<u32>> {
+        self.try_str().unwrap()
     }
 
     /// Converts to StringArray<u32> by formatting each value as string.
     ///
     /// Preserves Null mask.
-    pub fn str(self) -> Result<StringArray<u32>, MinarrowError> {
+    pub fn try_str(&self) -> Result<Arc<StringArray<u32>>, MinarrowError> {
         match self {
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int8(a) => Ok(StringArray::<u32>::from(&*a)),
+            NumericArray::Int8(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::Int16(a) => Ok(StringArray::<u32>::from(&*a)),
-            NumericArray::Int32(a) => Ok(StringArray::<u32>::from(&*a)),
-            NumericArray::Int64(a) => Ok(StringArray::<u32>::from(&*a)),
+            NumericArray::Int16(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
+            NumericArray::Int32(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
+            NumericArray::Int64(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt8(a) => Ok(StringArray::<u32>::from(&*a)),
+            NumericArray::UInt8(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
             #[cfg(feature = "extended_numeric_types")]
-            NumericArray::UInt16(a) => Ok(StringArray::<u32>::from(&*a)),
-            NumericArray::UInt32(a) => Ok(StringArray::<u32>::from(&*a)),
-            NumericArray::UInt64(a) => Ok(StringArray::<u32>::from(&*a)),
-            NumericArray::Float32(a) => Ok(StringArray::<u32>::from(&*a)),
-            NumericArray::Float64(a) => Ok(StringArray::<u32>::from(&*a)),
+            NumericArray::UInt16(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
+            NumericArray::UInt32(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
+            NumericArray::UInt64(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
+            NumericArray::Float32(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
+            NumericArray::Float64(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }

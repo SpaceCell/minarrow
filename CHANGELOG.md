@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add ArrowType::upcast for binary operation type promotion
 - Added `_into` kernel variants for buffer mutation support.
 - Added LBuffer as experimental backing buffer type
+- Fixed the enum accessors. `num()`, `str()`, `bool()`, `dt()` and the typed
+  accessors (`i32()` through `f64()`, `str32()`, `cat32()`, `dt32()`, etc.) now
+  borrow `&self` and return shared `Arc` handles. This addresses an earlier
+  regression where some APIs unfortunately duplicated impacting architectural clarity.
 
 ## 0.12.1
 

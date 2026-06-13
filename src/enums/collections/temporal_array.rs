@@ -220,54 +220,42 @@ impl TemporalArray {
         }
     }
 
-    /// Returns a reference to the inner `DatetimeArray<i32>` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn dt32_ref(&self) -> Result<&DatetimeArray<i32>, MinarrowError> {
-        match self {
-            TemporalArray::Datetime32(arr) => Ok(arr),
-            TemporalArray::Datetime64(_) => Err(MinarrowError::TypeError {
-                from: "Datetime64",
-                to: "DatetimeArray<i32>",
-                message: None,
-            }),
-            TemporalArray::Null => Err(MinarrowError::NullError { message: None }),
-        }
-    }
-
-    /// Returns a reference to the inner `DatetimeArray<i64>` if the variant matches.
-    /// No conversion or cloning is performed.
-    pub fn dt64_ref(&self) -> Result<&DatetimeArray<i64>, MinarrowError> {
-        match self {
-            TemporalArray::Datetime64(arr) => Ok(arr),
-            TemporalArray::Datetime32(_) => Err(MinarrowError::TypeError {
-                from: "Datetime32",
-                to: "DatetimeArray<i64>",
-                message: None,
-            }),
-            TemporalArray::Null => Err(MinarrowError::NullError { message: None }),
-        }
+    /// Returns the inner array as `Arc<DatetimeArray<i32>>`, casting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn dt32(&self) -> Arc<DatetimeArray<i32>> {
+        self.try_dt32().unwrap()
     }
 
     /// Returns an Arc<DatetimeArray<i32>> (casting if needed).
-    pub fn dt32(self) -> Result<DatetimeArray<i32>, MinarrowError> {
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    pub fn try_dt32(&self) -> Result<Arc<DatetimeArray<i32>>, MinarrowError> {
         match self {
-            TemporalArray::Datetime32(arr) => match Arc::try_unwrap(arr) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            TemporalArray::Datetime64(arr) => Ok(DatetimeArray::<i32>::try_from(&*arr)?),
+            TemporalArray::Datetime32(arr) => Ok(arr.clone()),
+            TemporalArray::Datetime64(arr) => Ok(Arc::new(DatetimeArray::<i32>::try_from(&**arr)?)),
             TemporalArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
 
+    /// Returns the inner array as `Arc<DatetimeArray<i64>>`, casting when the variant differs.
+    ///
+    /// - The matching variant returns as a shared handle without copying data.
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[inline]
+    pub fn dt64(&self) -> Arc<DatetimeArray<i64>> {
+        self.try_dt64().unwrap()
+    }
+
     /// Returns an Arc<DatetimeArray<i64>> (casting if needed).
-    pub fn dt64(self) -> Result<DatetimeArray<i64>, MinarrowError> {
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    pub fn try_dt64(&self) -> Result<Arc<DatetimeArray<i64>>, MinarrowError> {
         match self {
-            TemporalArray::Datetime64(arr) => match Arc::try_unwrap(arr) {
-                Ok(inner) => Ok(inner),
-                Err(shared) => Ok((*shared).clone()),
-            },
-            TemporalArray::Datetime32(arr) => Ok(DatetimeArray::<i64>::from(&*arr)),
+            TemporalArray::Datetime64(arr) => Ok(arr.clone()),
+            TemporalArray::Datetime32(arr) => Ok(Arc::new(DatetimeArray::<i64>::from(&**arr))),
             TemporalArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }

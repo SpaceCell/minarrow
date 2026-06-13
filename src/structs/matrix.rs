@@ -518,7 +518,18 @@ impl TableV {
         // windowed null check and caches on first use.
         for (pos, &raw_idx) in active.iter().enumerate() {
             let arrayv = &self.cols[raw_idx];
-            let fa = arrayv.array.num_ref()?.f64_ref()?;
+            let fa = match &arrayv.array {
+                Array::NumericArray(NumericArray::Float64(a)) => a,
+                _ => {
+                    return Err(MinarrowError::TypeError {
+                        from: "Array",
+                        to: "FloatArray<f64>",
+                        message: Some(format!(
+                            "try_as_matrix_zc: column {raw_idx} is not Float64"
+                        )),
+                    });
+                }
+            };
             if arrayv.null_count() > 0 {
                 return Err(MinarrowError::NullError {
                     message: Some(format!(
@@ -742,12 +753,12 @@ impl TryFrom<&Table> for Matrix {
 
         let mut vec = Vec64::with_capacity(stride * n_cols);
         for (col_idx, fa) in table.cols.iter().enumerate() {
-            let numeric = fa.array.num_ref().map_err(|_| MinarrowError::TypeError {
+            let numeric = fa.array.try_num().map_err(|_| MinarrowError::TypeError {
                 from: "non-numeric",
                 to: "Float64",
                 message: Some(format!("column {} is not numeric", col_idx)),
             })?;
-            let f64_arr = numeric.clone().f64()?;
+            let f64_arr = numeric.try_f64()?;
             if f64_arr.data.len() != n_rows {
                 return Err(MinarrowError::ColumnLengthMismatch {
                     col: col_idx,
@@ -822,7 +833,16 @@ impl TryFrom<&TableV> for Matrix {
         let mut vec = Vec64::with_capacity(stride * n_cols);
         for &col_idx in &active {
             let (array, offset, len) = view.cols[col_idx].as_tuple_ref();
-            let fa = array.num_ref()?.f64_ref()?;
+            let fa = match array {
+                Array::NumericArray(NumericArray::Float64(a)) => a,
+                _ => {
+                    return Err(MinarrowError::TypeError {
+                        from: "Array",
+                        to: "FloatArray<f64>",
+                        message: Some(format!("column {col_idx} is not Float64")),
+                    });
+                }
+            };
             // ArrayV::new bounds-checks offset+len at construction.
             vec.extend_from_slice(&fa.data.as_slice()[offset..offset + len]);
             if pad > 0 {
@@ -1023,8 +1043,9 @@ mod try_as_matrix_zc_tests {
 
     #[test]
     fn rejects_non_f64_columns() {
-        // Use fa_i32! for a shared-free integer column. The f64_ref cast fails
-        // first, so the ZC path surfaces a TypeError before the owned check.
+        // Use fa_i32! for a shared-free integer column. The Float64 variant
+        // check fails first, so the ZC path surfaces a TypeError before the
+        // owned check.
         let a = crate::fa_i32!("a", 1, 2, 3);
         let table = Table::new("t".into(), Some(vec![a]));
         let view = TableV::from_table(table, 0, 3);

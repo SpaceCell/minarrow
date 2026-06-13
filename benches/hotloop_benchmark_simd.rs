@@ -271,7 +271,7 @@ mod benchmarks_simd {
             data: Buffer::from(data),
             null_mask: None,
         })));
-        let int_arr = array.try_i64_ref().unwrap();
+        let int_arr = array.num().i64();
         let slice = int_arr.as_ref();
         let sum = simd_sum_i64_runtime(slice, simd_lanes);
         let dur_minarrow_enum = start.elapsed();
@@ -380,7 +380,7 @@ mod benchmarks_simd {
             data: Buffer::from(data),
             null_mask: None,
         })));
-        let float_arr = array.try_f64_ref().unwrap();
+        let float_arr = array.num().f64();
         let sum = simd_sum_f64_runtime(float_arr.as_ref(), simd_lanes);
         let dur_minarrow_enum_f64 = start.elapsed();
         println!(
