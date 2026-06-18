@@ -5,6 +5,11 @@ All notable changes to **minarrow** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+- Added `_into` mutable output buffer datetime variants supporting efficient parallelism.
+- Added `TimePeriod` enum consistency for datetime periods with automatic deref on string
+constituents i.e., `week` becomes `TimePeriod::Week` at the call-site.
+
 ## 0.13.0
 
 - Added fixed-format ISO 8601 / RFC 3339 timestamp parsing for DatetimeArray

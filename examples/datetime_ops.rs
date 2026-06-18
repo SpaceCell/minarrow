@@ -175,7 +175,7 @@ fn main() {
     // Truncation Operations
     println!("\n--- Truncation Operations ---");
 
-    let truncated_day = arr.truncate("day").unwrap();
+    let truncated_day = arr.truncate("day");
     println!("\nTruncated to start of day:");
     for i in 0..truncated_day.len() {
         if let Some(dt) = truncated_day.as_datetime(i) {
@@ -183,7 +183,7 @@ fn main() {
         }
     }
 
-    let truncated_month = arr.truncate("month").unwrap();
+    let truncated_month = arr.truncate("month");
     println!("\nTruncated to start of month:");
     for i in 0..truncated_month.len() {
         if let Some(dt) = truncated_month.as_datetime(i) {

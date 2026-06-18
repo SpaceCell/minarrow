@@ -316,7 +316,7 @@ impl Concatenate for TemporalArray {
 use crate::DatetimeOps;
 
 #[cfg(feature = "datetime_ops")]
-use crate::enums::time_units::TimeUnit;
+use crate::enums::time_units::{TimePeriod, TimeUnit};
 
 #[cfg(feature = "datetime_ops")]
 use time::Duration;
@@ -573,15 +573,16 @@ impl DatetimeOps for TemporalArray {
 
     // Truncation - delegate, wrap result back into enum variant
 
-    fn truncate(&self, unit: &str) -> Result<Self, MinarrowError> {
+    fn truncate<P: Into<TimePeriod>>(&self, period: P) -> Self {
+        let period = period.into();
         match self {
             TemporalArray::Datetime32(arr) => {
-                Ok(TemporalArray::Datetime32(Arc::new(arr.truncate(unit)?)))
+                TemporalArray::Datetime32(Arc::new(arr.truncate(period)))
             }
             TemporalArray::Datetime64(arr) => {
-                Ok(TemporalArray::Datetime64(Arc::new(arr.truncate(unit)?)))
+                TemporalArray::Datetime64(Arc::new(arr.truncate(period)))
             }
-            TemporalArray::Null => Err(MinarrowError::NullError { message: None }),
+            TemporalArray::Null => TemporalArray::Null,
         }
     }
 

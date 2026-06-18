@@ -148,6 +148,8 @@ pub mod kernels {
     pub mod bitmask;
     #[cfg(feature = "broadcast")]
     pub mod broadcast;
+    #[cfg(feature = "datetime_ops")]
+    pub mod datetime;
     #[cfg(feature = "views")]
     pub mod routing;
     pub mod string;
@@ -264,7 +266,7 @@ pub use enums::collections::text_array::TextArray;
 #[cfg(feature = "scalar_type")]
 pub use enums::scalar::Scalar;
 #[cfg(feature = "datetime")]
-pub use enums::time_units::{IntervalUnit, TimeUnit};
+pub use enums::time_units::{IntervalUnit, TimePeriod, TimeUnit};
 #[cfg(feature = "value_type")]
 pub use enums::value::Value;
 
