@@ -23,7 +23,10 @@
 use time::Duration;
 
 use crate::{
-    enums::{error::MinarrowError, time_units::TimeUnit},
+    enums::{
+        error::MinarrowError,
+        time_units::{TimePeriod, TimeUnit},
+    },
     structs::variants::{boolean::BooleanArray, integer::IntegerArray},
 };
 
@@ -110,8 +113,10 @@ pub trait DatetimeOps: Sized {
 
     // Truncation
 
-    /// Truncate/floor datetime values to the start of the specified unit.
-    fn truncate(&self, unit: &str) -> Result<Self, MinarrowError>;
+    /// Floor datetime values to the start of `period`.
+    ///
+    /// `period` accepts a [`TimePeriod`] or its string label (e.g. `"day"`).
+    fn truncate<P: Into<TimePeriod>>(&self, period: P) -> Self;
 
     /// Truncate to microsecond boundaries.
     fn us(&self) -> Self;

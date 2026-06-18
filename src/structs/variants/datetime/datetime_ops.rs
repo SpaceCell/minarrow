@@ -24,6 +24,11 @@
 //! - **Truncation**: round down to year, month, week, day, hour, minute, second, or sub-second boundaries
 //! - **Type casting**: convert between time units (seconds <-> milliseconds <-> microseconds <-> nanoseconds)
 //!
+//! ## Output buffer variants
+//! These methods allocate their result. The output-buffer (`_into`) forms that compute
+//! straight into a caller-provided buffer for parallel execution live in
+//! [`crate::kernels::datetime`]. Reach for those only when writing into engine-owned memory.
+//!
 //! ## Timezone Handling
 //! `DatetimeArray` stores raw UTC timestamps as integers. Timezone information is metadata-only
 //! and stored in `ArrowType::Timestamp(TimeUnit, Option<String>)` on the `Field` level.
@@ -38,13 +43,20 @@ use time::Duration;
 
 #[cfg(feature = "datetime_ops")]
 use crate::{
-    DatetimeArray,
-    enums::{error::MinarrowError, time_units::TimeUnit},
+    Bitmask, DatetimeArray, DatetimeOps,
+    enums::{
+        error::MinarrowError,
+        time_units::{TimePeriod, TimeUnit},
+    },
     structs::variants::{boolean::BooleanArray, integer::IntegerArray},
     traits::{masked_array::MaskedArray, type_unions::Integer},
 };
 #[cfg(feature = "datetime_ops")]
 use num_traits::FromPrimitive;
+#[cfg(feature = "datetime_ops")]
+use ::vec64::Vec64;
+#[cfg(feature = "datetime_ops")]
+use crate::kernels::datetime::{add_duration_into, add_months_into, truncate_into};
 
 #[cfg(feature = "datetime_ops")]
 impl<T: Integer + FromPrimitive> DatetimeArray<T> {
@@ -102,69 +114,22 @@ impl<T: Integer + FromPrimitive> DatetimeArray<T> {
         let val_i64 = self.data[i].to_i64()?;
         Self::i64_to_datetime(val_i64, self.time_unit)
     }
-}
 
-#[cfg(feature = "datetime_ops")]
-use crate::DatetimeOps;
+}
 
 #[cfg(feature = "datetime_ops")]
 impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     fn add_duration(&self, duration: Duration) -> Result<Self, MinarrowError> {
-        let mut result = self.clone();
-        let len = result.len();
-        let data = &self.data[..];
-
-        // Convert duration to the array's time unit
-        let duration_value: i64 =
-            match self.time_unit {
-                TimeUnit::Seconds => duration.whole_seconds(),
-                TimeUnit::Milliseconds => {
-                    duration.whole_milliseconds().try_into().map_err(|_| {
-                        MinarrowError::Overflow {
-                            value: format!("{} ms", duration.whole_milliseconds()),
-                            target: "i64",
-                        }
-                    })?
-                }
-                TimeUnit::Microseconds => {
-                    duration.whole_microseconds().try_into().map_err(|_| {
-                        MinarrowError::Overflow {
-                            value: format!("{} μs", duration.whole_microseconds()),
-                            target: "i64",
-                        }
-                    })?
-                }
-                TimeUnit::Nanoseconds => duration.whole_nanoseconds().try_into().map_err(|_| {
-                    MinarrowError::Overflow {
-                        value: format!("{} ns", duration.whole_nanoseconds()),
-                        target: "i64",
-                    }
-                })?,
-                TimeUnit::Days => duration.whole_days(),
-            };
-
-        for i in 0..len {
-            if !self.is_null(i) {
-                // SAFETY: i is bounded by len, so access is safe
-                let val = unsafe { *data.get_unchecked(i) };
-
-                if let Some(val_i64) = val.to_i64() {
-                    if let Some(new_val_i64) = val_i64.checked_add(duration_value) {
-                        if let Some(new_val_t) = T::from_i64(new_val_i64) {
-                            result.set(i, new_val_t);
-                        } else {
-                            result.set_null(i);
-                        }
-                    } else {
-                        result.set_null(i); // Overflow
-                    }
-                } else {
-                    result.set_null(i);
-                }
-            }
-        }
-
-        Ok(result)
+        let len = self.len();
+        let mut data = Vec64::from_slice(&self.data[..]);
+        let mut mask = match &self.null_mask {
+            Some(m) => m.clone(),
+            None => Bitmask::new_set_all(len, true),
+        };
+        add_duration_into(self, duration, data.as_mut_slice(), Some(&mut mask))?;
+        let null_mask =
+            if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
+        Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
     }
 
     /// Subtracts a duration from all datetime values in the array.
@@ -183,57 +148,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// (e.g., Jan 31 + 1 month), the day is clamped to the last valid day (Feb 28/29).
     /// Time-of-day is preserved.
     fn add_months(&self, months: i32) -> Result<Self, MinarrowError> {
-        let mut result = self.clone();
-        let len = result.len();
-        let data = &self.data[..];
-        let time_unit = self.time_unit; // Hoist time_unit outside loop
-
-        for i in 0..len {
-            if !self.is_null(i) {
-                // SAFETY: i is bounded by len
-                let val = unsafe { *data.get_unchecked(i) };
-
-                if let Some(val_i64) = val.to_i64() {
-                    if let Some(dt) = Self::i64_to_datetime(val_i64, time_unit) {
-                        let date = dt.date();
-
-                        // Calculate new year and month
-                        let total_months = date.year() * 12 + (date.month() as i32) - 1 + months;
-                        let new_year = total_months / 12;
-                        let new_month = (total_months % 12 + 1) as u8;
-
-                        // Try to construct new date
-                        if let Ok(new_month_enum) = time::Month::try_from(new_month) {
-                            let days_in_month = new_month_enum.length(new_year);
-                            let day = date.day().min(days_in_month);
-                            if let Ok(new_date) =
-                                time::Date::from_calendar_date(new_year, new_month_enum, day)
-                            {
-                                let new_dt_primitive = new_date.with_time(dt.time());
-                                let new_dt = new_dt_primitive.assume_utc();
-                                let new_val_i64 = Self::datetime_to_i64(new_dt, time_unit);
-
-                                if let Some(new_val_t) = T::from_i64(new_val_i64) {
-                                    result.set(i, new_val_t);
-                                } else {
-                                    result.set_null(i);
-                                }
-                            } else {
-                                result.set_null(i);
-                            }
-                        } else {
-                            result.set_null(i);
-                        }
-                    } else {
-                        result.set_null(i);
-                    }
-                } else {
-                    result.set_null(i);
-                }
-            }
-        }
-
-        Ok(result)
+        let len = self.len();
+        let mut data = Vec64::from_slice(&self.data[..]);
+        let mut mask = match &self.null_mask {
+            Some(m) => m.clone(),
+            None => Bitmask::new_set_all(len, true),
+        };
+        add_months_into(self, months, data.as_mut_slice(), Some(&mut mask));
+        let null_mask =
+            if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
+        Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
     }
 
     /// Adds a number of years to all datetime values.
@@ -628,71 +552,21 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
 
     // Rounding/Truncating Operations
 
-    /// Truncate/floor datetime values to the start of the specified unit.
+    /// Floor datetime values to the start of `period`.
     ///
-    /// # Arguments
-    /// * `unit` - The unit to truncate to (Day, Hour, Minute, Second)
-    fn truncate(&self, unit: &str) -> Result<Self, MinarrowError> {
-        let mut result = self.clone();
-        let len = result.len();
-        let time_unit = self.time_unit; // Hoist time_unit outside loop
-
-        for i in 0..len {
-            if !self.is_null(i) {
-                if let Some(val_i64) = self.data[i].to_i64() {
-                    if let Some(dt) = Self::i64_to_datetime(val_i64, time_unit) {
-                        let truncated_dt = match unit {
-                            "year" => {
-                                time::Date::from_calendar_date(dt.year(), time::Month::January, 1)
-                                    .ok()
-                                    .and_then(|d| d.with_hms(0, 0, 0).ok())
-                                    .map(|pdt| pdt.assume_utc())
-                            }
-                            "month" => time::Date::from_calendar_date(dt.year(), dt.month(), 1)
-                                .ok()
-                                .and_then(|d| d.with_hms(0, 0, 0).ok())
-                                .map(|pdt| pdt.assume_utc()),
-                            "day" => dt.date().with_hms(0, 0, 0).ok().map(|pdt| pdt.assume_utc()),
-                            "hour" => dt
-                                .date()
-                                .with_hms(dt.hour(), 0, 0)
-                                .ok()
-                                .map(|pdt| pdt.assume_utc()),
-                            "minute" => dt
-                                .date()
-                                .with_hms(dt.hour(), dt.minute(), 0)
-                                .ok()
-                                .map(|pdt| pdt.assume_utc()),
-                            "second" => dt
-                                .date()
-                                .with_hms(dt.hour(), dt.minute(), dt.second())
-                                .ok()
-                                .map(|pdt| pdt.assume_utc()),
-                            _ => {
-                                return Err(MinarrowError::TypeError {
-                                    from: "String",
-                                    to: "TimeUnit",
-                                    message: Some(format!("Invalid truncation unit: {}", unit)),
-                                });
-                            }
-                        };
-
-                        if let Some(new_dt) = truncated_dt {
-                            let new_val_i64 = Self::datetime_to_i64(new_dt, time_unit);
-                            if let Some(new_val_t) = T::from_i64(new_val_i64) {
-                                result.set(i, new_val_t);
-                            } else {
-                                result.set_null(i);
-                            }
-                        } else {
-                            result.set_null(i);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(result)
+    /// `period` accepts a [`TimePeriod`] or its string label (e.g. `"day"`).
+    fn truncate<P: Into<TimePeriod>>(&self, period: P) -> Self {
+        let period = period.into();
+        let len = self.len();
+        let mut data = Vec64::from_slice(&self.data[..]);
+        let mut mask = match &self.null_mask {
+            Some(m) => m.clone(),
+            None => Bitmask::new_set_all(len, true),
+        };
+        truncate_into(self, period, data.as_mut_slice(), Some(&mut mask));
+        let null_mask =
+            if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
+        Self::from_vec64(data, null_mask, Some(self.time_unit))
     }
 
     // Truncation Shorthand Methods
@@ -701,127 +575,34 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     ///
     /// Only meaningful for nanosecond precision arrays.
     fn us(&self) -> Self {
-        let mut result = self.clone();
-
-        // Only meaningful for nanosecond precision
-        if self.time_unit == TimeUnit::Nanoseconds {
-            let len = result.len();
-            let data = &self.data[..];
-
-            for i in 0..len {
-                if !self.is_null(i) {
-                    // SAFETY: i is bounded by len
-                    let val = unsafe { *data.get_unchecked(i) };
-                    if let Some(val_i64) = val.to_i64() {
-                        // Truncate to microseconds (1000 nanoseconds)
-                        let truncated = (val_i64 / 1_000) * 1_000;
-                        if let Some(new_val_t) = T::from_i64(truncated) {
-                            result.set(i, new_val_t);
-                        }
-                    }
-                }
-            }
-        }
-
-        result
+        self.truncate(TimePeriod::Microsecond)
     }
 
     /// Truncate to millisecond boundaries.
     ///
     /// Meaningful for nanosecond and microsecond precision arrays.
     fn ms(&self) -> Self {
-        let mut result = self.clone();
-        let len = result.len();
-        let data = &self.data[..];
-
-        match self.time_unit {
-            TimeUnit::Nanoseconds => {
-                for i in 0..len {
-                    if !self.is_null(i) {
-                        // SAFETY: i is bounded by len
-                        let val = unsafe { *data.get_unchecked(i) };
-                        if let Some(val_i64) = val.to_i64() {
-                            // Truncate to milliseconds (1_000_000 nanoseconds)
-                            let truncated = (val_i64 / 1_000_000) * 1_000_000;
-                            if let Some(new_val_t) = T::from_i64(truncated) {
-                                result.set(i, new_val_t);
-                            }
-                        }
-                    }
-                }
-            }
-            TimeUnit::Microseconds => {
-                for i in 0..len {
-                    if !self.is_null(i) {
-                        // SAFETY: i is bounded by len
-                        let val = unsafe { *data.get_unchecked(i) };
-                        if let Some(val_i64) = val.to_i64() {
-                            // Truncate to milliseconds (1_000 microseconds)
-                            let truncated = (val_i64 / 1_000) * 1_000;
-                            if let Some(new_val_t) = T::from_i64(truncated) {
-                                result.set(i, new_val_t);
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        result
+        self.truncate(TimePeriod::Millisecond)
     }
 
     /// Truncate to second boundaries.
     fn sec(&self) -> Self {
-        self.truncate("second").unwrap_or_else(|_| self.clone())
+        self.truncate(TimePeriod::Second)
     }
 
     /// Truncate to minute boundaries.
     fn min(&self) -> Self {
-        self.truncate("minute").unwrap_or_else(|_| self.clone())
+        self.truncate(TimePeriod::Minute)
     }
 
     /// Truncate to hour boundaries.
     fn hr(&self) -> Self {
-        self.truncate("hour").unwrap_or_else(|_| self.clone())
+        self.truncate(TimePeriod::Hour)
     }
 
     /// Truncate to week boundaries (Sunday 00:00:00).
     fn week(&self) -> Self {
-        let mut result = self.clone();
-        let len = result.len();
-        let time_unit = self.time_unit; // Hoist time_unit outside loop
-
-        for i in 0..len {
-            if !self.is_null(i) {
-                if let Some(val_i64) = self.data[i].to_i64() {
-                    if let Some(dt) = Self::i64_to_datetime(val_i64, time_unit) {
-                        // Get the current weekday (1=Sunday, 2=Monday, ..., 7=Saturday)
-                        let weekday = dt.weekday().number_from_sunday();
-                        // Calculate days to subtract to get to Sunday
-                        let days_to_sunday = (weekday - 1) as i64;
-
-                        // Subtract days and zero out time
-                        if let Some(week_start) =
-                            dt.checked_sub(time::Duration::days(days_to_sunday))
-                        {
-                            if let Some(week_start_dt) = week_start.date().with_hms(0, 0, 0).ok() {
-                                let truncated_dt = week_start_dt.assume_utc();
-                                let new_val_i64 = Self::datetime_to_i64(truncated_dt, time_unit);
-
-                                if let Some(new_val_t) = T::from_i64(new_val_i64) {
-                                    result.set(i, new_val_t);
-                                } else {
-                                    result.set_null(i);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        result
+        self.truncate(TimePeriod::Week)
     }
 
     // Type Casting Operations
@@ -1149,7 +930,7 @@ mod tests {
         let timestamp = 1_700_000_000i64; // 2023-11-14 22:13:20 UTC
         let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
 
-        let result = arr.truncate("year").unwrap();
+        let result = arr.truncate(TimePeriod::Year);
 
         assert_eq!(result.year().get(0), Some(2023));
         assert_eq!(result.month().get(0), Some(1));
@@ -1164,7 +945,7 @@ mod tests {
         let timestamp = 1_700_000_000i64; // 2023-11-14 22:13:20 UTC
         let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
 
-        let result = arr.truncate("month").unwrap();
+        let result = arr.truncate(TimePeriod::Month);
 
         assert_eq!(result.year().get(0), Some(2023));
         assert_eq!(result.month().get(0), Some(11));
@@ -1177,7 +958,7 @@ mod tests {
         let timestamp = 1_700_000_000i64; // 2023-11-14 22:13:20 UTC
         let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
 
-        let result = arr.truncate("day").unwrap();
+        let result = arr.truncate(TimePeriod::Day);
 
         assert_eq!(result.hour().get(0), Some(0));
         assert_eq!(result.minute().get(0), Some(0));
@@ -1189,7 +970,7 @@ mod tests {
         let timestamp = 1_700_000_000i64; // 2023-11-14 22:13:20 UTC
         let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
 
-        let result = arr.truncate("hour").unwrap();
+        let result = arr.truncate(TimePeriod::Hour);
 
         assert_eq!(result.hour().get(0), Some(22));
         assert_eq!(result.minute().get(0), Some(0));

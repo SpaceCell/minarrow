@@ -24,6 +24,9 @@
 //! Both integrate with Apache Arrow’s native types for FFI compatibility.
 
 use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::str::FromStr;
+
+use crate::enums::error::MinarrowError;
 
 /// # TimeUnit
 ///
@@ -90,5 +93,130 @@ impl Display for IntervalUnit {
             IntervalUnit::DaysTime => f.write_str("DaysTime"),
             IntervalUnit::MonthDaysNs => f.write_str("MonthDaysNs"),
         }
+    }
+}
+
+/// # TimePeriod
+///
+/// Calendar granularity for internal datetime mechanics such as truncation and
+/// flooring.
+///
+/// ## Role
+/// `TimePeriod` names the granularity a datetime is floored to, for example flooring
+/// to the start of the month. It drives the internal date arithmetic in
+/// `DatetimeArray` and is not part of the Apache Arrow type system.
+///
+/// For stored resolution and FFI, use [`TimeUnit`] instead - that is the Apache Arrow
+/// and FFI-compatible unit carried on `Field` and `ArrowType`. `TimePeriod` is a
+/// distinct concept: it names a calendar step, not the resolution of a stored value.
+///
+/// ## String form
+/// Each variant has a canonical lower-case label (`year`, `month`, `week`, `day`,
+/// `hour`, `minute`, `second`, `millisecond`, `microsecond`). A `TimePeriod` converts
+/// to and from that label, so a call site can pass either the variant or its string.
+/// Parse an untrusted string with `str::parse` (via [`FromStr`]) to get a `Result` -
+/// the `From<&str>` path panics on an unknown label and is for known-good literals.
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+pub enum TimePeriod {
+    Year,
+    Month,
+    Week,
+    Day,
+    Hour,
+    Minute,
+    Second,
+    Millisecond,
+    Microsecond,
+}
+
+impl TimePeriod {
+    /// The canonical lower-case label for this period.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            TimePeriod::Year => "year",
+            TimePeriod::Month => "month",
+            TimePeriod::Week => "week",
+            TimePeriod::Day => "day",
+            TimePeriod::Hour => "hour",
+            TimePeriod::Minute => "minute",
+            TimePeriod::Second => "second",
+            TimePeriod::Millisecond => "millisecond",
+            TimePeriod::Microsecond => "microsecond",
+        }
+    }
+}
+
+impl Display for TimePeriod {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for TimePeriod {
+    type Err = MinarrowError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "year" => Ok(TimePeriod::Year),
+            "month" => Ok(TimePeriod::Month),
+            "week" => Ok(TimePeriod::Week),
+            "day" => Ok(TimePeriod::Day),
+            "hour" => Ok(TimePeriod::Hour),
+            "minute" => Ok(TimePeriod::Minute),
+            "second" => Ok(TimePeriod::Second),
+            "millisecond" => Ok(TimePeriod::Millisecond),
+            "microsecond" => Ok(TimePeriod::Microsecond),
+            other => Err(MinarrowError::TypeError {
+                from: "String",
+                to: "TimePeriod",
+                message: Some(format!("Unknown time period: {}", other)),
+            }),
+        }
+    }
+}
+
+impl From<&str> for TimePeriod {
+    fn from(value: &str) -> Self {
+        value.parse().unwrap_or_else(|e| panic!("{}", e))
+    }
+}
+
+#[cfg(test)]
+mod time_period_tests {
+    use super::TimePeriod;
+
+    #[test]
+    fn label_round_trips_through_string() {
+        for period in [
+            TimePeriod::Year,
+            TimePeriod::Month,
+            TimePeriod::Week,
+            TimePeriod::Day,
+            TimePeriod::Hour,
+            TimePeriod::Minute,
+            TimePeriod::Second,
+            TimePeriod::Millisecond,
+            TimePeriod::Microsecond,
+        ] {
+            assert_eq!(period.as_str().parse::<TimePeriod>().unwrap(), period);
+            assert_eq!(period.to_string(), period.as_str());
+        }
+    }
+
+    #[test]
+    fn from_str_accepts_known_label() {
+        assert_eq!("day".parse::<TimePeriod>().unwrap(), TimePeriod::Day);
+        assert_eq!(TimePeriod::from("week"), TimePeriod::Week);
+    }
+
+    #[test]
+    fn parse_rejects_unknown_label() {
+        assert!("fortnight".parse::<TimePeriod>().is_err());
+    }
+
+    #[test]
+    #[should_panic]
+    fn from_panics_on_unknown_label() {
+        let _ = TimePeriod::from("fortnight");
     }
 }

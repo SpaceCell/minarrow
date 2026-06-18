@@ -524,6 +524,9 @@ macro_rules! windowed_self_op_infallible {
 }
 
 #[cfg(feature = "datetime_ops")]
+use crate::TimePeriod;
+
+#[cfg(feature = "datetime_ops")]
 impl DatetimeOps for TemporalArrayV {
     // Component Extraction - iterate only the windowed range
 
@@ -648,8 +651,9 @@ impl DatetimeOps for TemporalArrayV {
 
     // Truncation - slice the windowed range, delegate
 
-    fn truncate(&self, unit: &str) -> Result<Self, MinarrowError> {
-        windowed_self_op!(self, truncate, unit)
+    fn truncate<P: Into<TimePeriod>>(&self, period: P) -> Self {
+        let period: TimePeriod = period.into();
+        windowed_self_op_infallible!(self, truncate, period)
     }
 
     fn us(&self) -> Self {
