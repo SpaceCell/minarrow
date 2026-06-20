@@ -471,9 +471,7 @@ impl<T> Buffer<T> {
         self.as_slice().len()
     }
 
-    /// Returns the number of elements in the buffer. For an LBuffer-backed
-    /// buffer this is the producer's currently published length, including the
-    /// trailing validity byte when the backing is a mask buffer.
+    /// Returns the number of elements in the buffer.
     #[cfg(feature = "lbuffer")]
     #[inline]
     pub fn len(&self) -> usize {
