@@ -45,7 +45,6 @@ use regex::Regex;
 
 use crate::enums::error::KernelError;
 use crate::utils::confirm_mask_capacity;
-use std::marker::PhantomData;
 
 /// Side for string padding operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -433,12 +432,7 @@ macro_rules! str_predicate {
                 }
             }
             // Tight bitmask with no nulls - nulls became 'false'
-            BooleanArray {
-                data: out.into(),
-                null_mask: None,
-                len,
-                _phantom: PhantomData,
-            }
+            BooleanArray::new(out.into(), None)
         }
     };
 }
@@ -486,12 +480,7 @@ macro_rules! str_cat_predicate {
                 $method
             );
 
-            Ok(BooleanArray {
-                data: data.into(),
-                null_mask: Some(out_mask),
-                len,
-                _phantom: PhantomData,
-            })
+            Ok(BooleanArray::new(data.into(), Some(out_mask)))
         }
     };
 }
@@ -538,12 +527,7 @@ macro_rules! cat_cat_predicate {
                 $method
             );
 
-            Ok(BooleanArray {
-                data: data.into(),
-                null_mask: Some(out_mask),
-                len,
-                _phantom: PhantomData,
-            })
+            Ok(BooleanArray::new(data.into(), Some(out_mask)))
         }
     };
 }
@@ -596,12 +580,7 @@ macro_rules! dict_str_predicate {
                 unsafe { out_mask.set_unchecked(i, valid) };
             }
 
-            Ok(BooleanArray {
-                data: data.into(),
-                null_mask: Some(out_mask),
-                len,
-                _phantom: PhantomData,
-            })
+            Ok(BooleanArray::new(data.into(), Some(out_mask)))
         }
     };
 }
@@ -693,12 +672,7 @@ pub fn regex_str_str<'a, T: Integer, U: Integer>(
     let mut out_mask = Bitmask::new_set_all(len, false);
 
     let data = regex_match_loop!(len, lmask, rmask, out_mask, larr, loff, rarr, roff);
-    Ok(BooleanArray {
-        data: data.into(),
-        null_mask: Some(out_mask),
-        len,
-        _phantom: PhantomData,
-    })
+    Ok(BooleanArray::new(data.into(), Some(out_mask)))
 }
 
 /// Applies regular expression patterns to categorical array values against string patterns.
@@ -735,12 +709,7 @@ pub fn regex_dict_str<'a, U: Integer, T: Integer>(
     let mut out_mask = Bitmask::new_set_all(len, false);
 
     let data = regex_match_loop!(len, lmask, rmask, out_mask, larr, loff, rarr, roff);
-    Ok(BooleanArray {
-        data: data.into(),
-        null_mask: Some(out_mask),
-        len,
-        _phantom: PhantomData,
-    })
+    Ok(BooleanArray::new(data.into(), Some(out_mask)))
 }
 
 /// Applies regular expression patterns from categorical dictionary against string values.
@@ -777,12 +746,7 @@ pub fn regex_str_dict<'a, T: Integer, U: Integer>(
     let mut out_mask = Bitmask::new_set_all(len, false);
 
     let data = regex_match_loop!(len, lmask, rmask, out_mask, larr, loff, rarr, roff);
-    Ok(BooleanArray {
-        data: data.into(),
-        null_mask: Some(out_mask),
-        len,
-        _phantom: PhantomData,
-    })
+    Ok(BooleanArray::new(data.into(), Some(out_mask)))
 }
 
 /// Applies regular expression patterns between two categorical arrays via dictionary lookup.
@@ -822,12 +786,7 @@ pub fn regex_dict_dict<'a, T: Integer>(
     let mut out_mask = Bitmask::new_set_all(len, false);
 
     let data = regex_match_loop!(len, lmask, rmask, out_mask, larr, loff, rarr, roff);
-    Ok(BooleanArray {
-        data: data.into(),
-        null_mask: Some(out_mask),
-        len,
-        _phantom: PhantomData,
-    })
+    Ok(BooleanArray::new(data.into(), Some(out_mask)))
 }
 
 /// Computes the character length of each string in a `StringArray<T>` slice,

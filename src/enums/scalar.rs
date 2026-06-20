@@ -1520,12 +1520,10 @@ impl Scalar {
             }
             Scalar::Null => {
                 // Allocate with null mask for len elements (all null)
-                let arr = BooleanArray {
-                    data: Bitmask::new_set_all(len, false),
-                    null_mask: Some(Bitmask::new_set_all(len, false)),
-                    len,
-                    _phantom: std::marker::PhantomData,
-                };
+                let arr = BooleanArray::new(
+                    Bitmask::new_set_all(len, false),
+                    Some(Bitmask::new_set_all(len, false)),
+                );
                 Array::from_bool(arr)
             }
             #[cfg(feature = "datetime")]

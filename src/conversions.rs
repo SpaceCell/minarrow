@@ -55,7 +55,6 @@
 
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::enums::error::MinarrowError;
@@ -368,13 +367,8 @@ macro_rules! int_to_bool_from {
                     // Any non-zero value is true
                     data.set(i, v != 0);
                 }
-                BooleanArray {
-                    data,
-                    // Null mask remains identical
-                    null_mask: src.null_mask.clone(),
-                    len: src.data.len(),
-                    _phantom: PhantomData,
-                }
+                // Null mask remains identical
+                BooleanArray::new(data, src.null_mask.clone())
             }
         }
     };
@@ -403,12 +397,7 @@ macro_rules! float_to_bool_from {
                 for (i, &v) in src.data.iter().enumerate() {
                     data.set(i, v != 0.0);
                 }
-                BooleanArray {
-                    data,
-                    null_mask: src.null_mask.clone(),
-                    len: src.data.len(),
-                    _phantom: PhantomData,
-                }
+                BooleanArray::new(data, src.null_mask.clone())
             }
         }
     };

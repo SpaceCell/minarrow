@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::marker::PhantomData;
-
 use crate::enums::error::KernelError;
 use crate::{
     Array, ArrayV, Bitmask, BooleanArray, FloatArray, IntegerArray, MaskedArray, NumericArray,
@@ -47,15 +45,7 @@ pub fn broadcast_length_1_array(av: ArrayV, len: usize) -> Result<Array, KernelE
         Array::BooleanArray(a) => match a.get(0) {
             Some(v) => {
                 let bitmask = Bitmask::new_set_all(len, v);
-                Ok(Array::BooleanArray(
-                    BooleanArray {
-                        data: bitmask,
-                        null_mask: None,
-                        len,
-                        _phantom: PhantomData,
-                    }
-                    .into(),
-                ))
+                Ok(Array::BooleanArray(BooleanArray::new(bitmask, None).into()))
             }
             None => Err(KernelError::UnsupportedType(
                 "broadcasting null boolean values not supported in dense mode".into(),

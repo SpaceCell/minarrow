@@ -72,15 +72,6 @@ use vec64::Vec64;
 pub struct Bitmask {
     pub bits: Buffer<u8>,
     /// Owned bit count.
-    ///
-    /// For an LBuffer-backed bitmask this stays at 0; the live published bit
-    /// count is read via [`len`](Self::len). The `len` field is pub for
-    /// backwards compatibility reasons and users are encouraged to use `len()`
-    /// for portability. When the lbuffer feature is active callers go through
-    /// the `len()` method to observe the current value.
-    #[cfg(not(feature = "lbuffer"))]
-    pub len: usize,
-    #[cfg(feature = "lbuffer")]
     len: usize,
 }
 

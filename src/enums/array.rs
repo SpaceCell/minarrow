@@ -595,13 +595,7 @@ impl Array {
                             };
                             out.set(i, v);
                         }
-                        BooleanArray {
-                            data: out,
-                            null_mask: Some(bm),
-                            len: $a.len(),
-                            _phantom: std::marker::PhantomData,
-                        }
-                        .into()
+                        BooleanArray::new(out, Some(bm)).into()
                     }};
                 }
                 match arr {
@@ -624,13 +618,7 @@ impl Array {
                         bm.set(i, valid);
                         out.set(i, valid);
                     }
-                    BooleanArray {
-                        data: out,
-                        null_mask: Some(bm),
-                        len: a.len(),
-                        _phantom: std::marker::PhantomData,
-                    }
-                    .into()
+                    BooleanArray::new(out, Some(bm)).into()
                 }
                 TemporalArray::Datetime64(a) => {
                     let mut bm = Bitmask::with_capacity(a.len());
@@ -640,13 +628,7 @@ impl Array {
                         bm.set(i, valid);
                         out.set(i, valid);
                     }
-                    BooleanArray {
-                        data: out,
-                        null_mask: Some(bm),
-                        len: a.len(),
-                        _phantom: std::marker::PhantomData,
-                    }
-                    .into()
+                    BooleanArray::new(out, Some(bm)).into()
                 }
                 _ => BooleanArray::default().into(),
             },
@@ -665,13 +647,7 @@ impl Array {
                             && !str_val.is_empty();
                         out.set(i, if str_val.is_empty() { false } else { true_val });
                     }
-                    BooleanArray {
-                        data: out,
-                        null_mask: Some(bm),
-                        len: s.len(),
-                        _phantom: std::marker::PhantomData,
-                    }
-                    .into()
+                    BooleanArray::new(out, Some(bm)).into()
                 }
                 _ => BooleanArray::default().into(),
             },
@@ -4487,7 +4463,7 @@ mod tests {
         let arr = IntegerArray::<i32>::from_slice(&[0, 1, -2, 0]);
         let array = Array::from_int32(arr);
         let out = array.bool();
-        let values: Vec<_> = (0..out.len).map(|i| out.get(i)).collect();
+        let values: Vec<_> = (0..out.len()).map(|i| out.get(i)).collect();
         assert_eq!(
             &values[..],
             &[Some(false), Some(true), Some(true), Some(false)]
@@ -4499,7 +4475,7 @@ mod tests {
         let arr = StringArray::<u32>::from_slice(&["True", "0", "false", "abc", ""]);
         let array = Array::from_string32(arr);
         let out = array.bool();
-        let values: Vec<_> = (0..out.len).map(|i| out.get(i)).collect();
+        let values: Vec<_> = (0..out.len()).map(|i| out.get(i)).collect();
         assert_eq!(
             &values[..],
             &[
