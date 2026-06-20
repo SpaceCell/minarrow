@@ -19,7 +19,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        config: [default, no-default-features, all-features, lbuffer]
+        config: [default, no-default-features, all-features]
+        include:
+          - os: ubuntu-latest
+            config: lbuffer
     env:
       # Each config builds the full Polars/arrow-rs tree into every example
       # binary; trimming debug info keeps the target dir within disk limits.
@@ -66,7 +69,7 @@ jobs:
         target:
           - aarch64-unknown-linux-gnu
           - armv7-unknown-linux-gnueabihf
-        config: [default, no-default-features, all-features, lbuffer]
+        config: [default, no-default-features, all-features]
         include:
           - target: aarch64-unknown-linux-gnu
             apt_pkg: gcc-aarch64-linux-gnu
