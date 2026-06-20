@@ -91,7 +91,7 @@ fn main() {
     let bm = Bitmask::from_bools(&[true, false, true, true, false]);
     bm.print();
     #[cfg(feature = "views")]
-    BitmaskV::new(bm.clone(), 1, 3).print();
+    BitmaskV::new(&bm, 1, 3).print();
 
     // Datetime - various time units
     #[cfg(feature = "datetime")]

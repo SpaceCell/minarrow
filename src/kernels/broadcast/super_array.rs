@@ -54,10 +54,10 @@ pub fn broadcast_super_array_add(
                 let masks = (lhs_null_mask, rhs_null_mask);
                 let common_mask: Option<Arc<Bitmask>> = match masks {
                     (None, None) => None,
-                    (None, Some(rhs_bm)) => Some(rhs_bm.bitmask.clone()),
-                    (Some(lhs_bm), None) => Some(lhs_bm.bitmask.clone()),
+                    (None, Some(rhs_bm)) => Some(Arc::new(rhs_bm.bitmask.clone())),
+                    (Some(lhs_bm), None) => Some(Arc::new(lhs_bm.bitmask.clone())),
                     (Some(lhs_bm), Some(rhs_bm)) => {
-                        Some(lhs_bm.bitmask.union(&rhs_bm.bitmask).into())
+                        Some(lhs_bm.bitmask.union(rhs_bm.bitmask).into())
                     }
                 };
                 common_mask
@@ -218,10 +218,10 @@ pub fn route_super_array_broadcast(
                 let masks = (lhs_null_mask, rhs_null_mask);
                 let common_mask: Option<Arc<Bitmask>> = match masks {
                     (None, None) => None,
-                    (None, Some(rhs_bm)) => Some(rhs_bm.bitmask.clone()),
-                    (Some(lhs_bm), None) => Some(lhs_bm.bitmask.clone()),
+                    (None, Some(rhs_bm)) => Some(Arc::new(rhs_bm.bitmask.clone())),
+                    (Some(lhs_bm), None) => Some(Arc::new(lhs_bm.bitmask.clone())),
                     (Some(lhs_bm), Some(rhs_bm)) => {
-                        Some(lhs_bm.bitmask.union(&rhs_bm.bitmask).into())
+                        Some(lhs_bm.bitmask.union(rhs_bm.bitmask).into())
                     }
                 };
                 common_mask

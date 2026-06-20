@@ -895,13 +895,13 @@ impl Bitmask {
         (&self.bits[start_byte..end_byte], offset % 8, len)
     }
 
-    /// BCreates a `Bitmask` as a `BitmaskView` over `[offset, offset + len)`.
-    /// Provides a zero-copy logical window over the parent bitmask.
+    /// Creates a `BitmaskV` over `[offset, offset + len)`.
+    /// Returns a zero-copy logical window that borrows this bitmask.
     ///
     /// `Offset` and `Length` are semantic `usize` aliases.
     #[inline(always)]
-    pub fn view(&self, offset: Offset, len: Length) -> BitmaskV {
-        BitmaskV::new(self.clone(), offset, len)
+    pub fn view(&self, offset: Offset, len: Length) -> BitmaskV<'_> {
+        BitmaskV::new(self, offset, len)
     }
 
     /// Combine two optional null masks. None means "no nulls".

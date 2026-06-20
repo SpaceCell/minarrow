@@ -706,7 +706,7 @@ impl ArrayV {
 
     /// Returns a windowed view over the underlying null mask, if any.
     #[inline]
-    pub fn null_mask_view(&self) -> Option<BitmaskV> {
+    pub fn null_mask_view(&self) -> Option<BitmaskV<'_>> {
         self.array
             .null_mask()
             .map(|mask| mask.view(self.offset, self.len))

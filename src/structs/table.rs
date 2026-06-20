@@ -50,7 +50,7 @@ use crate::Field;
 #[cfg(feature = "chunked")]
 use crate::SuperTable;
 #[cfg(feature = "views")]
-use crate::{BitmaskV, NumericArrayV, TableV, TextArrayV};
+use crate::{Array, BitmaskV, NumericArrayV, TableV, TextArrayV};
 use crate::enums::{error::MinarrowError, shape_dim::ShapeDim};
 #[cfg(feature = "chunked")]
 use crate::traits::consolidate::Consolidate;
@@ -322,11 +322,17 @@ impl Table {
 
     /// Resolve a named column to a `BitmaskV`.
     #[cfg(feature = "views")]
-    pub fn col_bitmask(&self, name: &str) -> Result<BitmaskV, MinarrowError> {
+    pub fn col_bitmask(&self, name: &str) -> Result<BitmaskV<'_>, MinarrowError> {
         let idx = self.col_name_index(name)
             .ok_or_else(|| MinarrowError::IndexError(format!("column '{}' not found", name)))?;
-        let ba = self.cols[idx].array.try_bool()?;
-        Ok(BitmaskV::new(ba.data.clone(), 0, ba.len()))
+        match &self.cols[idx].array {
+            Array::BooleanArray(arc) => Ok(BitmaskV::new(&arc.data, 0, arc.len())),
+            _ => Err(MinarrowError::TypeError {
+                from: "Array",
+                to: "BitmaskV",
+                message: Some(format!("column '{}' is not a BooleanArray", name)),
+            }),
+        }
     }
 
 

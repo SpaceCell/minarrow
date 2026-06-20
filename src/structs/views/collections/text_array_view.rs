@@ -230,7 +230,7 @@ impl TextArrayV {
 
     /// Returns the null mask as a windowed `BitmaskView`.
     #[inline]
-    pub fn null_mask_view(&self) -> Option<BitmaskV> {
+    pub fn null_mask_view(&self) -> Option<BitmaskV<'_>> {
         self.array
             .null_mask()
             .map(|mask| mask.view(self.offset, self.len))

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `_into` mutable output buffer datetime variants supporting efficient parallelism.
 - Added `TimePeriod` enum consistency for datetime periods with automatic deref on string
 constituents i.e., `week` becomes `TimePeriod::Week` at the call-site.
+- Fixed BitmaskV lifetime.
 
 ## 0.13.0
 

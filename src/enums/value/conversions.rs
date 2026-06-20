@@ -935,11 +935,11 @@ impl From<TemporalArrayV> for Value {
 /// data is taken as the BooleanArray's data; `null_mask` is `None` since
 /// `BitmaskV` carries no separate validity.
 #[cfg(feature = "views")]
-impl From<BitmaskV> for Value {
+impl<'a> From<BitmaskV<'a>> for Value {
     #[inline]
-    fn from(v: BitmaskV) -> Self {
+    fn from(v: BitmaskV<'a>) -> Self {
         let len = v.len();
-        let bitmask = Arc::try_unwrap(v.bitmask).unwrap_or_else(|arc| (*arc).clone());
+        let bitmask = v.bitmask.clone();
         let bool_arr = crate::BooleanArray::new(bitmask, None);
         let array = Array::BooleanArray(Arc::new(bool_arr));
         Value::ArrayView(Arc::new(ArrayV::new(array, v.offset, len)))
@@ -1169,16 +1169,21 @@ impl TryFrom<Value> for TemporalArrayV {
     }
 }
 
-impl TryFrom<Value> for BitmaskV {
+/// Borrow a `Value` as a windowed `BitmaskV` over its boolean data.
+///
+/// The view borrows the `Value`, so the `Value` must outlive it. An
+/// `ArrayView` preserves the inner view's offset and length. An owned
+/// `Array` windows the whole boolean column.
+#[cfg(feature = "views")]
+impl<'a> TryFrom<&'a Value> for BitmaskV<'a> {
     type Error = MinarrowError;
-    fn try_from(v: Value) -> Result<Self, Self::Error> {
+    fn try_from(v: &'a Value) -> Result<Self, Self::Error> {
         match v {
             Value::ArrayView(inner) => {
-                let view = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                let (array, offset, len) = view.as_tuple();
+                let (array, offset, len) = inner.as_tuple_ref();
                 match array {
                     Array::BooleanArray(bool_arr) => {
-                        Ok(BitmaskV::new(bool_arr.data.clone(), offset, len))
+                        Ok(BitmaskV::new(&bool_arr.data, offset, len))
                     }
                     _ => Err(MinarrowError::TypeError {
                         from: "Value",
@@ -1187,20 +1192,17 @@ impl TryFrom<Value> for BitmaskV {
                     }),
                 }
             }
-            Value::Array(inner) => {
-                let array = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                match array {
-                    Array::BooleanArray(bool_arr) => {
-                        let len = bool_arr.data.len();
-                        Ok(BitmaskV::new(bool_arr.data.clone(), 0, len))
-                    }
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: "BitmaskV",
-                        message: Some("Array is not a BooleanArray".to_owned()),
-                    }),
+            Value::Array(inner) => match &**inner {
+                Array::BooleanArray(bool_arr) => {
+                    let len = bool_arr.data.len();
+                    Ok(BitmaskV::new(&bool_arr.data, 0, len))
                 }
-            }
+                _ => Err(MinarrowError::TypeError {
+                    from: "Value",
+                    to: "BitmaskV",
+                    message: Some("Array is not a BooleanArray".to_owned()),
+                }),
+            },
             _ => Err(MinarrowError::TypeError {
                 from: "Value",
                 to: "BitmaskV",

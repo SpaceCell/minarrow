@@ -20,20 +20,25 @@
 //! ## Purpose
 //! - **Indexable** and **bounds-checked** access to a subset of a bit-packed mask.
 //! - All logical indices are **relative to the window**.
-//! - Avoids copying - shares the parent mask buffer via `Arc`.
+//! - Avoids copying - borrows the parent mask by reference.
 //!
 //! ## Behaviour
 //! - All operations remap indices internally to the correct positions in the parent mask.
 //! - Window slicing (`slice`) is O(1) - pointer and metadata updates only.
-//! - Arc Clones cheaply.
+//! - Uses a lifetime which can be elided in many engine cases. However, if one needs to copy
+//!   it from there it is a deep clone. Given the backing buffer is a bitpacked `u8`, this is a
+//!   materially smaller penalty compared to other Minarrow buffers. This design avoids otherwise
+//!   threading `Arc<Bitmask>` through every strongly typed array variant which penalises the
+//!   default case disproportionately.
 //! - Use [`to_bitmask`](BitmaskV::to_bitmask) for a materialised copy of the view.
 //!
 //! ## Threading
 //! - Thread-safe by virtue of immutability - no interior mutability.
 //!
 //! ## Performance Notes
-//! - Before introducing a `BitmaskV`, consider whether simply cloning the [`Bitmask`]
-//!   would be sufficient, since cloning is already extremely cheap.
+//! - The view borrows the parent mask, so constructing or slicing it avoids allocating.
+//!   Materialise with [`to_bitmask`](BitmaskV::to_bitmask) when an owned, windowed
+//!   copy is required.
 //!
 //! ## Related
 //! - [`Bitmask`] - the full mask structure this views into.
@@ -41,11 +46,8 @@
 
 use std::fmt::{self, Debug, Display, Formatter};
 use std::ops::Index;
-use std::sync::Arc;
 
-use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
-use crate::traits::concatenate::Concatenate;
 use crate::traits::print::MAX_PREVIEW;
 use crate::traits::shape::Shape;
 use crate::{Array, Bitmask, BitmaskVT, BooleanArray};
@@ -57,7 +59,7 @@ use crate::ArrayV;
 /// Zero-copy, bounds-checked window over a [`Bitmask`].
 ///
 /// ## Fields
-/// - `bitmask`: backing [`Bitmask`] (shared via `Arc`).
+/// - `bitmask`: borrowed reference to the backing [`Bitmask`].
 /// - `offset`: start bit position in the parent mask.
 /// - `len`: number of bits in the view.
 ///
@@ -72,7 +74,7 @@ use crate::ArrayV;
 /// use minarrow::BitmaskV;
 ///
 /// let mask = Bitmask::from_bools(&[true, false, true, true, false]);
-/// let view = BitmaskV::new(mask, 1, 3); // window: false, true, true
+/// let view = BitmaskV::new(&mask, 1, 3); // window: false, true, true
 ///
 /// assert_eq!(view.len(), 3);
 /// assert!(!view.get(0));
@@ -80,28 +82,28 @@ use crate::ArrayV;
 /// assert!(view.get(2));
 /// ```
 #[derive(Clone, PartialEq)]
-pub struct BitmaskV {
-    /// The **outer bitmask** that this view is derived from - we retain a reference to it. 
-    /// Importantly, this is the ***full bitmask*** - not the *view*, and thus should not be 
+pub struct BitmaskV<'a> {
+    /// The **outer bitmask** that this view is derived from - we retain a reference to it.
+    /// Importantly, this is the ***full bitmask*** - not the *view*, and thus should not be
     /// accessed as though it were the view subset.
-    pub bitmask: Arc<Bitmask>,
+    pub bitmask: &'a Bitmask,
     /// The index offset from 0 that for where this view starts from the outer bitmask
     pub offset: usize,
     /// The bitmask length
     len: usize,
 }
 
-impl BitmaskV {
+impl<'a> BitmaskV<'a> {
     /// Construct a view over `bitmask[offset..offset+len)`.
     #[inline]
-    pub fn new(bitmask: Bitmask, offset: usize, len: usize) -> Self {
+    pub fn new(bitmask: &'a Bitmask, offset: usize, len: usize) -> Self {
         let bm_len = bitmask.len();
         assert!(
             len <= bm_len && offset <= bm_len - len,
             "BitmaskView: out of bounds (offset = {offset}, len = {len}, bitmask.len = {bm_len})"
         );
         Self {
-            bitmask: bitmask.into(),
+            bitmask,
             offset,
             len,
         }
@@ -208,7 +210,7 @@ impl BitmaskV {
             self.len
         );
         Self {
-            bitmask: self.bitmask.clone(),
+            bitmask: self.bitmask,
             offset: self.offset + offset,
             len,
         }
@@ -222,12 +224,12 @@ impl BitmaskV {
 
     /// Returns the underlying window as a tuple: (&Bitmask, offset, len).
     #[inline]
-    pub fn as_tuple(&self) -> BitmaskVT<'_> {
-        (&self.bitmask, self.offset, self.len)
+    pub fn as_tuple(&self) -> BitmaskVT<'a> {
+        (self.bitmask, self.offset, self.len)
     }
 }
 
-impl Index<usize> for BitmaskV {
+impl<'a> Index<usize> for BitmaskV<'a> {
     type Output = bool;
 
     /// Returns a reference to a constant `true` or `false` value depending on the bit at `index`.
@@ -247,7 +249,7 @@ impl Index<usize> for BitmaskV {
     }
 }
 
-impl Debug for BitmaskV {
+impl<'a> Debug for BitmaskV<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("BitmaskView")
             .field("offset", &self.offset)
@@ -258,7 +260,7 @@ impl Debug for BitmaskV {
     }
 }
 
-impl Display for BitmaskV {
+impl<'a> Display for BitmaskV<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let len = self.len;
         let offset = self.offset;
@@ -286,78 +288,52 @@ impl Display for BitmaskV {
     }
 }
 
-impl Shape for BitmaskV {
+impl<'a> Shape for BitmaskV<'a> {
     fn shape(&self) -> ShapeDim {
         ShapeDim::Rank1(self.len())
     }
 }
 
-impl Concatenate for BitmaskV {
-    /// Concatenates two bitmask views by materialising both to owned bitmasks,
-    /// concatenating them, and wrapping the result back in a view.
-    ///
-    /// # Notes
-    /// - This operation copies data from both views to create owned bitmasks.
-    /// - The resulting view has offset=0 and length equal to the combined length.
-    fn concat(self, other: Self) -> Result<Self, MinarrowError> {
-        // Materialise both views to owned bitmasks
-        let self_bitmask = self.to_bitmask();
-        let other_bitmask = other.to_bitmask();
-
-        // Concatenate the owned bitmasks
-        let concatenated = self_bitmask.concat(other_bitmask)?;
-
-        // Wrap the result in a new view
-        let len = concatenated.len();
-        Ok(BitmaskV::new(concatenated, 0, len))
-    }
-}
-
 /// View over the full bitmask with zero offset.
-impl From<Bitmask> for BitmaskV {
+impl<'a> From<&'a Bitmask> for BitmaskV<'a> {
     #[inline]
-    fn from(bitmask: Bitmask) -> Self {
+    fn from(bitmask: &'a Bitmask) -> Self {
         let len = bitmask.len();
         Self::new(bitmask, 0, len)
     }
 }
 
 /// View over a BooleanArray's data bitmask with zero offset.
-impl<T> From<BooleanArray<T>> for BitmaskV {
+impl<'a, T> From<&'a BooleanArray<T>> for BitmaskV<'a> {
     #[inline]
-    fn from(arr: BooleanArray<T>) -> Self {
+    fn from(arr: &'a BooleanArray<T>) -> Self {
         let len = arr.data.len();
-        Self::new(arr.data, 0, len)
+        Self::new(&arr.data, 0, len)
     }
 }
 
 /// Extract the boolean data from an Array. Panics if not a BooleanArray variant.
-impl From<Array> for BitmaskV {
+impl<'a> From<&'a Array> for BitmaskV<'a> {
     #[inline]
-    fn from(arr: Array) -> Self {
+    fn from(arr: &'a Array) -> Self {
         let Array::BooleanArray(arc) = arr else {
             panic!("BitmaskV: expected BooleanArray");
         };
-        match Arc::try_unwrap(arc) {
-            Ok(ba) => BitmaskV::from(ba),
-            Err(arc) => {
-                let len = arc.data.len();
-                Self::new(arc.data.clone(), 0, len)
-            }
-        }
+        let len = arc.data.len();
+        Self::new(&arc.data, 0, len)
     }
 }
 
 /// Extract the boolean data from an ArrayV, preserving the view's offset and length.
 /// Panics if the underlying array is not a BooleanArray variant.
 #[cfg(feature = "views")]
-impl From<ArrayV> for BitmaskV {
+impl<'a> From<&'a ArrayV> for BitmaskV<'a> {
     #[inline]
-    fn from(av: ArrayV) -> Self {
-        let Array::BooleanArray(ref arc) = av.array else {
+    fn from(av: &'a ArrayV) -> Self {
+        let Array::BooleanArray(arc) = &av.array else {
             panic!("BitmaskV: expected BooleanArray");
         };
-        Self::new(arc.data.clone(), av.offset, av.len())
+        Self::new(&arc.data, av.offset, av.len())
     }
 }
 
@@ -372,7 +348,7 @@ mod tests {
         let bits = [true, false, true, false, true, false, true, false];
         let mask = Bitmask::from_bools(&bits);
 
-        let view = BitmaskV::new(mask, 0, 8);
+        let view = BitmaskV::new(&mask,0, 8);
         assert_eq!(view.len(), 8);
         for i in 0..8 {
             assert_eq!(view.get(i), bits[i]);
@@ -401,7 +377,7 @@ mod tests {
         let mask = Bitmask::from_bools(&bits);
 
         // view over [2..6): 0 0 1 1
-        let view = BitmaskV::new(mask, 2, 4);
+        let view = BitmaskV::new(&mask,2, 4);
         assert_eq!(view.len(), 4);
         assert_eq!(
             (0..4).map(|i| view.get(i)).collect::<Vec<_>>(),
@@ -423,7 +399,7 @@ mod tests {
         ];
         let mask = Bitmask::from_bools(&bits);
 
-        let view = BitmaskV::new(mask, 2, 6); // [2..8): 1 0 0 0 1 0
+        let view = BitmaskV::new(&mask,2, 6); // [2..8): 1 0 0 0 1 0
         assert_eq!(view.len(), 6);
         assert_eq!(view.get(0), true);
         assert_eq!(view.get(1), false);
@@ -443,14 +419,14 @@ mod tests {
     #[test]
     fn test_bitmask_view_empty_and_single_bit() {
         let mask = Bitmask::from_bools(&[]);
-        let view = BitmaskV::new(mask, 0, 0);
+        let view = BitmaskV::new(&mask,0, 0);
         assert_eq!(view.len(), 0);
         assert!(view.is_empty());
         assert!(view.all_set()); // vacuously true
         assert!(view.all_unset()); // vacuously true
 
         let mask2 = Bitmask::from_bools(&[true]);
-        let view2 = BitmaskV::new(mask2, 0, 1);
+        let view2 = BitmaskV::new(&mask2, 0, 1);
         assert_eq!(view2.len(), 1);
         assert!(!view2.is_empty());
         assert_eq!(view2.get(0), true);
@@ -464,14 +440,14 @@ mod tests {
     #[should_panic(expected = "BitmaskView: out of bounds")]
     fn test_bitmask_view_out_of_bounds() {
         let mask = Bitmask::from_bools(&[true, false, true]);
-        let _ = BitmaskV::new(mask, 2, 2); // Exceeds mask length (should panic)
+        let _ = BitmaskV::new(&mask,2, 2); // Exceeds mask length (should panic)
     }
 
     #[test]
     #[should_panic(expected = "BitmaskView: index 3 out of bounds")]
     fn test_bitmask_view_get_oob() {
         let mask = Bitmask::from_bools(&[true, false, true, true]);
-        let view = BitmaskV::new(mask, 1, 2);
+        let view = BitmaskV::new(&mask,1, 2);
         let _ = view.get(3); // out-of-window
     }
 
@@ -479,7 +455,7 @@ mod tests {
     fn test_bitmask_view_debug() {
         let bits = [true, false, true, false];
         let mask = Bitmask::from_bools(&bits);
-        let view = BitmaskV::new(mask, 0, 4);
+        let view = BitmaskV::new(&mask,0, 4);
         let dbg = format!("{:?}", view);
         assert!(dbg.contains("BitmaskView"));
         assert!(dbg.contains("offset"));
@@ -490,7 +466,7 @@ mod tests {
     fn test_to_bitmask_full_coverage_matches_source() {
         let bits = [true, false, true, false, true];
         let mask = Bitmask::from_bools(&bits);
-        let view = BitmaskV::new(mask.clone(), 0, 5);
+        let view = BitmaskV::new(&mask, 0, 5);
         let out = view.to_bitmask();
 
         assert_eq!(out.len(), 5);
@@ -504,7 +480,7 @@ mod tests {
     fn test_to_bitmask_windowed_matches_slice() {
         let bits = [true, false, true, false, true, false];
         let mask = Bitmask::from_bools(&bits);
-        let view = BitmaskV::new(mask, 2, 3);
+        let view = BitmaskV::new(&mask,2, 3);
         let out = view.to_bitmask();
 
         assert_eq!(out.len(), 3);
