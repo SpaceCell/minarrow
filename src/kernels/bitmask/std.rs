@@ -70,25 +70,48 @@ use crate::{
 /// A new `Bitmask` containing the element-wise results with proper trailing bit handling.
 #[inline(always)]
 pub fn bitmask_binop_std(lhs: BitmaskVT<'_>, rhs: BitmaskVT<'_>, op: LogicalOperator) -> Bitmask {
+    let len = lhs.2;
+    let mut out = Bitmask::new_set_all(len, false);
+    bitmask_binop_std_into(&mut out, 0, lhs, rhs, op);
+    out
+}
+
+/// Scalar binary logical AND, OR or XOR, writing the result into `out` at bit
+/// offset `out_off` rather than allocating a fresh mask.
+///
+/// Full 64-bit words lying entirely within `[0, len)` run word-wise. The final
+/// `len % 64` bits run one bit at a time, so the write touches only valid
+/// positions and never the trailing bits past `len`. With byte-aligned offsets
+/// the words never straddle a window edge, so adjacent windows of a shared
+/// output buffer stay independent.
+///
+/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+#[inline(always)]
+pub fn bitmask_binop_std_into(
+    out: &mut Bitmask,
+    out_off: usize,
+    lhs: BitmaskVT<'_>,
+    rhs: BitmaskVT<'_>,
+    op: LogicalOperator,
+) {
     let (lhs_mask, lhs_off, len) = lhs;
     let (rhs_mask, rhs_off, _) = rhs;
     if len == 0 {
-        return Bitmask::new_set_all(0, false);
+        return;
     }
-    let mut out = Bitmask::new_set_all(len, false);
+    debug_assert_eq!(out_off % 8, 0, "bitmask_binop_std_into: out_off must be byte-aligned");
+    debug_assert_eq!(lhs_off % 8, 0, "bitmask_binop_std_into: lhs offset must be byte-aligned");
+    debug_assert_eq!(rhs_off % 8, 0, "bitmask_binop_std_into: rhs offset must be byte-aligned");
+    let full_words = len / 64;
+    let tail_bits = len % 64;
     {
         let lhs_bytes = bitmask_window_bytes(lhs_mask, lhs_off, len);
         let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
-        let dp_bytes = bitmask_window_bytes_mut(&mut out, 0, len);
-        // Tight byte slice: process whole u64 words that fit entirely,
-        // then handle the 0..7 leftover bytes byte-by-byte.
-        let total_bytes = lhs_bytes.len();
-        let full_words = total_bytes / 8;
-        let tail_bytes = total_bytes % 8;
+        let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
         unsafe {
             let lp = lhs_bytes.as_ptr().cast::<u64>();
             let rp = rhs_bytes.as_ptr().cast::<u64>();
-            let dp = dp_bytes.as_mut_ptr().cast::<u64>();
+            let dp = out_bytes.as_mut_ptr().cast::<u64>();
             for k in 0..full_words {
                 *dp.add(k) = match op {
                     LogicalOperator::And => *lp.add(k) & *rp.add(k),
@@ -97,38 +120,60 @@ pub fn bitmask_binop_std(lhs: BitmaskVT<'_>, rhs: BitmaskVT<'_>, op: LogicalOper
                 };
             }
         }
-        let base = full_words * 8;
-        for k in 0..tail_bytes {
-            let a = lhs_bytes[base + k];
-            let b = rhs_bytes[base + k];
-            dp_bytes[base + k] = match op {
+    }
+    // Final partial word written one bit at a time.
+    let base = full_words * 64;
+    unsafe {
+        for i in 0..tail_bits {
+            let a = lhs_mask.get_unchecked(lhs_off + base + i);
+            let b = rhs_mask.get_unchecked(rhs_off + base + i);
+            let v = match op {
                 LogicalOperator::And => a & b,
                 LogicalOperator::Or => a | b,
                 LogicalOperator::Xor => a ^ b,
             };
+            out.set_unchecked(out_off + base + i, v);
         }
     }
-    clear_trailing_bits(&mut out);
-    out
 }
 
 /// Bitwise unary operation (`NOT`) over a bitmask slice.
 #[inline(always)]
 pub fn bitmask_unop_std(src: BitmaskVT<'_>, op: UnaryOperator) -> Bitmask {
+    let len = src.2;
+    let mut out = Bitmask::new_set_all(len, false);
+    bitmask_unop_std_into(&mut out, 0, src, op);
+    out
+}
+
+/// Scalar unary `NOT`, writing the result into `out` at bit offset `out_off`
+/// rather than allocating a fresh mask.
+///
+/// Full 64-bit words run word-wise. The final `len % 64` bits run one bit at a
+/// time, so the write never touches the trailing bits past `len`.
+///
+/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+#[inline(always)]
+pub fn bitmask_unop_std_into(
+    out: &mut Bitmask,
+    out_off: usize,
+    src: BitmaskVT<'_>,
+    op: UnaryOperator,
+) {
     let (mask, offset, len) = src;
     if len == 0 {
-        return Bitmask::new_set_all(0, false);
+        return;
     }
-    let mut out = Bitmask::new_set_all(len, false);
+    debug_assert_eq!(out_off % 8, 0, "bitmask_unop_std_into: out_off must be byte-aligned");
+    debug_assert_eq!(offset % 8, 0, "bitmask_unop_std_into: src offset must be byte-aligned");
+    let full_words = len / 64;
+    let tail_bits = len % 64;
     {
         let src_bytes = bitmask_window_bytes(mask, offset, len);
-        let dp_bytes = bitmask_window_bytes_mut(&mut out, 0, len);
-        let total_bytes = src_bytes.len();
-        let full_words = total_bytes / 8;
-        let tail_bytes = total_bytes % 8;
+        let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
         unsafe {
             let sp = src_bytes.as_ptr().cast::<u64>();
-            let dp = dp_bytes.as_mut_ptr().cast::<u64>();
+            let dp = out_bytes.as_mut_ptr().cast::<u64>();
             for k in 0..full_words {
                 *dp.add(k) = match op {
                     UnaryOperator::Not => !*sp.add(k),
@@ -136,17 +181,18 @@ pub fn bitmask_unop_std(src: BitmaskVT<'_>, op: UnaryOperator) -> Bitmask {
                 };
             }
         }
-        let base = full_words * 8;
-        for k in 0..tail_bytes {
-            let a = src_bytes[base + k];
-            dp_bytes[base + k] = match op {
-                UnaryOperator::Not => !a,
+    }
+    // Final partial word written one bit at a time.
+    let base = full_words * 64;
+    unsafe {
+        for i in 0..tail_bits {
+            let v = match op {
+                UnaryOperator::Not => !mask.get_unchecked(offset + base + i),
                 _ => unreachable!(),
             };
+            out.set_unchecked(out_off + base + i, v);
         }
     }
-    clear_trailing_bits(&mut out);
-    out
 }
 
 // Entry points

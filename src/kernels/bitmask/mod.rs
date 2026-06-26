@@ -286,4 +286,100 @@ mod tests {
             assert!(!mask.get(i));
         }
     }
+
+    /// The `_into` output-window path matches the allocating dispatch bit-for-bit
+    /// across lengths that exercise full SIMD strides, scalar word tails and the
+    /// final bit tail.
+    #[test]
+    fn binop_into_matches_allocating() {
+        use crate::kernels::bitmask::dispatch::{
+            and_masks, and_masks_into, or_masks, or_masks_into, xor_masks, xor_masks_into,
+        };
+
+        for &len in &[1usize, 7, 8, 63, 64, 65, 127, 128, 200, 1000] {
+            let mut a = Bitmask::new_set_all(len, false);
+            let mut b = Bitmask::new_set_all(len, false);
+            for i in 0..len {
+                if i % 3 == 0 {
+                    a.set(i, true);
+                }
+                if i % 5 == 0 {
+                    b.set(i, true);
+                }
+            }
+
+            let cases: [(Bitmask, fn(&mut Bitmask, usize, BitmaskVT, BitmaskVT)); 3] = [
+                (and_masks((&a, 0, len), (&b, 0, len)), and_masks_into),
+                (or_masks((&a, 0, len), (&b, 0, len)), or_masks_into),
+                (xor_masks((&a, 0, len), (&b, 0, len)), xor_masks_into),
+            ];
+            for (reference, into_fn) in cases {
+                let mut out = Bitmask::new_set_all(len, false);
+                into_fn(&mut out, 0, (&a, 0, len), (&b, 0, len));
+                for i in 0..len {
+                    assert_eq!(out.get(i), reference.get(i), "len {len} bit {i}");
+                }
+            }
+        }
+    }
+
+    /// `not_mask_into` matches the allocating `not_mask` across the same lengths.
+    #[test]
+    fn unop_into_matches_allocating() {
+        use crate::kernels::bitmask::dispatch::{not_mask, not_mask_into};
+
+        for &len in &[1usize, 7, 64, 65, 127, 200] {
+            let mut src = Bitmask::new_set_all(len, false);
+            for i in 0..len {
+                if i % 2 == 0 {
+                    src.set(i, true);
+                }
+            }
+            let reference = not_mask((&src, 0, len));
+            let mut out = Bitmask::new_set_all(len, false);
+            not_mask_into(&mut out, 0, (&src, 0, len));
+            for i in 0..len {
+                assert_eq!(out.get(i), reference.get(i), "len {len} bit {i}");
+            }
+        }
+    }
+
+    /// A windowed `_into` write touches only its own bit range. Bits before the
+    /// window and beyond its end are left untouched, so adjacent windows of a
+    /// shared output buffer stay independent.
+    #[test]
+    fn binop_into_writes_only_its_window() {
+        use crate::kernels::bitmask::dispatch::and_masks_into;
+
+        // Window length is not a multiple of 64, so the write ends in the bit tail.
+        let win_len = 70usize;
+        let out_off = 128usize; // byte-aligned
+        let win_end = out_off + win_len; // 198
+
+        let mut a = Bitmask::new_set_all(win_len, false);
+        let mut b = Bitmask::new_set_all(win_len, false);
+        for i in 0..win_len {
+            if i % 3 == 0 {
+                a.set(i, true);
+            }
+            if i % 4 == 0 {
+                b.set(i, true);
+            }
+        }
+
+        // Pre-set the whole output buffer so any stray write flips a bit we check.
+        let mut out = Bitmask::new_set_all(256, true);
+        and_masks_into(&mut out, out_off, (&a, 0, win_len), (&b, 0, win_len));
+
+        for i in 0..out_off {
+            assert!(out.get(i), "bit {i} before the window was disturbed");
+        }
+        for i in 0..win_len {
+            let expect = a.get(i) & b.get(i);
+            assert_eq!(out.get(out_off + i), expect, "window bit {i}");
+        }
+        for i in win_end..256 {
+            assert!(out.get(i), "bit {i} past the window was disturbed");
+        }
+    }
 }

@@ -62,9 +62,7 @@ use crate::{Bitmask, BitmaskVT};
 use crate::kernels::arithmetic::simd::{W8, W16, W32, W64};
 
 use crate::enums::operators::{LogicalOperator, UnaryOperator};
-use crate::kernels::bitmask::{
-    bitmask_window_bytes, bitmask_window_bytes_mut, clear_trailing_bits,
-};
+use crate::kernels::bitmask::{bitmask_window_bytes, bitmask_window_bytes_mut};
 
 /// Primitive bit ops
 
@@ -95,65 +93,10 @@ pub fn bitmask_binop_simd<const LANES: usize>(
     lhs: BitmaskVT<'_>,
     rhs: BitmaskVT<'_>,
     op: LogicalOperator,
-) -> Bitmask
-where
-{
-    let (lhs_mask, lhs_off, len) = lhs;
-    let (rhs_mask, rhs_off, _) = rhs;
-    if len == 0 {
-        return Bitmask::new_set_all(0, false);
-    }
+) -> Bitmask {
+    let len = lhs.2;
     let mut out = Bitmask::new_set_all(len, false);
-    {
-        let lhs_bytes = bitmask_window_bytes(lhs_mask, lhs_off, len);
-        let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
-        let dp_bytes = bitmask_window_bytes_mut(&mut out, 0, len);
-        // Bitmask byte buffers are tight at (len + 7) / 8 bytes. SIMD reads
-        // u64 words, so we only stride whole u64 words that fit entirely in
-        // the slice; the final 0..7 leftover bytes are handled byte-wise.
-        let total_bytes = lhs_bytes.len();
-        let full_words = total_bytes / 8;
-        let tail_bytes = total_bytes % 8;
-        unsafe {
-            let lp = lhs_bytes.as_ptr().cast::<u64>();
-            let rp = rhs_bytes.as_ptr().cast::<u64>();
-            let dp = dp_bytes.as_mut_ptr().cast::<u64>();
-            let mut i = 0;
-            while i + LANES <= full_words {
-                let a = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(lp.add(i), LANES));
-                let b = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(rp.add(i), LANES));
-                let r = match op {
-                    LogicalOperator::And => a & b,
-                    LogicalOperator::Or => a | b,
-                    LogicalOperator::Xor => a ^ b,
-                };
-                std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
-                i += LANES;
-            }
-            // Scalar word tail when full_words is not a multiple of LANES.
-            for k in i..full_words {
-                let a = *lp.add(k);
-                let b = *rp.add(k);
-                *dp.add(k) = match op {
-                    LogicalOperator::And => a & b,
-                    LogicalOperator::Or => a | b,
-                    LogicalOperator::Xor => a ^ b,
-                };
-            }
-        }
-        // Partial-byte tail strictly within the slice.
-        let base = full_words * 8;
-        for k in 0..tail_bytes {
-            let a = lhs_bytes[base + k];
-            let b = rhs_bytes[base + k];
-            dp_bytes[base + k] = match op {
-                LogicalOperator::And => a & b,
-                LogicalOperator::Or => a | b,
-                LogicalOperator::Xor => a ^ b,
-            };
-        }
-    }
-    clear_trailing_bits(&mut out);
+    bitmask_binop_simd_into::<LANES>(&mut out, 0, lhs, rhs, op);
     out
 }
 
@@ -185,23 +128,119 @@ where
 /// - Pipeline efficiency: Better utilisation of modern CPU execution units
 /// - Cache locality: Sequential access patterns optimise cache utilisation
 #[inline(always)]
-pub fn bitmask_unop_simd<const LANES: usize>(src: BitmaskVT<'_>, op: UnaryOperator) -> Bitmask
-where
-{
+pub fn bitmask_unop_simd<const LANES: usize>(src: BitmaskVT<'_>, op: UnaryOperator) -> Bitmask {
+    let len = src.2;
+    let mut out = Bitmask::new_set_all(len, false);
+    bitmask_unop_simd_into::<LANES>(&mut out, 0, src, op);
+    out
+}
+
+/// Vectorised binary logical AND, OR or XOR, writing the result into `out` at
+/// bit offset `out_off` rather than allocating a fresh mask.
+///
+/// Full 64-bit words lying entirely within `[0, len)` run word-wise, `LANES`
+/// words per SIMD step and then any remaining whole words scalar. The final
+/// `len % 64` bits run one bit at a time, so the write touches only valid
+/// positions and never the trailing bits past `len`. With byte-aligned offsets
+/// the words never straddle a window edge, so adjacent windows of a shared
+/// output buffer stay independent.
+///
+/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+#[inline(always)]
+pub fn bitmask_binop_simd_into<const LANES: usize>(
+    out: &mut Bitmask,
+    out_off: usize,
+    lhs: BitmaskVT<'_>,
+    rhs: BitmaskVT<'_>,
+    op: LogicalOperator,
+) {
+    let (lhs_mask, lhs_off, len) = lhs;
+    let (rhs_mask, rhs_off, _) = rhs;
+    if len == 0 {
+        return;
+    }
+    debug_assert_eq!(out_off % 8, 0, "bitmask_binop_simd_into: out_off must be byte-aligned");
+    debug_assert_eq!(lhs_off % 8, 0, "bitmask_binop_simd_into: lhs offset must be byte-aligned");
+    debug_assert_eq!(rhs_off % 8, 0, "bitmask_binop_simd_into: rhs offset must be byte-aligned");
+    let full_words = len / 64;
+    let tail_bits = len % 64;
+    {
+        let lhs_bytes = bitmask_window_bytes(lhs_mask, lhs_off, len);
+        let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
+        let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
+        unsafe {
+            let lp = lhs_bytes.as_ptr().cast::<u64>();
+            let rp = rhs_bytes.as_ptr().cast::<u64>();
+            let dp = out_bytes.as_mut_ptr().cast::<u64>();
+            let mut i = 0;
+            while i + LANES <= full_words {
+                let a = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(lp.add(i), LANES));
+                let b = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(rp.add(i), LANES));
+                let r = match op {
+                    LogicalOperator::And => a & b,
+                    LogicalOperator::Or => a | b,
+                    LogicalOperator::Xor => a ^ b,
+                };
+                std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
+                i += LANES;
+            }
+            // Scalar word tail when full_words is not a multiple of LANES.
+            for k in i..full_words {
+                let a = *lp.add(k);
+                let b = *rp.add(k);
+                *dp.add(k) = match op {
+                    LogicalOperator::And => a & b,
+                    LogicalOperator::Or => a | b,
+                    LogicalOperator::Xor => a ^ b,
+                };
+            }
+        }
+    }
+    // Final partial word written one bit at a time.
+    let base = full_words * 64;
+    unsafe {
+        for i in 0..tail_bits {
+            let a = lhs_mask.get_unchecked(lhs_off + base + i);
+            let b = rhs_mask.get_unchecked(rhs_off + base + i);
+            let v = match op {
+                LogicalOperator::And => a & b,
+                LogicalOperator::Or => a | b,
+                LogicalOperator::Xor => a ^ b,
+            };
+            out.set_unchecked(out_off + base + i, v);
+        }
+    }
+}
+
+/// Vectorised unary `NOT`, writing the result into `out` at bit offset
+/// `out_off` rather than allocating a fresh mask.
+///
+/// Full 64-bit words run word-wise, `LANES` words per SIMD step and then any
+/// remaining whole words scalar. The final `len % 64` bits run one bit at a
+/// time, so the write never touches the trailing bits past `len`.
+///
+/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+#[inline(always)]
+pub fn bitmask_unop_simd_into<const LANES: usize>(
+    out: &mut Bitmask,
+    out_off: usize,
+    src: BitmaskVT<'_>,
+    op: UnaryOperator,
+) {
     let (mask, offset, len) = src;
     if len == 0 {
-        return Bitmask::new_set_all(0, false);
+        return;
     }
-    let mut out = Bitmask::new_set_all(len, false);
+    debug_assert_eq!(out_off % 8, 0, "bitmask_unop_simd_into: out_off must be byte-aligned");
+    debug_assert_eq!(offset % 8, 0, "bitmask_unop_simd_into: src offset must be byte-aligned");
+    let full_words = len / 64;
+    let tail_bits = len % 64;
     {
         let src_bytes = bitmask_window_bytes(mask, offset, len);
-        let dp_bytes = bitmask_window_bytes_mut(&mut out, 0, len);
-        let total_bytes = src_bytes.len();
-        let full_words = total_bytes / 8;
-        let tail_bytes = total_bytes % 8;
+        let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
         unsafe {
             let sp = src_bytes.as_ptr().cast::<u64>();
-            let dp = dp_bytes.as_mut_ptr().cast::<u64>();
+            let dp = out_bytes.as_mut_ptr().cast::<u64>();
             let mut i = 0;
             while i + LANES <= full_words {
                 let a = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(sp.add(i), LANES));
@@ -214,25 +253,24 @@ where
             }
             // Scalar word tail when full_words is not a multiple of LANES.
             for k in i..full_words {
-                let a = *sp.add(k);
                 *dp.add(k) = match op {
-                    UnaryOperator::Not => !a,
+                    UnaryOperator::Not => !*sp.add(k),
                     _ => unreachable!(),
                 };
             }
         }
-        // Partial-byte tail strictly within the slice.
-        let base = full_words * 8;
-        for k in 0..tail_bytes {
-            let a = src_bytes[base + k];
-            dp_bytes[base + k] = match op {
-                UnaryOperator::Not => !a,
+    }
+    // Final partial word written one bit at a time.
+    let base = full_words * 64;
+    unsafe {
+        for i in 0..tail_bits {
+            let v = match op {
+                UnaryOperator::Not => !mask.get_unchecked(offset + base + i),
                 _ => unreachable!(),
             };
+            out.set_unchecked(out_off + base + i, v);
         }
     }
-    clear_trailing_bits(&mut out);
-    out
 }
 
 // ---- Entry points ----

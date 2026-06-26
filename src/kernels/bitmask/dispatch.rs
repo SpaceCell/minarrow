@@ -143,6 +143,71 @@ pub fn not_mask(src: BitmaskVT<'_>) -> Bitmask {
     }
 }
 
+// --- Output-Buffer Logical Operations ---
+
+/// Binary logical op (AND/OR/XOR) writing into an output window at bit offset
+/// `out_off`, dispatching to the SIMD or scalar path by feature.
+#[inline(always)]
+pub fn bitmask_binop_into(
+    out: &mut Bitmask,
+    out_off: usize,
+    lhs: BitmaskVT<'_>,
+    rhs: BitmaskVT<'_>,
+    op: LogicalOperator,
+) {
+    #[cfg(feature = "simd")]
+    {
+        crate::kernels::bitmask::simd::bitmask_binop_simd_into::<W8>(out, out_off, lhs, rhs, op)
+    }
+    #[cfg(not(feature = "simd"))]
+    {
+        crate::kernels::bitmask::std::bitmask_binop_std_into(out, out_off, lhs, rhs, op)
+    }
+}
+
+/// Unary op (`NOT`) writing into an output window at bit offset `out_off`,
+/// dispatching to the SIMD or scalar path by feature.
+#[inline(always)]
+pub fn bitmask_unop_into(
+    out: &mut Bitmask,
+    out_off: usize,
+    src: BitmaskVT<'_>,
+    op: UnaryOperator,
+) {
+    #[cfg(feature = "simd")]
+    {
+        crate::kernels::bitmask::simd::bitmask_unop_simd_into::<W8>(out, out_off, src, op)
+    }
+    #[cfg(not(feature = "simd"))]
+    {
+        crate::kernels::bitmask::std::bitmask_unop_std_into(out, out_off, src, op)
+    }
+}
+
+/// Element-wise bitwise AND of two bitmask windows into an output window.
+#[inline(always)]
+pub fn and_masks_into(out: &mut Bitmask, out_off: usize, lhs: BitmaskVT<'_>, rhs: BitmaskVT<'_>) {
+    bitmask_binop_into(out, out_off, lhs, rhs, LogicalOperator::And)
+}
+
+/// Element-wise bitwise OR of two bitmask windows into an output window.
+#[inline(always)]
+pub fn or_masks_into(out: &mut Bitmask, out_off: usize, lhs: BitmaskVT<'_>, rhs: BitmaskVT<'_>) {
+    bitmask_binop_into(out, out_off, lhs, rhs, LogicalOperator::Or)
+}
+
+/// Element-wise bitwise XOR of two bitmask windows into an output window.
+#[inline(always)]
+pub fn xor_masks_into(out: &mut Bitmask, out_off: usize, lhs: BitmaskVT<'_>, rhs: BitmaskVT<'_>) {
+    bitmask_binop_into(out, out_off, lhs, rhs, LogicalOperator::Xor)
+}
+
+/// Element-wise bitwise NOT of a bitmask window into an output window.
+#[inline(always)]
+pub fn not_mask_into(out: &mut Bitmask, out_off: usize, src: BitmaskVT<'_>) {
+    bitmask_unop_into(out, out_off, src, UnaryOperator::Not)
+}
+
 // --- Set Logic ---
 
 /// Performs bitwise inclusion: output bit is true if lhs bit is present in rhs bit-set.
