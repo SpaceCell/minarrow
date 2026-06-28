@@ -341,6 +341,50 @@ field_into!(
     |dt| (dt.ordinal() as i32 + 7 - dt.weekday().number_from_sunday() as i32) / 7
 );
 
+/// Evaluate a boolean predicate on each datetime of `src` in the window
+/// `[src_offset, src_offset + out_bits.len())`, writing the bit-packed result into
+/// `out_bits`. A value that is not a representable datetime clears its `out_mask` bit.
+/// Input nulls already arrive in `out_mask`, so they are not re-checked here.
+fn extract_bool_into<T, F>(
+    src: &DatetimeArray<T>,
+    src_offset: usize,
+    out_bits: &mut Bitmask,
+    mut out_mask: Option<&mut Bitmask>,
+    predicate: F,
+) where
+    T: Integer + FromPrimitive,
+    F: Fn(time::OffsetDateTime) -> bool,
+{
+    let time_unit = src.time_unit;
+    for i in 0..out_bits.len() {
+        match src.data[src_offset + i]
+            .to_i64()
+            .and_then(|v| DatetimeArray::<T>::i64_to_datetime(v, time_unit))
+        {
+            // SAFETY: `i < out_bits.len()`, so the bit index is within the bitmask's
+            // capacity, satisfying `set_unchecked`'s precondition.
+            Some(dt) => unsafe { out_bits.set_unchecked(i, predicate(dt)) },
+            None => {
+                if let Some(mask) = out_mask.as_deref_mut() {
+                    mask.set(i, false);
+                }
+            }
+        }
+    }
+}
+
+/// Whether each datetime in the window falls in a leap year. See [`extract_bool_into`].
+pub fn is_leap_year_into<T: Integer + FromPrimitive>(
+    src: &DatetimeArray<T>,
+    src_offset: usize,
+    out_bits: &mut Bitmask,
+    out_mask: Option<&mut Bitmask>,
+) {
+    extract_bool_into(src, src_offset, out_bits, out_mask, |dt| {
+        time::util::is_leap_year(dt.year())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
