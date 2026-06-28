@@ -160,13 +160,16 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
     }
 }
 
-/// Add `duration` to every value of `src`, writing into `out`.
+/// Add `duration` to the values of `src` in the window `[src_offset, src_offset +
+/// out.len())`, writing into `out`.
 ///
 /// `duration` is first converted to the array's time unit. If it is too large to
 /// represent in that unit, the call returns an error and writes nothing. A value whose
-/// sum overflows the storage type is marked null in `out_mask`.
+/// sum overflows the storage type is marked null in `out_mask`. The allocating
+/// `DatetimeArray::add_duration` passes `src_offset = 0` over the whole array.
 pub fn add_duration_into<T: Integer + FromPrimitive>(
     src: &DatetimeArray<T>,
+    src_offset: usize,
     duration: Duration,
     out: &mut [T],
     mut out_mask: Option<&mut Bitmask>,
@@ -194,10 +197,10 @@ pub fn add_duration_into<T: Integer + FromPrimitive>(
         TimeUnit::Days => duration.whole_days(),
     };
 
-    for i in 0..src.len() {
-        let original = src.data[i];
+    for i in 0..out.len() {
+        let original = src.data[src_offset + i];
         out[i] = original;
-        let valid = if src.is_null(i) {
+        let valid = if src.is_null(src_offset + i) {
             false
         } else {
             match original.to_i64().and_then(|v| v.checked_add(duration_value)).and_then(T::from_i64)
@@ -223,15 +226,16 @@ pub fn add_duration_into<T: Integer + FromPrimitive>(
 /// marked null in `out_mask`.
 pub fn add_months_into<T: Integer + FromPrimitive>(
     src: &DatetimeArray<T>,
+    src_offset: usize,
     months: i32,
     out: &mut [T],
     mut out_mask: Option<&mut Bitmask>,
 ) {
     let time_unit = src.time_unit;
-    for i in 0..src.len() {
-        let original = src.data[i];
+    for i in 0..out.len() {
+        let original = src.data[src_offset + i];
         out[i] = original;
-        let computed = if src.is_null(i) {
+        let computed = if src.is_null(src_offset + i) {
             None
         } else {
             original

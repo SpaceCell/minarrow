@@ -126,7 +126,7 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
             Some(m) => m.clone(),
             None => Bitmask::new_set_all(len, true),
         };
-        add_duration_into(self, duration, data.as_mut_slice(), Some(&mut mask))?;
+        add_duration_into(self, 0, duration, data.as_mut_slice(), Some(&mut mask))?;
         let null_mask =
             if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
         Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
@@ -154,7 +154,7 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
             Some(m) => m.clone(),
             None => Bitmask::new_set_all(len, true),
         };
-        add_months_into(self, months, data.as_mut_slice(), Some(&mut mask));
+        add_months_into(self, 0, months, data.as_mut_slice(), Some(&mut mask));
         let null_mask =
             if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
         Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
