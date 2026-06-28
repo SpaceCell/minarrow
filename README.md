@@ -281,8 +281,6 @@ Minarrow is a from-scratch implementation of the Apache Arrow memory layout insp
 
 Minarrow is not affiliated with Apache Arrow.
 
-## Backed by SpaceCell
+## SpaceCell
 
-Minarrow is backed by ***SpaceCell***, ensuring ongoing support for the project.
-
-For an edge in high-performance data computing, visit [spacecell.com](https://spacecell.com)
+Minarrow is maintained by [SpaceCell](https://spacecell.com) and forms part of its open-source foundation for high-performance data computing.
