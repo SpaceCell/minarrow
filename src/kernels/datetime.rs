@@ -345,7 +345,10 @@ field_into!(
 /// `[src_offset, src_offset + out_bits.len())`, writing the bit-packed result into
 /// `out_bits`. A value that is not a representable datetime clears its `out_mask` bit.
 /// Input nulls already arrive in `out_mask`, so they are not re-checked here.
-fn extract_bool_into<T, F>(
+///
+/// Public so a caller can supply a predicate the kernels do not name, such as a
+/// calendar-config weekend or business-day test.
+pub fn extract_bool_into<T, F>(
     src: &DatetimeArray<T>,
     src_offset: usize,
     out_bits: &mut Bitmask,
@@ -412,6 +415,109 @@ bool_predicate_into!(
     "Whether each datetime in the window is the last day of its year.",
     |dt| dt.month() == time::Month::December && dt.day() == 31
 );
+
+/// Evaluate a boolean predicate over each pair of datetimes from the `lhs`/`rhs`
+/// windows, converting each side through its own time unit so mixed units and widths
+/// compare correctly. An unrepresentable value on either side clears the `out_mask`
+/// bit; input nulls already arrive in `out_mask`.
+fn binary_bool_into<T, U, F>(
+    lhs: &DatetimeArray<T>,
+    lhs_offset: usize,
+    rhs: &DatetimeArray<U>,
+    rhs_offset: usize,
+    out_bits: &mut Bitmask,
+    mut out_mask: Option<&mut Bitmask>,
+    predicate: F,
+) where
+    T: Integer + FromPrimitive,
+    U: Integer + FromPrimitive,
+    F: Fn(time::OffsetDateTime, time::OffsetDateTime) -> bool,
+{
+    let lhs_unit = lhs.time_unit;
+    let rhs_unit = rhs.time_unit;
+    for i in 0..out_bits.len() {
+        let a = lhs.data[lhs_offset + i]
+            .to_i64()
+            .and_then(|v| DatetimeArray::<T>::i64_to_datetime(v, lhs_unit));
+        let b = rhs.data[rhs_offset + i]
+            .to_i64()
+            .and_then(|v| DatetimeArray::<U>::i64_to_datetime(v, rhs_unit));
+        match (a, b) {
+            // SAFETY: `i < out_bits.len()`, within the bitmask's capacity.
+            (Some(a), Some(b)) => unsafe { out_bits.set_unchecked(i, predicate(a, b)) },
+            _ => {
+                if let Some(mask) = out_mask.as_deref_mut() {
+                    mask.set(i, false);
+                }
+            }
+        }
+    }
+}
+
+/// Whether each `lhs` datetime is strictly before the matching `rhs`. See [`binary_bool_into`].
+pub fn is_before_into<T: Integer + FromPrimitive, U: Integer + FromPrimitive>(
+    lhs: &DatetimeArray<T>,
+    lhs_offset: usize,
+    rhs: &DatetimeArray<U>,
+    rhs_offset: usize,
+    out_bits: &mut Bitmask,
+    out_mask: Option<&mut Bitmask>,
+) {
+    binary_bool_into(lhs, lhs_offset, rhs, rhs_offset, out_bits, out_mask, |a, b| a < b)
+}
+
+/// Whether each `lhs` datetime is strictly after the matching `rhs`. See [`binary_bool_into`].
+pub fn is_after_into<T: Integer + FromPrimitive, U: Integer + FromPrimitive>(
+    lhs: &DatetimeArray<T>,
+    lhs_offset: usize,
+    rhs: &DatetimeArray<U>,
+    rhs_offset: usize,
+    out_bits: &mut Bitmask,
+    out_mask: Option<&mut Bitmask>,
+) {
+    binary_bool_into(lhs, lhs_offset, rhs, rhs_offset, out_bits, out_mask, |a, b| a > b)
+}
+
+/// Whether each `value` datetime falls within `[start, end]` of the matching windows,
+/// each side converted through its own time unit.
+pub fn between_into<T, U, V>(
+    value: &DatetimeArray<T>,
+    value_offset: usize,
+    start: &DatetimeArray<U>,
+    start_offset: usize,
+    end: &DatetimeArray<V>,
+    end_offset: usize,
+    out_bits: &mut Bitmask,
+    mut out_mask: Option<&mut Bitmask>,
+) where
+    T: Integer + FromPrimitive,
+    U: Integer + FromPrimitive,
+    V: Integer + FromPrimitive,
+{
+    let value_unit = value.time_unit;
+    let start_unit = start.time_unit;
+    let end_unit = end.time_unit;
+    for i in 0..out_bits.len() {
+        let v = value.data[value_offset + i]
+            .to_i64()
+            .and_then(|x| DatetimeArray::<T>::i64_to_datetime(x, value_unit));
+        let s = start.data[start_offset + i]
+            .to_i64()
+            .and_then(|x| DatetimeArray::<U>::i64_to_datetime(x, start_unit));
+        let e = end.data[end_offset + i]
+            .to_i64()
+            .and_then(|x| DatetimeArray::<V>::i64_to_datetime(x, end_unit));
+        match (v, s, e) {
+            // SAFETY: `i < out_bits.len()`, within the bitmask's capacity.
+            (Some(v), Some(s), Some(e)) => unsafe { out_bits.set_unchecked(i, v >= s && v <= e) },
+            _ => {
+                if let Some(mask) = out_mask.as_deref_mut() {
+                    mask.set(i, false);
+                }
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
