@@ -53,20 +53,12 @@ use crate::{
 };
 #[cfg(feature = "datetime_ops")]
 use num_traits::FromPrimitive;
-<<<<<<< HEAD
 #[cfg(feature = "datetime_ops")]
 use ::vec64::Vec64;
 #[cfg(feature = "datetime_ops")]
 use crate::kernels::datetime::{
     add_duration_into, add_months_into, diff_into, is_leap_year_into, truncate_into,
 };
-||||||| parent of a41ca90 (Add datetime _into primitives and TimePeriod truncation enum)
-=======
-#[cfg(feature = "datetime_ops")]
-use ::vec64::Vec64;
-#[cfg(feature = "datetime_ops")]
-use crate::kernels::datetime::{add_duration_into, add_months_into, truncate_into};
->>>>>>> a41ca90 (Add datetime _into primitives and TimePeriod truncation enum)
 
 #[cfg(feature = "datetime_ops")]
 impl<T: Integer + FromPrimitive> DatetimeArray<T> {
@@ -130,7 +122,6 @@ impl<T: Integer + FromPrimitive> DatetimeArray<T> {
 #[cfg(feature = "datetime_ops")]
 impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     fn add_duration(&self, duration: Duration) -> Result<Self, MinarrowError> {
-<<<<<<< HEAD
         let len = self.len();
         let mut data = Vec64::from_slice(&self.data[..]);
         let mut mask = match &self.null_mask {
@@ -141,74 +132,6 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
         let null_mask =
             if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
         Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
-||||||| parent of a41ca90 (Add datetime _into primitives and TimePeriod truncation enum)
-        let mut result = self.clone();
-        let len = result.len();
-        let data = &self.data[..];
-
-        // Convert duration to the array's time unit
-        let duration_value: i64 =
-            match self.time_unit {
-                TimeUnit::Seconds => duration.whole_seconds(),
-                TimeUnit::Milliseconds => {
-                    duration.whole_milliseconds().try_into().map_err(|_| {
-                        MinarrowError::Overflow {
-                            value: format!("{} ms", duration.whole_milliseconds()),
-                            target: "i64",
-                        }
-                    })?
-                }
-                TimeUnit::Microseconds => {
-                    duration.whole_microseconds().try_into().map_err(|_| {
-                        MinarrowError::Overflow {
-                            value: format!("{} μs", duration.whole_microseconds()),
-                            target: "i64",
-                        }
-                    })?
-                }
-                TimeUnit::Nanoseconds => duration.whole_nanoseconds().try_into().map_err(|_| {
-                    MinarrowError::Overflow {
-                        value: format!("{} ns", duration.whole_nanoseconds()),
-                        target: "i64",
-                    }
-                })?,
-                TimeUnit::Days => duration.whole_days(),
-            };
-
-        for i in 0..len {
-            if !self.is_null(i) {
-                // SAFETY: i is bounded by len, so access is safe
-                let val = unsafe { *data.get_unchecked(i) };
-
-                if let Some(val_i64) = val.to_i64() {
-                    if let Some(new_val_i64) = val_i64.checked_add(duration_value) {
-                        if let Some(new_val_t) = T::from_i64(new_val_i64) {
-                            result.set(i, new_val_t);
-                        } else {
-                            result.set_null(i);
-                        }
-                    } else {
-                        result.set_null(i); // Overflow
-                    }
-                } else {
-                    result.set_null(i);
-                }
-            }
-        }
-
-        Ok(result)
-=======
-        let len = self.len();
-        let mut data = Vec64::from_slice(&self.data[..]);
-        let mut mask = match &self.null_mask {
-            Some(m) => m.clone(),
-            None => Bitmask::new_set_all(len, true),
-        };
-        add_duration_into(self, duration, data.as_mut_slice(), Some(&mut mask))?;
-        let null_mask =
-            if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
-        Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
->>>>>>> a41ca90 (Add datetime _into primitives and TimePeriod truncation enum)
     }
 
     /// Subtracts a duration from all datetime values in the array.
@@ -227,7 +150,6 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// (e.g., Jan 31 + 1 month), the day is clamped to the last valid day (Feb 28/29).
     /// Time-of-day is preserved.
     fn add_months(&self, months: i32) -> Result<Self, MinarrowError> {
-<<<<<<< HEAD
         let len = self.len();
         let mut data = Vec64::from_slice(&self.data[..]);
         let mut mask = match &self.null_mask {
@@ -238,70 +160,6 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
         let null_mask =
             if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
         Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
-||||||| parent of a41ca90 (Add datetime _into primitives and TimePeriod truncation enum)
-        let mut result = self.clone();
-        let len = result.len();
-        let data = &self.data[..];
-        let time_unit = self.time_unit; // Hoist time_unit outside loop
-
-        for i in 0..len {
-            if !self.is_null(i) {
-                // SAFETY: i is bounded by len
-                let val = unsafe { *data.get_unchecked(i) };
-
-                if let Some(val_i64) = val.to_i64() {
-                    if let Some(dt) = Self::i64_to_datetime(val_i64, time_unit) {
-                        let date = dt.date();
-
-                        // Calculate new year and month
-                        let total_months = date.year() * 12 + (date.month() as i32) - 1 + months;
-                        let new_year = total_months / 12;
-                        let new_month = (total_months % 12 + 1) as u8;
-
-                        // Try to construct new date
-                        if let Ok(new_month_enum) = time::Month::try_from(new_month) {
-                            let days_in_month = new_month_enum.length(new_year);
-                            let day = date.day().min(days_in_month);
-                            if let Ok(new_date) =
-                                time::Date::from_calendar_date(new_year, new_month_enum, day)
-                            {
-                                let new_dt_primitive = new_date.with_time(dt.time());
-                                let new_dt = new_dt_primitive.assume_utc();
-                                let new_val_i64 = Self::datetime_to_i64(new_dt, time_unit);
-
-                                if let Some(new_val_t) = T::from_i64(new_val_i64) {
-                                    result.set(i, new_val_t);
-                                } else {
-                                    result.set_null(i);
-                                }
-                            } else {
-                                result.set_null(i);
-                            }
-                        } else {
-                            result.set_null(i);
-                        }
-                    } else {
-                        result.set_null(i);
-                    }
-                } else {
-                    result.set_null(i);
-                }
-            }
-        }
-
-        Ok(result)
-=======
-        let len = self.len();
-        let mut data = Vec64::from_slice(&self.data[..]);
-        let mut mask = match &self.null_mask {
-            Some(m) => m.clone(),
-            None => Bitmask::new_set_all(len, true),
-        };
-        add_months_into(self, months, data.as_mut_slice(), Some(&mut mask));
-        let null_mask =
-            if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
-        Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
->>>>>>> a41ca90 (Add datetime _into primitives and TimePeriod truncation enum)
     }
 
     /// Adds a number of years to all datetime values.
@@ -681,7 +539,6 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
 
     /// Floor datetime values to the start of `period`.
     ///
-<<<<<<< HEAD
     /// `period` accepts a [`TimePeriod`] or its string label (e.g. `"day"`).
     fn truncate<P: Into<TimePeriod>>(&self, period: P) -> Self {
         let period = period.into();
@@ -695,85 +552,6 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
         let null_mask =
             if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
         Self::from_vec64(data, null_mask, Some(self.time_unit))
-||||||| parent of a41ca90 (Add datetime _into primitives and TimePeriod truncation enum)
-    /// # Arguments
-    /// * `unit` - The unit to truncate to (Day, Hour, Minute, Second)
-    fn truncate(&self, unit: &str) -> Result<Self, MinarrowError> {
-        let mut result = self.clone();
-        let len = result.len();
-        let time_unit = self.time_unit; // Hoist time_unit outside loop
-
-        for i in 0..len {
-            if !self.is_null(i) {
-                if let Some(val_i64) = self.data[i].to_i64() {
-                    if let Some(dt) = Self::i64_to_datetime(val_i64, time_unit) {
-                        let truncated_dt = match unit {
-                            "year" => {
-                                time::Date::from_calendar_date(dt.year(), time::Month::January, 1)
-                                    .ok()
-                                    .and_then(|d| d.with_hms(0, 0, 0).ok())
-                                    .map(|pdt| pdt.assume_utc())
-                            }
-                            "month" => time::Date::from_calendar_date(dt.year(), dt.month(), 1)
-                                .ok()
-                                .and_then(|d| d.with_hms(0, 0, 0).ok())
-                                .map(|pdt| pdt.assume_utc()),
-                            "day" => dt.date().with_hms(0, 0, 0).ok().map(|pdt| pdt.assume_utc()),
-                            "hour" => dt
-                                .date()
-                                .with_hms(dt.hour(), 0, 0)
-                                .ok()
-                                .map(|pdt| pdt.assume_utc()),
-                            "minute" => dt
-                                .date()
-                                .with_hms(dt.hour(), dt.minute(), 0)
-                                .ok()
-                                .map(|pdt| pdt.assume_utc()),
-                            "second" => dt
-                                .date()
-                                .with_hms(dt.hour(), dt.minute(), dt.second())
-                                .ok()
-                                .map(|pdt| pdt.assume_utc()),
-                            _ => {
-                                return Err(MinarrowError::TypeError {
-                                    from: "String",
-                                    to: "TimeUnit",
-                                    message: Some(format!("Invalid truncation unit: {}", unit)),
-                                });
-                            }
-                        };
-
-                        if let Some(new_dt) = truncated_dt {
-                            let new_val_i64 = Self::datetime_to_i64(new_dt, time_unit);
-                            if let Some(new_val_t) = T::from_i64(new_val_i64) {
-                                result.set(i, new_val_t);
-                            } else {
-                                result.set_null(i);
-                            }
-                        } else {
-                            result.set_null(i);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(result)
-=======
-    /// `period` accepts a [`TimePeriod`] or its string label (e.g. `"day"`).
-    fn truncate<P: Into<TimePeriod>>(&self, period: P) -> Self {
-        let period = period.into();
-        let len = self.len();
-        let mut data = Vec64::from_slice(&self.data[..]);
-        let mut mask = match &self.null_mask {
-            Some(m) => m.clone(),
-            None => Bitmask::new_set_all(len, true),
-        };
-        truncate_into(self, period, data.as_mut_slice(), Some(&mut mask));
-        let null_mask =
-            if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
-        Self::from_vec64(data, null_mask, Some(self.time_unit))
->>>>>>> a41ca90 (Add datetime _into primitives and TimePeriod truncation enum)
     }
 
     // Truncation Shorthand Methods

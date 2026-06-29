@@ -5,7 +5,6 @@ All notable changes to **minarrow** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-<<<<<<< HEAD
 ## Unreleased
 - Added `_into` Datetime kernel variants for efficient non-allocations.
 - Added `_into` Bitmask kernel variants for efficient non-allocations.
@@ -20,17 +19,6 @@ constituents i.e., `week` becomes `TimePeriod::Week` at the call-site.
 
 ## 0.13.0
 
-||||||| parent of a41ca90 (Add datetime _into primitives and TimePeriod truncation enum)
-## Unreleased - 0.13.0
-=======
-## Unreleased
-- Added `_into` mutable output buffer datetime variants supporting efficient parallelism.
-- Added `TimePeriod` enum consistency for datetime periods with automatic deref on string
-constituents i.e., `week` becomes `TimePeriod::Week` at the call-site.
-
-## 0.13.0
-
->>>>>>> a41ca90 (Add datetime _into primitives and TimePeriod truncation enum)
 - Added fixed-format ISO 8601 / RFC 3339 timestamp parsing for DatetimeArray
 - Add ArrowType::upcast for binary operation type promotion
 - Added `_into` kernel variants for buffer mutation support.
