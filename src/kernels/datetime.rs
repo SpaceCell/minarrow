@@ -519,6 +519,51 @@ pub fn between_into<T, U, V>(
     }
 }
 
+/// Difference `lhs - rhs` for each pair in the windows, expressed in `unit`, writing
+/// `i64` into `out`. Each side converts through its own time unit. An unrepresentable
+/// value on either side writes `0` and clears the `out_mask` bit.
+pub fn diff_into<T, U>(
+    lhs: &DatetimeArray<T>,
+    lhs_offset: usize,
+    rhs: &DatetimeArray<U>,
+    rhs_offset: usize,
+    unit: TimeUnit,
+    out: &mut [i64],
+    mut out_mask: Option<&mut Bitmask>,
+) where
+    T: Integer + FromPrimitive,
+    U: Integer + FromPrimitive,
+{
+    let lhs_unit = lhs.time_unit;
+    let rhs_unit = rhs.time_unit;
+    for i in 0..out.len() {
+        let a = lhs.data[lhs_offset + i]
+            .to_i64()
+            .and_then(|v| DatetimeArray::<T>::i64_to_datetime(v, lhs_unit));
+        let b = rhs.data[rhs_offset + i]
+            .to_i64()
+            .and_then(|v| DatetimeArray::<U>::i64_to_datetime(v, rhs_unit));
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                let d = a - b;
+                out[i] = match unit {
+                    TimeUnit::Seconds => d.whole_seconds(),
+                    TimeUnit::Milliseconds => d.whole_milliseconds() as i64,
+                    TimeUnit::Microseconds => d.whole_microseconds() as i64,
+                    TimeUnit::Nanoseconds => d.whole_nanoseconds() as i64,
+                    TimeUnit::Days => d.whole_days(),
+                };
+            }
+            _ => {
+                out[i] = 0;
+                if let Some(mask) = out_mask.as_deref_mut() {
+                    mask.set(i, false);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
