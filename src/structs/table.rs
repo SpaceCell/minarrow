@@ -134,7 +134,8 @@ impl Table {
 
     /// Constructs a new Table with a specified name and optional columns.
     /// If `cols` is provided, the number of rows will be inferred from the first column.
-    pub fn new(name: String, cols: Option<Vec<FieldArray>>) -> Self {
+    pub fn new(name: impl Into<String>, cols: Option<Vec<FieldArray>>) -> Self {
+        let name = name.into();
         let cols = cols.unwrap_or_else(Vec::new);
         let n_rows = cols.first().map(|col| col.len()).unwrap_or(0);
 
@@ -1145,7 +1146,7 @@ impl Display for Table {
         // Render body
         for (logical_row, cells) in rows.iter().enumerate() {
             let physical_row = row_indices[logical_row];
-            write!(f, "| {idx:>w$} |", idx = physical_row, w = idx_width)?;
+            write!(f, "| {idx:^w$} |", idx = physical_row, w = idx_width)?;
             for (col_idx, cell) in cells.iter().enumerate() {
                 write!(f, " {val:^w$} |", val = cell, w = widths[col_idx])?;
             }
@@ -1422,7 +1423,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn test_table_slice_and_slice() {
-        let mut t = Table::new("foo".into(), None);
+        let mut t = Table::new("foo", None);
         t.add_col(fa_i32!("ints", 1, 2, 3));
         t.add_col(fa_bool!("bools", true, false, true));
 

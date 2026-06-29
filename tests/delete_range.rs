@@ -204,7 +204,7 @@ fn field_array_delete_refreshes_null_count() {
 #[test]
 fn table_delete_range_all_column_types() {
     let mut table = Table::new(
-        "t".into(),
+        "t",
         vec![
             FieldArray::from_arr("i", arr_i64![0, 1, 2, 3, 4, 5]),
             FieldArray::from_arr("f", arr_f64![0.0, 0.1, 0.2, 0.3, 0.4, 0.5]),
@@ -243,7 +243,7 @@ fn table_delete_range_all_column_types() {
 #[test]
 fn table_delete_range_empty_is_noop() {
     let mut table = Table::new(
-        "t".into(),
+        "t",
         vec![FieldArray::from_arr("i", arr_i64![1, 2, 3])].into(),
     );
     table.delete_range(1, 1);
@@ -254,7 +254,7 @@ fn table_delete_range_empty_is_noop() {
 #[should_panic]
 fn table_delete_range_out_of_bounds_panics() {
     let mut table = Table::new(
-        "t".into(),
+        "t",
         vec![FieldArray::from_arr("i", arr_i64![1, 2, 3])].into(),
     );
     table.delete_range(1, 4);

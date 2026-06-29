@@ -807,6 +807,181 @@ impl Array {
         }
     }
 
+    /// The scalar is converted to the array's element type. String and
+    /// categorical arrays take its text form, and categorical arrays intern it.
+    /// Returns an error when the value cannot be represented as the array's type,
+    /// or the array is `Null`.
+    ///
+    /// Mutation is copy-on-write. The inner array is held behind `Arc`, so a
+    /// uniquely owned array is mutated in place, while a shared array is cloned
+    /// once before the push and the mutation lands on the clone. An array becomes
+    /// shared when it is cloned or held inside another structure such as a `Table`.
+    #[cfg(feature = "scalar_type")]
+    pub fn push(&mut self, value: crate::Scalar) -> Result<(), MinarrowError> {
+        use crate::Scalar;
+        let dtype = self.arrow_type();
+        let unsupported = || MinarrowError::TypeError {
+            from: "Scalar",
+            to: "array element",
+            message: Some(format!(
+                "cannot push a {value:?} value into an array of type {dtype:?}"
+            )),
+        };
+        match self {
+            Array::NumericArray(inner) => match inner {
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(a) => Arc::make_mut(a).push(value.try_i8().ok_or_else(unsupported)?),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(a) => Arc::make_mut(a).push(value.try_i16().ok_or_else(unsupported)?),
+                NumericArray::Int32(a) => Arc::make_mut(a).push(value.try_i32().ok_or_else(unsupported)?),
+                NumericArray::Int64(a) => Arc::make_mut(a).push(value.try_i64().ok_or_else(unsupported)?),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(a) => Arc::make_mut(a).push(value.try_u8().ok_or_else(unsupported)?),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(a) => Arc::make_mut(a).push(value.try_u16().ok_or_else(unsupported)?),
+                NumericArray::UInt32(a) => Arc::make_mut(a).push(value.try_u32().ok_or_else(unsupported)?),
+                NumericArray::UInt64(a) => Arc::make_mut(a).push(value.try_u64().ok_or_else(unsupported)?),
+                NumericArray::Float32(a) => Arc::make_mut(a).push(value.try_f32().ok_or_else(unsupported)?),
+                NumericArray::Float64(a) => Arc::make_mut(a).push(value.try_f64().ok_or_else(unsupported)?),
+                NumericArray::Null => return Err(unsupported()),
+            },
+            Array::BooleanArray(a) => Arc::make_mut(a).push(value.try_bool().ok_or_else(unsupported)?),
+            Array::TextArray(inner) => match inner {
+                TextArray::String32(a) => Arc::make_mut(a).push(value.try_str().ok_or_else(unsupported)?),
+                #[cfg(feature = "large_string")]
+                TextArray::String64(a) => Arc::make_mut(a).push(value.try_str().ok_or_else(unsupported)?),
+                #[cfg(feature = "default_categorical_8")]
+                TextArray::Categorical8(a) => Arc::make_mut(a).push(value.try_str().ok_or_else(unsupported)?),
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical16(a) => Arc::make_mut(a).push(value.try_str().ok_or_else(unsupported)?),
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                TextArray::Categorical32(a) => Arc::make_mut(a).push(value.try_str().ok_or_else(unsupported)?),
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical64(a) => Arc::make_mut(a).push(value.try_str().ok_or_else(unsupported)?),
+                TextArray::Null => return Err(unsupported()),
+            },
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(inner) => match inner {
+                TemporalArray::Datetime32(a) => Arc::make_mut(a).push(value.try_i32().ok_or_else(unsupported)?),
+                TemporalArray::Datetime64(a) => Arc::make_mut(a).push(value.try_i64().ok_or_else(unsupported)?),
+                TemporalArray::Null => return Err(unsupported()),
+            },
+            Array::Null => return Err(unsupported()),
+        }
+        Ok(())
+    }
+
+    /// Appends a null to the array. Returns an error when the array is `Null`.
+    /// Mutation is copy-on-write.
+    pub fn push_null(&mut self) -> Result<(), MinarrowError> {
+        let dtype = self.arrow_type();
+        let unsupported =
+            || MinarrowError::TypeError {
+                from: "scalar",
+                to: "array element",
+                message: Some(format!("cannot push a null into a {dtype:?} array")),
+            };
+        match self {
+            Array::NumericArray(inner) => match inner {
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(a) => Arc::make_mut(a).push_null(),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(a) => Arc::make_mut(a).push_null(),
+                NumericArray::Int32(a) => Arc::make_mut(a).push_null(),
+                NumericArray::Int64(a) => Arc::make_mut(a).push_null(),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(a) => Arc::make_mut(a).push_null(),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(a) => Arc::make_mut(a).push_null(),
+                NumericArray::UInt32(a) => Arc::make_mut(a).push_null(),
+                NumericArray::UInt64(a) => Arc::make_mut(a).push_null(),
+                NumericArray::Float32(a) => Arc::make_mut(a).push_null(),
+                NumericArray::Float64(a) => Arc::make_mut(a).push_null(),
+                NumericArray::Null => return Err(unsupported()),
+            },
+            Array::BooleanArray(a) => Arc::make_mut(a).push_null(),
+            Array::TextArray(inner) => match inner {
+                TextArray::String32(a) => Arc::make_mut(a).push_null(),
+                #[cfg(feature = "large_string")]
+                TextArray::String64(a) => Arc::make_mut(a).push_null(),
+                #[cfg(feature = "default_categorical_8")]
+                TextArray::Categorical8(a) => Arc::make_mut(a).push_null(),
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical16(a) => Arc::make_mut(a).push_null(),
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                TextArray::Categorical32(a) => Arc::make_mut(a).push_null(),
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical64(a) => Arc::make_mut(a).push_null(),
+                TextArray::Null => return Err(unsupported()),
+            },
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(inner) => match inner {
+                TemporalArray::Datetime32(a) => Arc::make_mut(a).push_null(),
+                TemporalArray::Datetime64(a) => Arc::make_mut(a).push_null(),
+                TemporalArray::Null => return Err(unsupported()),
+            },
+            Array::Null => return Err(unsupported()),
+        }
+        Ok(())
+    }
+
+    /// Sets the element at `idx` to `value`, converting it to the element type.
+    ///
+    /// Returns an error when the value cannot be represented as the array's type,
+    /// or the array is `Null`. Mutation is copy-on-write.
+    #[cfg(feature = "scalar_type")]
+    pub fn set(&mut self, idx: usize, value: crate::Scalar) -> Result<(), MinarrowError> {
+        let dtype = self.arrow_type();
+        let unsupported =
+            || MinarrowError::TypeError {
+                from: "scalar",
+                to: "array element",
+                message: Some(format!("cannot set a value in a {dtype:?} array")),
+            };
+        match self {
+            Array::NumericArray(inner) => match inner {
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(a) => Arc::make_mut(a).set(idx, value.try_i8().ok_or_else(unsupported)?),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(a) => Arc::make_mut(a).set(idx, value.try_i16().ok_or_else(unsupported)?),
+                NumericArray::Int32(a) => Arc::make_mut(a).set(idx, value.try_i32().ok_or_else(unsupported)?),
+                NumericArray::Int64(a) => Arc::make_mut(a).set(idx, value.try_i64().ok_or_else(unsupported)?),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(a) => Arc::make_mut(a).set(idx, value.try_u8().ok_or_else(unsupported)?),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(a) => Arc::make_mut(a).set(idx, value.try_u16().ok_or_else(unsupported)?),
+                NumericArray::UInt32(a) => Arc::make_mut(a).set(idx, value.try_u32().ok_or_else(unsupported)?),
+                NumericArray::UInt64(a) => Arc::make_mut(a).set(idx, value.try_u64().ok_or_else(unsupported)?),
+                NumericArray::Float32(a) => Arc::make_mut(a).set(idx, value.try_f32().ok_or_else(unsupported)?),
+                NumericArray::Float64(a) => Arc::make_mut(a).set(idx, value.try_f64().ok_or_else(unsupported)?),
+                NumericArray::Null => return Err(unsupported()),
+            },
+            Array::BooleanArray(a) => Arc::make_mut(a).set(idx, value.try_bool().ok_or_else(unsupported)?),
+            Array::TextArray(inner) => match inner {
+                TextArray::String32(a) => Arc::make_mut(a).set(idx, value.try_str().ok_or_else(unsupported)?),
+                #[cfg(feature = "large_string")]
+                TextArray::String64(a) => Arc::make_mut(a).set(idx, value.try_str().ok_or_else(unsupported)?),
+                #[cfg(feature = "default_categorical_8")]
+                TextArray::Categorical8(a) => Arc::make_mut(a).set(idx, value.try_str().ok_or_else(unsupported)?),
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical16(a) => Arc::make_mut(a).set(idx, value.try_str().ok_or_else(unsupported)?),
+                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                TextArray::Categorical32(a) => Arc::make_mut(a).set(idx, value.try_str().ok_or_else(unsupported)?),
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical64(a) => Arc::make_mut(a).set(idx, value.try_str().ok_or_else(unsupported)?),
+                TextArray::Null => return Err(unsupported()),
+            },
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(inner) => match inner {
+                TemporalArray::Datetime32(a) => Arc::make_mut(a).set(idx, value.try_i32().ok_or_else(unsupported)?),
+                TemporalArray::Datetime64(a) => Arc::make_mut(a).set(idx, value.try_i64().ok_or_else(unsupported)?),
+                TemporalArray::Null => return Err(unsupported()),
+            },
+            Array::Null => return Err(unsupported()),
+        }
+        Ok(())
+    }
+
     /// Returns a metadata view and reference over the specified window of this array.
     ///
     /// Does not slice the object (yet).

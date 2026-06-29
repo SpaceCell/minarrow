@@ -119,13 +119,9 @@ impl fmt::Display for MinarrowError {
             }
             MinarrowError::TypeError { from, to, message } => {
                 if let Some(msg) = message {
-                    write!(
-                        f,
-                        "Type error: cannot cast from '{}' to '{}': {}",
-                        from, to, msg
-                    )
+                    write!(f, "{}", msg)
                 } else {
-                    write!(f, "Type error: cannot cast from '{}' to '{}'.", from, to)
+                    write!(f, "Cannot cast '{}' to '{}'.", from, to)
                 }
             }
             MinarrowError::NullError { message } => {

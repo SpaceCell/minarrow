@@ -229,8 +229,13 @@ impl<T: Integer> CategoricalArray<T> {
     }
 
     /// Build a categorical column from raw string values, auto-deriving the dictionary.
+    /// Returns [`MinarrowError::DictionaryOverflow`] when the unique category count
+    /// exceeds the index type's capacity, e.g. a 257th value on a `u8` index.
     #[inline]
-    pub fn from_vec64(values: Vec64<&str>, null_mask: Option<Bitmask>) -> Self {
+    pub fn try_from_vec64(
+        values: Vec64<&str>,
+        null_mask: Option<Bitmask>,
+    ) -> Result<Self, MinarrowError> {
         validate_null_mask_len(values.len(), &null_mask);
 
         let len = values.len();
@@ -250,27 +255,34 @@ impl<T: Integer> CategoricalArray<T> {
                 codes.push(code);
             } else {
                 let idx = unique_values.len();
-                let code = T::try_from(idx).ok().unwrap_or_else(|| {
-                    panic!(
-                        "Unique category count ({}) exceeds capacity of index type {}",
-                        idx + 1,
-                        std::any::type_name::<T>()
-                    )
-                });
+                let code = T::try_from(idx).ok().ok_or(MinarrowError::DictionaryOverflow)?;
                 unique_values.push(s.to_string());
                 dict.insert(s, code);
                 codes.push(code);
             }
         }
 
-        Self {
+        Ok(Self {
             data: codes.into(),
             #[cfg(not(feature = "shared_dict"))]
             unique_values,
             #[cfg(feature = "shared_dict")]
             dictionary: Dictionary::from(unique_values),
             null_mask,
-        }
+        })
+    }
+
+    /// Build a categorical column from raw string values, auto-deriving the dictionary.
+    /// Panics when the unique category count exceeds the index type's capacity. Use
+    /// [`try_from_vec64`](Self::try_from_vec64) for the fallible form.
+    #[inline]
+    pub fn from_vec64(values: Vec64<&str>, null_mask: Option<Bitmask>) -> Self {
+        Self::try_from_vec64(values, null_mask).unwrap_or_else(|_| {
+            panic!(
+                "unique category count exceeds capacity of index type {}",
+                std::any::type_name::<T>()
+            )
+        })
     }
 
     /// Vec wrapper

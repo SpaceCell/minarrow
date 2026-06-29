@@ -148,7 +148,7 @@ pub(crate) fn print_header_row(
     headers: &[String],
     col_widths: &[usize],
 ) -> fmt::Result {
-    write!(f, "| {hdr:^w$} |", hdr = "idx", w = idx_width)?;
+    write!(f, "| {hdr:^w$} |", hdr = "#", w = idx_width)?;
     for (hdr, &w) in headers.iter().zip(col_widths) {
         write!(f, " {hdr:^w$} |", hdr = hdr, w = w)?;
     }
