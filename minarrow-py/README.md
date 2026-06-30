@@ -6,7 +6,7 @@
 
 Documentation: [minarrow.com](https://minarrow.com)
 
-`minarrow` is a compact Python interface over the [Minarrow Rust core](https://github.com/pbower/minarrow).
+`minarrow` is a compact Python interface over [Minarrow Rust](https://github.com/pbower/minarrow).
 
 It gives Rust and Python the same columnar data model, with Arrow-compatible memory layouts and 64-byte-aligned buffers. Data produced in Rust can be exposed directly to Python, operated on by native SIMD kernels, and passed to PyArrow, Polars, DuckDB and other Arrow-aware libraries through the Arrow PyCapsule interface.
 
