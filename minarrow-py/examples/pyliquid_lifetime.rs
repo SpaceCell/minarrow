@@ -48,12 +48,12 @@ fn main() -> PyResult<()> {
         let scope = PyDict::new(py);
         scope.set_item("table", obj)?;
         py.run(
-            cr#"
-import polars as pl
+                        cr#"
+            import polars as pl
 
-df = table.to_polars()
-result = df.with_columns((pl.col("x") * 7).alias("x"))
-"#,
+            df = table.to_polars()
+            result = df.with_columns((pl.col("x") * 7).alias("x"))
+            "#,
             Some(&scope),
             Some(&scope),
         )?;

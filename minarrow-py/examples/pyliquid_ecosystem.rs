@@ -52,9 +52,10 @@
 //! ```
 
 use std::ffi::CStr;
+use std::hint::black_box;
 use std::time::Instant;
 
-use minarrow::{fa_f64, fa_i64, fa_str32, Print, Scalar, Table, Value, Vec64};
+use minarrow::{fa_f64, fa_i64, fa_str32, Array, NumericArray, Print, Scalar, Table, Value, Vec64};
 use minarrow_py::{PyInput, PyLiquid};
 use minarrow_pyo3::ffi::to_rust;
 use pyo3::prelude::*;
@@ -276,17 +277,16 @@ fn bridge_costs(small: &Table) -> PyResult<()> {
     let large = build_large(1_000_000);
 
     Python::with_gil(|py| -> PyResult<()> {
-        let pa = py.import("pyarrow")?;
         const N: u32 = 50;
 
         println!();
         println!("  Numeric buffers are shared, not copied, so import time does not grow with row count.");
 
-        // Build the Python object and consume it through PyArrow.
+        // Export a Minarrow table to a native Python object.
         let t = Instant::now();
         for _ in 0..N {
             let object = large.to_python(py)?;
-            let _consumed = pa.call_method1("table", (object,))?;
+            black_box(&object);
         }
         println!("  Rust to Python, 1,000,000 rows         : {:>11.3?}", t.elapsed() / N);
 
@@ -296,10 +296,11 @@ fn bridge_costs(small: &Table) -> PyResult<()> {
             (1_000_000, "1,000,000"),
             (10_000_000, "10,000,000"),
         ] {
-            let source = pa.call_method1("table", (build_large(rows).to_python(py)?,))?;
+            let source = build_large(rows).to_python(py)?;
             let t = Instant::now();
             for _ in 0..N {
-                let _back: Table = to_rust::record_batch_to_rust(&source)?;
+                let back: Table = to_rust::record_batch_to_rust(&source)?;
+                black_box(&back);
             }
             println!("  Python to Rust, {label:>10} rows        : {:>11.3?}", t.elapsed() / N);
         }
@@ -308,10 +309,11 @@ fn bridge_costs(small: &Table) -> PyResult<()> {
         println!("  String offsets are currently copied Minarrow, while the text is shared, so import time tracks row count rather than text length. This will change in a future version.");
 
         for width in [9usize, 64] {
-            let source = pa.call_method1("table", (build_strings(1_000_000, width).to_python(py)?,))?;
+            let source = build_strings(1_000_000, width).to_python(py)?;
             let t = Instant::now();
             for _ in 0..N {
-                let _back: Table = to_rust::record_batch_to_rust(&source)?;
+                let back: Table = to_rust::record_batch_to_rust(&source)?;
+                black_box(&back);
             }
             println!("  Python to Rust, 1,000,000 rows of {width:>2}-byte strings : {:>11.3?}", t.elapsed() / N);
         }
@@ -323,8 +325,8 @@ fn bridge_costs(small: &Table) -> PyResult<()> {
         let t = Instant::now();
         for _ in 0..M {
             let object = small.to_python(py)?;
-            let pyarrow_table = pa.call_method1("table", (object,))?;
-            let _back: Table = to_rust::record_batch_to_rust(&pyarrow_table)?;
+            let back: Table = to_rust::record_batch_to_rust(&object)?;
+            black_box(&back);
         }
         println!("  Round trip on the 8-row table          : {:>11.3?}", t.elapsed() / M);
 
@@ -409,7 +411,7 @@ fn build_strings(rows: usize, width: usize) -> Table {
 /// Prints the alignment of returned `f64` column buffers.
 fn report_alignment(table: &Table) {
     for column in &table.cols {
-        if let Ok(array) = column.array.try_f64_ref() {
+        if let Array::NumericArray(NumericArray::Float64(array)) = &column.array {
             let address = array.data.as_ptr() as usize;
 
             let status = if address % 64 == 0 {
