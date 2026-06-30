@@ -88,7 +88,7 @@ use crate::SuperTable;
 /// let col1 = fa_i32!("numbers", 1, 2, 3);
 /// let col2 = fa_str32!("letters", "x", "y", "z");
 ///
-/// let mut tbl = RecordBatch::new("Demo".into(), vec![col1, col2].into());
+/// let mut tbl = RecordBatch::new("Demo", vec![col1, col2].into());
 /// tbl.print();
 /// ```
 pub type RecordBatch = Table;

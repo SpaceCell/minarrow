@@ -96,10 +96,11 @@ impl Cube {
     /// If the name is empty or whitespace, a unique default name is assigned.
     /// If no columns are provided, the Cube will be empty.
     pub fn new(
-        name: String,
+        name: impl Into<String>,
         cols: Option<Vec<FieldArray>>,
         third_dim_index: Option<Vec<String>>,
     ) -> Self {
+        let name = name.into();
         let name = if name.trim().is_empty() {
             let id = UNNAMED_COUNTER.fetch_add(1, Ordering::Relaxed);
             format!("UnnamedCube{}", id)
@@ -815,13 +816,13 @@ mod tests {
     #[should_panic]
     fn test_add_table_schema_mismatch_panics() {
         let mut c = Cube::new_empty();
-        let mut t1 = Table::new("t1".into(), None);
+        let mut t1 = Table::new("t1", None);
         let mut arr = IntegerArray::<i32>::default();
         arr.push(1);
         t1.add_col(field_array("ints", Array::from_int32(arr)));
         c.add_table(t1);
 
-        let mut t2 = Table::new("t2".into(), None);
+        let mut t2 = Table::new("t2", None);
         let mut arr2 = IntegerArray::<i32>::default();
         arr2.push(2);
         t2.add_col(field_array("other", Array::from_int32(arr2))); // Different column name
@@ -984,11 +985,11 @@ mod tests {
         col2.push(false);
         col2.push(true);
 
-        let mut t1 = Table::new("snap1".into(), None);
+        let mut t1 = Table::new("snap1", None);
         t1.add_col(field_array("ints", Array::from_int32(col1)));
         t1.add_col(field_array("bools", Array::from_bool(col2)));
 
-        let mut t2 = Table::new("snap2".into(), None);
+        let mut t2 = Table::new("snap2", None);
         let mut col3 = IntegerArray::<i32>::default();
         col3.push(11);
         col3.push(12);

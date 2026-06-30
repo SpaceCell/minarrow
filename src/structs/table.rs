@@ -98,7 +98,7 @@ static UNNAMED_COUNTER: AtomicUsize = AtomicUsize::new(1);
 /// let col1 = fa_i32!("numbers", 1, 2, 3);
 /// let col2 = fa_str32!("letters", "x", "y", "z");
 ///
-/// let mut tbl = Table::new("Demo".into(), vec![col1, col2].into());
+/// let mut tbl = Table::new("Demo", vec![col1, col2].into());
 /// tbl.print();
 /// ```
 #[repr(C, align(64))]
@@ -188,7 +188,7 @@ impl Table {
     /// per batch.
     #[cfg(feature = "arena")]
     pub fn from_arena(
-        name: String,
+        name: impl Into<String>,
         schema: &[Arc<Field>],
         arena: crate::structs::arena::Arena,
         regions: Vec<crate::structs::arena::AAMaker>,
@@ -209,7 +209,7 @@ impl Table {
             })
             .collect();
 
-        Self::build(cols, n_rows, name)
+        Self::build(cols, n_rows, name.into())
     }
 
     /// Adds a column with a name.
@@ -1713,7 +1713,7 @@ mod tests {
                 },
             ];
 
-            let table = Table::from_arena("test".into(), &schema, arena, regions, 3);
+            let table = Table::from_arena("test", &schema, arena, regions, 3);
             assert_eq!(table.n_rows(), 3);
             assert_eq!(table.n_cols(), 2);
             assert_eq!(table.cols[0].field.name, "id");
@@ -1760,7 +1760,7 @@ mod tests {
                 mask: None,
             }];
 
-            let table = Table::from_arena("str_test".into(), &schema, arena, regions, 3);
+            let table = Table::from_arena("str_test", &schema, arena, regions, 3);
             assert_eq!(table.n_rows(), 3);
 
             if let crate::Array::TextArray(
@@ -1792,7 +1792,7 @@ mod tests {
                 mask: Some(r_mask),
             }];
 
-            let table = Table::from_arena("nullable".into(), &schema, arena, regions, 4);
+            let table = Table::from_arena("nullable", &schema, arena, regions, 4);
             assert_eq!(table.n_rows(), 4);
             assert_eq!(table.cols[0].null_count, 2);
 
@@ -1849,7 +1849,7 @@ mod tests {
                 },
             ];
 
-            let table = Table::from_arena("mixed".into(), &schema, arena, regions, 3);
+            let table = Table::from_arena("mixed", &schema, arena, regions, 3);
             assert_eq!(table.n_rows(), 3);
             assert_eq!(table.n_cols(), 2);
 
@@ -1897,7 +1897,7 @@ mod tests {
                 },
             ];
 
-            let table = Table::from_arena("shared".into(), &schema, arena, regions, 3);
+            let table = Table::from_arena("shared", &schema, arena, regions, 3);
 
             // Verify all buffers are SharedBuffer-backed
             if let crate::Array::NumericArray(crate::NumericArray::Int32(a)) = &table.cols[0].array

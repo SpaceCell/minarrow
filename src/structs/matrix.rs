@@ -97,13 +97,13 @@ const fn aligned_stride(n_rows: usize) -> usize {
 impl Matrix {
     /// Constructs a new dense Matrix with shape and optional name.
     /// Data buffer is zeroed. Columns are padded to 64-byte alignment.
-    pub fn new(n_rows: usize, n_cols: usize, name: Option<String>) -> Self {
+    pub fn new(n_rows: usize, n_cols: usize, name: Option<impl Into<String>>) -> Self {
         let stride = aligned_stride(n_rows);
         let len = stride * n_cols;
         let mut vec = Vec64::with_capacity(len);
         vec.resize(len, 0.0);
         let data = Buffer::from_vec64(vec);
-        Matrix { n_rows, n_cols, stride, data, name }
+        Matrix { n_rows, n_cols, stride, data, name: name.map(Into::into) }
     }
 
     /// Constructs a Matrix from a pre-padded Vec64 buffer.
@@ -161,7 +161,7 @@ impl Matrix {
     /// arrays.
     pub fn try_from_cols(
         cols: impl AsRef<[FloatArray<f64>]>,
-        name: Option<String>,
+        name: Option<impl Into<String>>,
     ) -> Result<Self, MinarrowError> {
         let columns = cols.as_ref();
         if columns.is_empty() {
@@ -204,7 +204,7 @@ impl Matrix {
                 vec.extend_from_slice(&[0.0; ALIGN_ELEMS][..pad]);
             }
         }
-        Ok(Matrix { n_rows, n_cols, stride, data: Buffer::from_vec64(vec), name })
+        Ok(Matrix { n_rows, n_cols, stride, data: Buffer::from_vec64(vec), name: name.map(Into::into) })
     }
 
     /// Returns the value at (row, col) (0-based). Panics if out of bounds.
@@ -631,7 +631,7 @@ impl Concatenate for Matrix {
             return Ok(Matrix::new(
                 0,
                 0,
-                None,
+                None::<String>,
             ));
         }
 
@@ -919,7 +919,7 @@ macro_rules! mat {
             &[
                 $( $crate::FloatArray::<f64>::from_slice(&[$($x),+]) ),+
             ][..],
-            None,
+            None::<String>,
         ).unwrap()
     }};
 
@@ -932,7 +932,7 @@ macro_rules! mat {
                 .map(|c| $crate::FloatArray::<f64>::from_slice(*c))
                 .collect::<::std::vec::Vec<_>>()
                 .as_slice(),
-            None,
+            None::<String>,
         ).unwrap()
     }};
 }
@@ -949,7 +949,7 @@ mod try_as_matrix_zc_tests {
             FloatArray::from_slice(&[1.0_f64, 2.0, 3.0, 4.0, 5.0]),
             FloatArray::from_slice(&[6.0_f64, 7.0, 8.0, 9.0, 10.0]),
             FloatArray::from_slice(&[11.0_f64, 12.0, 13.0, 14.0, 15.0]),
-        ], Some("m".into())).unwrap();
+        ], Some("m")).unwrap();
         let expected: Vec<f64> = src.data.as_slice().to_vec();
         let stride_src = src.stride;
         let table = src.to_table_gen();
@@ -970,7 +970,7 @@ mod try_as_matrix_zc_tests {
         let src = Matrix::try_from_cols(&[
             FloatArray::from_slice(&[1.0_f64, 2.0, 3.0]),
             FloatArray::from_slice(&[4.0_f64, 5.0, 6.0]),
-        ], None).unwrap();
+        ], None::<String>).unwrap();
         let table = src.to_table_gen();
         let view = TableV::from_table(table.clone(), 0, 3);
         let mut zc = view.try_as_matrix_zc().unwrap();
@@ -993,7 +993,7 @@ mod try_as_matrix_zc_tests {
         // independent owned buffers, which never satisfy the ZC layout.
         let a = crate::fa_f64!("a", 1.0, 2.0, 3.0);
         let b = crate::fa_f64!("b", 4.0, 5.0, 6.0);
-        let table = Table::new("t".into(), Some(vec![a, b]));
+        let table = Table::new("t", Some(vec![a, b]));
         let view = TableV::from_table(table, 0, 3);
         let err = view.try_as_matrix_zc().expect_err("owned columns cannot be zero-copy");
         assert!(
@@ -1007,7 +1007,7 @@ mod try_as_matrix_zc_tests {
         let src = Matrix::try_from_cols(&[
             FloatArray::from_slice(&[1.0_f64, 2.0, 3.0]),
             FloatArray::from_slice(&[4.0_f64, 5.0, 6.0]),
-        ], None).unwrap();
+        ], None::<String>).unwrap();
         let mut table = src.to_table_gen();
 
         // Inject a null into col 0. Buffer::clone preserves Shared storage, so
@@ -1035,7 +1035,7 @@ mod try_as_matrix_zc_tests {
 
     #[test]
     fn rejects_empty_view() {
-        let table = Table::new("t".into(), Some(Vec::new()));
+        let table = Table::new("t", Some(Vec::new()));
         let view = TableV::from_table(table, 0, 0);
         let err = view.try_as_matrix_zc().expect_err("empty view must reject");
         assert!(matches!(err, MinarrowError::ShapeError { .. }));
@@ -1047,7 +1047,7 @@ mod try_as_matrix_zc_tests {
         // check fails first, so the ZC path surfaces a TypeError before the
         // owned check.
         let a = crate::fa_i32!("a", 1, 2, 3);
-        let table = Table::new("t".into(), Some(vec![a]));
+        let table = Table::new("t", Some(vec![a]));
         let view = TableV::from_table(table, 0, 3);
         let err = view.try_as_matrix_zc().expect_err("non-f64 column must reject");
         assert!(matches!(err, MinarrowError::TypeError { .. }));
@@ -1061,11 +1061,11 @@ mod try_as_matrix_zc_tests {
         let m_a = Matrix::try_from_cols(&[
             FloatArray::from_slice(&[1.0_f64, 2.0, 3.0]),
             FloatArray::from_slice(&[4.0_f64, 5.0, 6.0]),
-        ], None).unwrap();
+        ], None::<String>).unwrap();
         let m_b = Matrix::try_from_cols(&[
             FloatArray::from_slice(&[10.0_f64, 20.0, 30.0]),
             FloatArray::from_slice(&[40.0_f64, 50.0, 60.0]),
-        ], None).unwrap();
+        ], None::<String>).unwrap();
         let mut table_a = m_a.to_table_gen();
         let table_b = m_b.to_table_gen();
         // Replace col 1 of table_a with col 0 of table_b.
@@ -1088,7 +1088,7 @@ mod try_as_matrix_zc_tests {
             FloatArray::from_slice(&[1.0_f64, 2.0, 3.0]),
             FloatArray::from_slice(&[4.0_f64, 5.0, 6.0]),
             FloatArray::from_slice(&[7.0_f64, 8.0, 9.0]),
-        ], None).unwrap();
+        ], None::<String>).unwrap();
         let mut table = src.to_table_gen();
         table.cols.swap(0, 2);
 
@@ -1106,7 +1106,7 @@ mod try_as_matrix_zc_tests {
         // buffer and succeeds.
         let a = crate::fa_f64!("a", 1.0, 2.0, 3.0);
         let b = crate::fa_f64!("b", 4.0, 5.0, 6.0);
-        let table = Table::new("t".into(), Some(vec![a, b]));
+        let table = Table::new("t", Some(vec![a, b]));
         let view = TableV::from_table(table, 0, 3);
         let m = view.try_as_matrix().expect("copy path always works for f64 columns");
         assert_eq!(m.n_rows, 3);
@@ -1122,7 +1122,7 @@ mod try_as_matrix_zc_tests {
         // matrix, not the full underlying column.
         let a = crate::fa_f64!("a", 10.0, 11.0, 12.0, 13.0, 14.0);
         let b = crate::fa_f64!("b", 20.0, 21.0, 22.0, 23.0, 24.0);
-        let table = Table::new("t".into(), Some(vec![a, b]));
+        let table = Table::new("t", Some(vec![a, b]));
         let view = TableV::from_table(table, 1, 3);
         let m = view.try_as_matrix().unwrap();
         assert_eq!(m.n_rows, 3);
@@ -1133,7 +1133,7 @@ mod try_as_matrix_zc_tests {
     #[test]
     fn try_as_matrix_rejects_non_f64() {
         let a = crate::fa_i32!("a", 1, 2, 3);
-        let table = Table::new("t".into(), Some(vec![a]));
+        let table = Table::new("t", Some(vec![a]));
         let view = TableV::from_table(table, 0, 3);
         let err = view.try_as_matrix().expect_err("non-f64 column must reject");
         assert!(matches!(err, MinarrowError::TypeError { .. }));
