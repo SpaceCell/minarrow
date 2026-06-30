@@ -276,7 +276,7 @@ fn test_field_array_from_arrow_round_trip_timestamp() {
 fn test_table_from_arrow_round_trip() {
     let c1 = fa_i32!("a", 1, 2, 3);
     let c2 = fa_str32!("b", "x", "y", "z");
-    let original = Table::new("t".into(), Some(vec![c1, c2]));
+    let original = Table::new("t", Some(vec![c1, c2]));
 
     let rb: RecordBatch = original.to_apache_arrow();
     let back = Table::from_apache_arrow(&rb);
@@ -293,7 +293,7 @@ fn test_table_from_arrow_round_trip() {
 #[test]
 fn test_table_from_arrow_via_into() {
     let c1 = fa_i32!("a", 1, 2);
-    let original = Table::new("t".into(), Some(vec![c1]));
+    let original = Table::new("t", Some(vec![c1]));
     let rb: RecordBatch = original.to_apache_arrow();
     let back: Table = (&rb).into();
     assert_eq!(back.n_rows(), 2);
@@ -340,11 +340,11 @@ fn test_super_table_apache_arrow_round_trip() {
 
     let c1a = fa_i32!("a", 1, 2);
     let c2a = fa_str32!("b", "x", "y");
-    let batch1 = Table::new("".into(), Some(vec![c1a, c2a]));
+    let batch1 = Table::new("", Some(vec![c1a, c2a]));
 
     let c1b = fa_i32!("a", 3, 4, 5);
     let c2b = fa_str32!("b", "z", "w", "v");
-    let batch2 = Table::new("".into(), Some(vec![c1b, c2b]));
+    let batch2 = Table::new("", Some(vec![c1b, c2b]));
 
     let st = SuperTable::from_batches(vec![Arc::new(batch1), Arc::new(batch2)], None);
 
@@ -367,7 +367,7 @@ fn test_super_table_apache_arrow_via_into() {
     use minarrow::SuperTable;
     use std::sync::Arc;
     let c1 = fa_i32!("a", 1, 2);
-    let batch = Table::new("".into(), Some(vec![c1]));
+    let batch = Table::new("", Some(vec![c1]));
     let st = SuperTable::from_batches(vec![Arc::new(batch)], None);
     let rbs: Vec<RecordBatch> = st.to_apache_arrow();
     let back: SuperTable = rbs.as_slice().into();
@@ -380,7 +380,7 @@ fn test_table_to_arrow_record_batch() {
     // 2 columns
     let c1 = fa_i32!("a", 1, 2);
     let c2 = fa_str32!("b", "x", "y");
-    let t = Table::new("t".into(), Some(vec![c1, c2]));
+    let t = Table::new("t", Some(vec![c1, c2]));
 
     let rb: RecordBatch = t.to_apache_arrow();
     assert_eq!(rb.num_rows(), 2);
@@ -851,8 +851,8 @@ fn rt_arrow_super_table_shared_categorical32() {
         MArray::TextArray(TextArray::Categorical32(cat_b)),
     );
 
-    let tbl_a = Table::new("t".into(), Some(vec![fa_a]));
-    let tbl_b = Table::new("t".into(), Some(vec![fa_b]));
+    let tbl_a = Table::new("t", Some(vec![fa_a]));
+    let tbl_b = Table::new("t", Some(vec![fa_b]));
 
     let mut st = SuperTable::new("st".into());
     st.push(Arc::new(tbl_a));

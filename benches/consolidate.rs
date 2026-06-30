@@ -96,6 +96,7 @@ fn build_table(n_cols: usize, seed: usize) -> Table {
         cols,
         n_rows: ROWS_PER_TABLE,
         name: "batch".into(),
+        ..Default::default()
     }
 }
 
@@ -134,6 +135,7 @@ fn consolidate_concat(st: SuperTable) -> Table {
         cols,
         n_rows: st.n_rows,
         name: st.name,
+        ..Default::default()
     }
 }
 

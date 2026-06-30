@@ -818,7 +818,6 @@ impl Array {
     /// shared when it is cloned or held inside another structure such as a `Table`.
     #[cfg(feature = "scalar_type")]
     pub fn push(&mut self, value: crate::Scalar) -> Result<(), MinarrowError> {
-        use crate::Scalar;
         let dtype = self.arrow_type();
         let unsupported = || MinarrowError::TypeError {
             from: "Scalar",

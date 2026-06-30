@@ -168,7 +168,7 @@ fn test_table_to_polars() {
     // Tiny table: 2 cols
     let c1 = fa_i32!("a", 1, 2);
     let c2 = fa_str32!("b", "x", "y");
-    let t = Table::new("t".into(), Some(vec![c1, c2]));
+    let t = Table::new("t", Some(vec![c1, c2]));
     let df = t.to_polars();
     assert_eq!(df.height(), 2);
     assert_eq!(df.width(), 2);
@@ -240,7 +240,7 @@ fn test_field_array_from_polars_via_into() {
 fn test_table_from_polars_round_trip() {
     let c1 = fa_i32!("a", 1, 2, 3);
     let c2 = fa_str32!("b", "x", "y", "z");
-    let original = Table::new("t".into(), Some(vec![c1, c2]));
+    let original = Table::new("t", Some(vec![c1, c2]));
 
     let df = original.to_polars();
     let back = Table::from_polars(&df);
@@ -254,7 +254,7 @@ fn test_table_from_polars_round_trip() {
 #[test]
 fn test_table_from_polars_via_into() {
     let c1 = fa_i32!("a", 1, 2);
-    let original = Table::new("t".into(), Some(vec![c1]));
+    let original = Table::new("t", Some(vec![c1]));
     let df = original.to_polars();
     let back: Table = (&df).into();
     assert_eq!(back.n_rows(), 2);
@@ -293,8 +293,8 @@ fn test_super_table_from_polars_round_trip() {
     use std::sync::Arc;
     let c1 = fa_i32!("a", 1, 2);
     let c2 = fa_str32!("b", "x", "y");
-    let table1 = Table::new("".into(), Some(vec![c1.clone(), c2.clone()]));
-    let table2 = Table::new("".into(), Some(vec![c1, c2]));
+    let table1 = Table::new("", Some(vec![c1.clone(), c2.clone()]));
+    let table2 = Table::new("", Some(vec![c1, c2]));
     let st = SuperTable::from_batches(vec![Arc::new(table1), Arc::new(table2)], None);
 
     let df = st.to_polars();
@@ -982,8 +982,8 @@ fn rt_polars_super_table_shared_categorical32() {
             Array::TextArray(TextArray::Categorical32(arc)),
         )
     };
-    let tbl_a = Table::new("t".into(), Some(vec![mk_fa(cat_a)]));
-    let tbl_b = Table::new("t".into(), Some(vec![mk_fa(cat_b)]));
+    let tbl_a = Table::new("t", Some(vec![mk_fa(cat_a)]));
+    let tbl_b = Table::new("t", Some(vec![mk_fa(cat_b)]));
 
     let mut st = SuperTable::new("st".into());
     st.push(Arc::new(tbl_a));
