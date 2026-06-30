@@ -988,7 +988,7 @@ impl<T: Copy> IntoIterator for Buffer<T> {
                 };
                 drop(owner);
                 v.into_iter()
-            },
+            }
             #[cfg(feature = "lbuffer")]
             Storage::LBuffer(view) => {
                 let src = view.as_slice();

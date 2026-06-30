@@ -72,7 +72,11 @@ pub fn int_dense_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub +
                     let d = lhs[i] / rhs[i];
                     let r = lhs[i] % rhs[i];
                     // If remainder is non-zero and signs differ, floor toward -inf
-                    if r != T::zero() && (lhs[i] ^ rhs[i]) < T::zero() { d - T::one() } else { d }
+                    if r != T::zero() && (lhs[i] ^ rhs[i]) < T::zero() {
+                        d - T::one()
+                    } else {
+                        d
+                    }
                 }
             }
         };
@@ -120,7 +124,11 @@ pub fn int_masked_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub 
                     } else {
                         let d = lhs[i] / rhs[i];
                         let r = lhs[i] % rhs[i];
-                        if r != T::zero() && (lhs[i] ^ rhs[i]) < T::zero() { (d - T::one(), true) } else { (d, true) }
+                        if r != T::zero() && (lhs[i] ^ rhs[i]) < T::zero() {
+                            (d - T::one(), true)
+                        } else {
+                            (d, true)
+                        }
                     }
                 }
             };

@@ -685,7 +685,10 @@ impl AAMaker {
             }
 
             // --- Categorical ---
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             (
                 ArrowType::Dictionary(CategoricalIndexType::UInt32),
                 AAMaker::Categorical {
@@ -872,7 +875,10 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     .sum();
                 total_bytes += align64(data_bytes);
             }
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             TextArray::Categorical32(_) => {
                 total_bytes += align64(n_rows * 4);
             }
@@ -989,7 +995,10 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                 let total_data: usize = slices.iter().map(|(_, d, _)| d.len()).sum();
                 arena.write_string_slices(&slices, n_rows, total_data, has_nulls)
             }
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             TextArray::Categorical32(_) => {
                 let slices: Vec<_> = chunks
                     .iter()
@@ -1260,7 +1269,10 @@ pub(crate) fn consolidate_tables_arena(
                         .sum();
                     total_bytes += align64(data_bytes);
                 }
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 TextArray::Categorical32(_) => {
                     total_bytes += align64(n_rows * 4);
                 }
@@ -1389,7 +1401,10 @@ pub(crate) fn consolidate_tables_arena(
                     let total_data: usize = slices.iter().map(|(_, d, _)| d.len()).sum();
                     arena.write_string_slices(&slices, n_rows, total_data, has_nulls)
                 }
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 TextArray::Categorical32(_) => {
                     let slices: Vec<_> = tables
                         .iter()

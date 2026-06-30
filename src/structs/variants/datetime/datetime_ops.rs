@@ -42,6 +42,10 @@
 use time::Duration;
 
 #[cfg(feature = "datetime_ops")]
+use crate::kernels::datetime::{
+    add_duration_into, add_months_into, diff_into, is_leap_year_into, truncate_into,
+};
+#[cfg(feature = "datetime_ops")]
 use crate::{
     Bitmask, DatetimeArray, DatetimeOps,
     enums::{
@@ -52,13 +56,9 @@ use crate::{
     traits::{masked_array::MaskedArray, type_unions::Integer},
 };
 #[cfg(feature = "datetime_ops")]
-use num_traits::FromPrimitive;
-#[cfg(feature = "datetime_ops")]
 use ::vec64::Vec64;
 #[cfg(feature = "datetime_ops")]
-use crate::kernels::datetime::{
-    add_duration_into, add_months_into, diff_into, is_leap_year_into, truncate_into,
-};
+use num_traits::FromPrimitive;
 
 #[cfg(feature = "datetime_ops")]
 impl<T: Integer + FromPrimitive> DatetimeArray<T> {
@@ -116,7 +116,6 @@ impl<T: Integer + FromPrimitive> DatetimeArray<T> {
         let val_i64 = self.data[i].to_i64()?;
         Self::i64_to_datetime(val_i64, self.time_unit)
     }
-
 }
 
 #[cfg(feature = "datetime_ops")]
@@ -129,8 +128,11 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
             None => Bitmask::new_set_all(len, true),
         };
         add_duration_into(self, 0, duration, data.as_mut_slice(), Some(&mut mask))?;
-        let null_mask =
-            if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
+        let null_mask = if self.null_mask.is_some() || mask.has_cleared() {
+            Some(mask)
+        } else {
+            None
+        };
         Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
     }
 
@@ -157,8 +159,11 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
             None => Bitmask::new_set_all(len, true),
         };
         add_months_into(self, 0, months, data.as_mut_slice(), Some(&mut mask));
-        let null_mask =
-            if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
+        let null_mask = if self.null_mask.is_some() || mask.has_cleared() {
+            Some(mask)
+        } else {
+            None
+        };
         Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
     }
 
@@ -198,12 +203,12 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
             (Some(a), Some(b)) => a.intersect(b),
         };
         diff_into(self, 0, other, 0, unit, &mut data, Some(&mut mask));
-        let null_mask = if self.null_mask.is_some() || other.null_mask.is_some() || mask.has_cleared()
-        {
-            Some(mask)
-        } else {
-            None
-        };
+        let null_mask =
+            if self.null_mask.is_some() || other.null_mask.is_some() || mask.has_cleared() {
+                Some(mask)
+            } else {
+                None
+            };
         Ok(IntegerArray::from_vec64(data, null_mask))
     }
 
@@ -530,8 +535,11 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
             None => Bitmask::new_set_all(len, true),
         };
         is_leap_year_into(self, 0, &mut bits, Some(&mut mask));
-        let null_mask =
-            if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
+        let null_mask = if self.null_mask.is_some() || mask.has_cleared() {
+            Some(mask)
+        } else {
+            None
+        };
         BooleanArray::new(bits, null_mask)
     }
 
@@ -549,8 +557,11 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
             None => Bitmask::new_set_all(len, true),
         };
         truncate_into(self, 0, period, data.as_mut_slice(), Some(&mut mask));
-        let null_mask =
-            if self.null_mask.is_some() || mask.has_cleared() { Some(mask) } else { None };
+        let null_mask = if self.null_mask.is_some() || mask.has_cleared() {
+            Some(mask)
+        } else {
+            None
+        };
         Self::from_vec64(data, null_mask, Some(self.time_unit))
     }
 

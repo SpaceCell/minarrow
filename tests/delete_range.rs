@@ -280,7 +280,11 @@ fn large_i64_column_delete_page_multiple_span() {
 
     assert_eq!(arr.len(), n - 512 * 64);
     for i in (start - 2)..(start + 2) {
-        let expected = if i < start { i as i64 } else { (i + 512 * 64) as i64 };
+        let expected = if i < start {
+            i as i64
+        } else {
+            (i + 512 * 64) as i64
+        };
         assert_eq!(arr.get(i), Some(expected), "row {i}");
     }
     assert_eq!(arr.get(arr.len() - 1), Some((n - 1) as i64));

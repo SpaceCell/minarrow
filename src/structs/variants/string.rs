@@ -515,7 +515,10 @@ impl<T: Integer> MaskedArray for StringArray<T> {
 
     type LogicalType = String;
 
-    type CopyType<'a> = &'a str where Self: 'a;
+    type CopyType<'a>
+        = &'a str
+    where
+        Self: 'a;
 
     /// Removes the rows in `[start, end)`, shifting later rows left.
     ///
@@ -526,8 +529,14 @@ impl<T: Integer> MaskedArray for StringArray<T> {
     /// Panics if `start > end` or `end > len`.
     fn delete_range(&mut self, start: usize, end: usize) {
         let len = self.len();
-        assert!(start <= end, "StringArray::delete_range: start ({start}) > end ({end})");
-        assert!(end <= len, "StringArray::delete_range: end ({end}) > len ({len})");
+        assert!(
+            start <= end,
+            "StringArray::delete_range: start ({start}) > end ({end})"
+        );
+        assert!(
+            end <= len,
+            "StringArray::delete_range: end ({end}) > len ({len})"
+        );
         if start == end {
             return;
         }
@@ -650,11 +659,7 @@ impl<T: Integer> MaskedArray for StringArray<T> {
 
     /// Returns an iterator over a range of `Option<&str>` values borrowed from `self`.
     #[inline]
-    fn iter_opt_range(
-        &self,
-        offset: usize,
-        len: usize,
-    ) -> impl Iterator<Item = Option<&str>> + '_ {
+    fn iter_opt_range(&self, offset: usize, len: usize) -> impl Iterator<Item = Option<&str>> + '_ {
         (offset..offset + len).map(move |i| {
             if self.is_null(i) {
                 None
@@ -896,11 +901,15 @@ impl<T: Integer> MaskedArray for StringArray<T> {
     fn append_array(&mut self, other: &Self) {
         let orig_len = self.len();
         let other_len = other.len();
-        if other_len == 0 { return; }
+        if other_len == 0 {
+            return;
+        }
 
         self.data.extend_from_slice(&other.data);
 
-        let prev_last_offset = *self.offsets.last()
+        let prev_last_offset = *self
+            .offsets
+            .last()
             .expect("StringArray must have at least one offset");
         for off in other.offsets.iter().skip(1) {
             let new_offset = prev_last_offset + (*off - other.offsets[0]);
@@ -923,22 +932,35 @@ impl<T: Integer> MaskedArray for StringArray<T> {
         }
     }
 
-    fn append_range(&mut self, other: &Self, offset: usize, len: usize) -> Result<(), MinarrowError> {
-        if len == 0 { return Ok(()); }
+    fn append_range(
+        &mut self,
+        other: &Self,
+        offset: usize,
+        len: usize,
+    ) -> Result<(), MinarrowError> {
+        if len == 0 {
+            return Ok(());
+        }
         if offset + len > other.len() {
-            return Err(MinarrowError::IndexError(
-                format!("append_range: offset {} + len {} exceeds source length {}", offset, len, other.len())
-            ));
+            return Err(MinarrowError::IndexError(format!(
+                "append_range: offset {} + len {} exceeds source length {}",
+                offset,
+                len,
+                other.len()
+            )));
         }
         let orig_len = self.len();
 
         // Byte range in other's data buffer for rows [offset..offset+len)
         let src_byte_start = other.offsets[offset].to_usize();
         let src_byte_end = other.offsets[offset + len].to_usize();
-        self.data.extend_from_slice(&other.data[src_byte_start..src_byte_end]);
+        self.data
+            .extend_from_slice(&other.data[src_byte_start..src_byte_end]);
 
         // Rebase offsets relative to self's current end
-        let prev_last_offset = *self.offsets.last()
+        let prev_last_offset = *self
+            .offsets
+            .last()
             .expect("StringArray must have at least one offset");
         let base = other.offsets[offset];
         for i in 1..=len {
@@ -1400,7 +1422,10 @@ impl<'a, T: Integer> crate::traits::consolidate::Consolidate
         use crate::traits::consolidate::extend_null_mask;
         use crate::traits::masked_array::MaskedArray;
 
-        assert!(!self.is_empty(), "consolidate() called on empty Vec<StringAVT>");
+        assert!(
+            !self.is_empty(),
+            "consolidate() called on empty Vec<StringAVT>"
+        );
 
         let total_len: usize = self.iter().map(|(_, _, len)| *len).sum();
         let has_nulls = self.iter().any(|(arr, _, _)| arr.null_mask.is_some());
@@ -1429,9 +1454,8 @@ impl<'a, T: Integer> crate::traits::consolidate::Consolidate
             result_data.extend_from_slice(&data[byte_start..byte_end]);
 
             for i in (start_idx + 1)..=end_idx {
-                let adjusted = T::from_usize(
-                    (offsets[i].to_usize() - byte_start) + current_data_len,
-                );
+                let adjusted =
+                    T::from_usize((offsets[i].to_usize() - byte_start) + current_data_len);
                 result_offsets.push(adjusted);
             }
 

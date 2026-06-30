@@ -161,7 +161,9 @@ pub fn parse_iso8601_utc_ns(s: &str) -> Option<i64> {
 
     let days = days_from_civil(year, month, day);
     let epoch_seconds = days * 86_400 + hour * 3_600 + minute * 60 + second - offset_seconds;
-    epoch_seconds.checked_mul(1_000_000_000)?.checked_add(frac_ns)
+    epoch_seconds
+        .checked_mul(1_000_000_000)?
+        .checked_add(frac_ns)
 }
 
 /// Parses an ISO 8601 / RFC 3339 timestamp string into the value a
@@ -272,7 +274,13 @@ mod tests {
             .collect();
         let array = DatetimeArray::<i64>::from_slice(&values, Some(TimeUnit::Microseconds));
         assert_eq!(array.time_unit, TimeUnit::Microseconds);
-        assert_eq!(array.data.as_slice()[0], EPOCH_SECONDS * 1_000_000 + 123_456);
-        assert_eq!(array.data.as_slice()[1], EPOCH_SECONDS * 1_000_000 + 123_457);
+        assert_eq!(
+            array.data.as_slice()[0],
+            EPOCH_SECONDS * 1_000_000 + 123_456
+        );
+        assert_eq!(
+            array.data.as_slice()[1],
+            EPOCH_SECONDS * 1_000_000 + 123_457
+        );
     }
 }

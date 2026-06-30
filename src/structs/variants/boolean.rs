@@ -374,7 +374,10 @@ impl MaskedArray for BooleanArray<()> {
     type T = bool;
     type Container = Bitmask;
     type LogicalType = bool;
-    type CopyType<'a> = bool where Self: 'a;
+    type CopyType<'a>
+        = bool
+    where
+        Self: 'a;
 
     /// Removes the rows in `[start, end)`, shifting later rows left.
     ///
@@ -663,16 +666,27 @@ impl MaskedArray for BooleanArray<()> {
         }
     }
 
-    fn append_range(&mut self, other: &Self, offset: usize, len: usize) -> Result<(), MinarrowError> {
-        if len == 0 { return Ok(()); }
+    fn append_range(
+        &mut self,
+        other: &Self,
+        offset: usize,
+        len: usize,
+    ) -> Result<(), MinarrowError> {
+        if len == 0 {
+            return Ok(());
+        }
         if offset + len > other.len() {
-            return Err(MinarrowError::IndexError(
-                format!("append_range: offset {} + len {} exceeds source length {}", offset, len, other.len())
-            ));
+            return Err(MinarrowError::IndexError(format!(
+                "append_range: offset {} + len {} exceeds source length {}",
+                offset,
+                len,
+                other.len()
+            )));
         }
         let orig_len = self.len();
 
-        self.data.extend_from_bitmask_range(&other.data, offset, len);
+        self.data
+            .extend_from_bitmask_range(&other.data, offset, len);
         self.len += len;
 
         match (self.null_mask_mut(), other.null_mask()) {
@@ -1006,9 +1020,7 @@ impl<T: Send + Sync> BooleanArray<T> {
 }
 
 #[cfg(feature = "chunked")]
-impl<'a> crate::traits::consolidate::Consolidate
-    for Vec<crate::aliases::BooleanAVT<'a, ()>>
-{
+impl<'a> crate::traits::consolidate::Consolidate for Vec<crate::aliases::BooleanAVT<'a, ()>> {
     type Output = BooleanArray<()>;
 
     /// Consolidate a vector of `(BooleanArray, offset, len)` view tuples
@@ -1018,7 +1030,10 @@ impl<'a> crate::traits::consolidate::Consolidate
         use crate::structs::bitmask::Bitmask;
         use crate::traits::masked_array::MaskedArray;
 
-        assert!(!self.is_empty(), "consolidate() called on empty Vec<BooleanAVT>");
+        assert!(
+            !self.is_empty(),
+            "consolidate() called on empty Vec<BooleanAVT>"
+        );
 
         let total_len: usize = self.iter().map(|(_, _, len)| *len).sum();
         let has_nulls = self.iter().any(|(arr, _, _)| arr.null_mask.is_some());
@@ -1616,9 +1631,18 @@ mod tests_parallel {
         for i in 0..5 {
             assert!(arr.get(i).is_some(), "self position {} must be valid", i);
         }
-        assert!(arr.get(5).is_some(), "appended position 5 (other[0]) must be valid");
-        assert!(arr.get(6).is_none(), "appended position 6 (other[1]) must be null");
-        assert!(arr.get(7).is_some(), "appended position 7 (other[2]) must be valid");
+        assert!(
+            arr.get(5).is_some(),
+            "appended position 5 (other[0]) must be valid"
+        );
+        assert!(
+            arr.get(6).is_none(),
+            "appended position 6 (other[1]) must be null"
+        );
+        assert!(
+            arr.get(7).is_some(),
+            "appended position 7 (other[2]) must be valid"
+        );
         assert_eq!(arr.null_count(), 1);
     }
 

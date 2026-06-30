@@ -263,7 +263,11 @@ pub fn broadcast_array_to_cube(
         let broadcasted = broadcast_array_to_table(op, array, table)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Helper function for Array-Tuple2 broadcasting - broadcast array to each tuple element

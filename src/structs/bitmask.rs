@@ -32,13 +32,13 @@ use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::ops::{BitAnd, BitOr, Deref, DerefMut, Index, Not};
 
 use crate::enums::shape_dim::ShapeDim;
-use crate::traits::concatenate::Concatenate;
-use crate::traits::shape::Shape;
 #[cfg(feature = "lbuffer")]
 use crate::structs::lbuffer::LBufferV;
+use crate::traits::concatenate::Concatenate;
+use crate::traits::shape::Shape;
+use crate::{BitmaskV, Buffer, Length, Offset};
 #[cfg(feature = "lbuffer")]
 use std::sync::atomic::{AtomicU8, Ordering};
-use crate::{BitmaskV, Buffer, Length, Offset};
 use vec64::Vec64;
 
 /// TODO: Move bitmask kernels here
@@ -106,7 +106,10 @@ impl Bitmask {
     /// # Panics
     /// Panics if `start > end` or `end > len`.
     pub fn delete_range(&mut self, start: usize, end: usize) {
-        assert!(start <= end, "Bitmask::delete_range: start ({start}) > end ({end})");
+        assert!(
+            start <= end,
+            "Bitmask::delete_range: start ({start}) > end ({end})"
+        );
         assert!(
             end <= self.len,
             "Bitmask::delete_range: end ({end}) > len ({})",
@@ -140,7 +143,11 @@ impl Bitmask {
                 } else {
                     0
                 };
-                let shifted = if sh == 0 { lo } else { (lo >> sh) | (hi << (8 - sh)) };
+                let shifted = if sh == 0 {
+                    lo
+                } else {
+                    (lo >> sh) | (hi << (8 - sh))
+                };
                 let keep = start & 7;
                 self.bits[byte_idx] = if byte_idx == first && keep != 0 {
                     let mask = (1u8 << keep) - 1;
@@ -625,8 +632,9 @@ impl Bitmask {
             if filled > 0 {
                 // SAFETY: `settled` indexes the byte being filled, within the
                 // allocation; read atomically to match the producer's writes.
-                let byte =
-                    unsafe { AtomicU8::from_ptr(base.add(settled) as *mut u8).load(Ordering::Relaxed) };
+                let byte = unsafe {
+                    AtomicU8::from_ptr(base.add(settled) as *mut u8).load(Ordering::Relaxed)
+                };
                 let mask = ((1u16 << filled) - 1) as u8;
                 ones += (byte & mask).count_ones() as usize;
             }
@@ -783,7 +791,9 @@ impl Bitmask {
     /// Byte-aligned sources copy whole bytes directly. Unaligned sources
     /// shift bytes to align before copying.
     pub fn extend_from_bitmask_range(&mut self, other: &Bitmask, offset: usize, len: usize) {
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let src_bytes = other.bits.as_slice();
         if offset & 7 == 0 {
             // Source is byte-aligned - pass the bytes starting at the offset
@@ -863,7 +873,11 @@ impl Bitmask {
         if let Some(view) = self.bits.lbuffer_view()
             && let Some((base, settled, filled, sealed)) = view.mask_state()
         {
-            let n = if sealed && filled > 0 { settled + 1 } else { settled };
+            let n = if sealed && filled > 0 {
+                settled + 1
+            } else {
+                settled
+            };
             // SAFETY: those `n` bytes are within the allocation and frozen - the
             // settled bytes always, and the last byte too once sealed (the
             // producer has stopped). `base` stays valid while `self` holds the
@@ -1110,11 +1124,7 @@ impl Index<usize> for Bitmask {
 
     #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output {
-        if self.get(index) {
-            &true
-        } else {
-            &false
-        }
+        if self.get(index) { &true } else { &false }
     }
 }
 
@@ -1195,7 +1205,11 @@ impl Display for Bitmask {
         let len = self.len();
         let ones = self.count_ones();
         let zeros = self.count_zeros();
-        writeln!(f, "Bitmask [{} bits] (ones: {}, zeros: {})", len, ones, zeros)?;
+        writeln!(
+            f,
+            "Bitmask [{} bits] (ones: {}, zeros: {})",
+            len, ones, zeros
+        )?;
 
         const MAX_PREVIEW: usize = 64;
         write!(f, "[")?;

@@ -68,7 +68,11 @@ pub fn broadcast_cube_add(
     }
 
     // Create result Cube with same metadata as left cube
-    Ok(Cube::from_tables(result_tables, lhs.name.clone(), lhs.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        lhs.name.clone(),
+        lhs.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to Scalar - apply scalar to each table in the cube
@@ -83,7 +87,11 @@ pub fn broadcast_cube_to_scalar(
         let broadcasted = broadcast_table_to_scalar(op, table, scalar)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to Array - apply array to each table in the cube
@@ -98,7 +106,11 @@ pub fn broadcast_cube_to_array(
         let broadcasted = broadcast_table_to_array(op, table, array)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast FieldArray to Cube - apply field array's inner array to each table in the cube
@@ -114,7 +126,11 @@ pub fn broadcast_fieldarray_to_cube(
         let broadcasted = broadcast_array_to_table(op, array, table)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to FieldArray - apply field array's inner array to each table in the cube
@@ -130,7 +146,11 @@ pub fn broadcast_cube_to_fieldarray(
         let broadcasted = broadcast_table_to_array(op, table, array)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Table to Cube - apply table to each table in the cube
@@ -145,7 +165,11 @@ pub fn broadcast_table_to_cube(
         let broadcasted = broadcast_table_with_operator(op, table.clone(), cube_table.clone())?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to Table - apply table to each table in the cube
@@ -160,7 +184,11 @@ pub fn broadcast_cube_to_table(
         let broadcasted = broadcast_table_with_operator(op, cube_table.clone(), table.clone())?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast ArrayView to Cube - apply array view to each table in the cube
@@ -176,7 +204,11 @@ pub fn broadcast_arrayview_to_cube(
         let broadcasted = broadcast_arrayview_to_table(op, array_view, table)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to ArrayView - apply array view to each table in the cube
@@ -192,7 +224,11 @@ pub fn broadcast_cube_to_arrayview(
         let broadcasted = broadcast_table_to_arrayview(op, table, array_view)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast NumericArrayView to Cube - apply numeric array view to each table in the cube
@@ -210,7 +246,11 @@ pub fn broadcast_numericarrayview_to_cube(
         let broadcasted = broadcast_arrayview_to_table(op, &array_view, table)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to NumericArrayView - apply numeric array view to each table in the cube
@@ -228,7 +268,11 @@ pub fn broadcast_cube_to_numericarrayview(
         let broadcasted = broadcast_table_to_arrayview(op, table, &array_view)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast TextArrayView to Cube - apply text array view to each table in the cube
@@ -246,7 +290,11 @@ pub fn broadcast_textarrayview_to_cube(
         let broadcasted = broadcast_arrayview_to_table(op, &array_view, table)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to TextArrayView - apply text array view to each table in the cube
@@ -264,7 +312,11 @@ pub fn broadcast_cube_to_textarrayview(
         let broadcasted = broadcast_table_to_arrayview(op, table, &array_view)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast TemporalArrayView to Cube - apply temporal array view to each table in the cube
@@ -282,7 +334,11 @@ pub fn broadcast_temporalarrayview_to_cube(
         let broadcasted = broadcast_arrayview_to_table(op, &array_view, table)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to TemporalArrayView - apply temporal array view to each table in the cube
@@ -300,7 +356,11 @@ pub fn broadcast_cube_to_temporalarrayview(
         let broadcasted = broadcast_table_to_arrayview(op, table, &array_view)?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast TableView to Cube - apply table view to each table in the cube
@@ -316,7 +376,11 @@ pub fn broadcast_tableview_to_cube(
         let broadcasted = broadcast_table_with_operator(op, table.clone(), cube_table.clone())?;
         result_tables.push(broadcasted);
     }
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Helper: Materialise SuperArray into a single contiguous Array by concatenating chunks
@@ -717,7 +781,11 @@ pub fn broadcast_superarray_to_cube(
         result_tables.push(broadcasted);
     }
 
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to SuperArray - apply super array to each table in the cube
@@ -768,7 +836,11 @@ pub fn broadcast_cube_to_superarray(
         result_tables.push(broadcasted);
     }
 
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast SuperTable to Cube - apply super table to each table in the cube
@@ -789,7 +861,11 @@ pub fn broadcast_supertable_to_cube(
         result_tables.push(broadcasted);
     }
 
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to SuperTable - apply super table to each table in the cube
@@ -810,7 +886,11 @@ pub fn broadcast_cube_to_supertable(
         result_tables.push(broadcasted);
     }
 
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast SuperArrayView to Cube - apply super array view to each table in the cube
@@ -862,7 +942,11 @@ pub fn broadcast_superarrayview_to_cube(
         result_tables.push(broadcasted);
     }
 
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to SuperArrayView - apply super array view to each table in the cube
@@ -912,7 +996,11 @@ pub fn broadcast_cube_to_superarrayview(
         result_tables.push(broadcasted);
     }
 
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast SuperTableView to Cube - apply super table view to each table in the cube
@@ -933,7 +1021,11 @@ pub fn broadcast_supertableview_to_cube(
         result_tables.push(broadcasted);
     }
 
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 /// Broadcast Cube to SuperTableView - apply super table view to each table in the cube
@@ -954,7 +1046,11 @@ pub fn broadcast_cube_to_supertableview(
         result_tables.push(broadcasted);
     }
 
-    Ok(Cube::from_tables(result_tables, cube.name.clone(), cube.third_dim_index.clone()))
+    Ok(Cube::from_tables(
+        result_tables,
+        cube.name.clone(),
+        cube.third_dim_index.clone(),
+    ))
 }
 
 #[cfg(all(test, feature = "cube"))]

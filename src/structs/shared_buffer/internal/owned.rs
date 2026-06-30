@@ -46,7 +46,6 @@ pub(crate) struct Owned<T: AsRef<[u8]> + Send + Sync + 'static> {
     pub(crate) owner: T,
 }
 
-
 /// Clones owned buffer by incrementing reference count.
 unsafe fn owned_clone(h: &AtomicPtr<()>, p: *const u8, l: usize) -> SharedBuffer {
     let raw = h.load(Ordering::Acquire);
@@ -77,9 +76,8 @@ unsafe fn owned_drop(h: &mut AtomicPtr<()>, _p: *const u8, _l: usize) {
         // Owned is #[repr(C)] with ref_cnt first, drop_fn second, so the
         // layout is the same for all Owned<T>.
         unsafe {
-            let drop_fn_ptr =
-                (raw as *const u8).add(std::mem::size_of::<AtomicUsize>())
-                    as *const unsafe fn(*mut ());
+            let drop_fn_ptr = (raw as *const u8).add(std::mem::size_of::<AtomicUsize>())
+                as *const unsafe fn(*mut ());
             let drop_fn = *drop_fn_ptr;
             drop_fn(raw);
         }

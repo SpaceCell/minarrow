@@ -49,8 +49,6 @@ use crate::ArrayV;
 use crate::Field;
 #[cfg(feature = "chunked")]
 use crate::SuperTable;
-#[cfg(feature = "views")]
-use crate::{Array, BitmaskV, NumericArrayV, TableV, TextArrayV};
 use crate::enums::{error::MinarrowError, shape_dim::ShapeDim};
 #[cfg(feature = "chunked")]
 use crate::traits::consolidate::Consolidate;
@@ -61,6 +59,8 @@ use crate::traits::{
     print::{MAX_PREVIEW, print_ellipsis_row, print_header_row, print_rule, value_to_string},
     shape::Shape,
 };
+#[cfg(feature = "views")]
+use crate::{Array, BitmaskV, NumericArrayV, TableV, TextArrayV};
 
 // Global counter for unnamed table instances
 static UNNAMED_COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -265,10 +265,7 @@ impl Table {
     ///
     /// Returns an error if any old name is not found.
     /// This is metadata-only - array data is not touched.
-    pub fn rename_columns(
-        &mut self,
-        mapping: &[(&str, &str)],
-    ) -> Result<(), MinarrowError> {
+    pub fn rename_columns(&mut self, mapping: &[(&str, &str)]) -> Result<(), MinarrowError> {
         for &(old, _) in mapping {
             if !self.cols.iter().any(|fa| fa.field.name == old) {
                 return Err(MinarrowError::IndexError(format!(
@@ -306,7 +303,8 @@ impl Table {
     /// Resolve a named column to a `NumericArrayV`.
     #[cfg(feature = "views")]
     pub fn col_numeric(&self, name: &str) -> Result<NumericArrayV, MinarrowError> {
-        let idx = self.col_name_index(name)
+        let idx = self
+            .col_name_index(name)
             .ok_or_else(|| MinarrowError::IndexError(format!("column '{}' not found", name)))?;
         let num = self.cols[idx].array.try_num()?;
         Ok(NumericArrayV::from(num))
@@ -315,7 +313,8 @@ impl Table {
     /// Resolve a named column to a `TextArrayV`.
     #[cfg(feature = "views")]
     pub fn col_text(&self, name: &str) -> Result<TextArrayV, MinarrowError> {
-        let idx = self.col_name_index(name)
+        let idx = self
+            .col_name_index(name)
             .ok_or_else(|| MinarrowError::IndexError(format!("column '{}' not found", name)))?;
         let ta = self.cols[idx].array.try_str()?;
         Ok(TextArrayV::from(ta))
@@ -324,7 +323,8 @@ impl Table {
     /// Resolve a named column to a `BitmaskV`.
     #[cfg(feature = "views")]
     pub fn col_bitmask(&self, name: &str) -> Result<BitmaskV<'_>, MinarrowError> {
-        let idx = self.col_name_index(name)
+        let idx = self
+            .col_name_index(name)
             .ok_or_else(|| MinarrowError::IndexError(format!("column '{}' not found", name)))?;
         match &self.cols[idx].array {
             Array::BooleanArray(arc) => Ok(BitmaskV::new(&arc.data, 0, arc.len())),
@@ -336,7 +336,6 @@ impl Table {
         }
     }
 
-
     /// Removes the rows in `[start, end)` from every column, shifting later
     /// rows left.
     ///
@@ -346,7 +345,10 @@ impl Table {
     /// # Panics
     /// Panics if `start > end` or `end > n_rows`.
     pub fn delete_range(&mut self, start: usize, end: usize) {
-        assert!(start <= end, "Table::delete_range: start ({start}) > end ({end})");
+        assert!(
+            start <= end,
+            "Table::delete_range: start ({start}) > end ({end})"
+        );
         assert!(
             end <= self.n_rows,
             "Table::delete_range: end ({end}) > n_rows ({})",
@@ -485,10 +487,7 @@ impl Table {
             match self.cols.iter().find(|c| c.field.name == *name) {
                 Some(col) => results.push(func(col)),
                 None => {
-                    warn!(
-                        "Column '{}' not found in table '{}'",
-                        name, self.name
-                    );
+                    warn!("Column '{}' not found in table '{}'", name, self.name);
                 }
             }
         }
@@ -1176,7 +1175,11 @@ impl ColumnSelection for Table {
             return TableV {
                 name: self.name.clone(),
                 fields: all_fields,
-                cols: self.cols.iter().map(|fa| ArrayV::from(fa.clone())).collect(),
+                cols: self
+                    .cols
+                    .iter()
+                    .map(|fa| ArrayV::from(fa.clone()))
+                    .collect(),
                 offset: 0,
                 len: self.n_rows,
                 active_col_selection: None,
@@ -1287,10 +1290,10 @@ mod tests {
     use super::*;
     use crate::structs::field_array::field_array;
     use crate::traits::masked_array::MaskedArray;
-    use crate::{fa_bool, fa_i32, fa_i64, fa_u32};
     #[cfg(all(feature = "views", feature = "select"))]
     use crate::traits::selection::ColumnSelection;
     use crate::{Array, BooleanArray, IntegerArray, NumericArray};
+    use crate::{fa_bool, fa_i32, fa_i64, fa_u32};
 
     #[test]
     fn test_new_table() {
@@ -1807,7 +1810,10 @@ mod tests {
             }
         }
 
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         #[test]
         fn test_from_arena_boolean_and_categorical() {
             use crate::ffi::arrow_dtype::CategoricalIndexType;
@@ -1943,7 +1949,8 @@ mod tbl_macro_tests {
 
     #[test]
     fn tbl_builds_two_column_table() {
-        let t = tbl!("orders",
+        let t = tbl!(
+            "orders",
             fa_i32!("id", 1, 2, 3),
             fa_f64!("qty", 10.0, 20.0, 30.0),
         );
@@ -1972,10 +1979,7 @@ mod tbl_macro_tests {
 
     #[test]
     fn tbl_trailing_comma_accepted() {
-        let t = tbl!("orders",
-            fa_i32!("id", 1, 2),
-            fa_f64!("qty", 5.0, 6.0),
-        );
+        let t = tbl!("orders", fa_i32!("id", 1, 2), fa_f64!("qty", 5.0, 6.0),);
         assert_eq!(t.cols.len(), 2);
     }
 

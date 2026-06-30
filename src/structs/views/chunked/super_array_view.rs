@@ -264,7 +264,6 @@ impl Consolidate for SuperArrayV {
     }
 }
 
-
 impl Concatenate for SuperArrayV {
     /// Concatenates two super array views by materialising both to owned arrays,
     /// concatenating them, and wrapping the result back in a view.
@@ -827,7 +826,10 @@ mod tests {
 
     // Categorical Array Consolidation Tests
 
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[cfg(any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    ))]
     fn fa_categorical(name: &str, vals: &[&str]) -> FieldArray {
         use crate::ffi::arrow_dtype::CategoricalIndexType;
         let string_arr = crate::StringArray::<u32>::from_slice(vals);
@@ -842,7 +844,10 @@ mod tests {
         FieldArray::new(field, arr)
     }
 
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[cfg(any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    ))]
     #[test]
     fn test_consolidate_categorical_single_chunk() {
         let fa1 = fa_categorical("cat", &["a", "b", "a", "c"]);
@@ -863,7 +868,10 @@ mod tests {
         }
     }
 
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[cfg(any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    ))]
     #[test]
     fn test_consolidate_categorical_with_offset() {
         let fa1 = fa_categorical("cat", &["x", "y", "z", "w", "v"]);
@@ -882,7 +890,10 @@ mod tests {
         }
     }
 
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[cfg(any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    ))]
     #[test]
     fn test_consolidate_categorical_same_dict_multiple_chunks() {
         use crate::ffi::arrow_dtype::CategoricalIndexType;

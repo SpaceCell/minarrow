@@ -58,8 +58,8 @@
 
 use core::simd::Simd;
 
-use crate::{Bitmask, BitmaskVT};
 use crate::kernels::arithmetic::simd::{W8, W16, W32, W64};
+use crate::{Bitmask, BitmaskVT};
 
 use crate::enums::operators::{LogicalOperator, UnaryOperator};
 use crate::kernels::bitmask::{bitmask_window_bytes, bitmask_window_bytes_mut};
@@ -159,9 +159,21 @@ pub fn bitmask_binop_simd_into<const LANES: usize>(
     if len == 0 {
         return;
     }
-    debug_assert_eq!(out_off % 8, 0, "bitmask_binop_simd_into: out_off must be byte-aligned");
-    debug_assert_eq!(lhs_off % 8, 0, "bitmask_binop_simd_into: lhs offset must be byte-aligned");
-    debug_assert_eq!(rhs_off % 8, 0, "bitmask_binop_simd_into: rhs offset must be byte-aligned");
+    debug_assert_eq!(
+        out_off % 8,
+        0,
+        "bitmask_binop_simd_into: out_off must be byte-aligned"
+    );
+    debug_assert_eq!(
+        lhs_off % 8,
+        0,
+        "bitmask_binop_simd_into: lhs offset must be byte-aligned"
+    );
+    debug_assert_eq!(
+        rhs_off % 8,
+        0,
+        "bitmask_binop_simd_into: rhs offset must be byte-aligned"
+    );
     let full_words = len / 64;
     let tail_bits = len % 64;
     {
@@ -174,8 +186,10 @@ pub fn bitmask_binop_simd_into<const LANES: usize>(
             let dp = out_bytes.as_mut_ptr().cast::<u64>();
             let mut i = 0;
             while i + LANES <= full_words {
-                let a = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(lp.add(i), LANES));
-                let b = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(rp.add(i), LANES));
+                let a =
+                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(lp.add(i), LANES));
+                let b =
+                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(rp.add(i), LANES));
                 let r = match op {
                     LogicalOperator::And => a & b,
                     LogicalOperator::Or => a | b,
@@ -231,8 +245,16 @@ pub fn bitmask_unop_simd_into<const LANES: usize>(
     if len == 0 {
         return;
     }
-    debug_assert_eq!(out_off % 8, 0, "bitmask_unop_simd_into: out_off must be byte-aligned");
-    debug_assert_eq!(offset % 8, 0, "bitmask_unop_simd_into: src offset must be byte-aligned");
+    debug_assert_eq!(
+        out_off % 8,
+        0,
+        "bitmask_unop_simd_into: out_off must be byte-aligned"
+    );
+    debug_assert_eq!(
+        offset % 8,
+        0,
+        "bitmask_unop_simd_into: src offset must be byte-aligned"
+    );
     let full_words = len / 64;
     let tail_bits = len % 64;
     {
@@ -243,7 +265,8 @@ pub fn bitmask_unop_simd_into<const LANES: usize>(
             let dp = out_bytes.as_mut_ptr().cast::<u64>();
             let mut i = 0;
             while i + LANES <= full_words {
-                let a = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(sp.add(i), LANES));
+                let a =
+                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(sp.add(i), LANES));
                 let r = match op {
                     UnaryOperator::Not => !a,
                     _ => unreachable!(),
@@ -522,8 +545,10 @@ where
         {
             let mut i = 0;
             while i + LANES <= full_words {
-                let sa = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(ap.add(i), LANES));
-                let sb = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(bp.add(i), LANES));
+                let sa =
+                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(ap.add(i), LANES));
+                let sb =
+                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(bp.add(i), LANES));
                 let eq = !(sa ^ sb);
                 std::ptr::copy_nonoverlapping(eq.as_array().as_ptr(), dp.add(i), LANES);
                 i += LANES;
@@ -648,8 +673,10 @@ where
             use std::simd::prelude::SimdPartialEq;
             let mut i = 0;
             while i + LANES <= full_words {
-                let sa = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(ap.add(i), LANES));
-                let sb = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(bp.add(i), LANES));
+                let sa =
+                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(ap.add(i), LANES));
+                let sb =
+                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(bp.add(i), LANES));
                 if !sa.simd_eq(sb).all() {
                     return false;
                 }
@@ -732,7 +759,10 @@ where
             use std::simd::prelude::SimdUint;
             let mut i = 0;
             while i + LANES <= full_words {
-                let v = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(words_ptr.add(i), LANES));
+                let v = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(
+                    words_ptr.add(i),
+                    LANES,
+                ));
                 acc += v.count_ones().reduce_sum() as usize;
                 i += LANES;
             }
@@ -787,7 +817,10 @@ where
             let all_ones = Simd::<u64, LANES>::splat(all_ones_u64);
             let mut i = 0;
             while i + LANES <= full_words {
-                let arr = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(words_ptr.add(i), LANES));
+                let arr = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(
+                    words_ptr.add(i),
+                    LANES,
+                ));
                 if arr != all_ones {
                     return false;
                 }
@@ -851,7 +884,10 @@ where
             let zero = Simd::<u64, LANES>::splat(0u64);
             let mut i = 0;
             while i + LANES <= full_words {
-                let arr = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(words_ptr.add(i), LANES));
+                let arr = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(
+                    words_ptr.add(i),
+                    LANES,
+                ));
                 if arr != zero {
                     return false;
                 }
@@ -892,14 +928,13 @@ where
     true
 }
 
-
 /// Generates a SIMD equality mask function for a given element type and lane count.
 /// Processes LANES elements per iteration, with a scalar tail for the remainder.
 macro_rules! impl_simd_eq_mask {
     ($fn_name:ident, $t:ty, $lanes:expr) => {
         pub fn $fn_name(data: &[$t], field_mask: $t, target: $t) -> Bitmask {
-            use vec64::Vec64;
             use std::simd::cmp::SimdPartialEq;
+            use vec64::Vec64;
             let n = data.len();
             let n_bytes = (n + 7) / 8;
             let mut bytes = Vec64::<u8>::with_capacity(n_bytes);
@@ -943,7 +978,6 @@ impl_simd_eq_mask!(simd_eq_mask_u8, u8, W8);
 impl_simd_eq_mask!(simd_eq_mask_u16, u16, W16);
 impl_simd_eq_mask!(simd_eq_mask_u32, u32, W32);
 impl_simd_eq_mask!(simd_eq_mask_u64, u64, W64);
-
 
 #[cfg(test)]
 mod tests {

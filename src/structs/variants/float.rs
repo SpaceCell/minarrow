@@ -185,7 +185,10 @@ impl<'a, T: Float> crate::traits::consolidate::Consolidate
         use crate::traits::consolidate::extend_null_mask;
         use crate::traits::masked_array::MaskedArray;
 
-        assert!(!self.is_empty(), "consolidate() called on empty Vec<FloatAVT>");
+        assert!(
+            !self.is_empty(),
+            "consolidate() called on empty Vec<FloatAVT>"
+        );
 
         let total_len: usize = self.iter().map(|(_, _, len)| *len).sum();
         let has_nulls = self.iter().any(|(arr, _, _)| arr.null_mask.is_some());

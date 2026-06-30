@@ -919,7 +919,10 @@ macro_rules! impl_arc_masked_array {
             type T = $T;
             type Container = $Container;
             type LogicalType = $LogicalType;
-            type CopyType<'a> = $CopyType where Self: 'a;
+            type CopyType<'a>
+                = $CopyType
+            where
+                Self: 'a;
 
             fn len(&self) -> usize {
                 (**self).len()
@@ -992,7 +995,12 @@ macro_rules! impl_arc_masked_array {
             fn append_array(&mut self, other: &Self) {
                 ::std::sync::Arc::make_mut(self).append_array(&**other)
             }
-            fn append_range(&mut self, other: &Self, offset: usize, len: usize) -> Result<(), $crate::enums::error::MinarrowError> {
+            fn append_range(
+                &mut self,
+                other: &Self,
+                offset: usize,
+                len: usize,
+            ) -> Result<(), $crate::enums::error::MinarrowError> {
                 ::std::sync::Arc::make_mut(self).append_range(&**other, offset, len)
             }
             fn insert_rows(
@@ -1046,7 +1054,10 @@ macro_rules! impl_arc_masked_array {
             type T = $T;
             type Container = $Container;
             type LogicalType = $LogicalType;
-            type CopyType<'a> = $CopyType where Self: 'a;
+            type CopyType<'a>
+                = $CopyType
+            where
+                Self: 'a;
 
             fn len(&self) -> usize {
                 (**self).len()
@@ -1119,7 +1130,12 @@ macro_rules! impl_arc_masked_array {
             fn append_array(&mut self, other: &Self) {
                 ::std::sync::Arc::make_mut(self).append_array(&**other)
             }
-            fn append_range(&mut self, other: &Self, offset: usize, len: usize) -> Result<(), $crate::enums::error::MinarrowError> {
+            fn append_range(
+                &mut self,
+                other: &Self,
+                offset: usize,
+                len: usize,
+            ) -> Result<(), $crate::enums::error::MinarrowError> {
                 ::std::sync::Arc::make_mut(self).append_range(&**other, offset, len)
             }
             fn insert_rows(

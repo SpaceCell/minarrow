@@ -19,8 +19,8 @@
 use std::sync::Arc;
 
 use minarrow::{
-    fa_i32, fa_str32, fa_u32, Array, ArrowType, Field, FieldArray, MaskedArray, NumericArray,
-    Table, TextArray,
+    Array, ArrowType, Field, FieldArray, MaskedArray, NumericArray, Table, TextArray, fa_i32,
+    fa_str32, fa_u32,
 };
 #[cfg(feature = "datetime")]
 use minarrow::{TemporalArray, TimeUnit};
@@ -191,7 +191,9 @@ fn test_array_from_polars_round_trip_numeric() {
 
 #[test]
 fn test_array_from_polars_round_trip_string() {
-    let arr = Arc::new(minarrow::StringArray::<u32>::from_slice(&["foo", "bar", "baz"]));
+    let arr = Arc::new(minarrow::StringArray::<u32>::from_slice(&[
+        "foo", "bar", "baz",
+    ]));
     let original = Array::TextArray(TextArray::String32(arr));
     let s = original.to_polars("s");
     let back = Array::from_polars(&s);
@@ -327,58 +329,72 @@ fn arr_strings_back(back: &Array) -> Vec<String> {
 #[test]
 fn rt_polars_i32() {
     let mut a = minarrow::IntegerArray::<i32>::default();
-    for v in &[1i32, -2, 3, i32::MAX, i32::MIN] { a.push(*v); }
+    for v in &[1i32, -2, 3, i32::MAX, i32::MIN] {
+        a.push(*v);
+    }
     round_trip_array_polars(Array::from_int32(a), "i32");
 }
 
 #[test]
 fn rt_polars_i64() {
     let mut a = minarrow::IntegerArray::<i64>::default();
-    for v in &[1i64, -2, 3, i64::MAX, i64::MIN] { a.push(*v); }
+    for v in &[1i64, -2, 3, i64::MAX, i64::MIN] {
+        a.push(*v);
+    }
     round_trip_array_polars(Array::from_int64(a), "i64");
 }
 
 #[test]
 fn rt_polars_u32() {
     let mut a = minarrow::IntegerArray::<u32>::default();
-    for v in &[0u32, 1, u32::MAX] { a.push(*v); }
+    for v in &[0u32, 1, u32::MAX] {
+        a.push(*v);
+    }
     round_trip_array_polars(Array::from_uint32(a), "u32");
 }
 
 #[test]
 fn rt_polars_u64() {
     let mut a = minarrow::IntegerArray::<u64>::default();
-    for v in &[0u64, 1, u64::MAX] { a.push(*v); }
+    for v in &[0u64, 1, u64::MAX] {
+        a.push(*v);
+    }
     round_trip_array_polars(Array::from_uint64(a), "u64");
 }
 
 #[test]
 fn rt_polars_f32() {
     let mut a = minarrow::FloatArray::<f32>::default();
-    for v in &[0.0_f32, -1.5, 3.14, f32::MIN, f32::MAX] { a.push(*v); }
+    for v in &[0.0_f32, -1.5, 3.14, f32::MIN, f32::MAX] {
+        a.push(*v);
+    }
     round_trip_array_polars(Array::from_float32(a), "f32");
 }
 
 #[test]
 fn rt_polars_f64() {
     let mut a = minarrow::FloatArray::<f64>::default();
-    for v in &[0.0_f64, -1.5, 3.14, f64::MIN, f64::MAX] { a.push(*v); }
+    for v in &[0.0_f64, -1.5, 3.14, f64::MIN, f64::MAX] {
+        a.push(*v);
+    }
     round_trip_array_polars(Array::from_float64(a), "f64");
 }
 
 #[test]
 fn rt_polars_bool() {
     let mut a = minarrow::BooleanArray::<()>::default();
-    for v in &[true, false, true, true, false] { a.push(*v); }
+    for v in &[true, false, true, true, false] {
+        a.push(*v);
+    }
     round_trip_array_polars(Array::BooleanArray(Arc::new(a)), "bool");
 }
 
 #[test]
 fn rt_polars_string32_element_equal() {
     // Polars may upcast Utf8 -> LargeUtf8; check element-wise.
-    let arr = Arc::new(
-        minarrow::StringArray::<u32>::from_slice(&["alpha", "beta", "gamma"])
-    );
+    let arr = Arc::new(minarrow::StringArray::<u32>::from_slice(&[
+        "alpha", "beta", "gamma",
+    ]));
     let original = Array::TextArray(TextArray::String32(arr));
     let s = original.to_polars("s");
     let back = Array::from_polars(&s);
@@ -391,9 +407,9 @@ fn rt_polars_string32_element_equal() {
 #[cfg(feature = "large_string")]
 #[test]
 fn rt_polars_string64_element_equal() {
-    let arr = Arc::new(
-        minarrow::StringArray::<u64>::from_slice(&["one", "two", "three"])
-    );
+    let arr = Arc::new(minarrow::StringArray::<u64>::from_slice(&[
+        "one", "two", "three",
+    ]));
     let original = Array::TextArray(TextArray::String64(arr));
     let s = original.to_polars("s");
     let back = Array::from_polars(&s);
@@ -403,7 +419,10 @@ fn rt_polars_string64_element_equal() {
     );
 }
 
-#[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+#[cfg(any(
+    not(feature = "default_categorical_8"),
+    feature = "extended_categorical"
+))]
 #[test]
 // macOS: polars_arrow chunked export leaves sch.dictionary null while populating
 // arr.dictionary, which Minarrow surfaces as a BridgeError. Skip the round-trip
@@ -502,7 +521,12 @@ fn rt_polars_timestamp_ns() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("ts_ns", ArrowType::Timestamp(TimeUnit::Nanoseconds, None), false, None),
+        Field::new(
+            "ts_ns",
+            ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array_polars(fa);
@@ -519,7 +543,12 @@ fn rt_polars_timestamp_us() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("ts_us", ArrowType::Timestamp(TimeUnit::Microseconds, None), false, None),
+        Field::new(
+            "ts_us",
+            ArrowType::Timestamp(TimeUnit::Microseconds, None),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array_polars(fa);
@@ -536,7 +565,12 @@ fn rt_polars_duration_ns() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("dur_ns", ArrowType::Duration64(TimeUnit::Nanoseconds), false, None),
+        Field::new(
+            "dur_ns",
+            ArrowType::Duration64(TimeUnit::Nanoseconds),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array_polars(fa);
@@ -578,7 +612,9 @@ fn rt_polars_bool_with_nulls() {
 #[test]
 fn rt_polars_i32_all_null() {
     let mut a = minarrow::IntegerArray::<i32>::default();
-    for _ in 0..5 { a.push_null(); }
+    for _ in 0..5 {
+        a.push_null();
+    }
     round_trip_array_polars(Array::from_int32(a), "i32_all_null");
 }
 
@@ -744,11 +780,7 @@ fn rt_polars_table_from_multi_chunk_dataframe() {
 // Tests assert both the dtype promotion and the rescaled payload explicitly.
 
 #[cfg(feature = "datetime")]
-fn assert_time_promotes_to_ns_i64(
-    fa: FieldArray,
-    name: &str,
-    expected_ns: &[i64],
-) {
+fn assert_time_promotes_to_ns_i64(fa: FieldArray, name: &str, expected_ns: &[i64]) {
     let s = fa.to_polars();
     let back = FieldArray::from_polars(&s);
     assert_eq!(back.field.name, name, "name lost");
@@ -780,18 +812,19 @@ fn rt_polars_time32_sec_promotes_to_time64_ns() {
             },
         ))),
     );
-    assert_time_promotes_to_ns_i64(
-        fa,
-        "t32s",
-        &[0, 3_600_000_000_000, 86_399_000_000_000],
-    );
+    assert_time_promotes_to_ns_i64(fa, "t32s", &[0, 3_600_000_000_000, 86_399_000_000_000]);
 }
 
 #[cfg(feature = "datetime")]
 #[test]
 fn rt_polars_time32_ms_promotes_to_time64_ns() {
     let fa = FieldArray::new(
-        Field::new("t32m", ArrowType::Time32(TimeUnit::Milliseconds), false, None),
+        Field::new(
+            "t32m",
+            ArrowType::Time32(TimeUnit::Milliseconds),
+            false,
+            None,
+        ),
         Array::TemporalArray(TemporalArray::Datetime32(Arc::new(
             minarrow::DatetimeArray::<i32> {
                 data: minarrow::Buffer::from_slice(&[0_i32, 1000, 86_399_000]),
@@ -800,18 +833,19 @@ fn rt_polars_time32_ms_promotes_to_time64_ns() {
             },
         ))),
     );
-    assert_time_promotes_to_ns_i64(
-        fa,
-        "t32m",
-        &[0, 1_000_000_000, 86_399_000_000_000],
-    );
+    assert_time_promotes_to_ns_i64(fa, "t32m", &[0, 1_000_000_000, 86_399_000_000_000]);
 }
 
 #[cfg(feature = "datetime")]
 #[test]
 fn rt_polars_time64_us_promotes_to_time64_ns() {
     let fa = FieldArray::new(
-        Field::new("t64u", ArrowType::Time64(TimeUnit::Microseconds), false, None),
+        Field::new(
+            "t64u",
+            ArrowType::Time64(TimeUnit::Microseconds),
+            false,
+            None,
+        ),
         Array::TemporalArray(TemporalArray::Datetime64(Arc::new(
             minarrow::DatetimeArray::<i64> {
                 data: minarrow::Buffer::from_slice(&[0_i64, 1_000_000, 86_399_000_000]),
@@ -820,11 +854,7 @@ fn rt_polars_time64_us_promotes_to_time64_ns() {
             },
         ))),
     );
-    assert_time_promotes_to_ns_i64(
-        fa,
-        "t64u",
-        &[0, 1_000_000_000, 86_399_000_000_000],
-    );
+    assert_time_promotes_to_ns_i64(fa, "t64u", &[0, 1_000_000_000, 86_399_000_000_000]);
 }
 
 #[cfg(feature = "datetime")]
@@ -832,7 +862,12 @@ fn rt_polars_time64_us_promotes_to_time64_ns() {
 fn rt_polars_time64_ns() {
     // Time64(Ns) is the polars-native representation; passes through unchanged.
     let fa = FieldArray::new(
-        Field::new("t64n", ArrowType::Time64(TimeUnit::Nanoseconds), false, None),
+        Field::new(
+            "t64n",
+            ArrowType::Time64(TimeUnit::Nanoseconds),
+            false,
+            None,
+        ),
         Array::TemporalArray(TemporalArray::Datetime64(Arc::new(
             minarrow::DatetimeArray::<i64> {
                 data: minarrow::Buffer::from_slice(&[0_i64, 1_000_000_000, 86_399_000_000_000]),
@@ -866,10 +901,16 @@ fn rt_polars_date64_preserves_null_mask_through_timestamp_promotion() {
     let s = fa.to_polars();
     let back = FieldArray::from_polars(&s);
 
-    assert_eq!(back.field.dtype, ArrowType::Timestamp(TimeUnit::Milliseconds, None));
+    assert_eq!(
+        back.field.dtype,
+        ArrowType::Timestamp(TimeUnit::Milliseconds, None)
+    );
     match &back.array {
         Array::TemporalArray(TemporalArray::Datetime64(d)) => {
-            let mask = d.null_mask.as_ref().expect("null mask must survive promotion");
+            let mask = d
+                .null_mask
+                .as_ref()
+                .expect("null mask must survive promotion");
             assert!(unsafe { mask.get_unchecked(0) }, "idx 0 should be valid");
             assert!(!unsafe { mask.get_unchecked(1) }, "idx 1 should be null");
             assert!(unsafe { mask.get_unchecked(2) }, "idx 2 should be valid");
@@ -902,7 +943,10 @@ fn rt_polars_time32_sec_preserves_null_mask_through_promotion() {
     assert_eq!(back.field.dtype, ArrowType::Time64(TimeUnit::Nanoseconds));
     match &back.array {
         Array::TemporalArray(TemporalArray::Datetime64(d)) => {
-            let mask = d.null_mask.as_ref().expect("null mask must survive promotion");
+            let mask = d
+                .null_mask
+                .as_ref()
+                .expect("null mask must survive promotion");
             assert!(unsafe { mask.get_unchecked(0) }, "idx 0 should be valid");
             assert!(!unsafe { mask.get_unchecked(1) }, "idx 1 should be null");
             assert!(unsafe { mask.get_unchecked(2) }, "idx 2 should be valid");
@@ -928,7 +972,12 @@ fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
 
     let a = Array::TemporalArray(TemporalArray::Datetime64(Arc::new(data)));
     let fa = FieldArray::new(
-        Field::new("t64un", ArrowType::Time64(TimeUnit::Microseconds), true, None),
+        Field::new(
+            "t64un",
+            ArrowType::Time64(TimeUnit::Microseconds),
+            true,
+            None,
+        ),
         a,
     );
     let s = fa.to_polars();
@@ -937,7 +986,10 @@ fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
     assert_eq!(back.field.dtype, ArrowType::Time64(TimeUnit::Nanoseconds));
     match &back.array {
         Array::TemporalArray(TemporalArray::Datetime64(d)) => {
-            let mask = d.null_mask.as_ref().expect("null mask must survive promotion");
+            let mask = d
+                .null_mask
+                .as_ref()
+                .expect("null mask must survive promotion");
             assert!(unsafe { mask.get_unchecked(0) });
             assert!(!unsafe { mask.get_unchecked(1) });
             assert!(unsafe { mask.get_unchecked(2) });
@@ -955,7 +1007,10 @@ fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
 /// (later batch's dictionary is a superset of earlier).
 #[cfg(all(
     feature = "shared_dict",
-    any(not(feature = "default_categorical_8"), feature = "extended_categorical")
+    any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    )
 ))]
 #[test]
 fn rt_polars_super_table_shared_categorical32() {
@@ -1033,8 +1088,10 @@ fn rt_polars_super_table_shared_categorical32() {
     if let (
         Array::TextArray(TextArray::Categorical32(_)),
         Array::TextArray(TextArray::Categorical32(_)),
-    ) = (&back.batches[0].cols[0].array, &back.batches[1].cols[0].array)
-    {
+    ) = (
+        &back.batches[0].cols[0].array,
+        &back.batches[1].cols[0].array,
+    ) {
         let d0 = match &back.batches[0].cols[0].array {
             Array::TextArray(TextArray::Categorical32(c)) => c.dictionary.clone(),
             _ => unreachable!(),

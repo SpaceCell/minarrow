@@ -45,11 +45,11 @@ use std::sync::Arc;
 
 use arrow::array::ArrayRef;
 
+use crate::Array;
 use crate::Field;
 use crate::enums::error::MinarrowError;
 use crate::ffi::arrow_c_ffi::{ArrowArray, ArrowSchema, export_to_c, import_from_c_owned};
 use crate::ffi::schema::Schema;
-use crate::Array;
 
 /// Export a Minarrow array to an arrow-rs `ArrayRef`.
 ///

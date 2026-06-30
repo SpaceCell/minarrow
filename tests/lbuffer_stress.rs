@@ -123,8 +123,18 @@ fn verify_window(table: &Table, start: usize, n: usize) {
     let price_rows = &price.data.as_slice()[..n];
     let volume_rows = &volume.data.as_slice()[..n];
     for i in 0..n {
-        assert_eq!(price_rows[i], price_at(start + i), "price mismatch at global row {}", start + i);
-        assert_eq!(volume_rows[i], volume_at(start + i), "volume mismatch at global row {}", start + i);
+        assert_eq!(
+            price_rows[i],
+            price_at(start + i),
+            "price mismatch at global row {}",
+            start + i
+        );
+        assert_eq!(
+            volume_rows[i],
+            volume_at(start + i),
+            "volume mismatch at global row {}",
+            start + i
+        );
     }
 }
 
@@ -179,16 +189,37 @@ fn lbuffer_concurrent_lock_free_reads() {
                         let volume = table.cols[1].array.num().i64();
                         let price_slice = price.data.as_slice();
                         let volume_slice = volume.data.as_slice();
-                        assert!(price_slice.len() >= n, "reader {reader_id}: price below the row floor");
-                        assert!(volume_slice.len() >= n, "reader {reader_id}: volume below the row floor");
+                        assert!(
+                            price_slice.len() >= n,
+                            "reader {reader_id}: price below the row floor"
+                        );
+                        assert!(
+                            volume_slice.len() >= n,
+                            "reader {reader_id}: volume below the row floor"
+                        );
                         // Check the newest row - the slot most exposed to a
                         // torn read - plus the head row.
                         let last = start + n - 1;
-                        assert_eq!(price_slice[n - 1], price_at(last), "reader {reader_id}: torn price");
-                        assert_eq!(volume_slice[n - 1], volume_at(last), "reader {reader_id}: torn volume");
-                        assert_eq!(price_slice[0], price_at(*start), "reader {reader_id}: head price");
+                        assert_eq!(
+                            price_slice[n - 1],
+                            price_at(last),
+                            "reader {reader_id}: torn price"
+                        );
+                        assert_eq!(
+                            volume_slice[n - 1],
+                            volume_at(last),
+                            "reader {reader_id}: torn volume"
+                        );
+                        assert_eq!(
+                            price_slice[0],
+                            price_at(*start),
+                            "reader {reader_id}: head price"
+                        );
                         let observed = start + n;
-                        assert!(observed >= max_global, "reader {reader_id}: progress went backwards");
+                        assert!(
+                            observed >= max_global,
+                            "reader {reader_id}: progress went backwards"
+                        );
                         max_global = observed;
                     }
                 }
@@ -250,13 +281,20 @@ fn lbuffer_concurrent_lock_free_reads() {
 
     for handle in reader_handles {
         let max_global = handle.join().unwrap();
-        assert!(max_global <= total, "reader observed more rows than produced");
+        assert!(
+            max_global <= total,
+            "reader observed more rows than produced"
+        );
     }
 
     // Reconcile the window.
     let n = table.n_rows();
     verify_window(&table, chunk_start, n);
-    assert_eq!(chunk_start + n, total, "final window does not reconcile with produced rows");
+    assert_eq!(
+        chunk_start + n,
+        total,
+        "final window does not reconcile with produced rows"
+    );
     assert!(total > 0, "stress produced no rows");
 
     println!("verified {total} rows with {readers} readers, no torn reads");
@@ -338,7 +376,10 @@ fn masked_concurrent_validity_reads() {
     done.store(true, Ordering::Release);
     for handle in handles {
         let observed = handle.join().unwrap();
-        assert!(observed <= produced, "reader observed more rows than produced");
+        assert!(
+            observed <= produced,
+            "reader observed more rows than produced"
+        );
     }
 
     // Reconcile the window.

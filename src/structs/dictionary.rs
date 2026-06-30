@@ -66,8 +66,8 @@ use std::sync::Arc;
 
 use ::vec64::Vec64;
 
-use ::vec64::AppendOnlyVec;
 use crate::traits::type_unions::Integer;
+use ::vec64::AppendOnlyVec;
 
 // Shard mutex. `fast_dict` swaps to `parking_lot::Mutex` for a
 // faster uncontended fast path (~5 ns vs std's ~15 ns).
@@ -182,7 +182,6 @@ impl<T: Integer> ShardedIndex<T> {
         s.hash(&mut h);
         (h.finish() as usize) % N_INDEX_SHARDS
     }
-
 }
 
 /// Backing storage for a `Dictionary<T>`. Held behind the dictionary's
@@ -253,7 +252,10 @@ impl<T: Integer> Dictionary<T> {
                 let shard_idx = (hash as usize) & (N_INDEX_SHARDS - 1);
                 let shard = &d.inner.index.shards[shard_idx];
                 let mut g = shard.lock();
-                match g.raw_entry_mut().from_hash(hash, |k: &String| k.as_str() == s.as_str()) {
+                match g
+                    .raw_entry_mut()
+                    .from_hash(hash, |k: &String| k.as_str() == s.as_str())
+                {
                     RawEntryMut::Occupied(_) => continue,
                     RawEntryMut::Vacant(vac) => {
                         assert!(
@@ -374,7 +376,10 @@ impl<T: Integer> Dictionary<T> {
             // not re-hash. The eq callback compares the stored `String`
             // key directly against the input - one contiguous read on
             // the hash-bucket entry.
-            match g.raw_entry_mut().from_hash(hash, |k: &String| k.as_str() == value) {
+            match g
+                .raw_entry_mut()
+                .from_hash(hash, |k: &String| k.as_str() == value)
+            {
                 RawEntryMut::Occupied(e) => Ok(*e.get()),
                 RawEntryMut::Vacant(vac) => {
                     // Allocate the owned string once and share between
@@ -425,7 +430,9 @@ impl<T: Integer> Dictionary<T> {
         let mut shifted = false;
         let mut remap: Vec<T> = Vec::with_capacity(incoming.count());
         for (incoming_code, s) in incoming.iter() {
-            let Ok(new_code) = self.add_cat(s) else { return };
+            let Ok(new_code) = self.add_cat(s) else {
+                return;
+            };
             if new_code.to_usize() != incoming_code {
                 shifted = true;
             }
@@ -482,7 +489,10 @@ impl<T: Integer> Dictionary<T> {
                 let mut g = shard.lock();
                 // The source dictionary is deduplicated by construction,
                 // so every entry is novel against the fresh dict.
-                let vac = match g.raw_entry_mut().from_hash(hash, |k: &String| k.as_str() == s.as_str()) {
+                let vac = match g
+                    .raw_entry_mut()
+                    .from_hash(hash, |k: &String| k.as_str() == s.as_str())
+                {
                     RawEntryMut::Vacant(v) => v,
                     RawEntryMut::Occupied(_) => continue,
                 };
@@ -517,9 +527,7 @@ impl<T: Integer> Dictionary<T> {
     /// assigned at that position decodes to; codes against the old value
     /// no longer mean what they previously meant. For adding new values,
     /// `add_cat` is the append-only path.
-    pub fn try_values_iter_mut(
-        &mut self,
-    ) -> Option<std::slice::IterMut<'_, String>> {
+    pub fn try_values_iter_mut(&mut self) -> Option<std::slice::IterMut<'_, String>> {
         Arc::get_mut(&mut self.inner).map(|inner| inner.values.iter_mut())
     }
 }
@@ -566,7 +574,8 @@ impl<T: Integer> From<Vec<String>> for Dictionary<T> {
 
 impl<T: Integer, S: Into<String>> FromIterator<S> for Dictionary<T> {
     fn from_iter<I: IntoIterator<Item = S>>(iter: I) -> Self {
-        let owned: Vec64<String> = Vec64::from(iter.into_iter().map(Into::into).collect::<Vec<_>>());
+        let owned: Vec64<String> =
+            Vec64::from(iter.into_iter().map(Into::into).collect::<Vec<_>>());
         Self::from_values(owned)
     }
 }
@@ -606,7 +615,10 @@ pub enum CategoryManagerT {
     U8(Dictionary<u8>),
     #[cfg(feature = "extended_categorical")]
     U16(Dictionary<u16>),
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[cfg(any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    ))]
     U32(Dictionary<u32>),
     #[cfg(feature = "extended_categorical")]
     U64(Dictionary<u64>),
@@ -622,7 +634,10 @@ impl CategoryManagerT {
     pub fn install_from(array: &mut crate::Array) -> Option<Self> {
         use crate::{Array, TextArray};
         match array {
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             Array::TextArray(TextArray::Categorical32(arc)) => {
                 let cat = Arc::make_mut(arc);
                 Some(CategoryManagerT::U32(cat.dictionary.clone()))
@@ -653,7 +668,10 @@ impl CategoryManagerT {
     pub fn add_remap_cat(&self, array: &mut crate::Array) {
         use crate::{Array, TextArray};
         match (self, array) {
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             (CategoryManagerT::U32(d), Array::TextArray(TextArray::Categorical32(arc))) => {
                 d.add_remap_cat(Arc::make_mut(arc));
             }
@@ -704,7 +722,10 @@ impl CategoryManagerT {
             CategoryManagerT::U8(d) => d.len(),
             #[cfg(feature = "extended_categorical")]
             CategoryManagerT::U16(d) => d.len(),
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             CategoryManagerT::U32(d) => d.len(),
             #[cfg(feature = "extended_categorical")]
             CategoryManagerT::U64(d) => d.len(),

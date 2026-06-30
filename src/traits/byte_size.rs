@@ -196,7 +196,10 @@ impl ByteSize for TextArray {
             TextArray::Categorical8(arr) => arr.est_bytes(),
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical16(arr) => arr.est_bytes(),
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             TextArray::Categorical32(arr) => arr.est_bytes(),
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical64(arr) => arr.est_bytes(),

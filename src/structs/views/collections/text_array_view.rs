@@ -73,8 +73,8 @@ use crate::{Array, ArrayV, BitmaskV, StringArray, TextArray};
 /// - Use [`to_text_array`](Self::to_text_array) to materialise the data.
 #[derive(Clone, PartialEq)]
 pub struct TextArrayV {
-    /// The **outer array** that this view is derived from - we retain a reference to it. 
-    /// Importantly, this is the ***full array*** - not the *view*, and thus should not be 
+    /// The **outer array** that this view is derived from - we retain a reference to it.
+    /// Importantly, this is the ***full array*** - not the *view*, and thus should not be
     /// accessed as though it were the view subset.
     pub array: TextArray,
     /// The index offset from 0 that for where this view starts from the outer array
@@ -83,8 +83,8 @@ pub struct TextArrayV {
     len: usize,
     /// How many nulls are in the TextArrayView
     /// At construction, this is None, unless constructed via new_nc. When one uses '.null_count()',
-    /// the first time it will calculate it (quickly) using Bitmask popcount, and then from that 
-    /// point onwards the null count is a cached value. 
+    /// the first time it will calculate it (quickly) using Bitmask popcount, and then from that
+    /// point onwards the null count is a cached value.
     null_count: OnceLock<usize>,
 }
 
@@ -140,7 +140,10 @@ impl TextArrayV {
             TextArray::String32(arr) => arr.get_str(phys_idx),
             #[cfg(feature = "large_string")]
             TextArray::String64(arr) => arr.get_str(phys_idx),
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             TextArray::Categorical32(arr) => arr.get_str(phys_idx),
             #[cfg(feature = "default_categorical_8")]
             TextArray::Categorical8(arr) => arr.get_str(phys_idx),
@@ -330,7 +333,10 @@ impl Display for TextArrayV {
             TextArray::String32(_) => "String32<u32>",
             #[cfg(feature = "large_string")]
             TextArray::String64(_) => "String64<u64>",
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             TextArray::Categorical32(_) => "Categorical32<u32>",
             #[cfg(feature = "default_categorical_8")]
             TextArray::Categorical8(_) => "Categorical8<u8>",

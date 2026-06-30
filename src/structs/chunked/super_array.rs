@@ -496,10 +496,7 @@ impl SuperArray {
         #[cfg_attr(not(feature = "shared_dict"), allow(unused_mut))]
         let mut chunk = chunk;
         #[cfg(feature = "shared_dict")]
-        CategoryManagerT::add_remap_cats(
-            &mut self.category_manager,
-            std::iter::once(&mut chunk),
-        );
+        CategoryManagerT::add_remap_cats(&mut self.category_manager, std::iter::once(&mut chunk));
         self.chunks.push(chunk);
     }
 
@@ -523,10 +520,7 @@ impl SuperArray {
         #[cfg_attr(not(feature = "shared_dict"), allow(unused_mut))]
         let mut chunk = chunk;
         #[cfg(feature = "shared_dict")]
-        CategoryManagerT::add_remap_cats(
-            &mut self.category_manager,
-            std::iter::once(&mut chunk),
-        );
+        CategoryManagerT::add_remap_cats(&mut self.category_manager, std::iter::once(&mut chunk));
         self.chunks.push(chunk);
         if let Some(ref mut nc) = self.null_counts {
             nc.push(null_count);
@@ -565,10 +559,7 @@ impl SuperArray {
         #[cfg_attr(not(feature = "shared_dict"), allow(unused_mut))]
         let mut array = chunk.array;
         #[cfg(feature = "shared_dict")]
-        CategoryManagerT::add_remap_cats(
-            &mut self.category_manager,
-            std::iter::once(&mut array),
-        );
+        CategoryManagerT::add_remap_cats(&mut self.category_manager, std::iter::once(&mut array));
         self.chunks.push(array);
         if let Some(ref mut nc) = self.null_counts {
             nc.push(chunk.null_count);
@@ -993,10 +984,7 @@ impl SuperArray {
             return;
         }
         let mut chunks = std::mem::take(&mut self.chunks);
-        CategoryManagerT::add_remap_cats(
-            &mut self.category_manager,
-            chunks.iter_mut(),
-        );
+        CategoryManagerT::add_remap_cats(&mut self.category_manager, chunks.iter_mut());
         self.chunks = chunks;
     }
 }
@@ -1237,9 +1225,7 @@ impl SuperArray {
 
     /// Fallible variant of [`SuperArray::to_apache_arrow`].
     #[cfg(feature = "cast_arrow")]
-    pub fn try_to_apache_arrow(
-        &self,
-    ) -> Result<Vec<arrow::array::ArrayRef>, MinarrowError> {
+    pub fn try_to_apache_arrow(&self) -> Result<Vec<arrow::array::ArrayRef>, MinarrowError> {
         let mut out = Vec::with_capacity(self.chunks.len());
         // When a field is present, use it so logical types (Timestamp/Time/etc)
         // are preserved across chunks. Otherwise derive per chunk from shape.
@@ -1274,23 +1260,22 @@ impl SuperArray {
 
     /// Fallible variant of [`SuperArray::to_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_to_polars(
-        &self,
-    ) -> Result<polars::prelude::Series, MinarrowError> {
-        let field = self.field.as_deref().ok_or_else(|| MinarrowError::TypeError {
-            from: "SuperArray",
-            to: "polars::Series",
-            message: Some("SuperArray has no field metadata; assign one before exporting".into()),
-        })?;
+    pub fn try_to_polars(&self) -> Result<polars::prelude::Series, MinarrowError> {
+        let field = self
+            .field
+            .as_deref()
+            .ok_or_else(|| MinarrowError::TypeError {
+                from: "SuperArray",
+                to: "polars::Series",
+                message: Some(
+                    "SuperArray has no field metadata; assign one before exporting".into(),
+                ),
+            })?;
         let schema = crate::ffi::schema::Schema::from(vec![field.clone()]);
 
         if self.chunks.is_empty() {
             // Build an empty Series with the right dtype via an empty chunk.
-            return crate::ffi::polars::export(
-                Arc::new(Array::Null),
-                &field.name,
-                schema,
-            );
+            return crate::ffi::polars::export(Arc::new(Array::Null), &field.name, schema);
         }
 
         // Build a Series per chunk, then concatenate via polars to preserve chunks.
@@ -1302,11 +1287,8 @@ impl SuperArray {
         )?;
         let mut acc = first;
         for chunk in iter {
-            let s = crate::ffi::polars::export(
-                Arc::new(chunk.clone()),
-                &field.name,
-                schema.clone(),
-            )?;
+            let s =
+                crate::ffi::polars::export(Arc::new(chunk.clone()), &field.name, schema.clone())?;
             acc.append(&s)?;
         }
         Ok(acc)
@@ -1325,8 +1307,7 @@ impl SuperArray {
         name: impl Into<String>,
         chunks: &[arrow::array::ArrayRef],
     ) -> SuperArray {
-        Self::try_from_apache_arrow(name, chunks)
-            .expect("SuperArray::from_apache_arrow failed")
+        Self::try_from_apache_arrow(name, chunks).expect("SuperArray::from_apache_arrow failed")
     }
 
     /// Fallible variant of [`SuperArray::from_apache_arrow`].
@@ -1369,9 +1350,7 @@ impl SuperArray {
 
     /// Fallible variant of [`SuperArray::from_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_from_polars(
-        s: &polars::prelude::Series,
-    ) -> Result<SuperArray, MinarrowError> {
+    pub fn try_from_polars(s: &polars::prelude::Series) -> Result<SuperArray, MinarrowError> {
         use polars::prelude::CompatLevel;
         let n = s.n_chunks();
         if n == 0 {
@@ -1383,8 +1362,7 @@ impl SuperArray {
         let mut field_arrays = Vec::with_capacity(n);
         for i in 0..n {
             let arr2 = s.to_arrow(i, CompatLevel::oldest());
-            let (array_arc, field) =
-                crate::ffi::polars::import_chunk(&name, nullable, arr2)?;
+            let (array_arc, field) = crate::ffi::polars::import_chunk(&name, nullable, arr2)?;
             let array = Arc::try_unwrap(array_arc).unwrap_or_else(|arc| (*arc).clone());
             field_arrays.push(FieldArray::new(field, array));
         }
@@ -1790,7 +1768,10 @@ mod tests {
     /// others (single atomic store).
     #[cfg(all(
         feature = "shared_dict",
-        any(not(feature = "default_categorical_8"), feature = "extended_categorical")
+        any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        )
     ))]
     #[test]
     fn test_shared_dict_add_across_pushes() {

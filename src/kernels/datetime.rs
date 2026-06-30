@@ -83,11 +83,17 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
                 .map(|pdt| pdt.assume_utc())
         }),
         TimePeriod::Day => Some(|dt| dt.date().with_hms(0, 0, 0).ok().map(|pdt| pdt.assume_utc())),
-        TimePeriod::Hour => {
-            Some(|dt| dt.date().with_hms(dt.hour(), 0, 0).ok().map(|pdt| pdt.assume_utc()))
-        }
+        TimePeriod::Hour => Some(|dt| {
+            dt.date()
+                .with_hms(dt.hour(), 0, 0)
+                .ok()
+                .map(|pdt| pdt.assume_utc())
+        }),
         TimePeriod::Minute => Some(|dt| {
-            dt.date().with_hms(dt.hour(), dt.minute(), 0).ok().map(|pdt| pdt.assume_utc())
+            dt.date()
+                .with_hms(dt.hour(), dt.minute(), 0)
+                .ok()
+                .map(|pdt| pdt.assume_utc())
         }),
         TimePeriod::Second => Some(|dt| {
             dt.date()
@@ -144,7 +150,11 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
             match divisor {
                 None => true,
                 Some(divisor) => {
-                    match original.to_i64().map(|v| (v / divisor) * divisor).and_then(T::from_i64) {
+                    match original
+                        .to_i64()
+                        .map(|v| (v / divisor) * divisor)
+                        .and_then(T::from_i64)
+                    {
                         Some(t) => {
                             out[i] = t;
                             true
@@ -177,22 +187,31 @@ pub fn add_duration_into<T: Integer + FromPrimitive>(
     let duration_value: i64 = match src.time_unit {
         TimeUnit::Seconds => duration.whole_seconds(),
         TimeUnit::Milliseconds => {
-            duration.whole_milliseconds().try_into().map_err(|_| MinarrowError::Overflow {
-                value: format!("{} ms", duration.whole_milliseconds()),
-                target: "i64",
-            })?
+            duration
+                .whole_milliseconds()
+                .try_into()
+                .map_err(|_| MinarrowError::Overflow {
+                    value: format!("{} ms", duration.whole_milliseconds()),
+                    target: "i64",
+                })?
         }
         TimeUnit::Microseconds => {
-            duration.whole_microseconds().try_into().map_err(|_| MinarrowError::Overflow {
-                value: format!("{} μs", duration.whole_microseconds()),
-                target: "i64",
-            })?
+            duration
+                .whole_microseconds()
+                .try_into()
+                .map_err(|_| MinarrowError::Overflow {
+                    value: format!("{} μs", duration.whole_microseconds()),
+                    target: "i64",
+                })?
         }
         TimeUnit::Nanoseconds => {
-            duration.whole_nanoseconds().try_into().map_err(|_| MinarrowError::Overflow {
-                value: format!("{} ns", duration.whole_nanoseconds()),
-                target: "i64",
-            })?
+            duration
+                .whole_nanoseconds()
+                .try_into()
+                .map_err(|_| MinarrowError::Overflow {
+                    value: format!("{} ns", duration.whole_nanoseconds()),
+                    target: "i64",
+                })?
         }
         TimeUnit::Days => duration.whole_days(),
     };
@@ -203,7 +222,10 @@ pub fn add_duration_into<T: Integer + FromPrimitive>(
         let valid = if src.is_null(src_offset + i) {
             false
         } else {
-            match original.to_i64().and_then(|v| v.checked_add(duration_value)).and_then(T::from_i64)
+            match original
+                .to_i64()
+                .and_then(|v| v.checked_add(duration_value))
+                .and_then(T::from_i64)
             {
                 Some(t) => {
                     out[i] = t;
@@ -321,20 +343,56 @@ macro_rules! dt_component_into {
     };
 }
 
-dt_component_into!(year_into, "Calendar year of each datetime in the window.", |dt| dt.year());
-dt_component_into!(month_into, "Month (1-12) of each datetime in the window.", |dt| dt.month() as i32);
-dt_component_into!(day_into, "Day of month (1-31) of each datetime in the window.", |dt| dt.day() as i32);
-dt_component_into!(hour_into, "Hour (0-23) of each datetime in the window.", |dt| dt.hour() as i32);
-dt_component_into!(minute_into, "Minute (0-59) of each datetime in the window.", |dt| dt.minute() as i32);
-dt_component_into!(second_into, "Second (0-59) of each datetime in the window.", |dt| dt.second() as i32);
+dt_component_into!(
+    year_into,
+    "Calendar year of each datetime in the window.",
+    |dt| dt.year()
+);
+dt_component_into!(
+    month_into,
+    "Month (1-12) of each datetime in the window.",
+    |dt| dt.month() as i32
+);
+dt_component_into!(
+    day_into,
+    "Day of month (1-31) of each datetime in the window.",
+    |dt| dt.day() as i32
+);
+dt_component_into!(
+    hour_into,
+    "Hour (0-23) of each datetime in the window.",
+    |dt| dt.hour() as i32
+);
+dt_component_into!(
+    minute_into,
+    "Minute (0-59) of each datetime in the window.",
+    |dt| dt.minute() as i32
+);
+dt_component_into!(
+    second_into,
+    "Second (0-59) of each datetime in the window.",
+    |dt| dt.second() as i32
+);
 dt_component_into!(
     weekday_into,
     "Weekday (1=Sunday .. 7=Saturday) of each datetime in the window.",
     |dt| dt.weekday().number_from_sunday() as i32
 );
-dt_component_into!(day_of_year_into, "Day of year (1-366) of each datetime in the window.", |dt| dt.ordinal() as i32);
-dt_component_into!(iso_week_into, "ISO week number (1-53) of each datetime in the window.", |dt| dt.iso_week() as i32);
-dt_component_into!(quarter_into, "Quarter (1-4) of each datetime in the window.", |dt| ((dt.month() as i32 - 1) / 3) + 1);
+dt_component_into!(
+    day_of_year_into,
+    "Day of year (1-366) of each datetime in the window.",
+    |dt| dt.ordinal() as i32
+);
+dt_component_into!(
+    iso_week_into,
+    "ISO week number (1-53) of each datetime in the window.",
+    |dt| dt.iso_week() as i32
+);
+dt_component_into!(
+    quarter_into,
+    "Quarter (1-4) of each datetime in the window.",
+    |dt| ((dt.month() as i32 - 1) / 3) + 1
+);
 dt_component_into!(
     week_of_year_into,
     "Week of year (0-53, week 0 holds days before the first Sunday) of each datetime in the window.",
@@ -463,7 +521,15 @@ pub fn is_before_into<T: Integer + FromPrimitive, U: Integer + FromPrimitive>(
     out_bits: &mut Bitmask,
     out_mask: Option<&mut Bitmask>,
 ) {
-    binary_bool_into(lhs, lhs_offset, rhs, rhs_offset, out_bits, out_mask, |a, b| a < b)
+    binary_bool_into(
+        lhs,
+        lhs_offset,
+        rhs,
+        rhs_offset,
+        out_bits,
+        out_mask,
+        |a, b| a < b,
+    )
 }
 
 /// Whether each `lhs` datetime is strictly after the matching `rhs`. See [`binary_bool_into`].
@@ -475,7 +541,15 @@ pub fn is_after_into<T: Integer + FromPrimitive, U: Integer + FromPrimitive>(
     out_bits: &mut Bitmask,
     out_mask: Option<&mut Bitmask>,
 ) {
-    binary_bool_into(lhs, lhs_offset, rhs, rhs_offset, out_bits, out_mask, |a, b| a > b)
+    binary_bool_into(
+        lhs,
+        lhs_offset,
+        rhs,
+        rhs_offset,
+        out_bits,
+        out_mask,
+        |a, b| a > b,
+    )
 }
 
 /// Whether each `value` datetime falls within `[start, end]` of the matching windows,

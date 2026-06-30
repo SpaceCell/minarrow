@@ -246,7 +246,8 @@ impl SuperTable {
     fn add_dict_categories(&mut self, incoming: &mut Arc<Table>) {
         let table = Arc::make_mut(incoming);
         if self.category_managers.len() < table.cols.len() {
-            self.category_managers.resize_with(table.cols.len(), || None);
+            self.category_managers
+                .resize_with(table.cols.len(), || None);
         }
         for (col_idx, fa) in table.cols.iter_mut().enumerate() {
             CategoryManagerT::add_remap_cats(
@@ -1029,9 +1030,7 @@ impl SuperTable {
 
     /// Fallible variant of [`SuperTable::to_apache_arrow`].
     #[cfg(feature = "cast_arrow")]
-    pub fn try_to_apache_arrow(
-        &self,
-    ) -> Result<Vec<arrow::array::RecordBatch>, MinarrowError> {
+    pub fn try_to_apache_arrow(&self) -> Result<Vec<arrow::array::RecordBatch>, MinarrowError> {
         let mut out = Vec::with_capacity(self.batches.len());
         for batch in &self.batches {
             out.push(batch.try_to_apache_arrow()?);
@@ -1047,15 +1046,12 @@ impl SuperTable {
     #[cfg(feature = "cast_polars")]
     #[inline]
     pub fn to_polars(&self) -> polars::frame::DataFrame {
-        self.try_to_polars()
-            .expect("SuperTable::to_polars failed")
+        self.try_to_polars().expect("SuperTable::to_polars failed")
     }
 
     /// Fallible variant of [`SuperTable::to_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_to_polars(
-        &self,
-    ) -> Result<polars::frame::DataFrame, MinarrowError> {
+    pub fn try_to_polars(&self) -> Result<polars::frame::DataFrame, MinarrowError> {
         use polars::prelude::Column;
         if self.batches.is_empty() {
             // Build an empty DataFrame matching the schema.
@@ -1063,8 +1059,7 @@ impl SuperTable {
         }
 
         let n_cols = self.batches[0].n_cols();
-        let mut col_series: Vec<polars::prelude::Series> =
-            Vec::with_capacity(n_cols);
+        let mut col_series: Vec<polars::prelude::Series> = Vec::with_capacity(n_cols);
 
         // Per column, fold per-batch Series via `append` so chunks survive.
         for col_idx in 0..n_cols {
@@ -1092,11 +1087,8 @@ impl SuperTable {
     /// [`SuperTable::try_from_apache_arrow`].
     #[cfg(feature = "cast_arrow")]
     #[inline]
-    pub fn from_apache_arrow(
-        batches: &[arrow::array::RecordBatch],
-    ) -> SuperTable {
-        Self::try_from_apache_arrow(batches)
-            .expect("SuperTable::from_apache_arrow failed")
+    pub fn from_apache_arrow(batches: &[arrow::array::RecordBatch]) -> SuperTable {
+        Self::try_from_apache_arrow(batches).expect("SuperTable::from_apache_arrow failed")
     }
 
     /// Fallible variant of [`SuperTable::from_apache_arrow`].
@@ -1136,25 +1128,20 @@ impl SuperTable {
     #[cfg(feature = "cast_polars")]
     #[inline]
     pub fn from_polars(df: &polars::frame::DataFrame) -> SuperTable {
-        Self::try_from_polars(df)
-            .expect("SuperTable::from_polars failed")
+        Self::try_from_polars(df).expect("SuperTable::from_polars failed")
     }
 
     /// Fallible variant of [`SuperTable::from_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_from_polars(
-        df: &polars::frame::DataFrame,
-    ) -> Result<SuperTable, MinarrowError> {
+    pub fn try_from_polars(df: &polars::frame::DataFrame) -> Result<SuperTable, MinarrowError> {
         let columns = df.columns();
         if columns.is_empty() {
             return Ok(SuperTable::new(String::new()));
         }
 
         // Materialise each column to a Series and read its chunk count.
-        let series: Vec<&polars::prelude::Series> = columns
-            .iter()
-            .map(|c| c.as_materialized_series())
-            .collect();
+        let series: Vec<&polars::prelude::Series> =
+            columns.iter().map(|c| c.as_materialized_series()).collect();
         let n_chunks = series[0].n_chunks();
         let aligned = series.iter().all(|s| s.n_chunks() == n_chunks);
 
@@ -1177,13 +1164,9 @@ impl SuperTable {
             let mut cols = Vec::with_capacity(series.len());
             for s in &series {
                 let arr2 = s.to_arrow(chunk_idx, CompatLevel::oldest());
-                let (array_arc, field) = crate::ffi::polars::import_chunk(
-                    s.name().as_str(),
-                    s.null_count() > 0,
-                    arr2,
-                )?;
-                let array =
-                    Arc::try_unwrap(array_arc).unwrap_or_else(|arc| (*arc).clone());
+                let (array_arc, field) =
+                    crate::ffi::polars::import_chunk(s.name().as_str(), s.null_count() > 0, arr2)?;
+                let array = Arc::try_unwrap(array_arc).unwrap_or_else(|arc| (*arc).clone());
                 cols.push(FieldArray::new(field, array));
             }
             batches.push(Arc::new(Table::new(String::new(), Some(cols))));
@@ -1265,11 +1248,14 @@ macro_rules! st {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::arrow_dtype::ArrowType;
-    use crate::{fa_bool, fa_f64, fa_i32, fa_i64, fa_str32};
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[cfg(any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    ))]
     use crate::fa_cat32;
+    use crate::ffi::arrow_dtype::ArrowType;
     use crate::{Array, Field, FieldArray, MaskedArray, NumericArray, Table};
+    use crate::{fa_bool, fa_f64, fa_i32, fa_i64, fa_str32};
 
     fn table(cols: Vec<FieldArray>) -> Table {
         let n_rows = cols[0].len();
@@ -1331,7 +1317,10 @@ mod tests {
     #[test]
     fn test_push_and_consolidate() {
         let mut t = SuperTable::default();
-        t.push(Arc::new(table(vec![fa_i32!("x", 1, 2), fa_i32!("y", 3, 4)])));
+        t.push(Arc::new(table(vec![
+            fa_i32!("x", 1, 2),
+            fa_i32!("y", 3, 4),
+        ])));
         t.push(Arc::new(table(vec![fa_i32!("x", 5), fa_i32!("y", 6)])));
         assert_eq!(t.n_cols(), 2);
         assert_eq!(t.n_batches(), 2);
@@ -1349,7 +1338,10 @@ mod tests {
     fn test_push_col_count_mismatch() {
         let mut t = SuperTable::default();
         t.push(Arc::new(table(vec![fa_i32!("a", 1, 2)])));
-        t.push(Arc::new(table(vec![fa_i32!("a", 3, 4), fa_i32!("b", 5, 6)])));
+        t.push(Arc::new(table(vec![
+            fa_i32!("a", 3, 4),
+            fa_i32!("b", 5, 6),
+        ])));
     }
 
     #[cfg(feature = "views")]
@@ -1607,7 +1599,10 @@ mod tests {
     #[cfg(feature = "size")]
     fn test_rechunk_by_memory() {
         // Create a SuperTable with i32 data
-        let batch1 = Arc::new(table(vec![fa_i32!("a", 1, 2, 3, 4), fa_i32!("b", 5, 6, 7, 8)]));
+        let batch1 = Arc::new(table(vec![
+            fa_i32!("a", 1, 2, 3, 4),
+            fa_i32!("b", 5, 6, 7, 8),
+        ]));
         let batch2 = Arc::new(table(vec![
             fa_i32!("a", 9, 10, 11, 12),
             fa_i32!("b", 13, 14, 15, 16),
@@ -1690,10 +1685,7 @@ mod tests {
             fa_i32!("id", 1, 2, 3),
             fa_f64!("val", 1.5, 2.5, 3.5),
         ]));
-        let b2 = Arc::new(table(vec![
-            fa_i32!("id", 4, 5),
-            fa_f64!("val", 4.5, 5.5),
-        ]));
+        let b2 = Arc::new(table(vec![fa_i32!("id", 4, 5), fa_f64!("val", 4.5, 5.5)]));
         let st = SuperTable::from_batches(vec![b1, b2], None);
         let result = st.consolidate();
 
@@ -1944,7 +1936,10 @@ mod tests {
         }
     }
 
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[cfg(any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    ))]
     #[test]
     fn test_consolidate_arena_categorical() {
         let b1 = Arc::new(table(vec![fa_cat32!("cat", "a", "b", "a")]));
@@ -2078,7 +2073,7 @@ mod tests {
 mod st_macro_tests {
     use std::sync::Arc;
 
-    use crate::{fa_i32, tbl, SuperTable, Table};
+    use crate::{SuperTable, Table, fa_i32, tbl};
 
     fn make_batch(name: &str, ids: &[i32]) -> Table {
         tbl!("batch", fa_i32!(name, @slice ids))

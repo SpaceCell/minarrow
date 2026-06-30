@@ -24,7 +24,7 @@
 //! - Type promotion occurs automatically (e.g., Int32 + Float32 -> Float32)
 //! - Complex types (Table, Cube, SuperArray) support element-wise broadcasting
 
-use minarrow::{fa_i32, Array, FloatArray, IntegerArray, NumericArray, Table, Value, vec64};
+use minarrow::{Array, FloatArray, IntegerArray, NumericArray, Table, Value, fa_i32, vec64};
 use std::sync::Arc;
 
 #[cfg(feature = "views")]

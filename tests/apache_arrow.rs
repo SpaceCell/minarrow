@@ -26,8 +26,8 @@ use arrow::datatypes::{DataType as ADataType, TimeUnit as ATimeUnit};
 use arrow::record_batch::RecordBatch;
 
 use minarrow::{
-    fa_i32, fa_str32, fa_u32, Array as MArray, ArrowType, Field, FieldArray, MaskedArray,
-    NumericArray, Table, TextArray,
+    Array as MArray, ArrowType, Field, FieldArray, MaskedArray, NumericArray, Table, TextArray,
+    fa_i32, fa_str32, fa_u32,
 };
 
 #[cfg(feature = "datetime")]
@@ -225,7 +225,9 @@ fn test_array_from_arrow_round_trip_numeric() {
 
 #[test]
 fn test_array_from_arrow_round_trip_string() {
-    let arr = Arc::new(minarrow::StringArray::<u32>::from_slice(&["foo", "bar", ""]));
+    let arr = Arc::new(minarrow::StringArray::<u32>::from_slice(&[
+        "foo", "bar", "",
+    ]));
     let original = MArray::TextArray(TextArray::String32(arr));
     let arrow_ref = original.to_apache_arrow("s");
     let back = MArray::from_apache_arrow(&arrow_ref);
@@ -407,63 +409,78 @@ fn rt_arrow_i32() {
 #[test]
 fn rt_arrow_i64() {
     let mut a = minarrow::IntegerArray::<i64>::default();
-    for v in &[1i64, -2, 3, i64::MAX, i64::MIN] { a.push(*v); }
+    for v in &[1i64, -2, 3, i64::MAX, i64::MIN] {
+        a.push(*v);
+    }
     round_trip_array(MArray::from_int64(a), "i64");
 }
 
 #[test]
 fn rt_arrow_u32() {
     let mut a = minarrow::IntegerArray::<u32>::default();
-    for v in &[0u32, 1, u32::MAX] { a.push(*v); }
+    for v in &[0u32, 1, u32::MAX] {
+        a.push(*v);
+    }
     round_trip_array(MArray::from_uint32(a), "u32");
 }
 
 #[test]
 fn rt_arrow_u64() {
     let mut a = minarrow::IntegerArray::<u64>::default();
-    for v in &[0u64, 1, u64::MAX] { a.push(*v); }
+    for v in &[0u64, 1, u64::MAX] {
+        a.push(*v);
+    }
     round_trip_array(MArray::from_uint64(a), "u64");
 }
 
 #[test]
 fn rt_arrow_f32() {
     let mut a = minarrow::FloatArray::<f32>::default();
-    for v in &[0.0_f32, -1.5, 3.14, f32::INFINITY, f32::MIN, f32::MAX] { a.push(*v); }
+    for v in &[0.0_f32, -1.5, 3.14, f32::INFINITY, f32::MIN, f32::MAX] {
+        a.push(*v);
+    }
     round_trip_array(MArray::from_float32(a), "f32");
 }
 
 #[test]
 fn rt_arrow_f64() {
     let mut a = minarrow::FloatArray::<f64>::default();
-    for v in &[0.0_f64, -1.5, 3.14, f64::INFINITY, f64::MIN, f64::MAX] { a.push(*v); }
+    for v in &[0.0_f64, -1.5, 3.14, f64::INFINITY, f64::MIN, f64::MAX] {
+        a.push(*v);
+    }
     round_trip_array(MArray::from_float64(a), "f64");
 }
 
 #[test]
 fn rt_arrow_bool() {
     let mut a = minarrow::BooleanArray::<()>::default();
-    for v in &[true, false, true, true, false] { a.push(*v); }
+    for v in &[true, false, true, true, false] {
+        a.push(*v);
+    }
     round_trip_array(MArray::BooleanArray(std::sync::Arc::new(a)), "bool");
 }
 
 #[test]
 fn rt_arrow_string32() {
-    let arr = std::sync::Arc::new(
-        minarrow::StringArray::<u32>::from_slice(&["alpha", "beta", "gamma", ""])
-    );
+    let arr = std::sync::Arc::new(minarrow::StringArray::<u32>::from_slice(&[
+        "alpha", "beta", "gamma", "",
+    ]));
     round_trip_array(MArray::TextArray(TextArray::String32(arr)), "string32");
 }
 
 #[cfg(feature = "large_string")]
 #[test]
 fn rt_arrow_string64() {
-    let arr = std::sync::Arc::new(
-        minarrow::StringArray::<u64>::from_slice(&["one", "two", "three"])
-    );
+    let arr = std::sync::Arc::new(minarrow::StringArray::<u64>::from_slice(&[
+        "one", "two", "three",
+    ]));
     round_trip_array(MArray::TextArray(TextArray::String64(arr)), "string64");
 }
 
-#[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+#[cfg(any(
+    not(feature = "default_categorical_8"),
+    feature = "extended_categorical"
+))]
 #[test]
 fn rt_arrow_categorical32() {
     let arr = std::sync::Arc::new(minarrow::CategoricalArray::<u32>::from_slices(
@@ -531,7 +548,12 @@ fn rt_arrow_time32_ms() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("t32m", ArrowType::Time32(TimeUnit::Milliseconds), false, None),
+        Field::new(
+            "t32m",
+            ArrowType::Time32(TimeUnit::Milliseconds),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array(fa);
@@ -548,7 +570,12 @@ fn rt_arrow_time64_us() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("t64u", ArrowType::Time64(TimeUnit::Microseconds), false, None),
+        Field::new(
+            "t64u",
+            ArrowType::Time64(TimeUnit::Microseconds),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array(fa);
@@ -565,7 +592,12 @@ fn rt_arrow_time64_ns() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("t64n", ArrowType::Time64(TimeUnit::Nanoseconds), false, None),
+        Field::new(
+            "t64n",
+            ArrowType::Time64(TimeUnit::Nanoseconds),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array(fa);
@@ -582,7 +614,12 @@ fn rt_arrow_timestamp_s() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("ts_s", ArrowType::Timestamp(TimeUnit::Seconds, None), false, None),
+        Field::new(
+            "ts_s",
+            ArrowType::Timestamp(TimeUnit::Seconds, None),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array(fa);
@@ -599,7 +636,12 @@ fn rt_arrow_timestamp_ms() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("ts_ms", ArrowType::Timestamp(TimeUnit::Milliseconds, None), false, None),
+        Field::new(
+            "ts_ms",
+            ArrowType::Timestamp(TimeUnit::Milliseconds, None),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array(fa);
@@ -616,7 +658,12 @@ fn rt_arrow_timestamp_us() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("ts_us", ArrowType::Timestamp(TimeUnit::Microseconds, None), false, None),
+        Field::new(
+            "ts_us",
+            ArrowType::Timestamp(TimeUnit::Microseconds, None),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array(fa);
@@ -655,7 +702,12 @@ fn rt_arrow_duration32_sec() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("dur32s", ArrowType::Duration32(TimeUnit::Seconds), false, None),
+        Field::new(
+            "dur32s",
+            ArrowType::Duration32(TimeUnit::Seconds),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array(fa);
@@ -672,7 +724,12 @@ fn rt_arrow_duration64_ns() {
         },
     )));
     let fa = FieldArray::new(
-        Field::new("dur64n", ArrowType::Duration64(TimeUnit::Nanoseconds), false, None),
+        Field::new(
+            "dur64n",
+            ArrowType::Duration64(TimeUnit::Nanoseconds),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array(fa);
@@ -725,14 +782,18 @@ fn rt_arrow_string_with_nulls() {
 #[test]
 fn rt_arrow_i32_all_null() {
     let mut a = minarrow::IntegerArray::<i32>::default();
-    for _ in 0..5 { a.push_null(); }
+    for _ in 0..5 {
+        a.push_null();
+    }
     round_trip_array(MArray::from_int32(a), "i32_all_null");
 }
 
 #[test]
 fn rt_arrow_string_all_null() {
     let mut a = minarrow::StringArray::<u32>::default();
-    for _ in 0..3 { a.push_null(); }
+    for _ in 0..3 {
+        a.push_null();
+    }
     round_trip_array(MArray::from_string32(a), "string_all_null");
 }
 
@@ -740,12 +801,18 @@ fn rt_arrow_string_all_null() {
 
 #[test]
 fn rt_arrow_empty_i32() {
-    round_trip_array(MArray::from_int32(minarrow::IntegerArray::<i32>::default()), "empty_i32");
+    round_trip_array(
+        MArray::from_int32(minarrow::IntegerArray::<i32>::default()),
+        "empty_i32",
+    );
 }
 
 #[test]
 fn rt_arrow_empty_f64() {
-    round_trip_array(MArray::from_float64(minarrow::FloatArray::<f64>::default()), "empty_f64");
+    round_trip_array(
+        MArray::from_float64(minarrow::FloatArray::<f64>::default()),
+        "empty_f64",
+    );
 }
 
 #[test]
@@ -758,7 +825,10 @@ fn rt_arrow_empty_bool() {
 
 #[test]
 fn rt_arrow_empty_string() {
-    round_trip_array(MArray::from_string32(minarrow::StringArray::<u32>::default()), "empty_string");
+    round_trip_array(
+        MArray::from_string32(minarrow::StringArray::<u32>::default()),
+        "empty_string",
+    );
 }
 
 // ----- Single-element -----
@@ -800,7 +870,9 @@ fn rt_arrow_empty_super_table() {
 
 fn arr_i32_like(vals: &[i32]) -> MArray {
     let mut a = minarrow::IntegerArray::<i32>::default();
-    for v in vals { a.push(*v); }
+    for v in vals {
+        a.push(*v);
+    }
     MArray::from_int32(a)
 }
 
@@ -814,7 +886,10 @@ fn arr_i32_like(vals: &[i32]) -> MArray {
 /// the rebuilt structure.
 #[cfg(all(
     feature = "shared_dict",
-    any(not(feature = "default_categorical_8"), feature = "extended_categorical")
+    any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    )
 ))]
 #[test]
 fn rt_arrow_super_table_shared_categorical32() {
@@ -863,9 +938,9 @@ fn rt_arrow_super_table_shared_categorical32() {
         .batches
         .iter()
         .map(|b| match &b.cols[0].array {
-            MArray::TextArray(TextArray::Categorical32(c)) => {
-                (0..c.data.len()).map(|i| c.dictionary.values()[c.data[i] as usize].clone()).collect()
-            }
+            MArray::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
+                .map(|i| c.dictionary.values()[c.data[i] as usize].clone())
+                .collect(),
             _ => panic!("expected Categorical32"),
         })
         .collect();
@@ -883,9 +958,9 @@ fn rt_arrow_super_table_shared_categorical32() {
         .batches
         .iter()
         .map(|b| match &b.cols[0].array {
-            MArray::TextArray(TextArray::Categorical32(c)) => {
-                (0..c.data.len()).map(|i| c.dictionary.values()[c.data[i] as usize].clone()).collect()
-            }
+            MArray::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
+                .map(|i| c.dictionary.values()[c.data[i] as usize].clone())
+                .collect(),
             _ => panic!("expected Categorical32"),
         })
         .collect();

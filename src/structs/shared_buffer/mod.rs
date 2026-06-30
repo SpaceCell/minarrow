@@ -158,11 +158,10 @@ impl SharedBuffer {
             .len()
             .checked_mul(size_of_t)
             .expect("from_vec64_typed: len * size_of::<T> overflow");
-        let byte_cap = v
-            .0
-            .capacity()
-            .checked_mul(size_of_t)
-            .expect("from_vec64_typed: capacity * size_of::<T> overflow");
+        let byte_cap =
+            v.0.capacity()
+                .checked_mul(size_of_t)
+                .expect("from_vec64_typed: capacity * size_of::<T> overflow");
         let ptr = v.0.as_ptr() as *mut u8;
         std::mem::forget(v);
         let raw_vec = unsafe {
@@ -181,7 +180,9 @@ impl SharedBuffer {
         struct ArcOwner<M: ?Sized>(Arc<M>);
         impl<M: ?Sized + AsRef<[u8]>> AsRef<[u8]> for ArcOwner<M> {
             #[inline]
-            fn as_ref(&self) -> &[u8] { (*self.0).as_ref() }
+            fn as_ref(&self) -> &[u8] {
+                (*self.0).as_ref()
+            }
         }
         unsafe impl<M: ?Sized + Send + Sync> Send for ArcOwner<M> {}
         unsafe impl<M: ?Sized + Send + Sync> Sync for ArcOwner<M> {}
@@ -197,7 +198,9 @@ impl SharedBuffer {
         T: AsRef<[u8]> + Send + Sync + 'static,
     {
         unsafe fn drop_typed<T: AsRef<[u8]> + Send + Sync + 'static>(ptr: *mut ()) {
-            unsafe { drop(Box::from_raw(ptr as *mut Owned<T>)); }
+            unsafe {
+                drop(Box::from_raw(ptr as *mut Owned<T>));
+            }
         }
         let raw: *mut Owned<T> = Box::into_raw(Box::new(Owned {
             ref_cnt: AtomicUsize::new(1),

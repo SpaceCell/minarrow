@@ -236,22 +236,47 @@ impl NumericArray {
         }
     }
 
-    pub fn append_range(&mut self, other: &Self, offset: usize, len: usize) -> Result<(), MinarrowError> {
+    pub fn append_range(
+        &mut self,
+        other: &Self,
+        offset: usize,
+        len: usize,
+    ) -> Result<(), MinarrowError> {
         match (self, other) {
             #[cfg(feature = "extended_numeric_types")]
-            (NumericArray::Int8(a), NumericArray::Int8(b)) => Arc::make_mut(a).append_range(b, offset, len),
+            (NumericArray::Int8(a), NumericArray::Int8(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
             #[cfg(feature = "extended_numeric_types")]
-            (NumericArray::Int16(a), NumericArray::Int16(b)) => Arc::make_mut(a).append_range(b, offset, len),
-            (NumericArray::Int32(a), NumericArray::Int32(b)) => Arc::make_mut(a).append_range(b, offset, len),
-            (NumericArray::Int64(a), NumericArray::Int64(b)) => Arc::make_mut(a).append_range(b, offset, len),
+            (NumericArray::Int16(a), NumericArray::Int16(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
+            (NumericArray::Int32(a), NumericArray::Int32(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
+            (NumericArray::Int64(a), NumericArray::Int64(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
             #[cfg(feature = "extended_numeric_types")]
-            (NumericArray::UInt8(a), NumericArray::UInt8(b)) => Arc::make_mut(a).append_range(b, offset, len),
+            (NumericArray::UInt8(a), NumericArray::UInt8(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
             #[cfg(feature = "extended_numeric_types")]
-            (NumericArray::UInt16(a), NumericArray::UInt16(b)) => Arc::make_mut(a).append_range(b, offset, len),
-            (NumericArray::UInt32(a), NumericArray::UInt32(b)) => Arc::make_mut(a).append_range(b, offset, len),
-            (NumericArray::UInt64(a), NumericArray::UInt64(b)) => Arc::make_mut(a).append_range(b, offset, len),
-            (NumericArray::Float32(a), NumericArray::Float32(b)) => Arc::make_mut(a).append_range(b, offset, len),
-            (NumericArray::Float64(a), NumericArray::Float64(b)) => Arc::make_mut(a).append_range(b, offset, len),
+            (NumericArray::UInt16(a), NumericArray::UInt16(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
+            (NumericArray::UInt32(a), NumericArray::UInt32(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
+            (NumericArray::UInt64(a), NumericArray::UInt64(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
+            (NumericArray::Float32(a), NumericArray::Float32(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
+            (NumericArray::Float64(a), NumericArray::Float64(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
             (NumericArray::Null, NumericArray::Null) => Ok(()),
             (lhs, rhs) => Err(MinarrowError::TypeError {
                 from: "NumericArray",

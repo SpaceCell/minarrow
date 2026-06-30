@@ -256,9 +256,7 @@ pub fn write_simd_mask_bits<T: MaskElement, const N: usize>(
     out_mask: &mut Bitmask,
     offset: usize,
     m: Mask<T, N>,
-)
-where
-{
+) {
     let mbits = m.to_bitmask();
     let word_idx = offset / 64;
     let bit_shift = offset % 64;

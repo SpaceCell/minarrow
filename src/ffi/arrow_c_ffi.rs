@@ -163,7 +163,8 @@ pub struct ArrowArrayStream {
         Option<unsafe extern "C" fn(stream: *mut ArrowArrayStream, out: *mut ArrowSchema) -> i32>,
     pub get_next:
         Option<unsafe extern "C" fn(stream: *mut ArrowArrayStream, out: *mut ArrowArray) -> i32>,
-    pub get_last_error: Option<unsafe extern "C" fn(stream: *mut ArrowArrayStream) -> *const c_char>,
+    pub get_last_error:
+        Option<unsafe extern "C" fn(stream: *mut ArrowArrayStream) -> *const c_char>,
     pub release: Option<unsafe extern "C" fn(stream: *mut ArrowArrayStream)>,
     pub private_data: *mut c_void,
 }
@@ -352,7 +353,10 @@ pub fn fmt_c(dtype: ArrowType) -> CString {
             CategoricalIndexType::UInt8 => b"C",
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt16 => b"S",
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             CategoricalIndexType::UInt32 => b"I",
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt64 => b"L",
@@ -467,7 +471,10 @@ pub fn export_view_to_c(
         Array::TextArray(TextArray::String64(_)) => {
             export_string_array_to_c(&array, schema, offset, length)
         }
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         Array::TextArray(TextArray::Categorical32(cat)) => {
             let uniques = cat.unique_values().to_vec();
             export_categorical_array_to_c(&array, schema, offset, length, &uniques, 32)
@@ -527,7 +534,15 @@ fn export_string_array_to_c(
     let mut buf_ptrs = vec64![null_ptr, offsets_ptr, values_buf_ptr];
     let name_cstr = CString::new(schema.fields[0].name.clone()).unwrap();
     check_alignment(&mut buf_ptrs, length);
-    create_arrow_export(array.clone(), schema, buf_ptrs, 3, length, offset, name_cstr)
+    create_arrow_export(
+        array.clone(),
+        schema,
+        buf_ptrs,
+        3,
+        length,
+        offset,
+        name_cstr,
+    )
 }
 
 /// Exports a categorical array and its dictionary in Arrow C format.
@@ -593,7 +608,10 @@ fn export_categorical_array_to_c(
         8 => ArrowType::Dictionary(crate::ffi::arrow_dtype::CategoricalIndexType::UInt8),
         #[cfg(feature = "extended_categorical")]
         16 => ArrowType::Dictionary(crate::ffi::arrow_dtype::CategoricalIndexType::UInt16),
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         32 => ArrowType::Dictionary(crate::ffi::arrow_dtype::CategoricalIndexType::UInt32),
         #[cfg(feature = "extended_categorical")]
         64 => ArrowType::Dictionary(crate::ffi::arrow_dtype::CategoricalIndexType::UInt64),
@@ -744,7 +762,10 @@ pub unsafe fn import_from_c(arr_ptr: *const ArrowArray, sch_ptr: *const ArrowSch
 
     // When default_categorical_8 is on without extended_categorical and Arrow sends
     // i32 dictionary indices, narrow them to u8 before building CategoricalArray<u8>
-    #[cfg(all(feature = "default_categorical_8", not(feature = "extended_categorical")))]
+    #[cfg(all(
+        feature = "default_categorical_8",
+        not(feature = "extended_categorical")
+    ))]
     if is_dict && matches!(dtype, ArrowType::Int32 | ArrowType::UInt32) {
         return unsafe { import_categorical_narrow_to_u8(arr, sch, None) };
     }
@@ -759,7 +780,10 @@ pub unsafe fn import_from_c(arr_ptr: *const ArrowArray, sch_ptr: *const ArrowSch
             #[cfg(feature = "extended_numeric_types")]
             #[cfg(feature = "extended_categorical")]
             ArrowType::Int16 | ArrowType::UInt16 => CategoricalIndexType::UInt16,
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             ArrowType::Int32 | ArrowType::UInt32 => CategoricalIndexType::UInt32,
             #[cfg(feature = "extended_numeric_types")]
             #[cfg(feature = "extended_categorical")]
@@ -916,7 +940,10 @@ pub unsafe fn import_from_c_owned(
                         #[cfg(not(feature = "extended_categorical"))]
                         panic!("Extended categorical not enabled")
                     }
-                    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                    #[cfg(any(
+                        not(feature = "default_categorical_8"),
+                        feature = "extended_categorical"
+                    ))]
                     ArrowType::Int32 | ArrowType::UInt32 => CategoricalIndexType::UInt32,
                     #[cfg(feature = "extended_numeric_types")]
                     ArrowType::Int64 | ArrowType::UInt64 => {
@@ -1016,8 +1043,14 @@ unsafe fn import_array_zero_copy(
         let sch = unsafe { &*sch_ptr };
 
         // Narrow i32 Arrow dictionary indices to u8 when only CategoricalArray<u8> is available
-        #[cfg(all(feature = "default_categorical_8", not(feature = "extended_categorical")))]
-        if matches!(dtype, ArrowType::Int32 | ArrowType::UInt32 | ArrowType::Dictionary(_)) {
+        #[cfg(all(
+            feature = "default_categorical_8",
+            not(feature = "extended_categorical")
+        ))]
+        if matches!(
+            dtype,
+            ArrowType::Int32 | ArrowType::UInt32 | ArrowType::Dictionary(_)
+        ) {
             return unsafe { import_categorical_narrow_to_u8(arr, sch, Some(arr_box)) };
         }
 
@@ -1037,7 +1070,10 @@ unsafe fn import_array_zero_copy(
                         feature = "extended_categorical"
                     ))]
                     ArrowType::Int16 | ArrowType::UInt16 => CategoricalIndexType::UInt16,
-                    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                    #[cfg(any(
+                        not(feature = "default_categorical_8"),
+                        feature = "extended_categorical"
+                    ))]
                     ArrowType::Int32 | ArrowType::UInt32 => CategoricalIndexType::UInt32,
                     #[cfg(all(
                         feature = "extended_numeric_types",
@@ -1113,11 +1149,7 @@ unsafe fn import_array_zero_copy(
 ///
 /// # Safety
 /// `ptr` must point to a bit-packed buffer of at least `(offset + len + 7) / 8` bytes.
-unsafe fn import_null_mask_offset(
-    ptr: *const u8,
-    offset: usize,
-    len: usize,
-) -> Bitmask {
+unsafe fn import_null_mask_offset(ptr: *const u8, offset: usize, len: usize) -> Bitmask {
     if offset == 0 {
         unsafe { Bitmask::from_raw_slice(ptr, len) }
     } else {
@@ -1342,9 +1374,8 @@ unsafe fn import_utf8<T: Integer>(
 
     // Read offsets[offset..offset+len+1]; with offset=0 this matches the
     // pre-existing behaviour. Validation walks the windowed range.
-    let offsets_slice = unsafe {
-        std::slice::from_raw_parts((offsets_ptr as *const T).add(offset), len + 1)
-    };
+    let offsets_slice =
+        unsafe { std::slice::from_raw_parts((offsets_ptr as *const T).add(offset), len + 1) };
 
     assert_eq!(
         offsets_slice.len(),
@@ -1400,9 +1431,8 @@ unsafe fn import_utf8<T: Integer>(
         let shared = SharedBuffer::from_owner(foreign);
         Buffer::from_shared(shared)
     } else {
-        let data = unsafe {
-            std::slice::from_raw_parts((values_ptr as *const u8).add(base), data_len)
-        };
+        let data =
+            unsafe { std::slice::from_raw_parts((values_ptr as *const u8).add(base), data_len) };
         Vec64::from(data).into()
     };
 
@@ -1635,7 +1665,10 @@ unsafe fn import_categorical(
             let arr = CategoricalArray::<u16>::new(codes_buf, dict_strings, null_mask);
             Arc::new(Array::TextArray(TextArray::Categorical16(Arc::new(arr))))
         }
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         CategoricalIndexType::UInt32 => {
             let codes_buf = unsafe { build_codes::<u32>(codes_ptr, offset, len, ownership) };
             let arr = CategoricalArray::<u32>::new(codes_buf, dict_strings, null_mask);
@@ -1659,7 +1692,10 @@ unsafe fn import_categorical(
 ///
 /// # Safety
 /// Caller must ensure the ArrowArray and ArrowSchema pointers are valid.
-#[cfg(all(feature = "default_categorical_8", not(feature = "extended_categorical")))]
+#[cfg(all(
+    feature = "default_categorical_8",
+    not(feature = "extended_categorical")
+))]
 unsafe fn import_categorical_narrow_to_u8(
     arr: &ArrowArray,
     sch: &ArrowSchema,
@@ -2049,12 +2085,8 @@ pub fn export_table_view_to_c(
     for (field, col) in view.fields.iter().zip(view.cols.iter()) {
         let col_schema = Schema::from(vec![(**field).clone()]);
         let arr_arc = Arc::new(col.array.clone());
-        let (arr_ptr, sch_ptr) = export_view_to_c(
-            arr_arc,
-            col_schema,
-            col.offset as i64,
-            col.len() as i64,
-        );
+        let (arr_ptr, sch_ptr) =
+            export_view_to_c(arr_arc, col_schema, col.offset as i64, col.len() as i64);
         child_array_ptrs.push(arr_ptr);
         child_schema_ptrs.push(sch_ptr);
     }
@@ -3135,11 +3167,17 @@ unsafe fn field_from_c_schema(schema: &ArrowSchema) -> crate::Field {
             b"c" | b"C" => CategoricalIndexType::UInt8,
             #[cfg(all(feature = "extended_numeric_types", feature = "extended_categorical"))]
             b"s" | b"S" => CategoricalIndexType::UInt16,
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             b"i" | b"I" => CategoricalIndexType::UInt32,
             // When default_categorical_8 is on without extended_categorical,
             // record as UInt8 for schema purposes - actual narrowing happens at import time
-            #[cfg(all(feature = "default_categorical_8", not(feature = "extended_categorical")))]
+            #[cfg(all(
+                feature = "default_categorical_8",
+                not(feature = "extended_categorical")
+            ))]
             b"i" | b"I" => CategoricalIndexType::UInt8,
             #[cfg(all(feature = "extended_numeric_types", feature = "extended_categorical"))]
             b"l" | b"L" => CategoricalIndexType::UInt64,
@@ -3884,8 +3922,10 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn test_table_view_export_round_trip() {
-        use super::{export_table_view_to_c, import_record_batch_stream_with_metadata,
-                    export_record_batch_view_stream};
+        use super::{
+            export_record_batch_view_stream, export_table_view_to_c,
+            import_record_batch_stream_with_metadata,
+        };
         use crate::{Table, TableV};
 
         let mut a = IntegerArray::<i32>::default();
@@ -3914,8 +3954,7 @@ mod tests {
         let fields: Vec<Field> = view.fields.iter().map(|f| (**f).clone()).collect();
         let stream = export_record_batch_view_stream(vec![view.clone()], fields, None);
         let stream_ptr = Box::into_raw(stream);
-        let (batches, _meta) =
-            unsafe { import_record_batch_stream_with_metadata(stream_ptr) };
+        let (batches, _meta) = unsafe { import_record_batch_stream_with_metadata(stream_ptr) };
 
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].len(), 2);
@@ -4045,33 +4084,20 @@ mod tests {
         let stream = export_super_table_view_stream(&super_view, None);
         let stream_ptr = Box::into_raw(stream);
 
-        let (batches, _meta) =
-            unsafe { import_record_batch_stream_with_metadata(stream_ptr) };
+        let (batches, _meta) = unsafe { import_record_batch_stream_with_metadata(stream_ptr) };
         assert_eq!(batches.len(), 2);
 
         // Batch 0: a=[1,2,3], b=[1.0,2.0,3.0]
         let (col_a0, _) = &batches[0][0];
         let (col_b0, _) = &batches[0][1];
-        assert_eq!(
-            col_a0.num().i32().data.as_slice(),
-            &[1, 2, 3]
-        );
-        assert_eq!(
-            col_b0.num().f64().data.as_slice(),
-            &[1.0, 2.0, 3.0]
-        );
+        assert_eq!(col_a0.num().i32().data.as_slice(), &[1, 2, 3]);
+        assert_eq!(col_b0.num().f64().data.as_slice(), &[1.0, 2.0, 3.0]);
 
         // Batch 1: a=[105,106], b=[105.0,106.0]
         let (col_a1, _) = &batches[1][0];
         let (col_b1, _) = &batches[1][1];
-        assert_eq!(
-            col_a1.num().i32().data.as_slice(),
-            &[105, 106]
-        );
-        assert_eq!(
-            col_b1.num().f64().data.as_slice(),
-            &[105.0, 106.0]
-        );
+        assert_eq!(col_a1.num().i32().data.as_slice(), &[105, 106]);
+        assert_eq!(col_b1.num().f64().data.as_slice(), &[105.0, 106.0]);
     }
 
     /// Exercises `import_null_mask_offset`: a windowed view that spans
@@ -4106,7 +4132,10 @@ mod tests {
             let inner = imported.num().i32();
             assert_eq!(inner.data.as_slice(), &[3, 4, 5, 6, 7, 8, 9]);
 
-            let mask = inner.null_mask.clone().expect("null mask must survive offset");
+            let mask = inner
+                .null_mask
+                .clone()
+                .expect("null mask must survive offset");
             // Indices in the imported array: 1 (was parent index 4) and
             // 4 (was parent index 7) should read as null; everything else valid.
             for i in 0..7 {
@@ -4198,7 +4227,10 @@ mod tests {
     /// buffer is windowed via `ArrowArray.offset`, dictionary stays full.
     #[cfg(all(
         feature = "views",
-        any(not(feature = "default_categorical_8"), feature = "extended_categorical")
+        any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        )
     ))]
     #[test]
     fn test_view_export_categorical_window() {

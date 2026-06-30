@@ -97,9 +97,21 @@ pub fn bitmask_binop_std_into(
     if len == 0 {
         return;
     }
-    debug_assert_eq!(out_off % 8, 0, "bitmask_binop_std_into: out_off must be byte-aligned");
-    debug_assert_eq!(lhs_off % 8, 0, "bitmask_binop_std_into: lhs offset must be byte-aligned");
-    debug_assert_eq!(rhs_off % 8, 0, "bitmask_binop_std_into: rhs offset must be byte-aligned");
+    debug_assert_eq!(
+        out_off % 8,
+        0,
+        "bitmask_binop_std_into: out_off must be byte-aligned"
+    );
+    debug_assert_eq!(
+        lhs_off % 8,
+        0,
+        "bitmask_binop_std_into: lhs offset must be byte-aligned"
+    );
+    debug_assert_eq!(
+        rhs_off % 8,
+        0,
+        "bitmask_binop_std_into: rhs offset must be byte-aligned"
+    );
     let full_words = len / 64;
     let tail_bits = len % 64;
     {
@@ -162,8 +174,16 @@ pub fn bitmask_unop_std_into(
     if len == 0 {
         return;
     }
-    debug_assert_eq!(out_off % 8, 0, "bitmask_unop_std_into: out_off must be byte-aligned");
-    debug_assert_eq!(offset % 8, 0, "bitmask_unop_std_into: src offset must be byte-aligned");
+    debug_assert_eq!(
+        out_off % 8,
+        0,
+        "bitmask_unop_std_into: out_off must be byte-aligned"
+    );
+    debug_assert_eq!(
+        offset % 8,
+        0,
+        "bitmask_unop_std_into: src offset must be byte-aligned"
+    );
     let full_words = len / 64;
     let tail_bits = len % 64;
     {

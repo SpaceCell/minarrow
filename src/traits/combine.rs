@@ -28,11 +28,11 @@
 //!
 //! [`Concatenate`]: crate::Concatenate
 
-use crate::enums::error::MinarrowError;
 #[cfg(feature = "cube")]
 use crate::Cube;
 #[cfg(feature = "views")]
 use crate::TableV;
+use crate::enums::error::MinarrowError;
 use crate::{FieldArray, Table};
 
 /// Build a new container from `elements`, inheriting `&self`'s name,

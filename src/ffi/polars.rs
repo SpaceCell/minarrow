@@ -91,11 +91,7 @@ const _: () = assert!(
 /// `schema.fields[0]` supplies the logical type for the export. The Series
 /// name is taken from `name` (Series carry their own name, separate from
 /// schema field names).
-pub fn export(
-    array: Arc<Array>,
-    name: &str,
-    schema: Schema,
-) -> Result<Series, MinarrowError> {
+pub fn export(array: Arc<Array>, name: &str, schema: Schema) -> Result<Series, MinarrowError> {
     let field_dtype = schema.fields[0].dtype.clone();
     let (c_arr, c_schema) = export_to_c(array, schema);
 
@@ -115,13 +111,13 @@ pub fn export(
 
     let a2_dtype = arrow_type_to_polars_dtype(&field_dtype);
 
-    let a2_array = unsafe {
-        polars_arrow::ffi::import_array_from_c(arr_val, a2_dtype)
-    }
-    .map_err(|e| MinarrowError::BridgeError {
-        source: "polars_arrow",
-        message: format!("import_array_from_c: {e}"),
-    })?;
+    let a2_array =
+        unsafe { polars_arrow::ffi::import_array_from_c(arr_val, a2_dtype) }.map_err(|e| {
+            MinarrowError::BridgeError {
+                source: "polars_arrow",
+                message: format!("import_array_from_c: {e}"),
+            }
+        })?;
 
     Ok(Series::from_arrow(name.into(), a2_array)?)
 }
@@ -145,8 +141,7 @@ pub fn import_chunk(
         polars_arrow::datatypes::ArrowDataType::Dictionary(..)
     );
     let pa_arr = polars_arrow::ffi::export_array_to_c(arr2);
-    let pa_field =
-        polars_arrow::datatypes::Field::new(name.into(), dtype, nullable);
+    let pa_field = polars_arrow::datatypes::Field::new(name.into(), dtype, nullable);
     let pa_sch = polars_arrow::ffi::export_field_to_c(&pa_field);
 
     let arr_ptr = Box::into_raw(Box::new(pa_arr)) as *mut ArrowArray;
@@ -161,19 +156,15 @@ pub fn import_chunk(
     // Surface a clear bridge error instead of risking silent data corruption.
     #[cfg(target_os = "macos")]
     {
-        if is_dictionary
-            && !arr_box.dictionary.is_null()
-            && sch_box.dictionary.is_null()
-        {
+        if is_dictionary && !arr_box.dictionary.is_null() && sch_box.dictionary.is_null() {
             return Err(MinarrowError::BridgeError {
                 source: "polars",
-                message:
-                    "Due to a Polars FFI boundary edge case this operation \
+                message: "Due to a Polars FFI boundary edge case this operation \
                      is currently unsupported on macOS, due to silent \
                      failure concerns. If this affects you for an important \
                      use case, please file an issue and/or PR and we can \
                      consider allocating resources to the fix."
-                        .to_string(),
+                    .to_string(),
             });
         }
     }
@@ -224,102 +215,60 @@ fn arrow_type_to_polars_dtype(dtype: &ArrowType) -> polars_arrow::datatypes::Arr
         ArrowType::Date64 => polars_arrow::datatypes::ArrowDataType::Date64,
 
         #[cfg(feature = "datetime")]
-        ArrowType::Time32(u) => {
-            polars_arrow::datatypes::ArrowDataType::Time32(match u {
-                crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
-                crate::TimeUnit::Milliseconds => {
-                    polars_arrow::datatypes::TimeUnit::Millisecond
-                }
-                _ => panic!("Time32 supports Seconds or Milliseconds only"),
-            })
-        }
+        ArrowType::Time32(u) => polars_arrow::datatypes::ArrowDataType::Time32(match u {
+            crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
+            crate::TimeUnit::Milliseconds => polars_arrow::datatypes::TimeUnit::Millisecond,
+            _ => panic!("Time32 supports Seconds or Milliseconds only"),
+        }),
         #[cfg(feature = "datetime")]
-        ArrowType::Time64(u) => {
-            polars_arrow::datatypes::ArrowDataType::Time64(match u {
-                crate::TimeUnit::Microseconds => {
-                    polars_arrow::datatypes::TimeUnit::Microsecond
-                }
-                crate::TimeUnit::Nanoseconds => {
-                    polars_arrow::datatypes::TimeUnit::Nanosecond
-                }
-                _ => panic!("Time64 supports Microseconds or Nanoseconds only"),
-            })
-        }
+        ArrowType::Time64(u) => polars_arrow::datatypes::ArrowDataType::Time64(match u {
+            crate::TimeUnit::Microseconds => polars_arrow::datatypes::TimeUnit::Microsecond,
+            crate::TimeUnit::Nanoseconds => polars_arrow::datatypes::TimeUnit::Nanosecond,
+            _ => panic!("Time64 supports Microseconds or Nanoseconds only"),
+        }),
         #[cfg(feature = "datetime")]
-        ArrowType::Duration32(u) => {
-            polars_arrow::datatypes::ArrowDataType::Duration(match u {
-                crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
-                crate::TimeUnit::Milliseconds => {
-                    polars_arrow::datatypes::TimeUnit::Millisecond
-                }
-                _ => panic!("Duration32 supports Seconds or Milliseconds only"),
-            })
-        }
+        ArrowType::Duration32(u) => polars_arrow::datatypes::ArrowDataType::Duration(match u {
+            crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
+            crate::TimeUnit::Milliseconds => polars_arrow::datatypes::TimeUnit::Millisecond,
+            _ => panic!("Duration32 supports Seconds or Milliseconds only"),
+        }),
         #[cfg(feature = "datetime")]
-        ArrowType::Duration64(u) => {
-            polars_arrow::datatypes::ArrowDataType::Duration(match u {
-                crate::TimeUnit::Microseconds => {
-                    polars_arrow::datatypes::TimeUnit::Microsecond
-                }
-                crate::TimeUnit::Nanoseconds => {
-                    polars_arrow::datatypes::TimeUnit::Nanosecond
-                }
-                _ => panic!("Duration64 supports Microseconds or Nanoseconds only"),
-            })
-        }
+        ArrowType::Duration64(u) => polars_arrow::datatypes::ArrowDataType::Duration(match u {
+            crate::TimeUnit::Microseconds => polars_arrow::datatypes::TimeUnit::Microsecond,
+            crate::TimeUnit::Nanoseconds => polars_arrow::datatypes::TimeUnit::Nanosecond,
+            _ => panic!("Duration64 supports Microseconds or Nanoseconds only"),
+        }),
         #[cfg(feature = "datetime")]
         ArrowType::Timestamp(u, tz) => polars_arrow::datatypes::ArrowDataType::Timestamp(
             match u {
                 crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
-                crate::TimeUnit::Milliseconds => {
-                    polars_arrow::datatypes::TimeUnit::Millisecond
-                }
-                crate::TimeUnit::Microseconds => {
-                    polars_arrow::datatypes::TimeUnit::Microsecond
-                }
-                crate::TimeUnit::Nanoseconds => {
-                    polars_arrow::datatypes::TimeUnit::Nanosecond
-                }
+                crate::TimeUnit::Milliseconds => polars_arrow::datatypes::TimeUnit::Millisecond,
+                crate::TimeUnit::Microseconds => polars_arrow::datatypes::TimeUnit::Microsecond,
+                crate::TimeUnit::Nanoseconds => polars_arrow::datatypes::TimeUnit::Nanosecond,
                 crate::TimeUnit::Days => panic!("Timestamp(Days) is invalid"),
             },
             tz.as_ref().map(|s| s.as_str().into()),
         ),
         #[cfg(feature = "datetime")]
-        ArrowType::Interval(iu) => {
-            polars_arrow::datatypes::ArrowDataType::Interval(match iu {
-                crate::IntervalUnit::YearMonth => {
-                    polars_arrow::datatypes::IntervalUnit::YearMonth
-                }
-                crate::IntervalUnit::DaysTime => {
-                    polars_arrow::datatypes::IntervalUnit::DayTime
-                }
-                crate::IntervalUnit::MonthDaysNs => {
-                    polars_arrow::datatypes::IntervalUnit::MonthDayNano
-                }
-            })
-        }
+        ArrowType::Interval(iu) => polars_arrow::datatypes::ArrowDataType::Interval(match iu {
+            crate::IntervalUnit::YearMonth => polars_arrow::datatypes::IntervalUnit::YearMonth,
+            crate::IntervalUnit::DaysTime => polars_arrow::datatypes::IntervalUnit::DayTime,
+            crate::IntervalUnit::MonthDaysNs => polars_arrow::datatypes::IntervalUnit::MonthDayNano,
+        }),
 
         ArrowType::Dictionary(idx) => {
             let key: polars_arrow::datatypes::IntegerType = match idx {
                 #[cfg(feature = "default_categorical_8")]
-                CategoricalIndexType::UInt8 => {
-                    polars_arrow::datatypes::IntegerType::UInt8
-                }
+                CategoricalIndexType::UInt8 => polars_arrow::datatypes::IntegerType::UInt8,
                 #[cfg(feature = "extended_categorical")]
-                CategoricalIndexType::UInt16 => {
-                    polars_arrow::datatypes::IntegerType::UInt16
-                }
+                CategoricalIndexType::UInt16 => polars_arrow::datatypes::IntegerType::UInt16,
                 #[cfg(any(
                     not(feature = "default_categorical_8"),
                     feature = "extended_categorical"
                 ))]
-                CategoricalIndexType::UInt32 => {
-                    polars_arrow::datatypes::IntegerType::UInt32
-                }
+                CategoricalIndexType::UInt32 => polars_arrow::datatypes::IntegerType::UInt32,
                 #[cfg(feature = "extended_categorical")]
-                CategoricalIndexType::UInt64 => {
-                    polars_arrow::datatypes::IntegerType::UInt64
-                }
+                CategoricalIndexType::UInt64 => polars_arrow::datatypes::IntegerType::UInt64,
             };
             polars_arrow::datatypes::ArrowDataType::Dictionary(
                 key,

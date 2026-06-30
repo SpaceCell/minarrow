@@ -119,12 +119,15 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
     fn consolidate(self) -> Self::Output {
         use crate::enums::array::Array;
         use crate::enums::collections::numeric_array::NumericArray;
-        use crate::enums::collections::text_array::TextArray;
         #[cfg(feature = "datetime")]
         use crate::enums::collections::temporal_array::TemporalArray;
+        use crate::enums::collections::text_array::TextArray;
         use std::sync::Arc;
 
-        assert!(!self.is_empty(), "consolidate() called on empty Vec<ArrayVT>");
+        assert!(
+            !self.is_empty(),
+            "consolidate() called on empty Vec<ArrayVT>"
+        );
 
         // Gather typed AVT tuples for the matching variant. Every chunk
         // must share the same width as the first; mismatches are a
@@ -135,9 +138,7 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
                     .iter()
                     .map(|(arr, off, len)| match arr {
                         Array::NumericArray(NumericArray::$variant(a)) => (a.as_ref(), *off, *len),
-                        _ => panic!(
-                            "inconsistent NumericArray variants in chunk vector"
-                        ),
+                        _ => panic!("inconsistent NumericArray variants in chunk vector"),
                     })
                     .collect();
                 Array::NumericArray(NumericArray::$variant(Arc::new(views.consolidate())))
@@ -150,9 +151,7 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
                     .iter()
                     .map(|(arr, off, len)| match arr {
                         Array::NumericArray(NumericArray::$variant(a)) => (a.as_ref(), *off, *len),
-                        _ => panic!(
-                            "inconsistent NumericArray variants in chunk vector"
-                        ),
+                        _ => panic!("inconsistent NumericArray variants in chunk vector"),
                     })
                     .collect();
                 Array::NumericArray(NumericArray::$variant(Arc::new(views.consolidate())))
@@ -165,9 +164,7 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
                     .iter()
                     .map(|(arr, off, len)| match arr {
                         Array::TextArray(TextArray::$variant(a)) => (a.as_ref(), *off, *len),
-                        _ => panic!(
-                            "inconsistent TextArray variants in chunk vector"
-                        ),
+                        _ => panic!("inconsistent TextArray variants in chunk vector"),
                     })
                     .collect();
                 Array::TextArray(TextArray::$variant(Arc::new(views.consolidate())))
@@ -180,9 +177,7 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
                     .iter()
                     .map(|(arr, off, len)| match arr {
                         Array::TextArray(TextArray::$variant(a)) => (a.as_ref(), *off, *len),
-                        _ => panic!(
-                            "inconsistent TextArray variants in chunk vector"
-                        ),
+                        _ => panic!("inconsistent TextArray variants in chunk vector"),
                     })
                     .collect();
                 Array::TextArray(TextArray::$variant(Arc::new(views.consolidate())))
@@ -198,9 +193,7 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
                         Array::TemporalArray(TemporalArray::$variant(a)) => {
                             (a.as_ref(), *off, *len)
                         }
-                        _ => panic!(
-                            "inconsistent TemporalArray variants in chunk vector"
-                        ),
+                        _ => panic!("inconsistent TemporalArray variants in chunk vector"),
                     })
                     .collect();
                 Array::TemporalArray(TemporalArray::$variant(Arc::new(views.consolidate())))
@@ -227,14 +220,23 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
             Array::TextArray(TextArray::String32(_)) => gather_string!(String32, u32),
             #[cfg(feature = "large_string")]
             Array::TextArray(TextArray::String64(_)) => gather_string!(String64, u64),
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-            Array::TextArray(TextArray::Categorical32(_)) => gather_categorical!(Categorical32, u32),
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            Array::TextArray(TextArray::Categorical32(_)) => {
+                gather_categorical!(Categorical32, u32)
+            }
             #[cfg(feature = "default_categorical_8")]
             Array::TextArray(TextArray::Categorical8(_)) => gather_categorical!(Categorical8, u8),
             #[cfg(feature = "extended_categorical")]
-            Array::TextArray(TextArray::Categorical16(_)) => gather_categorical!(Categorical16, u16),
+            Array::TextArray(TextArray::Categorical16(_)) => {
+                gather_categorical!(Categorical16, u16)
+            }
             #[cfg(feature = "extended_categorical")]
-            Array::TextArray(TextArray::Categorical64(_)) => gather_categorical!(Categorical64, u64),
+            Array::TextArray(TextArray::Categorical64(_)) => {
+                gather_categorical!(Categorical64, u64)
+            }
             Array::TextArray(TextArray::Null) => Array::Null,
 
             Array::BooleanArray(_) => {
@@ -259,4 +261,3 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
         }
     }
 }
-

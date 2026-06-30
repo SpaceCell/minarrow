@@ -174,7 +174,10 @@ impl Field {
                     a.is_nullable(),
                     Some(metadata),
                 ),
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 TextArray::Categorical32(a) => Field::new(
                     name,
                     ArrowType::Dictionary(CategoricalIndexType::UInt32),

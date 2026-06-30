@@ -255,7 +255,9 @@ impl<T: Integer> CategoricalArray<T> {
                 codes.push(code);
             } else {
                 let idx = unique_values.len();
-                let code = T::try_from(idx).ok().ok_or(MinarrowError::DictionaryOverflow)?;
+                let code = T::try_from(idx)
+                    .ok()
+                    .ok_or(MinarrowError::DictionaryOverflow)?;
                 unique_values.push(s.to_string());
                 dict.insert(s, code);
                 codes.push(code);
@@ -640,7 +642,10 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
 
     type LogicalType = String;
 
-    type CopyType<'a> = &'a str where Self: 'a;
+    type CopyType<'a>
+        = &'a str
+    where
+        Self: 'a;
 
     /// Removes the rows in `[start, end)`, shifting later rows left.
     /// The dictionary is unchanged: entries left unreferenced remain valid.
@@ -781,11 +786,7 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
 
     /// Returns an iterator over `Option<&str>` values for a specified range.
     #[inline]
-    fn iter_opt_range(
-        &self,
-        offset: usize,
-        len: usize,
-    ) -> impl Iterator<Item = Option<&str>> + '_ {
+    fn iter_opt_range(&self, offset: usize, len: usize) -> impl Iterator<Item = Option<&str>> + '_ {
         self.data[offset..offset + len]
             .iter()
             .enumerate()
@@ -906,7 +907,9 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
     fn append_array(&mut self, other: &Self) {
         let orig_len = self.len();
         let other_len = other.len();
-        if other_len == 0 { return; }
+        if other_len == 0 {
+            return;
+        }
 
         self.data_mut().extend_from_slice(other.data());
 
@@ -926,16 +929,27 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
         }
     }
 
-    fn append_range(&mut self, other: &Self, offset: usize, len: usize) -> Result<(), MinarrowError> {
-        if len == 0 { return Ok(()); }
+    fn append_range(
+        &mut self,
+        other: &Self,
+        offset: usize,
+        len: usize,
+    ) -> Result<(), MinarrowError> {
+        if len == 0 {
+            return Ok(());
+        }
         if offset + len > other.len() {
-            return Err(MinarrowError::IndexError(
-                format!("append_range: offset {} + len {} exceeds source length {}", offset, len, other.len())
-            ));
+            return Err(MinarrowError::IndexError(format!(
+                "append_range: offset {} + len {} exceeds source length {}",
+                offset,
+                len,
+                other.len()
+            )));
         }
         let orig_len = self.len();
 
-        self.data_mut().extend_from_slice(&other.data()[offset..offset + len]);
+        self.data_mut()
+            .extend_from_slice(&other.data()[offset..offset + len]);
 
         match (self.null_mask_mut(), other.null_mask()) {
             (Some(self_mask), Some(other_mask)) => {
@@ -1322,7 +1336,10 @@ impl<'a, T: Integer> crate::traits::consolidate::Consolidate
     fn consolidate(self) -> CategoricalArray<T> {
         use crate::traits::masked_array::MaskedArray;
 
-        assert!(!self.is_empty(), "consolidate() called on empty Vec<CategoricalAVT>");
+        assert!(
+            !self.is_empty(),
+            "consolidate() called on empty Vec<CategoricalAVT>"
+        );
 
         // Fast path: all chunks point at the same Shared dictionary Arc.
         // `shares_with` is always `false` without the `shared_dict`
@@ -1608,8 +1625,7 @@ mod tests {
         // buffer holds -1 at null slots, which becomes 255 when the index
         // type is u8. The null mask correctly marks the slot invalid.
         let data: Vec64<u8> = vec64![0, 1, 255, 0];
-        let unique_values: Vec64<String> =
-            vec64!["Yes".to_string(), "No".to_string()];
+        let unique_values: Vec64<String> = vec64!["Yes".to_string(), "No".to_string()];
         let mask = bm(&[true, true, false, true]);
 
         let arr = CategoricalArray::<u8>::new(data, unique_values, Some(mask));
@@ -1627,8 +1643,7 @@ mod tests {
         // Same shape as above, but the offending slot is marked valid -
         // construction must still fail loudly.
         let data: Vec64<u8> = vec64![0, 1, 255, 0];
-        let unique_values: Vec64<String> =
-            vec64!["Yes".to_string(), "No".to_string()];
+        let unique_values: Vec64<String> = vec64!["Yes".to_string(), "No".to_string()];
         let mask = bm(&[true, true, true, true]);
 
         let _ = CategoricalArray::<u8>::new(data, unique_values, Some(mask));

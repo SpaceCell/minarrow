@@ -54,8 +54,7 @@ pub fn broadcast_table_with_operator(
         let result_array = resolve_binary_arithmetic(op, col_l.clone(), col_r.clone(), None)?;
 
         // Create new FieldArray with the field schema from the left table
-        let result_field_array =
-            FieldArray::new(table_l.fields[i].as_ref().clone(), result_array);
+        let result_field_array = FieldArray::new(table_l.fields[i].as_ref().clone(), result_array);
         result_field_arrays.push(result_field_array);
     }
 

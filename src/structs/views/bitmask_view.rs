@@ -47,12 +47,12 @@
 use std::fmt::{self, Debug, Display, Formatter};
 use std::ops::Index;
 
+#[cfg(feature = "views")]
+use crate::ArrayV;
 use crate::enums::shape_dim::ShapeDim;
 use crate::traits::print::MAX_PREVIEW;
 use crate::traits::shape::Shape;
 use crate::{Array, Bitmask, BitmaskVT, BooleanArray};
-#[cfg(feature = "views")]
-use crate::ArrayV;
 
 /// # BitmaskView
 ///
@@ -348,7 +348,7 @@ mod tests {
         let bits = [true, false, true, false, true, false, true, false];
         let mask = Bitmask::from_bools(&bits);
 
-        let view = BitmaskV::new(&mask,0, 8);
+        let view = BitmaskV::new(&mask, 0, 8);
         assert_eq!(view.len(), 8);
         for i in 0..8 {
             assert_eq!(view.get(i), bits[i]);
@@ -377,7 +377,7 @@ mod tests {
         let mask = Bitmask::from_bools(&bits);
 
         // view over [2..6): 0 0 1 1
-        let view = BitmaskV::new(&mask,2, 4);
+        let view = BitmaskV::new(&mask, 2, 4);
         assert_eq!(view.len(), 4);
         assert_eq!(
             (0..4).map(|i| view.get(i)).collect::<Vec<_>>(),
@@ -399,7 +399,7 @@ mod tests {
         ];
         let mask = Bitmask::from_bools(&bits);
 
-        let view = BitmaskV::new(&mask,2, 6); // [2..8): 1 0 0 0 1 0
+        let view = BitmaskV::new(&mask, 2, 6); // [2..8): 1 0 0 0 1 0
         assert_eq!(view.len(), 6);
         assert_eq!(view.get(0), true);
         assert_eq!(view.get(1), false);
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn test_bitmask_view_empty_and_single_bit() {
         let mask = Bitmask::from_bools(&[]);
-        let view = BitmaskV::new(&mask,0, 0);
+        let view = BitmaskV::new(&mask, 0, 0);
         assert_eq!(view.len(), 0);
         assert!(view.is_empty());
         assert!(view.all_set()); // vacuously true
@@ -440,14 +440,14 @@ mod tests {
     #[should_panic(expected = "BitmaskView: out of bounds")]
     fn test_bitmask_view_out_of_bounds() {
         let mask = Bitmask::from_bools(&[true, false, true]);
-        let _ = BitmaskV::new(&mask,2, 2); // Exceeds mask length (should panic)
+        let _ = BitmaskV::new(&mask, 2, 2); // Exceeds mask length (should panic)
     }
 
     #[test]
     #[should_panic(expected = "BitmaskView: index 3 out of bounds")]
     fn test_bitmask_view_get_oob() {
         let mask = Bitmask::from_bools(&[true, false, true, true]);
-        let view = BitmaskV::new(&mask,1, 2);
+        let view = BitmaskV::new(&mask, 1, 2);
         let _ = view.get(3); // out-of-window
     }
 
@@ -455,7 +455,7 @@ mod tests {
     fn test_bitmask_view_debug() {
         let bits = [true, false, true, false];
         let mask = Bitmask::from_bools(&bits);
-        let view = BitmaskV::new(&mask,0, 4);
+        let view = BitmaskV::new(&mask, 0, 4);
         let dbg = format!("{:?}", view);
         assert!(dbg.contains("BitmaskView"));
         assert!(dbg.contains("offset"));
@@ -473,14 +473,17 @@ mod tests {
         for (i, expected) in bits.iter().enumerate() {
             assert_eq!(out.get(i), *expected, "bit {} mismatched", i);
         }
-        assert_eq!(out, mask, "full-coverage to_bitmask should equal the source bitmask");
+        assert_eq!(
+            out, mask,
+            "full-coverage to_bitmask should equal the source bitmask"
+        );
     }
 
     #[test]
     fn test_to_bitmask_windowed_matches_slice() {
         let bits = [true, false, true, false, true, false];
         let mask = Bitmask::from_bools(&bits);
-        let view = BitmaskV::new(&mask,2, 3);
+        let view = BitmaskV::new(&mask, 2, 3);
         let out = view.to_bitmask();
 
         assert_eq!(out.len(), 3);

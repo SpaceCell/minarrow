@@ -32,7 +32,10 @@ mod apache_arrow_test {
     };
     use arrow::array::{ArrayRef, RecordBatch, make_array};
     use minarrow::ffi::arrow_c_ffi::{export_to_c, import_from_c};
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[cfg(any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    ))]
     use minarrow::ffi::arrow_dtype::CategoricalIndexType;
     use minarrow::ffi::schema::Schema;
     use minarrow::{Array, ArrowType, Field, FieldArray, NumericArray, Table, TextArray};
@@ -80,7 +83,10 @@ mod apache_arrow_test {
         let arr_string32 = Arc::new(minarrow::StringArray::<u32>::from_slice(&[
             "abc", "def", "",
         ])) as Arc<minarrow::StringArray<u32>>;
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         let arr_categorical32 = Arc::new(minarrow::CategoricalArray::<u32>::from_slices(
             &[0, 1, 2],
             &["A".to_string(), "B".to_string(), "C".to_string()],
@@ -124,7 +130,10 @@ mod apache_arrow_test {
         let minarr_float64 = Array::NumericArray(NumericArray::Float64(arr_float64));
         let minarr_bool = Array::BooleanArray(arr_bool);
         let minarr_string32 = Array::TextArray(TextArray::String32(arr_string32));
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         let minarr_categorical32 = Array::TextArray(TextArray::Categorical32(arr_categorical32));
         #[cfg(feature = "datetime")]
         let minarr_datetime32 = Array::TemporalArray(TemporalArray::Datetime32(arr_datetime32));
@@ -148,7 +157,10 @@ mod apache_arrow_test {
         let field_float64 = Field::new("float64", ArrowType::Float64, false, None);
         let field_bool = Field::new("bool", ArrowType::Boolean, false, None);
         let field_string32 = Field::new("string32", ArrowType::String, false, None);
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         let field_categorical32 = Field::new(
             "categorical32",
             ArrowType::Dictionary(CategoricalIndexType::UInt32),
@@ -178,7 +190,10 @@ mod apache_arrow_test {
         let fa_float64 = FieldArray::new(field_float64, minarr_float64);
         let fa_bool = FieldArray::new(field_bool, minarr_bool);
         let fa_string32 = FieldArray::new(field_string32, minarr_string32);
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         let fa_categorical32 = FieldArray::new(field_categorical32, minarr_categorical32);
         #[cfg(feature = "datetime")]
         let fa_datetime32 = FieldArray::new(field_datetime32, minarr_datetime32);
@@ -205,7 +220,10 @@ mod apache_arrow_test {
         cols.push(fa_float64);
         cols.push(fa_bool);
         cols.push(fa_string32);
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         cols.push(fa_categorical32);
         #[cfg(feature = "datetime")]
         {

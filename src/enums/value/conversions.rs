@@ -1182,9 +1182,7 @@ impl<'a> TryFrom<&'a Value> for BitmaskV<'a> {
             Value::ArrayView(inner) => {
                 let (array, offset, len) = inner.as_tuple_ref();
                 match array {
-                    Array::BooleanArray(bool_arr) => {
-                        Ok(BitmaskV::new(&bool_arr.data, offset, len))
-                    }
+                    Array::BooleanArray(bool_arr) => Ok(BitmaskV::new(&bool_arr.data, offset, len)),
                     _ => Err(MinarrowError::TypeError {
                         from: "Value",
                         to: "BitmaskV",
@@ -1221,9 +1219,7 @@ impl TryFrom<Value> for BooleanArrayV {
                 let view = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
                 let (array, offset, len) = view.as_tuple();
                 match array {
-                    Array::BooleanArray(bool_arr) => {
-                        Ok(BooleanArrayV::new(bool_arr, offset, len))
-                    }
+                    Array::BooleanArray(bool_arr) => Ok(BooleanArrayV::new(bool_arr, offset, len)),
                     _ => Err(MinarrowError::TypeError {
                         from: "Value",
                         to: "BooleanArrayV",
@@ -1778,7 +1774,10 @@ macro_rules! val_cat16 {
     };
 }
 
-#[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+#[cfg(any(
+    not(feature = "default_categorical_8"),
+    feature = "extended_categorical"
+))]
 #[macro_export]
 macro_rules! val_cat32 {
     ($($x:tt)*) => {
@@ -2147,7 +2146,11 @@ mod vecvalue_terminal_coercion_tests {
 
     #[test]
     fn try_from_vecvalue_multi_consolidates_array_rows() {
-        let parts = vec![val_arr_i32(&[1, 2]), val_arr_i32(&[3, 4, 5]), val_arr_i32(&[6])];
+        let parts = vec![
+            val_arr_i32(&[1, 2]),
+            val_arr_i32(&[3, 4, 5]),
+            val_arr_i32(&[6]),
+        ];
         let v = Value::VecValue(Arc::new(parts));
         let arr = Array::try_from(v).expect("multi VecValue<Array> should concat-fold");
         assert_eq!(arr.len(), 6);
@@ -2166,7 +2169,10 @@ mod vecvalue_terminal_coercion_tests {
         )));
         let v = Value::VecValue(Arc::new(vec![a, b]));
         let res = Array::try_from(v);
-        assert!(res.is_err(), "incompatible inner dtypes must error, not silently coerce");
+        assert!(
+            res.is_err(),
+            "incompatible inner dtypes must error, not silently coerce"
+        );
     }
 
     // ----- Table::try_from -----

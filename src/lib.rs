@@ -199,15 +199,15 @@ pub mod structs {
     }
     pub mod bitmask;
     pub mod buffer;
-    #[cfg(feature = "lbuffer")]
-    pub mod lbuffer;
     pub mod column;
-    #[cfg(feature = "shared_dict")]
-    pub mod dictionary;
     #[cfg(feature = "cube")]
     pub mod cube;
+    #[cfg(feature = "shared_dict")]
+    pub mod dictionary;
     pub mod field;
     pub mod field_array;
+    #[cfg(feature = "lbuffer")]
+    pub mod lbuffer;
     #[cfg(feature = "matrix")]
     pub mod matrix;
     pub mod shared_buffer;
@@ -218,11 +218,11 @@ pub mod structs {
 pub mod ffi {
     pub mod arrow_c_ffi;
     pub mod arrow_dtype;
-    pub mod schema;
     #[cfg(feature = "cast_arrow")]
     pub mod arrow_rs;
     #[cfg(feature = "cast_polars")]
     pub mod polars;
+    pub mod schema;
 }
 
 /// **Type Standardisation** - `MaskedArray`, `View`, `Print` traits + more,
@@ -274,13 +274,13 @@ pub use enums::value::Value;
 pub use structs::arena::{AAMaker, Arena, ArenaRegion};
 pub use structs::bitmask::Bitmask;
 pub use structs::buffer::Buffer;
-#[cfg(feature = "lbuffer")]
-pub use structs::lbuffer::{LBuffer, LBufferV};
 #[cfg(feature = "chunked")]
 pub use structs::chunked::{
     super_array::{RechunkStrategy, SuperArray},
     super_table::SuperTable,
 };
+#[cfg(feature = "lbuffer")]
+pub use structs::lbuffer::{LBuffer, LBufferV};
 #[cfg(feature = "views")]
 pub use structs::views::array_view::ArrayV;
 pub use structs::views::bitmask_view::BitmaskV;
@@ -299,10 +299,10 @@ pub use structs::views::collections::text_array_view::TextArrayV;
 
 pub use ffi::arrow_dtype::ArrowType;
 pub use structs::column::{Column, column};
-#[cfg(feature = "shared_dict")]
-pub use structs::dictionary::Dictionary;
 #[cfg(feature = "cube")]
 pub use structs::cube::Cube;
+#[cfg(feature = "shared_dict")]
+pub use structs::dictionary::Dictionary;
 pub use structs::field::Field;
 pub use structs::field_array::{FieldArray, field_array};
 #[cfg(feature = "matrix")]

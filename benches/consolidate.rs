@@ -21,7 +21,7 @@
 //! Improvement is generally 15-20% for the arena in this single-threaded
 //! case, with additional benefits from reducing allocator lock contention
 //! in multi-threaded scenarios.
-//! 
+//!
 //! Run with:
 //!   cargo bench --bench consolidate --features chunked,arena
 
@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use minarrow::{
-    ArrowType, Array, BooleanArray, Field, FieldArray, FloatArray, IntegerArray, MaskedArray,
+    Array, ArrowType, BooleanArray, Field, FieldArray, FloatArray, IntegerArray, MaskedArray,
     StringArray, SuperTable, Table,
 };
 
@@ -68,8 +68,11 @@ fn build_table(n_cols: usize, seed: usize) -> Table {
                     )
                 }
                 2 => {
-                    let mut arr =
-                        StringArray::<u32>::with_capacity(ROWS_PER_TABLE, ROWS_PER_TABLE * 8, false);
+                    let mut arr = StringArray::<u32>::with_capacity(
+                        ROWS_PER_TABLE,
+                        ROWS_PER_TABLE * 8,
+                        false,
+                    );
                     for i in 0..ROWS_PER_TABLE {
                         arr.push(format!("r{}", base + i + col));
                     }

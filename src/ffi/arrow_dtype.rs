@@ -220,7 +220,11 @@ impl ArrowType {
             use PromotionVariant::*;
             return Some(match (a, b) {
                 (Float(x), Float(y)) => {
-                    if x.max(y) == 32 { Float32 } else { Float64 }
+                    if x.max(y) == 32 {
+                        Float32
+                    } else {
+                        Float64
+                    }
                 }
                 // A float preserves an integer when the integer's width
                 // fits the float's mantissa: 24 bits for Float32, with
@@ -252,16 +256,20 @@ impl ArrowType {
                         TimeUnit::Nanoseconds => 4,
                     }
                 }
-                if rank(a) >= rank(b) { a.clone() } else { b.clone() }
+                if rank(a) >= rank(b) {
+                    a.clone()
+                } else {
+                    b.clone()
+                }
             }
 
             match (self, other) {
                 (Date32, Date32) => return Some(Date32),
                 (Date32, Date64) | (Date64, Date32) | (Date64, Date64) => return Some(Date64),
                 (Time32(a), Time32(b)) => return Some(Time32(finer(a, b))),
-                (Time64(a), Time64(b))
-                | (Time32(a), Time64(b))
-                | (Time64(a), Time32(b)) => return Some(Time64(finer(a, b))),
+                (Time64(a), Time64(b)) | (Time32(a), Time64(b)) | (Time64(a), Time32(b)) => {
+                    return Some(Time64(finer(a, b)));
+                }
                 (Duration32(a), Duration32(b)) => return Some(Duration32(finer(a, b))),
                 (Duration64(a), Duration64(b))
                 | (Duration32(a), Duration64(b))
@@ -291,14 +299,26 @@ impl ArrowType {
         match (self, other) {
             #[cfg(feature = "datetime")]
             (
-                Date32 | Date64 | Time32(_) | Time64(_) | Duration32(_) | Duration64(_)
-                | Timestamp(_, _) | Interval(_),
+                Date32
+                | Date64
+                | Time32(_)
+                | Time64(_)
+                | Duration32(_)
+                | Duration64(_)
+                | Timestamp(_, _)
+                | Interval(_),
                 _,
             )
             | (
                 _,
-                Date32 | Date64 | Time32(_) | Time64(_) | Duration32(_) | Duration64(_)
-                | Timestamp(_, _) | Interval(_),
+                Date32
+                | Date64
+                | Time32(_)
+                | Time64(_)
+                | Duration32(_)
+                | Duration64(_)
+                | Timestamp(_, _)
+                | Interval(_),
             ) => None,
             (Null | Boolean | String | Utf8View | Dictionary(_), _)
             | (_, Null | Boolean | String | Utf8View | Dictionary(_)) => None,
@@ -306,10 +326,8 @@ impl ArrowType {
             (LargeString, _) | (_, LargeString) => None,
             #[cfg(feature = "extended_numeric_types")]
             (
-                Int8 | Int16 | UInt8 | UInt16 | Int32 | Int64 | UInt32 | UInt64 | Float32
-                | Float64,
-                Int8 | Int16 | UInt8 | UInt16 | Int32 | Int64 | UInt32 | UInt64 | Float32
-                | Float64,
+                Int8 | Int16 | UInt8 | UInt16 | Int32 | Int64 | UInt32 | UInt64 | Float32 | Float64,
+                Int8 | Int16 | UInt8 | UInt16 | Int32 | Int64 | UInt32 | UInt64 | Float32 | Float64,
             ) => unreachable!("numeric pairs resolve in the numeric rules above"),
             #[cfg(not(feature = "extended_numeric_types"))]
             (
@@ -343,7 +361,10 @@ pub enum CategoricalIndexType {
     UInt8,
     #[cfg(feature = "extended_categorical")]
     UInt16,
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+    #[cfg(any(
+        not(feature = "default_categorical_8"),
+        feature = "extended_categorical"
+    ))]
     UInt32,
     #[cfg(feature = "extended_categorical")]
     UInt64,
@@ -385,7 +406,10 @@ impl<T: Integer> CategoricalArray<T> {
         if t == TypeId::of::<u16>() {
             return ArrowType::Dictionary(CategoricalIndexType::UInt16);
         }
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        #[cfg(any(
+            not(feature = "default_categorical_8"),
+            feature = "extended_categorical"
+        ))]
         if t == TypeId::of::<u32>() {
             return ArrowType::Dictionary(CategoricalIndexType::UInt32);
         }
@@ -501,7 +525,10 @@ impl Display for CategoricalIndexType {
             CategoricalIndexType::UInt8 => f.write_str("UInt8"),
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt16 => f.write_str("UInt16"),
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             CategoricalIndexType::UInt32 => f.write_str("UInt32"),
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt64 => f.write_str("UInt64"),
@@ -615,8 +642,10 @@ mod tests {
             Some(Timestamp(TimeUnit::Nanoseconds, Some("UTC".into())))
         );
         assert_eq!(
-            Timestamp(TimeUnit::Milliseconds, Some("UTC".into()))
-                .upcast(&Timestamp(TimeUnit::Milliseconds, Some("America/New_York".into()))),
+            Timestamp(TimeUnit::Milliseconds, Some("UTC".into())).upcast(&Timestamp(
+                TimeUnit::Milliseconds,
+                Some("America/New_York".into())
+            )),
             None
         );
         assert_eq!(

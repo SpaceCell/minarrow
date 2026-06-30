@@ -103,12 +103,7 @@ impl NumericArrayV {
     }
 
     /// Creates a new `NumericArrayView` with a precomputed null count.
-    pub fn new_nc(
-        array: NumericArray,
-        offset: usize,
-        len: usize,
-        null_count: usize,
-    ) -> Self {
+    pub fn new_nc(array: NumericArray, offset: usize, len: usize, null_count: usize) -> Self {
         assert!(
             offset + len <= array.len(),
             "NumericArrayView: window out of bounds (offset + len = {}, array.len = {})",
@@ -313,7 +308,9 @@ impl NumericArrayV {
             self.array = old.cow_into_f64();
         }
         // Safe: the branch above guarantees Float64 at this point
-        let NumericArray::Float64(arr) = &self.array else { unreachable!() };
+        let NumericArray::Float64(arr) = &self.array else {
+            unreachable!()
+        };
         let slice = &arr.data.as_slice()[self.offset..self.offset + self.len];
         let mask = arr.null_mask.as_ref();
         let nc = if mask.is_some() {
@@ -323,7 +320,6 @@ impl NumericArrayV {
         };
         (slice, mask, nc)
     }
-
 }
 
 impl From<NumericArray> for NumericArrayV {

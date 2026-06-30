@@ -478,7 +478,10 @@ impl<'a, T: Integer> crate::traits::consolidate::Consolidate
         use crate::traits::consolidate::extend_null_mask;
         use crate::traits::masked_array::MaskedArray;
 
-        assert!(!self.is_empty(), "consolidate() called on empty Vec<DatetimeAVT>");
+        assert!(
+            !self.is_empty(),
+            "consolidate() called on empty Vec<DatetimeAVT>"
+        );
 
         let total_len: usize = self.iter().map(|(_, _, len)| *len).sum();
         let has_nulls = self.iter().any(|(arr, _, _)| arr.null_mask.is_some());

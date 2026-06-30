@@ -105,7 +105,11 @@ pub fn int_dense_body_simd<T, const LANES: usize>(
                 } else {
                     let d = lhs[idx] / rhs[idx];
                     let r = lhs[idx] % rhs[idx];
-                    if r != T::zero() && (lhs[idx] ^ rhs[idx]) < T::zero() { d - T::one() } else { d }
+                    if r != T::zero() && (lhs[idx] ^ rhs[idx]) < T::zero() {
+                        d - T::one()
+                    } else {
+                        d
+                    }
                 }
             }
         };
@@ -190,7 +194,11 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
                         } else {
                             let d = a[l] / b[l];
                             let r = a[l] % b[l];
-                            tmp[l] = if r != T::zero() && (a[l] ^ b[l]) < T::zero() { d - T::one() } else { d };
+                            tmp[l] = if r != T::zero() && (a[l] ^ b[l]) < T::zero() {
+                                d - T::one()
+                            } else {
+                                d
+                            };
                         }
                     }
                     (Simd::<T, LANES>::from_array(tmp), valid)
@@ -254,7 +262,11 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
                     } else {
                         let d = lhs[idx] / rhs[idx];
                         let r = lhs[idx] % rhs[idx];
-                        out[idx] = if r != T::zero() && (lhs[idx] ^ rhs[idx]) < T::zero() { d - T::one() } else { d };
+                        out[idx] = if r != T::zero() && (lhs[idx] ^ rhs[idx]) < T::zero() {
+                            d - T::one()
+                        } else {
+                            d
+                        };
                         unsafe {
                             out_mask.set_unchecked(idx, true);
                         }
@@ -304,7 +316,11 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
                     if b[l] != T::zero() {
                         let d = a[l] / b[l];
                         let r = a[l] % b[l];
-                        tmp[l] = if r != T::zero() && (a[l] ^ b[l]) < T::zero() { d - T::one() } else { d };
+                        tmp[l] = if r != T::zero() && (a[l] ^ b[l]) < T::zero() {
+                            d - T::one()
+                        } else {
+                            d
+                        };
                     }
                 }
                 Simd::<T, LANES>::from_array(tmp)
@@ -317,7 +333,9 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
 
         // write out-mask bits: combine source mask with div-by-zero validity
         let final_mask = match op {
-            ArithmeticOperator::Divide | ArithmeticOperator::Remainder | ArithmeticOperator::FloorDiv => {
+            ArithmeticOperator::Divide
+            | ArithmeticOperator::Remainder
+            | ArithmeticOperator::FloorDiv => {
                 // Valid iff source is valid and not dividing by zero
                 m_src & !div_zero
             }
@@ -356,7 +374,11 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
                     } else {
                         let d = lhs[j] / rhs[j];
                         let r = lhs[j] % rhs[j];
-                        if r != T::zero() && (lhs[j] ^ rhs[j]) < T::zero() { (d - T::one(), true) } else { (d, true) }
+                        if r != T::zero() && (lhs[j] ^ rhs[j]) < T::zero() {
+                            (d - T::one(), true)
+                        } else {
+                            (d, true)
+                        }
                     }
                 }
             };

@@ -126,10 +126,7 @@ fn xorshift(state: &mut u32) -> u32 {
 /// thread's categorical points at the same store. Without, every thread
 /// gets a fresh independent dictionary.
 #[cfg(feature = "shared_dict")]
-fn new_array_for_thread(
-    capacity: usize,
-    shared: &Dictionary<u32>,
-) -> CategoricalArray<u32> {
+fn new_array_for_thread(capacity: usize, shared: &Dictionary<u32>) -> CategoricalArray<u32> {
     use vec64::Vec64;
     CategoricalArray::<u32>::new_existing_dict(
         Vec64::<u32>::with_capacity(capacity),
@@ -286,7 +283,10 @@ fn run_stress(threads: usize, iters: usize) {
         throughput, ns_per_intern
     );
     #[cfg(feature = "shared_dict")]
-    println!("  unique strings in dict     : {} (one shared dict across threads)", unique_in_dict);
+    println!(
+        "  unique strings in dict     : {} (one shared dict across threads)",
+        unique_in_dict
+    );
     #[cfg(not(feature = "shared_dict"))]
     println!(
         "  unique strings in dict     : {} (sum of {} independent per-thread dicts)",
@@ -349,7 +349,10 @@ fn run_stress(threads: usize, iters: usize) {
         // (3) Every published code resolves back to its string.
         for (i, s) in dict_values.iter().enumerate() {
             let code = shared_dict.lookup(s).unwrap_or_else(|| {
-                panic!("interned value '{}' (code {}) not findable via lookup", s, i)
+                panic!(
+                    "interned value '{}' (code {}) not findable via lookup",
+                    s, i
+                )
             });
             assert_eq!(
                 code as usize, i,

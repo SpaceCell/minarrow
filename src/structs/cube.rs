@@ -14,7 +14,7 @@
 
 //! # **Cube Module** - *3D Type for Advanced Analysis*
 //!
-//! An optional collection type that groups multiple [`Table`]s into a logical 3rd dimension 
+//! An optional collection type that groups multiple [`Table`]s into a logical 3rd dimension
 //! (e.g., **time snapshots** or a **category** axis). Gated behind the `cube` feature.
 //!
 //! ## Purpose
@@ -137,7 +137,12 @@ impl Cube {
         for (i, t) in arc_tables.iter().enumerate() {
             resolver.insert(t.name.clone(), i);
         }
-        Self { tables: arc_tables, name, third_dim_index: index_by, resolver }
+        Self {
+            tables: arc_tables,
+            name,
+            third_dim_index: index_by,
+            resolver,
+        }
     }
 
     /// Constructs a new, empty Cube with a globally unique name.
@@ -680,12 +685,17 @@ impl crate::traits::selection::ColumnSelection for Cube {
         }
 
         // Build new Cube with only selected columns from each sub-table
-        let tables: Vec<Arc<Table>> = self.tables.iter().map(|t| {
-            let cols: Vec<FieldArray> = indices.iter()
-                .filter_map(|&i| t.cols().get(i).cloned())
-                .collect();
-            Arc::new(Table::new(t.name.clone(), Some(cols)))
-        }).collect();
+        let tables: Vec<Arc<Table>> = self
+            .tables
+            .iter()
+            .map(|t| {
+                let cols: Vec<FieldArray> = indices
+                    .iter()
+                    .filter_map(|&i| t.cols().get(i).cloned())
+                    .collect();
+                Arc::new(Table::new(t.name.clone(), Some(cols)))
+            })
+            .collect();
 
         let mut resolver = HashMap::new();
         for (i, t) in tables.iter().enumerate() {
@@ -708,20 +718,27 @@ impl crate::traits::selection::ColumnSelection for Cube {
         if self.tables.is_empty() || idx >= self.n_cols() {
             return None;
         }
-        Some(self.tables.iter().filter_map(|t| {
-            let fa = t.cols().get(idx)?;
-            Some(crate::ArrayV::new(fa.array.clone(), 0, fa.len()))
-        }).collect())
+        Some(
+            self.tables
+                .iter()
+                .filter_map(|t| {
+                    let fa = t.cols().get(idx)?;
+                    Some(crate::ArrayV::new(fa.array.clone(), 0, fa.len()))
+                })
+                .collect(),
+        )
     }
 
     fn col_vec(&self) -> Vec<Self::ColumnView> {
         if self.tables.is_empty() {
             return Vec::new();
         }
-        (0..self.n_cols()).filter_map(|i| {
-            // Use ColumnSelection::col_ix, not the inherent method
-            crate::traits::selection::ColumnSelection::col_ix(self, i)
-        }).collect()
+        (0..self.n_cols())
+            .filter_map(|i| {
+                // Use ColumnSelection::col_ix, not the inherent method
+                crate::traits::selection::ColumnSelection::col_ix(self, i)
+            })
+            .collect()
     }
 
     fn get_cols(&self) -> Vec<Arc<Field>> {

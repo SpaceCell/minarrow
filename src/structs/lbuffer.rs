@@ -181,7 +181,10 @@ impl LMaskTail {
     #[inline]
     pub(crate) fn load(&self) -> (usize, usize) {
         let v = self.cell.load(Ordering::Acquire);
-        ((v >> Self::INDEX_SHIFT) as usize, (v & Self::COUNT_MASK) as usize)
+        (
+            (v >> Self::INDEX_SHIFT) as usize,
+            (v & Self::COUNT_MASK) as usize,
+        )
     }
 
     /// Writer-side load of its own cursor. `Relaxed` is sound: the writer
@@ -190,7 +193,10 @@ impl LMaskTail {
     #[inline]
     fn load_relaxed(&self) -> (usize, usize) {
         let v = self.cell.load(Ordering::Relaxed);
-        ((v >> Self::INDEX_SHIFT) as usize, (v & Self::COUNT_MASK) as usize)
+        (
+            (v >> Self::INDEX_SHIFT) as usize,
+            (v & Self::COUNT_MASK) as usize,
+        )
     }
 
     /// Publish the cursor with `Release`, after the last byte's writes.
@@ -279,7 +285,6 @@ impl<T> LBuffer<T, false> {
 }
 
 impl<T, const MASK: bool> LBuffer<T, MASK> {
-
     /// Append a value. Returns `Err(value)` when the buffer is sealed or
     /// at capacity.
     ///

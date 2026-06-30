@@ -78,8 +78,8 @@ use crate::{Array, ArrayV, BitmaskV, MaskedArray, TemporalArray};
 /// - Use [`to_temporal_array`](Self::to_temporal_array) to materialise the window.
 #[derive(Clone, PartialEq)]
 pub struct TemporalArrayV {
-    /// The **outer array** that this view is derived from - we retain a reference to it. 
-    /// Importantly, this is the ***full array*** - not the *view*, and thus should not be 
+    /// The **outer array** that this view is derived from - we retain a reference to it.
+    /// Importantly, this is the ***full array*** - not the *view*, and thus should not be
     /// accessed as though it were the view subset.
     pub array: TemporalArray,
     /// The index offset from 0 that for where this view starts from the outer array
@@ -88,8 +88,8 @@ pub struct TemporalArrayV {
     len: usize,
     /// How many nulls are in the TemporalArrayView
     /// At construction, this is None, unless constructed via new_nc. When one uses '.null_count()',
-    /// the first time it will calculate it (quickly) using Bitmask popcount, and then from that 
-    /// point onwards the null count is a cached value. 
+    /// the first time it will calculate it (quickly) using Bitmask popcount, and then from that
+    /// point onwards the null count is a cached value.
     null_count: OnceLock<usize>,
 }
 
@@ -111,12 +111,7 @@ impl TemporalArrayV {
     }
 
     /// Creates a new `TemporalArrayView` with a precomputed null count.
-    pub fn new_nc(
-        array: TemporalArray,
-        offset: usize,
-        len: usize,
-        null_count: usize,
-    ) -> Self {
+    pub fn new_nc(array: TemporalArray, offset: usize, len: usize, null_count: usize) -> Self {
         assert!(
             offset + len <= array.len(),
             "TemporalArrayView: window out of bounds (offset + len = {}, array.len = {})",

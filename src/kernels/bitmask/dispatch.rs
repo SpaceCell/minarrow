@@ -168,12 +168,7 @@ pub fn bitmask_binop_into(
 /// Unary op (`NOT`) writing into an output window at bit offset `out_off`,
 /// dispatching to the SIMD or scalar path by feature.
 #[inline(always)]
-pub fn bitmask_unop_into(
-    out: &mut Bitmask,
-    out_off: usize,
-    src: BitmaskVT<'_>,
-    op: UnaryOperator,
-) {
+pub fn bitmask_unop_into(out: &mut Bitmask, out_off: usize, src: BitmaskVT<'_>, op: UnaryOperator) {
     #[cfg(feature = "simd")]
     {
         crate::kernels::bitmask::simd::bitmask_unop_simd_into::<W8>(out, out_off, src, op)

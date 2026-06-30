@@ -56,7 +56,7 @@ use crate::{Array, BitmaskV, FieldArray, MaskedArray, TextArray};
 /// # ArrayView
 ///
 /// Logical, windowed view over an `Array`.
-/// 
+///
 /// ArrayView handles indexing offsets automatically so that the View behaves
 /// like a regular array.
 ///
@@ -77,8 +77,8 @@ use crate::{Array, BitmaskV, FieldArray, MaskedArray, TextArray};
 /// - Use [`to_array`](Self::to_array) to materialise as an owned array.
 #[derive(Clone, PartialEq)]
 pub struct ArrayV {
-    /// The **outer array** that this view is derived from - we retain a reference to it. 
-    /// Importantly, this is the ***full array*** - not the *view*, and thus should not be 
+    /// The **outer array** that this view is derived from - we retain a reference to it.
+    /// Importantly, this is the ***full array*** - not the *view*, and thus should not be
     /// accessed as though it were the view subset.
     pub array: Array, // contains Arc<inner>
     /// The index offset from 0 that for where this view starts from the outer array
@@ -87,8 +87,8 @@ pub struct ArrayV {
     len: usize,
     /// How many nulls are in the ArrayView
     /// At construction, this is None, unless constructed via new_nc. When one uses '.null_count()',
-    /// the first time it will calculate it (quickly) using Bitmask popcount, and then from that 
-    /// point onwards the null count is a cached value. 
+    /// the first time it will calculate it (quickly) using Bitmask popcount, and then from that
+    /// point onwards the null count is a cached value.
     null_count: OnceLock<usize>,
 }
 
@@ -186,7 +186,10 @@ impl ArrayV {
             Array::TextArray(TextArray::Categorical8(arr)) => arr.get_str(self.offset + i),
             #[cfg(feature = "extended_categorical")]
             Array::TextArray(TextArray::Categorical16(arr)) => arr.get_str(self.offset + i),
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             Array::TextArray(TextArray::Categorical32(arr)) => arr.get_str(self.offset + i),
             #[cfg(feature = "extended_categorical")]
             Array::TextArray(TextArray::Categorical64(arr)) => arr.get_str(self.offset + i),
@@ -232,7 +235,10 @@ impl ArrayV {
                     Some(unsafe { arr.get_str_unchecked(self.offset + i) })
                 }
             }
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
             Array::TextArray(TextArray::Categorical32(arr)) => {
                 if arr.is_null(self.offset + i) {
                     None
@@ -526,7 +532,10 @@ impl ArrayV {
                     }
                     Array::from_string64(new_arr)
                 }
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 TextArray::Categorical32(_) => {
                     let mut values: Vec<&str> = Vec::with_capacity(indices.len());
                     for &idx in indices {
