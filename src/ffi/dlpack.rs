@@ -26,6 +26,7 @@ use std::sync::Arc;
 use crate::structs::buffer::Buffer;
 use crate::structs::ndarray::NdArray;
 use crate::structs::shared_buffer::SharedBuffer;
+use crate::traits::type_unions::Float;
 
 // ****************************************************************
 // DLPack C structs (matching the DLPack header)
@@ -107,8 +108,8 @@ unsafe impl Sync for DLManagedTensor {}
 
 /// Keeps the NdArray and the i64 shape/strides arrays alive for the
 /// lifetime of the exported DLManagedTensor.
-struct DLPackHolder {
-    _ndarray: Arc<NdArray>,
+struct DLPackHolder<T> {
+    _ndarray: Arc<NdArray<T>>,
     shape_i64: Vec<i64>,
     strides_i64: Vec<i64>,
 }
@@ -121,7 +122,7 @@ struct DLPackHolder {
 ///
 /// For FFI handoff (e.g. creating a PyCapsule), call `.into_raw()` to
 /// transfer ownership to the consumer.
-pub fn export_to_dlpack(ndarray: Arc<NdArray>) -> DLPackTensor {
+pub fn export_to_dlpack<T: Float>(ndarray: Arc<NdArray<T>>) -> DLPackTensor {
     let ndim = ndarray.ndim();
     let shape = ndarray.shape();
     let strides = ndarray.strides();
@@ -137,11 +138,13 @@ pub fn export_to_dlpack(ndarray: Arc<NdArray>) -> DLPackTensor {
         strides_i64,
     });
 
+    let dtype = DLDataType { code: 2, bits: (std::mem::size_of::<T>() * 8) as u8, lanes: 1 };
+
     let tensor = DLTensor {
         data: data_ptr,
         device: DLDevice { device_type: DLDeviceType::CPU, device_id: 0 },
         ndim: ndim as i32,
-        dtype: DLDataType::FLOAT64,
+        dtype,
         shape: holder.shape_i64.as_mut_ptr(),
         strides: holder.strides_i64.as_mut_ptr(),
         byte_offset: 0,
@@ -150,7 +153,7 @@ pub fn export_to_dlpack(ndarray: Arc<NdArray>) -> DLPackTensor {
     let managed = Box::new(DLManagedTensor {
         dl_tensor: tensor,
         manager_ctx: Box::into_raw(holder) as *mut c_void,
-        deleter: Some(dlpack_deleter),
+        deleter: Some(dlpack_deleter::<T>),
     });
 
     DLPackTensor { ptr: Box::into_raw(managed) }
@@ -161,12 +164,12 @@ pub fn export_to_dlpack(ndarray: Arc<NdArray>) -> DLPackTensor {
 ///
 /// # Safety
 /// Must only be called once per DLManagedTensor.
-unsafe extern "C" fn dlpack_deleter(managed: *mut DLManagedTensor) {
+unsafe extern "C" fn dlpack_deleter<T>(managed: *mut DLManagedTensor) {
     if managed.is_null() { return; }
     let managed = unsafe { Box::from_raw(managed) };
     if !managed.manager_ctx.is_null() {
-        let _holder: Box<DLPackHolder> = unsafe {
-            Box::from_raw(managed.manager_ctx as *mut DLPackHolder)
+        let _holder: Box<DLPackHolder<T>> = unsafe {
+            Box::from_raw(managed.manager_ctx as *mut DLPackHolder<T>)
         };
         // holder drops here, releasing the Arc<NdArray>
     }
@@ -259,14 +262,15 @@ unsafe impl Sync for ForeignDLPack {}
 
 /// Import a foreign DLManagedTensor as a Minarrow NdArray.
 ///
-/// Only CPU f64 tensors are supported. The NdArray takes ownership of the
-/// DLManagedTensor and will call its deleter when dropped.
+/// Only CPU float tensors matching the element type `T` are supported. The
+/// NdArray takes ownership of the DLManagedTensor and will call its deleter
+/// when dropped.
 ///
 /// # Safety
 /// - The DLManagedTensor must be valid and point to accessible CPU memory
 /// - The caller transfers ownership - the tensor must not be used after this call
-/// - The tensor must contain f64 data
-pub unsafe fn import_from_dlpack(managed_ptr: *mut DLManagedTensor) -> Result<NdArray, String> {
+/// - The tensor must contain data of element type `T`
+pub unsafe fn import_from_dlpack<T: Float>(managed_ptr: *mut DLManagedTensor) -> Result<NdArray<T>, String> {
     if managed_ptr.is_null() {
         return Err("DLPack: null pointer".to_string());
     }
@@ -292,9 +296,13 @@ pub unsafe fn import_from_dlpack(managed_ptr: *mut DLManagedTensor) -> Result<Nd
     }
 
     // Validate dtype
-    if tensor.dtype.code != 2 || tensor.dtype.bits != 64 || tensor.dtype.lanes != 1 {
+    if tensor.dtype.code != 2
+        || tensor.dtype.bits != (std::mem::size_of::<T>() * 8) as u8
+        || tensor.dtype.lanes != 1
+    {
         return Err(format!(
-            "DLPack: only f64 supported, got code={} bits={} lanes={}",
+            "DLPack: dtype mismatch, expected code=2 bits={}, got code={} bits={} lanes={}",
+            std::mem::size_of::<T>() * 8,
             tensor.dtype.code, tensor.dtype.bits, tensor.dtype.lanes
         ));
     }
@@ -339,9 +347,9 @@ pub unsafe fn import_from_dlpack(managed_ptr: *mut DLManagedTensor) -> Result<Nd
     // Data pointer with byte offset
     let data_ptr = unsafe {
         (tensor.data as *const u8).add(tensor.byte_offset as usize)
-    } as *const f64;
+    } as *const T;
 
-    let buf_len_bytes = buf_len * std::mem::size_of::<f64>();
+    let buf_len_bytes = buf_len * std::mem::size_of::<T>();
 
     // Record the data window now that shape and strides are known.
     foreign.ptr = data_ptr as *const u8;
@@ -350,7 +358,7 @@ pub unsafe fn import_from_dlpack(managed_ptr: *mut DLManagedTensor) -> Result<Nd
     // Wrap into SharedBuffer -> Buffer -> NdArray. The guard moves into the
     // SharedBuffer, so the deleter now runs when the NdArray is dropped.
     let shared = SharedBuffer::from_owner(foreign);
-    let buffer: Buffer<f64> = Buffer::from_shared(shared);
+    let buffer: Buffer<T> = Buffer::from_shared(shared);
 
     Ok(NdArray::from_buffer(buffer, &shape, &strides))
 }
@@ -431,7 +439,7 @@ mod tests {
         let owned = export_to_dlpack(original.clone());
         let raw = owned.into_raw();
 
-        let imported = unsafe { import_from_dlpack(raw) }.unwrap();
+        let imported = unsafe { import_from_dlpack::<f64>(raw) }.unwrap();
         assert_eq!(imported.shape(), &[3, 2]);
         assert_eq!(imported.get(&[0, 0]), 1.0);
         assert_eq!(imported.get(&[2, 0]), 3.0);
@@ -441,7 +449,7 @@ mod tests {
 
     #[test]
     fn import_null_ptr_fails() {
-        let result = unsafe { import_from_dlpack(std::ptr::null_mut()) };
+        let result = unsafe { import_from_dlpack::<f64>(std::ptr::null_mut()) };
         assert!(result.is_err());
     }
 
@@ -471,5 +479,45 @@ mod tests {
         assert_eq!(tensor.ndim, 2);
         let data = tensor.data as *const f64;
         assert_eq!(unsafe { *data }, 1.0);
+    }
+
+    #[test]
+    fn export_roundtrip_f32() {
+        let original = Arc::new(NdArray::<f32>::from_slice(
+            &[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]
+        ));
+        let owned = export_to_dlpack(original.clone());
+        let raw = owned.into_raw();
+
+        let imported = unsafe { import_from_dlpack::<f32>(raw) }.unwrap();
+        assert_eq!(imported.shape(), &[3, 2]);
+        assert_eq!(imported.get(&[0, 0]), 1.0);
+        assert_eq!(imported.get(&[2, 0]), 3.0);
+        assert_eq!(imported.get(&[0, 1]), 4.0);
+        assert_eq!(imported.get(&[2, 1]), 6.0);
+    }
+
+    #[test]
+    fn export_f32_dtype_bits() {
+        let arr = Arc::new(NdArray::<f32>::from_slice(&[1.0f32, 2.0, 3.0], &[3]));
+        let owned = export_to_dlpack(arr);
+        let tensor = owned.tensor();
+        assert_eq!(tensor.dtype.code, 2);
+        assert_eq!(tensor.dtype.bits, 32);
+    }
+
+    #[test]
+    fn import_dtype_mismatch_fails() {
+        // Export f64, then import as f32 - the bit width mismatch rejects.
+        let f64_arr = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]));
+        let raw = export_to_dlpack(f64_arr).into_raw();
+        let result = unsafe { import_from_dlpack::<f32>(raw) };
+        assert!(result.is_err());
+
+        // Export f32, then import as f64 - likewise rejected.
+        let f32_arr = Arc::new(NdArray::<f32>::from_slice(&[1.0f32, 2.0, 3.0, 4.0], &[2, 2]));
+        let raw = export_to_dlpack(f32_arr).into_raw();
+        let result = unsafe { import_from_dlpack::<f64>(raw) };
+        assert!(result.is_err());
     }
 }

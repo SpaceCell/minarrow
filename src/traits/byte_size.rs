@@ -333,9 +333,9 @@ impl ByteSize for Matrix {
 use crate::structs::ndarray::NdArray;
 
 #[cfg(feature = "ndarray")]
-impl ByteSize for NdArray {
+impl<T> ByteSize for NdArray<T> {
     fn est_bytes(&self) -> usize {
-        // Dense f64 backing buffer for the full logical shape.
+        // Dense backing buffer for the full logical shape.
         self.data.est_bytes()
     }
 }

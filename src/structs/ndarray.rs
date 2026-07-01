@@ -1,27 +1,30 @@
 //! # **NdArray** - *N-dimensional dense array for scientific and statistical computing*
 //!
 //! Comparable to NumPy's `ndarray` or Rust's `ndarray` crate, but backed
-//! by Minarrow's [`Buffer<f64>`] so it shares memory with Tables, Matrices,
+//! by Minarrow's [`Buffer<T>`] so it shares memory with Tables, Matrices,
 //! and external sources without copying.
+//!
+//! ## Element type
+//! Generic over `T: Float`, which covers `f32` and `f64`. Rank is determined
+//! at runtime rather than through generics, and dimensions 1D-5D are stored
+//! inline to avoid heap allocation in the common case.
 //!
 //! ## Layout
 //! Column-major with 64-byte aligned strides, so the buffer can be handed
-//! directly to BLAS/LAPACK routines or SIMD kernels. Rank is determined at
-//! runtime rather than through generics, and dimensions 1D-5D are stored
-//! inline to avoid heap allocation in the common case.
+//! directly to BLAS/LAPACK routines or SIMD kernels.
 //!
 //! ## Null handling
-//! Arrow null values are converted to `f64::NAN` on ingestion.
-//! BLAS/LAPACK and IEEE 754 arithmetic propagate NaN through results,
-//! so nulls flow through compute without special-case logic.
+//! Missing values are represented as NaN. BLAS/LAPACK and IEEE 754 arithmetic
+//! propagate NaN through results, so nulls flow through compute without
+//! special-case logic.
 //!
 //! ## Interop
-//! - 2D NdArray to/from [`Matrix`] - zero-copy when strides already match.
+//! - 2D NdArray to/from [`Matrix`] - zero-copy when strides already match (f64).
 //! - 2D NdArray to [`Table`] via [`SharedBuffer`] - each column becomes a
-//!   `FloatArray` window into the shared allocation.
+//!   `FloatArray` window into the shared allocation (f64).
 //! - 1D NdArray to [`Array`] as `FloatArray<f64>`.
-//! - [`Table`] / [`Matrix`] to NdArray via [`TryFrom`].
-//! - DLPack export for zero-copy sharing with PyTorch, JAX, TensorFlow.
+//! - [`Table`] / [`Matrix`] to NdArray via [`TryFrom`] (f64).
+//! - DLPack export for zero-copy sharing with PyTorch, JAX, TensorFlow (f32 and f64).
 
 use std::fmt;
 use std::ops::{Index, IndexMut, Range, RangeFrom, RangeFull, RangeTo};
@@ -30,6 +33,7 @@ use std::sync::Arc;
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::buffer::Buffer;
+use crate::traits::type_unions::Float;
 use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::{Array, ArrowType, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
 
@@ -51,21 +55,21 @@ use crate::ffi::dlpack::{export_to_dlpack, DLPackTensor};
 ///
 /// See the [module-level documentation](self) for design rationale.
 #[derive(Clone, PartialEq)]
-pub struct NdArray {
-    pub(crate) data: Buffer<f64>,
+pub struct NdArray<T> {
+    pub(crate) data: Buffer<T>,
     pub(crate) dims: NdDims,
     pub name: Option<String>,
 }
 
 // *** Construction ************************************************
 
-impl NdArray {
+impl<T: Float> NdArray<T> {
     /// Create a zeroed NdArray with the given shape, column-major strides.
     pub fn new(shape: &[usize]) -> Self {
         let dims = NdDims::from_shape(shape);
         let total = buffer_len(dims.shape(), dims.strides());
         let mut v = Vec64::with_capacity(total);
-        v.0.resize(total, 0.0);
+        v.0.resize(total, T::default());
         NdArray { data: Buffer::from_vec64(v), dims, name: None }
     }
 
@@ -81,7 +85,7 @@ impl NdArray {
     /// The slice holds `product(shape)` logical elements in column-major
     /// order without stride padding. Data is re-laid out with 64-byte
     /// aligned strides.
-    pub fn from_slice(data: &[f64], shape: &[usize]) -> Self {
+    pub fn from_slice(data: &[T], shape: &[usize]) -> Self {
         let logical_len: usize = shape.iter().product();
         assert_eq!(
             data.len(), logical_len,
@@ -103,7 +107,7 @@ impl NdArray {
 
         // Re-lay out with stride padding
         let mut buf = Vec64::with_capacity(total);
-        buf.0.resize(total, 0.0);
+        buf.0.resize(total, T::default());
         copy_unpadded_to_strided(data, shape, strides, buf.as_mut_slice());
 
         NdArray { data: Buffer::from_vec64(buf), dims, name: None }
@@ -113,7 +117,7 @@ impl NdArray {
     ///
     /// The buffer must already contain `buffer_len(shape, strides)` elements
     /// in the correct strided layout.
-    pub fn from_buffer(data: Buffer<f64>, shape: &[usize], strides: &[usize]) -> Self {
+    pub fn from_buffer(data: Buffer<T>, shape: &[usize], strides: &[usize]) -> Self {
         let required = buffer_len(shape, strides);
         assert!(
             data.len() >= required,
@@ -125,7 +129,7 @@ impl NdArray {
     }
 
     /// Create an NdArray filled with a constant value.
-    pub fn fill(shape: &[usize], value: f64) -> Self {
+    pub fn fill(shape: &[usize], value: T) -> Self {
         let dims = NdDims::from_shape(shape);
         let total = buffer_len(dims.shape(), dims.strides());
         let mut v = Vec64::with_capacity(total);
@@ -135,7 +139,7 @@ impl NdArray {
 
     /// Create an NdArray of ones.
     pub fn ones(shape: &[usize]) -> Self {
-        Self::fill(shape, 1.0)
+        Self::fill(shape, T::one())
     }
 
     /// Create a 2D identity matrix.
@@ -144,16 +148,16 @@ impl NdArray {
         let stride = arr.dims.strides()[1];
         let buf = arr.data.as_mut_slice();
         for i in 0..n {
-            buf[i * stride + i] = 1.0;
+            buf[i * stride + i] = T::one();
         }
         arr
     }
 
     /// Create a 1D NdArray with evenly spaced values in `[start, end]`.
-    pub fn linspace(start: f64, end: f64, n: usize) -> Self {
+    pub fn linspace(start: T, end: T, n: usize) -> Self {
         assert!(n >= 2, "linspace requires at least 2 points");
-        let step = (end - start) / (n - 1) as f64;
-        let v: Vec64<f64> = (0..n).map(|i| start + step * i as f64).collect();
+        let step = (end - start) / T::from(n - 1).unwrap();
+        let v: Vec64<T> = (0..n).map(|i| start + step * T::from(i).unwrap()).collect();
         NdArray {
             data: Buffer::from_vec64(v),
             dims: NdDims::from_shape(&[n]),
@@ -163,8 +167,8 @@ impl NdArray {
 
     /// Create a 1D NdArray with values `start, start+step, start+2*step, ...`
     /// for `n` elements.
-    pub fn arange(start: f64, step: f64, n: usize) -> Self {
-        let v: Vec64<f64> = (0..n).map(|i| start + step * i as f64).collect();
+    pub fn arange(start: T, step: T, n: usize) -> Self {
+        let v: Vec64<T> = (0..n).map(|i| start + step * T::from(i).unwrap()).collect();
         NdArray {
             data: Buffer::from_vec64(v),
             dims: NdDims::from_shape(&[n]),
@@ -215,14 +219,14 @@ impl NdArray {
 
     /// Get element by N-dimensional index. Panics if out of bounds.
     #[inline]
-    pub fn get(&self, indices: &[usize]) -> f64 {
+    pub fn get(&self, indices: &[usize]) -> T {
         self.data.as_slice()[self.offset_of(indices)]
     }
 
     /// Set element by N-dimensional index. Panics if out of bounds.
     /// Triggers copy-on-write if the buffer is shared.
     #[inline]
-    pub fn set(&mut self, indices: &[usize], value: f64) {
+    pub fn set(&mut self, indices: &[usize], value: T) {
         let off = self.offset_of(indices);
         self.data.as_mut_slice()[off] = value;
     }
@@ -243,19 +247,19 @@ impl NdArray {
 
     /// Immutable reference to the full flat buffer including stride padding.
     #[inline]
-    pub fn as_slice(&self) -> &[f64] {
+    pub fn as_slice(&self) -> &[T] {
         self.data.as_slice()
     }
 
     /// Mutable reference to the full flat buffer. Triggers copy-on-write
     /// if the underlying buffer is shared.
     #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [f64] {
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
         self.data.as_mut_slice()
     }
 
     /// Fill every logical element with a value.
-    pub fn fill_with(&mut self, value: f64) {
+    pub fn fill_with(&mut self, value: T) {
         // For contiguous arrays, fill the whole buffer
         if self.is_contiguous() {
             self.data.as_mut_slice().fill(value);
@@ -287,7 +291,7 @@ impl NdArray {
 
     /// Immutable column slice for a 2D array. Panics if ndim != 2.
     #[inline]
-    pub fn col(&self, col: usize) -> &[f64] {
+    pub fn col(&self, col: usize) -> &[T] {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "col() requires a 2D array");
         debug_assert!(col < shape[1], "Column index out of bounds");
@@ -299,7 +303,7 @@ impl NdArray {
     /// Mutable column slice for a 2D array. Panics if ndim != 2.
     /// Triggers copy-on-write if the buffer is shared.
     #[inline]
-    pub fn col_mut(&mut self, col: usize) -> &mut [f64] {
+    pub fn col_mut(&mut self, col: usize) -> &mut [T] {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "col_mut() requires a 2D array");
         debug_assert!(col < shape[1], "Column index out of bounds");
@@ -310,7 +314,7 @@ impl NdArray {
     }
 
     /// All columns as immutable slices. 2D only.
-    pub fn columns(&self) -> Vec<&[f64]> {
+    pub fn columns(&self) -> Vec<&[T]> {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "columns() requires a 2D array");
         let stride = self.dims.strides()[1];
@@ -322,7 +326,7 @@ impl NdArray {
     }
 
     /// All columns as mutable slices. 2D only.
-    pub fn columns_mut(&mut self) -> Vec<&mut [f64]> {
+    pub fn columns_mut(&mut self) -> Vec<&mut [T]> {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "columns_mut() requires a 2D array");
         let n_rows = shape[0];
@@ -347,7 +351,7 @@ impl NdArray {
     /// Call `.obs(i)` on the returned view to get individual observations
     /// without re-cloning the buffer each time.
     #[cfg(feature = "views")]
-    pub fn as_view(self: &Arc<Self>) -> NdArrayV {
+    pub fn as_view(self: &Arc<Self>) -> NdArrayV<T> {
         NdArrayV::from_ndarray(self.clone())
     }
 
@@ -360,7 +364,7 @@ impl NdArray {
     /// For repeated access in a loop, prefer `Arc::new(nd).as_view()`
     /// then call `.obs()` on the view to avoid re-wrapping each time.
     #[cfg(feature = "views")]
-    pub fn obs(self: &Arc<Self>, idx: usize) -> NdArrayV {
+    pub fn obs(self: &Arc<Self>, idx: usize) -> NdArrayV<T> {
         self.as_view().obs(idx)
     }
 
@@ -393,7 +397,7 @@ impl NdArray {
     ///
     /// The total number of logical elements must match. Data is copied
     /// from logical element order into the new strided layout.
-    pub fn reshape(&self, new_shape: &[usize]) -> Result<NdArray, MinarrowError> {
+    pub fn reshape(&self, new_shape: &[usize]) -> Result<NdArray<T>, MinarrowError> {
         let new_len: usize = new_shape.iter().product();
         if new_len != self.len() {
             return Err(MinarrowError::ShapeError {
@@ -403,12 +407,12 @@ impl NdArray {
                 ),
             });
         }
-        let flat: Vec64<f64> = self.into_iter().collect();
+        let flat: Vec64<T> = self.into_iter().collect();
         Ok(NdArray::from_slice(&flat, new_shape))
     }
 
     /// Transpose a 2D array. Returns a new NdArray with swapped axes.
-    pub fn transpose(&self) -> Result<NdArray, MinarrowError> {
+    pub fn transpose(&self) -> Result<NdArray<T>, MinarrowError> {
         if self.ndim() != 2 {
             return Err(MinarrowError::ShapeError {
                 message: format!("transpose requires a 2D array, got {}D", self.ndim()),
@@ -432,8 +436,8 @@ impl NdArray {
     }
 
     /// Flatten to a contiguous 1D array.
-    pub fn flatten(&self) -> NdArray {
-        let flat: Vec64<f64> = self.into_iter().collect();
+    pub fn flatten(&self) -> NdArray<T> {
+        let flat: Vec64<T> = self.into_iter().collect();
         let n = flat.len();
         NdArray {
             data: Buffer::from_vec64(flat),
@@ -444,12 +448,12 @@ impl NdArray {
 
     /// If the array has non-standard strides, re-lay out into default
     /// column-major contiguous form.
-    pub fn to_contiguous(&self) -> NdArray {
+    pub fn to_contiguous(&self) -> NdArray<T> {
         if self.is_contiguous() {
             return self.clone();
         }
         NdArray::from_slice(
-            &self.into_iter().collect::<Vec64<f64>>(),
+            &self.into_iter().collect::<Vec64<T>>(),
             self.shape(),
         )
     }
@@ -471,7 +475,7 @@ impl NdArray {
     /// arr.slice((1, 0..4, 3))       // mixed for 3D
     /// ```
     #[cfg(feature = "views")]
-    pub fn slice<S: IntoSlice>(&self, sel: S) -> NdArrayV {
+    pub fn slice<S: IntoSlice>(&self, sel: S) -> NdArrayV<T> {
         let axes = sel.into_slice();
         assert_eq!(
             axes.len(), self.ndim(),
@@ -518,6 +522,48 @@ impl NdArray {
 
     // *** Conversions *********************************************
 
+    /// Export as a DLPack tensor for zero-copy sharing with PyTorch,
+    /// NumPy, JAX, and other DLPack-compatible frameworks.
+    ///
+    /// Returns a `DLPackTensor` that manages the lifecycle. Drop it to
+    /// release, or call `.into_raw()` to transfer ownership to an FFI
+    /// consumer such as a PyCapsule.
+    #[cfg(feature = "dlpack")]
+    pub fn to_dlpack(self) -> DLPackTensor {
+        export_to_dlpack(Arc::new(self))
+    }
+
+    // *** Parallel iteration (rayon) ******************************
+
+    /// Parallel iterator over the underlying buffer. Rayon splits
+    /// the contiguous data into chunks across threads automatically.
+    #[cfg(feature = "parallel_proc")]
+    pub fn par_iter(&self) -> rayon::slice::Iter<'_, T> {
+        use rayon::prelude::*;
+        self.data.as_slice().par_iter()
+    }
+
+    /// Parallel chunks of the underlying buffer. Each chunk is a
+    /// contiguous `&[f64]` slice that rayon distributes across threads.
+    #[cfg(feature = "parallel_proc")]
+    pub fn par_chunks(&self, chunk_size: usize) -> rayon::slice::Chunks<'_, T> {
+        use rayon::prelude::*;
+        self.data.as_slice().par_chunks(chunk_size)
+    }
+
+    /// Parallel iterator over axis-0 observations. Each item is the
+    /// observation index and a zero-copy `NdArrayV` view.
+    #[cfg(all(feature = "parallel_proc", feature = "views"))]
+    pub fn par_iter_obs(self: &Arc<Self>) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_ {
+        use rayon::prelude::*;
+        let n_obs = self.dims.shape()[0];
+        (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
+    }
+}
+
+// *** f64 conversions to the Array/Table/Matrix enum boundary *****
+
+impl NdArray<f64> {
     /// Convert a 2D NdArray to a Table with zero-copy column sharing.
     ///
     /// Each column becomes a `FloatArray<f64>` backed by a window into
@@ -605,44 +651,6 @@ impl NdArray {
         let stride = self.dims.strides()[1];
 
         Ok(Matrix { n_rows, n_cols, stride, data: self.data, name: self.name })
-    }
-
-    /// Export as a DLPack tensor for zero-copy sharing with PyTorch,
-    /// NumPy, JAX, and other DLPack-compatible frameworks.
-    ///
-    /// Returns a `DLPackTensor` that manages the lifecycle. Drop it to
-    /// release, or call `.into_raw()` to transfer ownership to an FFI
-    /// consumer such as a PyCapsule.
-    #[cfg(feature = "dlpack")]
-    pub fn to_dlpack(self) -> DLPackTensor {
-        export_to_dlpack(Arc::new(self))
-    }
-
-    // *** Parallel iteration (rayon) ******************************
-
-    /// Parallel iterator over the underlying buffer. Rayon splits
-    /// the contiguous data into chunks across threads automatically.
-    #[cfg(feature = "parallel_proc")]
-    pub fn par_iter(&self) -> rayon::slice::Iter<'_, f64> {
-        use rayon::prelude::*;
-        self.data.as_slice().par_iter()
-    }
-
-    /// Parallel chunks of the underlying buffer. Each chunk is a
-    /// contiguous `&[f64]` slice that rayon distributes across threads.
-    #[cfg(feature = "parallel_proc")]
-    pub fn par_chunks(&self, chunk_size: usize) -> rayon::slice::Chunks<'_, f64> {
-        use rayon::prelude::*;
-        self.data.as_slice().par_chunks(chunk_size)
-    }
-
-    /// Parallel iterator over axis-0 observations. Each item is the
-    /// observation index and a zero-copy `NdArrayV` view.
-    #[cfg(all(feature = "parallel_proc", feature = "views"))]
-    pub fn par_iter_obs(self: &Arc<Self>) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV)> + '_ {
-        use rayon::prelude::*;
-        let n_obs = self.dims.shape()[0];
-        (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
     }
 }
 
@@ -906,12 +914,12 @@ pub(crate) fn buffer_len(shape: &[usize], strides: &[usize]) -> usize {
 /// walking contiguous runs along axis 0 (the innermost dimension)
 /// and advancing through higher dimensions. Each column/slice is
 /// a sequential cache-friendly read with no per-element arithmetic.
-impl<'a> IntoIterator for &'a NdArray {
-    type Item = f64;
-    type IntoIter = NdArrayIter<'a>;
+impl<'a, T: Float> IntoIterator for &'a NdArray<T> {
+    type Item = T;
+    type IntoIter = NdArrayIter<'a, T>;
 
     #[inline]
-    fn into_iter(self) -> NdArrayIter<'a> {
+    fn into_iter(self) -> NdArrayIter<'a, T> {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
         let n_inner = shape[0];
@@ -965,13 +973,13 @@ impl<'a> IntoIterator for &'a NdArray {
 }
 
 /// Consuming iterator - collects logical elements then iterates.
-impl IntoIterator for NdArray {
-    type Item = f64;
-    type IntoIter = std::vec::IntoIter<f64>;
+impl<T: Float> IntoIterator for NdArray<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
 
     #[inline]
-    fn into_iter(self) -> std::vec::IntoIter<f64> {
-        let v: Vec<f64> = (&self).into_iter().collect();
+    fn into_iter(self) -> std::vec::IntoIter<T> {
+        let v: Vec<T> = (&self).into_iter().collect();
         v.into_iter()
     }
 }
@@ -982,8 +990,8 @@ impl IntoIterator for NdArray {
 /// along axis 0 with sequential memory reads. When `inner_stride` > 1
 /// (e.g. after collapsing axis 0 via slicing), steps through strided
 /// elements within each run.
-pub struct NdArrayIter<'a> {
-    pub(crate) buf: &'a [f64],
+pub struct NdArrayIter<'a, T> {
+    pub(crate) buf: &'a [T],
     pub(crate) n_inner: usize,
     pub(crate) inner_stride: usize,
     pub(crate) run_offsets: Vec<usize>,
@@ -993,11 +1001,11 @@ pub struct NdArrayIter<'a> {
     pub(crate) yielded: usize,
 }
 
-impl<'a> Iterator for NdArrayIter<'a> {
-    type Item = f64;
+impl<'a, T: Float> Iterator for NdArrayIter<'a, T> {
+    type Item = T;
 
     #[inline]
-    fn next(&mut self) -> Option<f64> {
+    fn next(&mut self) -> Option<T> {
         if self.yielded >= self.total { return None; }
 
         let val = self.buf[self.run_offsets[self.run_idx] + self.inner_idx * self.inner_stride];
@@ -1017,7 +1025,7 @@ impl<'a> Iterator for NdArrayIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for NdArrayIter<'a> {}
+impl<'a, T: Float> ExactSizeIterator for NdArrayIter<'a, T> {}
 
 // ****************************************************************
 // Internal helpers
@@ -1040,7 +1048,7 @@ pub(crate) fn offset_of_impl(indices: &[usize], shape: &[usize], strides: &[usiz
 }
 
 /// Copy unpadded column-major data into a strided buffer.
-fn copy_unpadded_to_strided(src: &[f64], shape: &[usize], strides: &[usize], dst: &mut [f64]) {
+fn copy_unpadded_to_strided<T: Copy>(src: &[T], shape: &[usize], strides: &[usize], dst: &mut [T]) {
     if shape.len() == 2 {
         // Fast path for 2D
         let n_rows = shape[0];
@@ -1084,7 +1092,7 @@ fn copy_unpadded_to_strided(src: &[f64], shape: &[usize], strides: &[usize], dst
 // Trait implementations
 // ****************************************************************
 
-impl Shape for NdArray {
+impl<T: Float> Shape for NdArray<T> {
     fn shape(&self) -> ShapeDim {
         match self.dims.ndim() {
             1 => ShapeDim::Rank1(self.dims.shape()[0]),
@@ -1097,7 +1105,7 @@ impl Shape for NdArray {
     }
 }
 
-impl Concatenate for NdArray {
+impl<T: Float> Concatenate for NdArray<T> {
     /// Concatenate along axis 0. All other dimensions must match.
     fn concat(self, other: Self) -> Result<Self, MinarrowError> {
         let s1 = self.dims.shape();
@@ -1132,7 +1140,7 @@ impl Concatenate for NdArray {
             let new_stride = new_dims.strides()[1];
             let total = buffer_len(&new_shape, new_dims.strides());
             let mut buf = Vec64::with_capacity(total);
-            buf.0.resize(total, 0.0);
+            buf.0.resize(total, T::default());
             let dst = buf.as_mut_slice();
             for c in 0..s1[1] {
                 let dst_start = c * new_stride;
@@ -1161,11 +1169,11 @@ impl Concatenate for NdArray {
 /// For 1D, returns a single-element slice.
 /// For 2D (column-major), `arr[col]` returns the contiguous column
 /// as `&[f64]`, so `arr[col][row]` gives `&f64`.
-impl Index<usize> for NdArray {
-    type Output = [f64];
+impl<T: Float> Index<usize> for NdArray<T> {
+    type Output = [T];
 
     #[inline]
-    fn index(&self, idx: usize) -> &[f64] {
+    fn index(&self, idx: usize) -> &[T] {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
         match shape.len() {
@@ -1192,9 +1200,9 @@ impl Index<usize> for NdArray {
     }
 }
 
-impl IndexMut<usize> for NdArray {
+impl<T: Float> IndexMut<usize> for NdArray<T> {
     #[inline]
-    fn index_mut(&mut self, idx: usize) -> &mut [f64] {
+    fn index_mut(&mut self, idx: usize) -> &mut [T] {
         let shape = self.dims.shape().to_vec();
         let strides = self.dims.strides().to_vec();
         match shape.len() {
@@ -1227,11 +1235,11 @@ impl IndexMut<usize> for NdArray {
 ///
 /// For 1D, returns the element slice directly.
 /// For 2D, selects a range of columns as a contiguous slab.
-impl Index<Range<usize>> for NdArray {
-    type Output = [f64];
+impl<T: Float> Index<Range<usize>> for NdArray<T> {
+    type Output = [T];
 
     #[inline]
-    fn index(&self, range: Range<usize>) -> &[f64] {
+    fn index(&self, range: Range<usize>) -> &[T] {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
         match shape.len() {
@@ -1250,9 +1258,9 @@ impl Index<Range<usize>> for NdArray {
     }
 }
 
-impl IndexMut<Range<usize>> for NdArray {
+impl<T: Float> IndexMut<Range<usize>> for NdArray<T> {
     #[inline]
-    fn index_mut(&mut self, range: Range<usize>) -> &mut [f64] {
+    fn index_mut(&mut self, range: Range<usize>) -> &mut [T] {
         let shape = self.dims.shape().to_vec();
         let strides = self.dims.strides().to_vec();
         match shape.len() {
@@ -1271,31 +1279,31 @@ impl IndexMut<Range<usize>> for NdArray {
     }
 }
 
-impl Index<RangeFrom<usize>> for NdArray {
-    type Output = [f64];
+impl<T: Float> Index<RangeFrom<usize>> for NdArray<T> {
+    type Output = [T];
 
     #[inline]
-    fn index(&self, range: RangeFrom<usize>) -> &[f64] {
+    fn index(&self, range: RangeFrom<usize>) -> &[T] {
         let last_dim = self.dims.shape().len() - 1;
         let end = self.dims.shape()[last_dim.max(0)];
         &self[range.start..end]
     }
 }
 
-impl Index<RangeTo<usize>> for NdArray {
-    type Output = [f64];
+impl<T: Float> Index<RangeTo<usize>> for NdArray<T> {
+    type Output = [T];
 
     #[inline]
-    fn index(&self, range: RangeTo<usize>) -> &[f64] {
+    fn index(&self, range: RangeTo<usize>) -> &[T] {
         &self[0..range.end]
     }
 }
 
-impl Index<RangeFull> for NdArray {
-    type Output = [f64];
+impl<T: Float> Index<RangeFull> for NdArray<T> {
+    type Output = [T];
 
     #[inline]
-    fn index(&self, _: RangeFull) -> &[f64] {
+    fn index(&self, _: RangeFull) -> &[T] {
         let last_dim = self.dims.shape().len() - 1;
         let end = self.dims.shape()[last_dim.max(0)];
         &self[0..end]
@@ -1304,81 +1312,81 @@ impl Index<RangeFull> for NdArray {
 
 // *** Tuple indexing **********************************************
 
-impl Index<(usize,)> for NdArray {
-    type Output = f64;
+impl<T: Float> Index<(usize,)> for NdArray<T> {
+    type Output = T;
     #[inline]
-    fn index(&self, (i,): (usize,)) -> &f64 {
+    fn index(&self, (i,): (usize,)) -> &T {
         &self.data.as_slice()[self.offset_of(&[i])]
     }
 }
 
-impl Index<(usize, usize)> for NdArray {
-    type Output = f64;
+impl<T: Float> Index<(usize, usize)> for NdArray<T> {
+    type Output = T;
     #[inline]
-    fn index(&self, (i, j): (usize, usize)) -> &f64 {
+    fn index(&self, (i, j): (usize, usize)) -> &T {
         &self.data.as_slice()[self.offset_of(&[i, j])]
     }
 }
 
-impl Index<(usize, usize, usize)> for NdArray {
-    type Output = f64;
+impl<T: Float> Index<(usize, usize, usize)> for NdArray<T> {
+    type Output = T;
     #[inline]
-    fn index(&self, (i, j, k): (usize, usize, usize)) -> &f64 {
+    fn index(&self, (i, j, k): (usize, usize, usize)) -> &T {
         &self.data.as_slice()[self.offset_of(&[i, j, k])]
     }
 }
 
-impl Index<(usize, usize, usize, usize)> for NdArray {
-    type Output = f64;
+impl<T: Float> Index<(usize, usize, usize, usize)> for NdArray<T> {
+    type Output = T;
     #[inline]
-    fn index(&self, (i, j, k, l): (usize, usize, usize, usize)) -> &f64 {
+    fn index(&self, (i, j, k, l): (usize, usize, usize, usize)) -> &T {
         &self.data.as_slice()[self.offset_of(&[i, j, k, l])]
     }
 }
 
-impl Index<(usize, usize, usize, usize, usize)> for NdArray {
-    type Output = f64;
+impl<T: Float> Index<(usize, usize, usize, usize, usize)> for NdArray<T> {
+    type Output = T;
     #[inline]
-    fn index(&self, (i, j, k, l, m): (usize, usize, usize, usize, usize)) -> &f64 {
+    fn index(&self, (i, j, k, l, m): (usize, usize, usize, usize, usize)) -> &T {
         &self.data.as_slice()[self.offset_of(&[i, j, k, l, m])]
     }
 }
 
-impl IndexMut<(usize,)> for NdArray {
+impl<T: Float> IndexMut<(usize,)> for NdArray<T> {
     #[inline]
-    fn index_mut(&mut self, (i,): (usize,)) -> &mut f64 {
+    fn index_mut(&mut self, (i,): (usize,)) -> &mut T {
         let off = self.offset_of(&[i]);
         &mut self.data.as_mut_slice()[off]
     }
 }
 
-impl IndexMut<(usize, usize)> for NdArray {
+impl<T: Float> IndexMut<(usize, usize)> for NdArray<T> {
     #[inline]
-    fn index_mut(&mut self, (i, j): (usize, usize)) -> &mut f64 {
+    fn index_mut(&mut self, (i, j): (usize, usize)) -> &mut T {
         let off = self.offset_of(&[i, j]);
         &mut self.data.as_mut_slice()[off]
     }
 }
 
-impl IndexMut<(usize, usize, usize)> for NdArray {
+impl<T: Float> IndexMut<(usize, usize, usize)> for NdArray<T> {
     #[inline]
-    fn index_mut(&mut self, (i, j, k): (usize, usize, usize)) -> &mut f64 {
+    fn index_mut(&mut self, (i, j, k): (usize, usize, usize)) -> &mut T {
         let off = self.offset_of(&[i, j, k]);
         &mut self.data.as_mut_slice()[off]
     }
 }
 
-impl IndexMut<(usize, usize, usize, usize)> for NdArray {
+impl<T: Float> IndexMut<(usize, usize, usize, usize)> for NdArray<T> {
     #[inline]
-    fn index_mut(&mut self, (i, j, k, l): (usize, usize, usize, usize)) -> &mut f64 {
+    fn index_mut(&mut self, (i, j, k, l): (usize, usize, usize, usize)) -> &mut T {
         let off = self.offset_of(&[i, j, k, l]);
         &mut self.data.as_mut_slice()[off]
     }
 }
 
-impl IndexMut<(usize, usize, usize, usize, usize)> for NdArray {
+impl<T: Float> IndexMut<(usize, usize, usize, usize, usize)> for NdArray<T> {
     #[inline]
-    fn index_mut(&mut self, (i, j, k, l, m): (usize, usize, usize, usize, usize)) -> &mut f64 {
+    fn index_mut(&mut self, (i, j, k, l, m): (usize, usize, usize, usize, usize)) -> &mut T {
         let off = self.offset_of(&[i, j, k, l, m]);
         &mut self.data.as_mut_slice()[off]
     }
@@ -1387,8 +1395,8 @@ impl IndexMut<(usize, usize, usize, usize, usize)> for NdArray {
 // *** From conversions ********************************************
 
 /// 1D from a flat slice.
-impl From<&[f64]> for NdArray {
-    fn from(data: &[f64]) -> Self {
+impl<T: Float> From<&[T]> for NdArray<T> {
+    fn from(data: &[T]) -> Self {
         NdArray {
             data: Buffer::from_slice(data),
             dims: NdDims::from_shape(&[data.len()]),
@@ -1398,8 +1406,8 @@ impl From<&[f64]> for NdArray {
 }
 
 /// 1D from owned Vec64.
-impl From<Vec64<f64>> for NdArray {
-    fn from(v: Vec64<f64>) -> Self {
+impl<T: Float> From<Vec64<T>> for NdArray<T> {
+    fn from(v: Vec64<T>) -> Self {
         let n = v.len();
         NdArray {
             data: Buffer::from_vec64(v),
@@ -1410,8 +1418,8 @@ impl From<Vec64<f64>> for NdArray {
 }
 
 /// 2D from column vectors.
-impl From<&[Vec<f64>]> for NdArray {
-    fn from(columns: &[Vec<f64>]) -> Self {
+impl<T: Float> From<&[Vec<T>]> for NdArray<T> {
+    fn from(columns: &[Vec<T>]) -> Self {
         let n_cols = columns.len();
         if n_cols == 0 {
             return NdArray::new(&[0, 0]);
@@ -1425,7 +1433,7 @@ impl From<&[Vec<f64>]> for NdArray {
         let stride = dims.strides()[1];
         let total = buffer_len(&shape, dims.strides());
         let mut buf = Vec64::with_capacity(total);
-        buf.0.resize(total, 0.0);
+        buf.0.resize(total, T::default());
         for (c, col) in columns.iter().enumerate() {
             let start = c * stride;
             buf.as_mut_slice()[start..start + n_rows].copy_from_slice(col);
@@ -1435,8 +1443,8 @@ impl From<&[Vec<f64>]> for NdArray {
 }
 
 /// 2D from FloatArray columns.
-impl From<&[FloatArray<f64>]> for NdArray {
-    fn from(columns: &[FloatArray<f64>]) -> Self {
+impl<T: Float> From<&[FloatArray<T>]> for NdArray<T> {
+    fn from(columns: &[FloatArray<T>]) -> Self {
         let n_cols = columns.len();
         if n_cols == 0 {
             return NdArray::new(&[0, 0]);
@@ -1450,7 +1458,7 @@ impl From<&[FloatArray<f64>]> for NdArray {
         let stride = dims.strides()[1];
         let total = buffer_len(&shape, dims.strides());
         let mut buf = Vec64::with_capacity(total);
-        buf.0.resize(total, 0.0);
+        buf.0.resize(total, T::default());
         for (c, col) in columns.iter().enumerate() {
             let start = c * stride;
             buf.as_mut_slice()[start..start + n_rows].copy_from_slice(col.data.as_slice());
@@ -1461,7 +1469,7 @@ impl From<&[FloatArray<f64>]> for NdArray {
 
 /// From Matrix - zero-copy, moves the Buffer straight across.
 #[cfg(feature = "matrix")]
-impl From<Matrix> for NdArray {
+impl From<Matrix> for NdArray<f64> {
     fn from(mat: Matrix) -> Self {
         let shape = [mat.n_rows, mat.n_cols];
         let strides = [1, mat.stride];
@@ -1474,7 +1482,7 @@ impl From<Matrix> for NdArray {
 }
 
 /// TryFrom Table - extracts numeric columns, converts nulls to NaN.
-impl TryFrom<&Table> for NdArray {
+impl TryFrom<&Table> for NdArray<f64> {
     type Error = MinarrowError;
 
     fn try_from(table: &Table) -> Result<Self, Self::Error> {
@@ -1526,7 +1534,7 @@ impl TryFrom<&Table> for NdArray {
     }
 }
 
-impl TryFrom<Table> for NdArray {
+impl TryFrom<Table> for NdArray<f64> {
     type Error = MinarrowError;
     fn try_from(table: Table) -> Result<Self, Self::Error> {
         NdArray::try_from(&table)
@@ -1535,7 +1543,7 @@ impl TryFrom<Table> for NdArray {
 
 // *** Debug *******************************************************
 
-impl fmt::Debug for NdArray {
+impl<T: Float> fmt::Debug for NdArray<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f, "NdArray{}: {:?} [{}D, col-major]",
@@ -1550,7 +1558,7 @@ impl fmt::Debug for NdArray {
             for r in 0..max_rows {
                 write!(f, "\n[")?;
                 for c in 0..max_cols {
-                    write!(f, " {:8.4}", self[(r, c)])?;
+                    write!(f, " {:8.4}", self.get(&[r, c]).to_f64().unwrap_or(f64::NAN))?;
                     if c < max_cols - 1 { write!(f, ",")?; }
                 }
                 if shape[1] > 8 { write!(f, " ...")?; }
@@ -1561,7 +1569,7 @@ impl fmt::Debug for NdArray {
             let n = self.dims.shape()[0].min(10);
             write!(f, "\n[")?;
             for i in 0..n {
-                write!(f, " {:8.4}", self[(i,)])?;
+                write!(f, " {:8.4}", self.get(&[i]).to_f64().unwrap_or(f64::NAN))?;
                 if i < n - 1 { write!(f, ",")?; }
             }
             if self.dims.shape()[0] > 10 { write!(f, " ...")?; }
@@ -1583,7 +1591,7 @@ mod tests {
 
     #[test]
     fn new_zeroed_1d() {
-        let a = NdArray::new(&[5]);
+        let a = NdArray::<f64>::new(&[5]);
         assert_eq!(a.ndim(), 1);
         assert_eq!(a.shape(), &[5]);
         assert_eq!(a.len(), 5);
@@ -1593,7 +1601,7 @@ mod tests {
 
     #[test]
     fn new_zeroed_2d() {
-        let a = NdArray::new(&[3, 4]);
+        let a = NdArray::<f64>::new(&[3, 4]);
         assert_eq!(a.ndim(), 2);
         assert_eq!(a.shape(), &[3, 4]);
         assert_eq!(a.len(), 12);
@@ -1602,7 +1610,7 @@ mod tests {
 
     #[test]
     fn new_zeroed_3d() {
-        let a = NdArray::new(&[2, 3, 4]);
+        let a = NdArray::<f64>::new(&[2, 3, 4]);
         assert_eq!(a.ndim(), 3);
         assert_eq!(a.shape(), &[2, 3, 4]);
         assert_eq!(a.len(), 24);
@@ -1610,21 +1618,21 @@ mod tests {
 
     #[test]
     fn new_zeroed_5d() {
-        let a = NdArray::new(&[2, 3, 4, 5, 6]);
+        let a = NdArray::<f64>::new(&[2, 3, 4, 5, 6]);
         assert_eq!(a.ndim(), 5);
         assert_eq!(a.len(), 720);
     }
 
     #[test]
     fn new_zeroed_6d_heap() {
-        let a = NdArray::new(&[2, 3, 2, 2, 2, 2]);
+        let a = NdArray::<f64>::new(&[2, 3, 2, 2, 2, 2]);
         assert_eq!(a.ndim(), 6);
         assert_eq!(a.len(), 96);
     }
 
     #[test]
     fn new_named() {
-        let a = NdArray::new_named(&[3, 3], "covariance");
+        let a = NdArray::<f64>::new_named(&[3, 3], "covariance");
         assert_eq!(a.name.as_deref(), Some("covariance"));
     }
 
@@ -1655,13 +1663,13 @@ mod tests {
         assert_eq!(a.len(), 6);
         for v in &a { assert_eq!(v, 7.0); }
 
-        let b = NdArray::ones(&[4]);
+        let b = NdArray::<f64>::ones(&[4]);
         for v in &b { assert_eq!(v, 1.0); }
     }
 
     #[test]
     fn eye_identity() {
-        let a = NdArray::eye(3);
+        let a = NdArray::<f64>::eye(3);
         assert_eq!(a.shape(), &[3, 3]);
         assert_eq!(a.get(&[0, 0]), 1.0);
         assert_eq!(a.get(&[1, 1]), 1.0);
@@ -1672,7 +1680,7 @@ mod tests {
 
     #[test]
     fn linspace_basic() {
-        let a = NdArray::linspace(0.0, 1.0, 5);
+        let a = NdArray::<f64>::linspace(0.0, 1.0, 5);
         assert_eq!(a.shape(), &[5]);
         assert_eq!(a.get(&[0]), 0.0);
         assert_eq!(a.get(&[4]), 1.0);
@@ -1807,25 +1815,25 @@ mod tests {
 
     #[test]
     fn is_contiguous_default() {
-        let a = NdArray::new(&[3, 4]);
+        let a = NdArray::<f64>::new(&[3, 4]);
         assert!(a.is_contiguous());
     }
 
     #[test]
     fn shape_trait_1d() {
-        let a = NdArray::new(&[5]);
+        let a = NdArray::<f64>::new(&[5]);
         assert_eq!(Shape::shape(&a), ShapeDim::Rank1(5));
     }
 
     #[test]
     fn shape_trait_2d() {
-        let a = NdArray::new(&[3, 4]);
+        let a = NdArray::<f64>::new(&[3, 4]);
         assert_eq!(Shape::shape(&a), ShapeDim::Rank2 { rows: 3, cols: 4 });
     }
 
     #[test]
     fn shape_trait_3d() {
-        let a = NdArray::new(&[2, 3, 4]);
+        let a = NdArray::<f64>::new(&[2, 3, 4]);
         assert_eq!(Shape::shape(&a), ShapeDim::RankN(vec![2, 3, 4]));
     }
 
@@ -1930,7 +1938,7 @@ mod tests {
 
     #[test]
     fn blas_params() {
-        let a = NdArray::new(&[10, 5]);
+        let a = NdArray::<f64>::new(&[10, 5]);
         assert_eq!(a.m(), 10);
         assert_eq!(a.n(), 5);
         assert_eq!(a.lda(), 16);
@@ -1938,7 +1946,7 @@ mod tests {
 
     #[test]
     fn blas_params_aligned_rows() {
-        let a = NdArray::new(&[8, 3]);
+        let a = NdArray::<f64>::new(&[8, 3]);
         assert_eq!(a.m(), 8);
         assert_eq!(a.n(), 3);
         assert_eq!(a.lda(), 8);
@@ -1951,7 +1959,7 @@ mod tests {
     #[test]
     fn stride_alignment_2d() {
         for n_rows in 1..=20 {
-            let a = NdArray::new(&[n_rows, 3]);
+            let a = NdArray::<f64>::new(&[n_rows, 3]);
             let stride = a.strides()[1];
             assert!(stride >= n_rows);
             assert_eq!(stride % 8, 0);
@@ -1960,7 +1968,7 @@ mod tests {
 
     #[test]
     fn stride_alignment_3d() {
-        let a = NdArray::new(&[10, 3, 4]);
+        let a = NdArray::<f64>::new(&[10, 3, 4]);
         let strides = a.strides();
         assert_eq!(strides[0], 1);
         assert_eq!(strides[1], 16);
@@ -2003,7 +2011,7 @@ mod tests {
 
     #[test]
     fn transpose_non_2d_fails() {
-        let a = NdArray::new(&[2, 3, 4]);
+        let a = NdArray::<f64>::new(&[2, 3, 4]);
         assert!(a.transpose().is_err());
     }
 
@@ -2238,14 +2246,14 @@ mod tests {
 
     #[test]
     fn concat_dimension_mismatch_fails() {
-        let a = NdArray::new(&[3, 2]);
+        let a = NdArray::<f64>::new(&[3, 2]);
         let b = NdArray::new(&[3, 3]);
         assert!(a.concat(b).is_err());
     }
 
     #[test]
     fn concat_rank_mismatch_fails() {
-        let a = NdArray::new(&[3]);
+        let a = NdArray::<f64>::new(&[3]);
         let b = NdArray::new(&[3, 2]);
         assert!(a.concat(b).is_err());
     }
@@ -2289,7 +2297,7 @@ mod tests {
 
     #[test]
     fn debug_2d_named() {
-        let a = NdArray::new_named(&[2, 3], "test");
+        let a = NdArray::<f64>::new_named(&[2, 3], "test");
         let s = format!("{:?}", a);
         assert!(s.contains("'test'"));
         assert!(s.contains("[2, 3]"));
@@ -2327,7 +2335,7 @@ mod tests {
     #[test]
     fn large_array_iteration_count() {
         let n = 1000;
-        let a = NdArray::ones(&[n, 100]);
+        let a = NdArray::<f64>::ones(&[n, 100]);
         let count = (&a).into_iter().count();
         assert_eq!(count, n * 100);
     }

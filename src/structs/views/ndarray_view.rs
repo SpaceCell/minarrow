@@ -14,6 +14,7 @@ use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::ndarray::{AxisSel, IntoSlice, NdArray, NdArrayIter, NdDims, offset_of_impl};
 use crate::traits::shape::Shape;
+use crate::traits::type_unions::Float;
 use crate::Vec64;
 
 #[cfg(feature = "matrix")]
@@ -25,15 +26,15 @@ use crate::structs::matrix::Matrix;
 /// own offset and dimension metadata. This enables slicing and axis
 /// selection without copying the underlying data.
 #[derive(Clone)]
-pub struct NdArrayV {
-    source: Arc<NdArray>,
+pub struct NdArrayV<T> {
+    source: Arc<NdArray<T>>,
     offset: usize,
     dims: NdDims,
 }
 
-impl NdArrayV {
+impl<T: Float> NdArrayV<T> {
     /// Create a view over an NdArray with the given offset and dimensions.
-    pub fn new(source: Arc<NdArray>, offset: usize, shape: &[usize], strides: &[usize]) -> Self {
+    pub fn new(source: Arc<NdArray<T>>, offset: usize, shape: &[usize], strides: &[usize]) -> Self {
         NdArrayV {
             source,
             offset,
@@ -42,7 +43,7 @@ impl NdArrayV {
     }
 
     /// Create a full view over an NdArray with the same shape and strides.
-    pub fn from_ndarray(source: Arc<NdArray>) -> Self {
+    pub fn from_ndarray(source: Arc<NdArray<T>>) -> Self {
         let dims = source.dims.clone();
         NdArrayV { source, offset: 0, dims }
     }
@@ -69,7 +70,7 @@ impl NdArrayV {
 
     /// Get element by N-dimensional index.
     #[inline]
-    pub fn get(&self, indices: &[usize]) -> f64 {
+    pub fn get(&self, indices: &[usize]) -> T {
         let off = self.offset_of(indices);
         self.source.data.as_slice()[off]
     }
@@ -82,7 +83,7 @@ impl NdArrayV {
 
     /// Immutable column slice for 2D views. Panics if ndim != 2.
     #[inline]
-    pub fn col(&self, col: usize) -> &[f64] {
+    pub fn col(&self, col: usize) -> &[T] {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "col() requires a 2D view");
         debug_assert!(col < shape[1]);
@@ -92,7 +93,7 @@ impl NdArrayV {
     }
 
     /// All columns as slices. 2D only.
-    pub fn columns(&self) -> Vec<&[f64]> {
+    pub fn columns(&self) -> Vec<&[T]> {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "columns() requires a 2D view");
         let stride = self.dims.strides()[1];
@@ -133,7 +134,7 @@ impl NdArrayV {
     /// Returns an (N-1)-dimensional view. For a 2D view with shape
     /// [n, m], returns a 1D view of shape [m]. For 3D [n, m, k],
     /// returns 2D [m, k]. For 1D, returns a single-element view.
-    pub fn obs(&self, idx: usize) -> NdArrayV {
+    pub fn obs(&self, idx: usize) -> NdArrayV<T> {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
         debug_assert!(idx < shape[0], "obs: index {} out of bounds for axis 0 (size {})", idx, shape[0]);
@@ -148,7 +149,7 @@ impl NdArrayV {
 
     /// Slice this view, producing a sub-view. Zero-copy - shares the
     /// same backing Arc<NdArray>, just adjusts offset and dims.
-    pub fn slice<S: IntoSlice>(&self, sel: S) -> NdArrayV {
+    pub fn slice<S: IntoSlice>(&self, sel: S) -> NdArrayV<T> {
         let axes = sel.into_slice();
         let shape = self.dims.shape();
         let strides = self.dims.strides();
@@ -187,17 +188,11 @@ impl NdArrayV {
     // *** Materialisation *****************************************
 
     /// Materialise this view as an owned NdArray.
-    pub fn to_ndarray(&self) -> NdArray {
-        let flat: Vec64<f64> = self.into_iter().collect();
+    pub fn to_ndarray(&self) -> NdArray<T> {
+        let flat: Vec64<T> = self.into_iter().collect();
         let mut arr = NdArray::from_slice(&flat, self.dims.shape());
         arr.name = self.source.name.clone();
         arr
-    }
-
-    /// Materialise a 2D view as a Matrix.
-    #[cfg(feature = "matrix")]
-    pub fn to_matrix(&self) -> Result<Matrix, MinarrowError> {
-        self.to_ndarray().to_matrix()
     }
 
     // *** Parallel iteration (rayon) ******************************
@@ -205,10 +200,19 @@ impl NdArrayV {
     /// Parallel iterator over axis-0 observations. Each item is the
     /// observation index and a zero-copy `NdArrayV` view.
     #[cfg(feature = "parallel_proc")]
-    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV)> + '_ {
+    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_ {
         use rayon::prelude::*;
         let n_obs = self.dims.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
+    }
+}
+
+/// Materialise a 2D view as a Matrix.
+#[cfg(feature = "matrix")]
+impl NdArrayV<f64> {
+    /// Materialise a 2D view as a Matrix.
+    pub fn to_matrix(&self) -> Result<Matrix, MinarrowError> {
+        self.to_ndarray().to_matrix()
     }
 }
 
@@ -216,11 +220,11 @@ impl NdArrayV {
 
 /// Iterating a view works the same as iterating an NdArray: contiguous
 /// runs along axis 0, cache-friendly, no per-element offset arithmetic.
-impl<'a> IntoIterator for &'a NdArrayV {
-    type Item = f64;
-    type IntoIter = NdArrayIter<'a>;
+impl<'a, T: Float> IntoIterator for &'a NdArrayV<T> {
+    type Item = T;
+    type IntoIter = NdArrayIter<'a, T>;
 
-    fn into_iter(self) -> NdArrayIter<'a> {
+    fn into_iter(self) -> NdArrayIter<'a, T> {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
         let n_inner = shape[0];
@@ -268,7 +272,7 @@ impl<'a> IntoIterator for &'a NdArrayV {
 
 // *** Trait implementations ***************************************
 
-impl Shape for NdArrayV {
+impl<T: Float> Shape for NdArrayV<T> {
     fn shape(&self) -> ShapeDim {
         match self.dims.ndim() {
             1 => ShapeDim::Rank1(self.dims.shape()[0]),
@@ -281,7 +285,7 @@ impl Shape for NdArrayV {
     }
 }
 
-impl PartialEq for NdArrayV {
+impl<T: Float> PartialEq for NdArrayV<T> {
     fn eq(&self, other: &Self) -> bool {
         if self.dims.shape() != other.dims.shape() { return false; }
         self.into_iter()
@@ -292,49 +296,49 @@ impl PartialEq for NdArrayV {
 
 // *** Tuple indexing **********************************************
 
-impl Index<(usize,)> for NdArrayV {
-    type Output = f64;
+impl<T: Float> Index<(usize,)> for NdArrayV<T> {
+    type Output = T;
     #[inline]
-    fn index(&self, (i,): (usize,)) -> &f64 {
+    fn index(&self, (i,): (usize,)) -> &T {
         &self.source.data.as_slice()[self.offset_of(&[i])]
     }
 }
 
-impl Index<(usize, usize)> for NdArrayV {
-    type Output = f64;
+impl<T: Float> Index<(usize, usize)> for NdArrayV<T> {
+    type Output = T;
     #[inline]
-    fn index(&self, (i, j): (usize, usize)) -> &f64 {
+    fn index(&self, (i, j): (usize, usize)) -> &T {
         &self.source.data.as_slice()[self.offset_of(&[i, j])]
     }
 }
 
-impl Index<(usize, usize, usize)> for NdArrayV {
-    type Output = f64;
+impl<T: Float> Index<(usize, usize, usize)> for NdArrayV<T> {
+    type Output = T;
     #[inline]
-    fn index(&self, (i, j, k): (usize, usize, usize)) -> &f64 {
+    fn index(&self, (i, j, k): (usize, usize, usize)) -> &T {
         &self.source.data.as_slice()[self.offset_of(&[i, j, k])]
     }
 }
 
-impl Index<(usize, usize, usize, usize)> for NdArrayV {
-    type Output = f64;
+impl<T: Float> Index<(usize, usize, usize, usize)> for NdArrayV<T> {
+    type Output = T;
     #[inline]
-    fn index(&self, (i, j, k, l): (usize, usize, usize, usize)) -> &f64 {
+    fn index(&self, (i, j, k, l): (usize, usize, usize, usize)) -> &T {
         &self.source.data.as_slice()[self.offset_of(&[i, j, k, l])]
     }
 }
 
-impl Index<(usize, usize, usize, usize, usize)> for NdArrayV {
-    type Output = f64;
+impl<T: Float> Index<(usize, usize, usize, usize, usize)> for NdArrayV<T> {
+    type Output = T;
     #[inline]
-    fn index(&self, (i, j, k, l, m): (usize, usize, usize, usize, usize)) -> &f64 {
+    fn index(&self, (i, j, k, l, m): (usize, usize, usize, usize, usize)) -> &T {
         &self.source.data.as_slice()[self.offset_of(&[i, j, k, l, m])]
     }
 }
 
 // *** Debug *******************************************************
 
-impl fmt::Debug for NdArrayV {
+impl<T: Float> fmt::Debug for NdArrayV<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f, "NdArrayV: {:?} [{}D, offset={}]",
@@ -438,7 +442,7 @@ mod tests {
 
     #[test]
     fn blas_params() {
-        let a = Arc::new(NdArray::new(&[10, 5]));
+        let a = Arc::new(NdArray::<f64>::new(&[10, 5]));
         let v = NdArrayV::from_ndarray(a);
         assert_eq!(v.m(), 10);
         assert_eq!(v.n(), 5);
@@ -455,7 +459,7 @@ mod tests {
 
     #[test]
     fn shape_trait() {
-        let a = Arc::new(NdArray::new(&[3, 4]));
+        let a = Arc::new(NdArray::<f64>::new(&[3, 4]));
         let v = NdArrayV::from_ndarray(a);
         assert_eq!(Shape::shape(&v), ShapeDim::Rank2 { rows: 3, cols: 4 });
     }

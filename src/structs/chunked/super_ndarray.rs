@@ -27,6 +27,7 @@ use crate::structs::ndarray::NdArray;
 use crate::traits::concatenate::Concatenate;
 use crate::traits::consolidate::Consolidate;
 use crate::traits::shape::Shape;
+use crate::traits::type_unions::Float;
 use crate::structs::ndarray::NdArrayIter;
 #[cfg(feature = "views")]
 use crate::structs::views::ndarray_view::NdArrayV;
@@ -41,14 +42,14 @@ use rayon::prelude::*;
 /// Access by global index is transparent - the chunk boundary
 /// is resolved internally.
 #[derive(Clone)]
-pub struct SuperNdArray {
-    pub batches: Vec<Arc<NdArray>>,
+pub struct SuperNdArray<T> {
+    pub batches: Vec<Arc<NdArray<T>>>,
     ndim: usize,
     inner_shape: Vec<usize>,
     pub name: String,
 }
 
-impl SuperNdArray {
+impl<T: Float> SuperNdArray<T> {
     /// Create an empty SuperNdArray.
     pub fn new(name: impl Into<String>) -> Self {
         SuperNdArray {
@@ -60,7 +61,7 @@ impl SuperNdArray {
     }
 
     /// Create from existing batches. Panics if shapes are incompatible.
-    pub fn from_batches(batches: Vec<NdArray>, name: impl Into<String>) -> Self {
+    pub fn from_batches(batches: Vec<NdArray<T>>, name: impl Into<String>) -> Self {
         if batches.is_empty() {
             return Self::new(name);
         }
@@ -81,7 +82,7 @@ impl SuperNdArray {
     }
 
     /// Append a chunk. Validates shape compatibility.
-    pub fn push(&mut self, chunk: NdArray) {
+    pub fn push(&mut self, chunk: NdArray<T>) {
         if self.batches.is_empty() {
             self.ndim = chunk.ndim();
             self.inner_shape = chunk.shape()[1..].to_vec();
@@ -132,7 +133,7 @@ impl SuperNdArray {
 
     /// Get chunk by index.
     #[inline]
-    pub fn chunk(&self, idx: usize) -> Option<&Arc<NdArray>> { self.batches.get(idx) }
+    pub fn chunk(&self, idx: usize) -> Option<&Arc<NdArray<T>>> { self.batches.get(idx) }
 
     /// Logical shape as if consolidated. Returns a temporary vec, not a
     /// slice reference, since the full shape doesn't exist as a contiguous
@@ -154,7 +155,7 @@ impl SuperNdArray {
 
     /// Column slice from a 2D chunked array. Consolidates the column
     /// across all batches into a contiguous allocation.
-    pub fn col(&self, c: usize) -> Vec<f64> {
+    pub fn col(&self, c: usize) -> Vec<T> {
         assert_eq!(self.ndim, 2, "col() requires a 2D array");
         let mut result = Vec::with_capacity(self.n_obs());
         for batch in &self.batches {
@@ -170,7 +171,7 @@ impl SuperNdArray {
     /// array with shape [n, m], returns a 1D view of shape [m]. For 3D
     /// [n, m, k], returns 2D [m, k]. For 1D, returns a single-element view.
     #[cfg(feature = "views")]
-    pub fn obs(&self, idx: usize) -> NdArrayV {
+    pub fn obs(&self, idx: usize) -> NdArrayV<T> {
         let (chunk_idx, local) = self.resolve(idx);
         self.batches[chunk_idx].obs(local)
     }
@@ -205,7 +206,7 @@ impl SuperNdArray {
 
     /// Get element by global N-dimensional index, transparently resolving
     /// which chunk contains it. The first index is the global axis-0 position.
-    pub fn get(&self, indices: &[usize]) -> f64 {
+    pub fn get(&self, indices: &[usize]) -> T {
         let (chunk_idx, local_row) = self.resolve(indices[0]);
         let mut local = indices.to_vec();
         local[0] = local_row;
@@ -214,7 +215,7 @@ impl SuperNdArray {
 
     /// Set element by global index. Triggers copy-on-write if the
     /// target chunk's buffer is shared.
-    pub fn set(&mut self, indices: &[usize], value: f64) {
+    pub fn set(&mut self, indices: &[usize], value: T) {
         let (chunk_idx, local_row) = self.resolve(indices[0]);
         let mut local = indices.to_vec();
         local[0] = local_row;
@@ -249,20 +250,20 @@ impl SuperNdArray {
 
     /// Iterate over batches.
     #[inline]
-    pub fn iter_batches(&self) -> std::slice::Iter<'_, Arc<NdArray>> {
+    pub fn iter_batches(&self) -> std::slice::Iter<'_, Arc<NdArray<T>>> {
         self.batches.iter()
     }
 
     /// Mutable iteration over batches.
     #[inline]
-    pub fn iter_batches_mut(&mut self) -> std::slice::IterMut<'_, Arc<NdArray>> {
+    pub fn iter_batches_mut(&mut self) -> std::slice::IterMut<'_, Arc<NdArray<T>>> {
         self.batches.iter_mut()
     }
 
     /// Parallel iteration over batches.
     #[cfg(feature = "parallel_proc")]
     #[inline]
-    pub fn par_iter_batches(&self) -> rayon::slice::Iter<'_, Arc<NdArray>> {
+    pub fn par_iter_batches(&self) -> rayon::slice::Iter<'_, Arc<NdArray<T>>> {
         self.batches.par_iter()
     }
 
@@ -270,7 +271,7 @@ impl SuperNdArray {
     /// Each item is the global observation index and a zero-copy
     /// `NdArrayV` view. Batch boundaries are resolved transparently.
     #[cfg(all(feature = "parallel_proc", feature = "views"))]
-    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV)> + '_ {
+    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_ {
         use rayon::prelude::*;
         let n_obs = self.n_obs();
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
@@ -365,11 +366,11 @@ impl SuperNdArray {
 
 /// Iterating a SuperNdArray yields f64 values in column-major order,
 /// seamlessly crossing chunk boundaries.
-impl<'a> IntoIterator for &'a SuperNdArray {
-    type Item = f64;
-    type IntoIter = SuperNdArrayIter<'a>;
+impl<'a, T: Float> IntoIterator for &'a SuperNdArray<T> {
+    type Item = T;
+    type IntoIter = SuperNdArrayIter<'a, T>;
 
-    fn into_iter(self) -> SuperNdArrayIter<'a> {
+    fn into_iter(self) -> SuperNdArrayIter<'a, T> {
         SuperNdArrayIter {
             batches: &self.batches,
             chunk_idx: 0,
@@ -379,16 +380,16 @@ impl<'a> IntoIterator for &'a SuperNdArray {
 }
 
 /// Iterator that chains across chunk boundaries transparently.
-pub struct SuperNdArrayIter<'a> {
-    batches: &'a [Arc<NdArray>],
+pub struct SuperNdArrayIter<'a, T> {
+    batches: &'a [Arc<NdArray<T>>],
     chunk_idx: usize,
-    inner: Option<NdArrayIter<'a>>,
+    inner: Option<NdArrayIter<'a, T>>,
 }
 
-impl<'a> Iterator for SuperNdArrayIter<'a> {
-    type Item = f64;
+impl<'a, T: Float> Iterator for SuperNdArrayIter<'a, T> {
+    type Item = T;
 
-    fn next(&mut self) -> Option<f64> {
+    fn next(&mut self) -> Option<T> {
         loop {
             if let Some(ref mut it) = self.inner {
                 if let Some(v) = it.next() {
@@ -415,16 +416,16 @@ impl<'a> Iterator for SuperNdArrayIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for SuperNdArrayIter<'a> {}
+impl<'a, T: Float> ExactSizeIterator for SuperNdArrayIter<'a, T> {}
 
 // ****************************************************************
 // Consolidate
 // ****************************************************************
 
-impl Consolidate for SuperNdArray {
-    type Output = NdArray;
+impl<T: Float> Consolidate for SuperNdArray<T> {
+    type Output = NdArray<T>;
 
-    fn consolidate(self) -> NdArray {
+    fn consolidate(self) -> NdArray<T> {
         if self.batches.is_empty() {
             return NdArray::new(&[0]);
         }
@@ -487,7 +488,7 @@ impl Consolidate for SuperNdArray {
 /// The comparison walks one logical column at a time, chaining each side's
 /// batches independently, so arrays split into different chunks still line
 /// up without materialising either side.
-impl PartialEq for SuperNdArray {
+impl<T: Float> PartialEq for SuperNdArray<T> {
     fn eq(&self, other: &Self) -> bool {
         if self.ndim != other.ndim
             || self.inner_shape != other.inner_shape
@@ -517,7 +518,7 @@ impl PartialEq for SuperNdArray {
     }
 }
 
-impl Shape for SuperNdArray {
+impl<T: Float> Shape for SuperNdArray<T> {
     fn shape(&self) -> ShapeDim {
         let obs = self.n_obs();
         match self.ndim {
@@ -532,7 +533,7 @@ impl Shape for SuperNdArray {
     }
 }
 
-impl Concatenate for SuperNdArray {
+impl<T: Float> Concatenate for SuperNdArray<T> {
     fn concat(mut self, other: Self) -> Result<Self, MinarrowError> {
         if self.batches.is_empty() { return Ok(other); }
         if other.batches.is_empty() { return Ok(self); }
@@ -555,7 +556,7 @@ impl Concatenate for SuperNdArray {
     }
 }
 
-impl fmt::Debug for SuperNdArray {
+impl<T: Float> fmt::Debug for SuperNdArray<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f, "SuperNdArray '{}': {} batches, {}D, shape {:?}, {} elements",
@@ -574,7 +575,7 @@ mod tests {
 
     #[test]
     fn empty() {
-        let snd = SuperNdArray::new("empty");
+        let snd = SuperNdArray::<f64>::new("empty");
         assert!(snd.is_empty());
         assert_eq!(snd.n_batches(), 0);
     }

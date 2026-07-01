@@ -30,6 +30,7 @@ use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::ffi::arrow_dtype::ArrowType;
 use crate::structs::ndarray::{AxisSel, NdArray};
+use crate::traits::type_unions::Float;
 use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::{Array, Field, StringArray, Table};
 
@@ -146,14 +147,14 @@ macro_rules! delegate {
 /// assert_eq!(col0.ndim(), 1);
 /// ```
 #[derive(Clone)]
-pub struct XArray {
-    data: NdArrayE,
+pub struct XArray<T> {
+    data: NdArrayE<T>,
     axes: Vec<Axis>,
 }
 
-impl XArray {
+impl<T: Float> XArray<T> {
     /// Create with named dimensions, no coordinates.
-    pub fn new(data: NdArray, dim_names: &[&str]) -> Self {
+    pub fn new(data: NdArray<T>, dim_names: &[&str]) -> Self {
         assert_eq!(
             data.ndim(), dim_names.len(),
             "XArray: {} dim names for {}D array", dim_names.len(), data.ndim()
@@ -163,7 +164,7 @@ impl XArray {
     }
 
     /// Create with fully specified axes.
-    pub fn with_axes(data: NdArray, axes: Vec<Axis>) -> Self {
+    pub fn with_axes(data: NdArray<T>, axes: Vec<Axis>) -> Self {
         assert_eq!(
             data.ndim(), axes.len(),
             "XArray: {} axes for {}D array", axes.len(), data.ndim()
@@ -181,7 +182,7 @@ impl XArray {
     }
 
     /// Create from NdArray with auto-generated dim names.
-    pub fn from_ndarray(data: NdArray) -> Self {
+    pub fn from_ndarray(data: NdArray<T>) -> Self {
         let axes = (0..data.ndim())
             .map(|i| Axis::named(format!("dim_{}", i)))
             .collect();
@@ -190,7 +191,7 @@ impl XArray {
 
     /// Wrap a SuperNdArray with axes.
     #[cfg(feature = "chunked")]
-    pub fn from_batched(data: SuperNdArray, dim_names: &[&str]) -> Self {
+    pub fn from_batched(data: SuperNdArray<T>, dim_names: &[&str]) -> Self {
         assert_eq!(
             data.ndim(), dim_names.len(),
             "XArray: {} dim names for {}D batched array", dim_names.len(), data.ndim()
@@ -201,7 +202,7 @@ impl XArray {
 
     /// Wrap an NdArrayV view with axes (zero-copy).
     #[cfg(feature = "views")]
-    pub fn from_view(view: NdArrayV, axes: Vec<Axis>) -> Self {
+    pub fn from_view(view: NdArrayV<T>, axes: Vec<Axis>) -> Self {
         assert_eq!(
             view.ndim(), axes.len(),
             "XArray: {} axes for {}D view", axes.len(), view.ndim()
@@ -250,7 +251,7 @@ impl XArray {
 
     /// Consume and return the inner NdArray, consolidating if batched,
     /// materialising if a view.
-    pub fn into_ndarray(self) -> NdArray {
+    pub fn into_ndarray(self) -> NdArray<T> {
         match self.data {
             NdArrayE::Owned(nd) => nd,
             #[cfg(feature = "views")]
@@ -263,7 +264,7 @@ impl XArray {
     }
 
     /// Materialise to owned NdArray if currently a view or batched.
-    pub fn to_owned(&self) -> XArray {
+    pub fn to_owned(&self) -> XArray<T> {
         match &self.data {
             NdArrayE::Owned(_) => self.clone(),
             #[cfg(feature = "views")]
@@ -313,7 +314,7 @@ impl XArray {
     /// Returns an (N-1)-dimensional `NdArrayV` view regardless of
     /// the inner storage mode.
     #[cfg(feature = "views")]
-    pub fn obs(&self, idx: usize) -> NdArrayV {
+    pub fn obs(&self, idx: usize) -> NdArrayV<T> {
         match &self.data {
             NdArrayE::Owned(nd) => {
                 let arc = std::sync::Arc::new(nd.clone());
@@ -336,10 +337,10 @@ impl XArray {
     pub fn lda(&self) -> i32 { delegate!(self, lda()) }
 
     /// Single element access.
-    pub fn get(&self, indices: &[usize]) -> f64 { delegate!(self, get(indices)) }
+    pub fn get(&self, indices: &[usize]) -> T { delegate!(self, get(indices)) }
 
     /// Mutable element access. Only works on owned or batched data.
-    pub fn set(&mut self, indices: &[usize], value: f64) {
+    pub fn set(&mut self, indices: &[usize], value: T) {
         match &mut self.data {
             NdArrayE::Owned(nd) => nd.set(indices, value),
             #[cfg(feature = "views")]
@@ -352,7 +353,7 @@ impl XArray {
     /// Parallel iterator over axis-0 observations. Each item is the
     /// observation index and a zero-copy `NdArrayV` view.
     #[cfg(all(feature = "parallel_proc", feature = "views"))]
-    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV)> + '_ {
+    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_ {
         use rayon::prelude::*;
         let n_obs = self.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
@@ -401,7 +402,7 @@ impl XArray {
     /// xa.select((("lat", 0..3), ("lon", 2)))       // multi-axis mixed
     /// ```
     #[cfg(feature = "views")]
-    pub fn select<S: IntoAxisSelections>(&self, sel: S) -> XArray {
+    pub fn select<S: IntoAxisSelections>(&self, sel: S) -> XArray<T> {
         let selections = sel.into_selections();
         let shape = self.shape();
 
@@ -441,7 +442,7 @@ impl XArray {
     /// Slice the underlying NdArray/NdArrayV positionally. Zero-copy.
     /// For named axis selection, use `.select()` instead.
     #[cfg(feature = "views")]
-    pub fn slice(&self, sel: Vec<AxisSel>) -> NdArrayV {
+    pub fn slice(&self, sel: Vec<AxisSel>) -> NdArrayV<T> {
         match &self.data {
             NdArrayE::Owned(nd) => nd.slice(sel),
             NdArrayE::View(v) => v.slice(sel),
@@ -459,7 +460,7 @@ impl XArray {
     /// Select a single position on a named axis by coordinate value.
     /// Collapses that dimension. Returns an error if the value is not found.
     #[cfg(feature = "views")]
-    pub fn try_at(&self, dim_name: &str, value: f64) -> Result<XArray, MinarrowError> {
+    pub fn try_at(&self, dim_name: &str, value: f64) -> Result<XArray<T>, MinarrowError> {
         let dim_idx = self.dim(dim_name);
         let pos = self.try_find_coord_pos(dim_idx, value)?;
 
@@ -481,7 +482,7 @@ impl XArray {
 
     /// Select a single position by coordinate value. Panics if not found.
     #[cfg(feature = "views")]
-    pub fn at(&self, dim_name: &str, value: f64) -> XArray {
+    pub fn at(&self, dim_name: &str, value: f64) -> XArray<T> {
         self.try_at(dim_name, value)
             .unwrap_or_else(|e| panic!("{}", e))
     }
@@ -489,7 +490,7 @@ impl XArray {
     /// Select a range by coordinate value bounds (inclusive).
     /// Returns an error if no values fall in the range.
     #[cfg(feature = "views")]
-    pub fn try_between(&self, dim_name: &str, low: f64, high: f64) -> Result<XArray, MinarrowError> {
+    pub fn try_between(&self, dim_name: &str, low: f64, high: f64) -> Result<XArray<T>, MinarrowError> {
         let dim_idx = self.dim(dim_name);
         let (start, end) = self.try_find_coord_range(dim_idx, low, high)?;
 
@@ -516,7 +517,7 @@ impl XArray {
 
     /// Select a range by coordinate value bounds. Panics if no values match.
     #[cfg(feature = "views")]
-    pub fn between(&self, dim_name: &str, low: f64, high: f64) -> XArray {
+    pub fn between(&self, dim_name: &str, low: f64, high: f64) -> XArray<T> {
         self.try_between(dim_name, low, high)
             .unwrap_or_else(|e| panic!("{}", e))
     }
@@ -526,7 +527,7 @@ impl XArray {
     // ****************************************************************
 
     /// Transpose (2D only). Reorders axes by name.
-    pub fn transpose(&self, dim_order: &[&str]) -> Result<XArray, MinarrowError> {
+    pub fn transpose(&self, dim_order: &[&str]) -> Result<XArray<T>, MinarrowError> {
         if self.ndim() != 2 {
             return Err(MinarrowError::ShapeError {
                 message: format!("transpose requires 2D, got {}D", self.ndim()),
@@ -550,35 +551,6 @@ impl XArray {
             .map(|name| self.ax(name).clone())
             .collect();
         Ok(XArray { data: NdArrayE::Owned(inner), axes: new_axes })
-    }
-
-    // ****************************************************************
-    // Conversions
-    // ****************************************************************
-
-    /// Convert a 2D XArray to a Table. Uses axis 1 coords as column names
-    /// if available, otherwise generates names from the dim name.
-    pub fn to_table(self) -> Result<Table, MinarrowError> {
-        if self.ndim() != 2 {
-            return Err(MinarrowError::ShapeError {
-                message: format!("to_table requires 2D, got {}D", self.ndim()),
-            });
-        }
-        let n_cols = self.shape()[1];
-        let fields: Vec<Field> = if let Some(ref coords) = self.axes[1].coords {
-            (0..n_cols).map(|i| {
-                let name = coords.value_to_string(i);
-                Field::new(name, ArrowType::Float64, false, None)
-            }).collect()
-        } else {
-            (0..n_cols).map(|i| {
-                Field::new(
-                    format!("{}_{}", self.axes[1].name, i),
-                    ArrowType::Float64, false, None,
-                )
-            }).collect()
-        };
-        self.into_ndarray().to_table(fields)
     }
 
     // ****************************************************************
@@ -644,6 +616,33 @@ impl XArray {
     }
 }
 
+impl XArray<f64> {
+    /// Convert a 2D XArray to a Table. Uses axis 1 coords as column names
+    /// if available, otherwise generates names from the dim name.
+    pub fn to_table(self) -> Result<Table, MinarrowError> {
+        if self.ndim() != 2 {
+            return Err(MinarrowError::ShapeError {
+                message: format!("to_table requires 2D, got {}D", self.ndim()),
+            });
+        }
+        let n_cols = self.shape()[1];
+        let fields: Vec<Field> = if let Some(ref coords) = self.axes[1].coords {
+            (0..n_cols).map(|i| {
+                let name = coords.value_to_string(i);
+                Field::new(name, ArrowType::Float64, false, None)
+            }).collect()
+        } else {
+            (0..n_cols).map(|i| {
+                Field::new(
+                    format!("{}_{}", self.axes[1].name, i),
+                    ArrowType::Float64, false, None,
+                )
+            }).collect()
+        };
+        self.into_ndarray().to_table(fields)
+    }
+}
+
 // ****************************************************************
 // NdArrayE - owned or view storage
 // ****************************************************************
@@ -651,12 +650,12 @@ impl XArray {
 /// Internal storage: either owned NdArray or zero-copy NdArrayV.
 /// Enables XArray to be a single type regardless of ownership.
 #[derive(Clone)]
-pub(crate) enum NdArrayE {
-    Owned(NdArray),
+pub(crate) enum NdArrayE<T> {
+    Owned(NdArray<T>),
     #[cfg(feature = "views")]
-    View(NdArrayV),
+    View(NdArrayV<T>),
     #[cfg(feature = "chunked")]
-    Chunked(SuperNdArray),
+    Chunked(SuperNdArray<T>),
 }
 
 // ****************************************************************
@@ -745,7 +744,7 @@ impl<T: Into<AxisSelection>> IntoAxisSelections for (&str, T) {
 // Trait implementations
 // ****************************************************************
 
-impl Shape for XArray {
+impl<T: Float> Shape for XArray<T> {
     fn shape(&self) -> ShapeDim {
         match &self.data {
             NdArrayE::Owned(nd) => Shape::shape(nd),
@@ -757,7 +756,7 @@ impl Shape for XArray {
     }
 }
 
-impl Concatenate for XArray {
+impl<T: Float> Concatenate for XArray<T> {
     fn concat(self, other: Self) -> Result<Self, MinarrowError> {
         if self.axes.len() != other.axes.len() {
             return Err(MinarrowError::IncompatibleTypeError {
@@ -778,7 +777,7 @@ impl Concatenate for XArray {
         let XArray { data: self_data, axes: self_axes } = self;
         let XArray { data: other_data, axes: other_axes } = other;
 
-        let to_ndarray = |data: NdArrayE| -> NdArray {
+        let to_ndarray = |data: NdArrayE<T>| -> NdArray<T> {
             match data {
                 NdArrayE::Owned(nd) => nd,
                 #[cfg(feature = "views")]
@@ -811,9 +810,9 @@ impl Concatenate for XArray {
     }
 }
 
-impl<'a> IntoIterator for &'a XArray {
-    type Item = f64;
-    type IntoIter = Box<dyn Iterator<Item = f64> + 'a>;
+impl<'a, T: Float> IntoIterator for &'a XArray<T> {
+    type Item = T;
+    type IntoIter = Box<dyn Iterator<Item = T> + 'a>;
 
     fn into_iter(self) -> Self::IntoIter {
         match &self.data {
@@ -826,7 +825,7 @@ impl<'a> IntoIterator for &'a XArray {
     }
 }
 
-impl PartialEq for XArray {
+impl<T: Float> PartialEq for XArray<T> {
     fn eq(&self, other: &Self) -> bool {
         if self.axes != other.axes { return false; }
         if self.shape() != other.shape() { return false; }
@@ -834,7 +833,7 @@ impl PartialEq for XArray {
     }
 }
 
-impl fmt::Debug for XArray {
+impl<T: Float> fmt::Debug for XArray<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let shape = self.shape();
         let dims: Vec<String> = self.axes.iter()
@@ -854,7 +853,7 @@ impl fmt::Debug for XArray {
 // TryFrom<Table>
 // ****************************************************************
 
-impl TryFrom<Table> for XArray {
+impl TryFrom<Table> for XArray<f64> {
     type Error = MinarrowError;
 
     fn try_from(table: Table) -> Result<Self, Self::Error> {
@@ -886,8 +885,19 @@ mod tests {
     use std::sync::Arc;
     use crate::{FloatArray, NumericArray, FieldArray};
 
-    fn make_2d() -> NdArray {
+    fn make_2d() -> NdArray<f64> {
         NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2])
+    }
+
+    #[test]
+    fn f32_element_type() {
+        let data = NdArray::<f32>::from_slice(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let xa = XArray::new(data, &["obs", "feat"]);
+        assert_eq!(xa.get(&[0, 0]), 1.0f32);
+        assert_eq!(xa.get(&[2, 1]), 6.0f32);
+        let sub = xa.select(("obs", 0..2));
+        assert_eq!(sub.shape(), vec![2, 2]);
+        assert_eq!(sub.get(&[1, 1]), 5.0f32);
     }
 
     fn float_coords(vals: &[f64]) -> Array {
