@@ -1,17 +1,40 @@
 //! # **NdArray** - *N-dimensional dense array for scientific and statistical computing*
 //!
 //! Comparable to NumPy's `ndarray` or Rust's `ndarray` crate, but backed
-//! by Minarrow's [`Buffer<T>`] so it shares memory with Tables, Matrices,
-//! and external sources without copying.
+//! by Minarrow's [`Buffer<T>`], so external memory such as an imported
+//! DLPack tensor wraps without copying. Conversions into the padded and
+//! columnar types re-lay data for their layouts.
 //!
+//! ## Intent
+//! NdArray is the landing container for n-dimensional numeric data - off a
+//! network, sensor feed, or file - and the bridge to Python and GPU
+//! frameworks over DLPack, or a basis for building on in Rust. 
+//! It is not a 'Python NdArray-equivalent' compute library. Kernels, BLAS, and
+//! deep learning frameworks operate on the data it carries.
+//! It's therefore here to make it easier and more consistent to have all the required
+//! data structures in one place for bridging rather than needing to collate separate 
+//! sources for different data structures.
+//! 
 //! ## Element type
 //! Generic over `T: Float`, which covers `f32` and `f64`. Rank is determined
 //! at runtime rather than through generics, and dimensions 1D-5D are stored
 //! inline to avoid heap allocation in the common case.
 //!
 //! ## Layout
-//! Column-major with 64-byte aligned strides, so the buffer can be handed
-//! directly to BLAS/LAPACK routines or SIMD kernels.
+//! Compact column-major with no inter-dimension padding, so the buffer is
+//! fully contiguous and hands to DLPack consumers as a dense tensor. The
+//! allocation start is 64-byte aligned through `Vec64`, which serves
+//! whole-buffer SIMD over the flattened data. Padded per-column alignment
+//! for BLAS/LAPACK column access is [`Matrix`]'s job, and `to_matrix`
+//! re-lays data into that form.
+//! 
+//! # SIMD only in 1D
+//! Notably, this is different to the other structures in Minarrow, which optimise
+//! for columnar SIMD. NdArray does not - except when the array is laid out flat in 1D.
+//! The reasoning is that SIMD is for fast decisions via CPU. With Nd dimensions,
+//! typically one will use a GPU which has different optimisation mechanisms that don't
+//! benefit from 64-byte padding, which then otherwise causes issues with Python libraries
+//! like PyTorch that may re-allocate in order to achieve a contiguous layout.
 //!
 //! ## Null handling
 //! Missing values are represented as NaN. BLAS/LAPACK and IEEE 754 arithmetic
@@ -19,12 +42,15 @@
 //! special-case logic.
 //!
 //! ## Interop
-//! - 2D NdArray to/from [`Matrix`] - zero-copy when strides already match (f64).
-//! - 2D NdArray to [`Table`] via [`SharedBuffer`] - each column becomes a
-//!   `FloatArray` window into the shared allocation (f64).
-//! - 1D NdArray to [`Array`] as `FloatArray<f64>`.
-//! - [`Table`] / [`Matrix`] to NdArray via [`TryFrom`] (f64).
-//! - DLPack export for zero-copy sharing with PyTorch, JAX, TensorFlow (f32 and f64).
+//! - [`Matrix`] to 2D NdArray - zero-copy, the padded stride carries through (f64).
+//! - 2D NdArray to [`Matrix`] - re-lays into the padded column layout, zero-copy
+//!   when the stride already matches (f64).
+//! - 2D NdArray to [`Table`] - each column copies into its own 64-byte aligned
+//!   `FloatArray` (f64).
+//! - 1D NdArray to [`Array`] - moves the buffer into a `FloatArray<f64>`.
+//! - [`Table`] to NdArray via [`TryFrom`] - copies, converting nulls to NaN (f64).
+//! - DLPack export and import for zero-copy sharing with PyTorch, JAX,
+//!   TensorFlow (f32 and f64).
 
 use std::fmt;
 use std::ops::{Index, IndexMut, Range, RangeFrom, RangeFull, RangeTo};
@@ -38,7 +64,7 @@ use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::{Array, ArrowType, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
 
 #[cfg(feature = "matrix")]
-use crate::structs::matrix::Matrix;
+use crate::structs::matrix::{Matrix, aligned_stride};
 #[cfg(feature = "views")]
 use crate::structs::views::ndarray_view::NdArrayV;
 #[cfg(feature = "dlpack")]
@@ -48,10 +74,10 @@ use crate::ffi::dlpack::{export_to_dlpack, DLPackTensor};
 // NdArray
 // ****************************************************************
 
-/// N-dimensional dense array of `f64` values.
+/// N-dimensional dense array of float values.
 ///
-/// Backed by [`Buffer<f64>`] for zero-copy interop with external memory.
-/// Column-major layout with 64-byte aligned strides.
+/// Backed by [`Buffer<T>`] for zero-copy interop with external memory.
+/// Compact column-major layout with a 64-byte aligned allocation start.
 ///
 /// See the [module-level documentation](self) for design rationale.
 #[derive(Clone, PartialEq)]
@@ -83,8 +109,7 @@ impl<T: Float> NdArray<T> {
     /// Create from a flat column-major slice and shape.
     ///
     /// The slice holds `product(shape)` logical elements in column-major
-    /// order without stride padding. Data is re-laid out with 64-byte
-    /// aligned strides.
+    /// order, matching the compact layout, so the data copies straight in.
     pub fn from_slice(data: &[T], shape: &[usize]) -> Self {
         let logical_len: usize = shape.iter().product();
         assert_eq!(
@@ -93,24 +118,11 @@ impl<T: Float> NdArray<T> {
             data.len(), logical_len
         );
         let dims = NdDims::from_shape(shape);
-        let strides = dims.strides();
-        let total = buffer_len(shape, strides);
-
-        // For 1D, no padding is needed
-        if shape.len() == 1 {
-            return NdArray {
-                data: Buffer::from_slice(data),
-                dims,
-                name: None,
-            };
+        NdArray {
+            data: Buffer::from_slice(data),
+            dims,
+            name: None,
         }
-
-        // Re-lay out with stride padding
-        let mut buf = Vec64::with_capacity(total);
-        buf.0.resize(total, T::default());
-        copy_unpadded_to_strided(data, shape, strides, buf.as_mut_slice());
-
-        NdArray { data: Buffer::from_vec64(buf), dims, name: None }
     }
 
     /// Create from a pre-owned `Buffer<f64>` with explicit shape and strides.
@@ -198,11 +210,19 @@ impl<T: Float> NdArray<T> {
     #[inline]
     pub fn is_empty(&self) -> bool { self.len() == 0 }
 
-    /// True if the buffer layout matches default column-major strides,
+    /// True if the buffer layout matches compact column-major strides,
     /// with no transposition or non-standard stride pattern.
     pub fn is_contiguous(&self) -> bool {
-        let expected = col_major_strides(self.shape());
-        self.strides() == expected.as_slice()
+        let shape = self.dims.shape();
+        let strides = self.dims.strides();
+        let mut expected = 1;
+        for d in 0..shape.len() {
+            if strides[d] != expected {
+                return false;
+            }
+            expected *= shape[d];
+        }
+        true
     }
 
     /// True if any element is NaN.
@@ -245,7 +265,7 @@ impl<T: Float> NdArray<T> {
         self.name = Some(name.into());
     }
 
-    /// Immutable reference to the full flat buffer including stride padding.
+    /// Immutable reference to the full flat buffer.
     #[inline]
     pub fn as_slice(&self) -> &[T] {
         self.data.as_slice()
@@ -463,11 +483,13 @@ impl<T: Float> NdArray<T> {
     /// Slice this array along any combination of axes.
     ///
     /// Each axis takes either a single index (collapses that dimension)
-    /// or a range (keeps it). Returns an `NdArrayV` view - zero-copy
-    /// when possible.
+    /// or a range (keeps it). Returns a zero-copy `NdArrayV` view that
+    /// keeps the parent alive through an `Arc` bump, matching `as_view`
+    /// and `obs`.
     ///
     /// # Examples
     /// ```ignore
+    /// let arr = Arc::new(arr);
     /// arr.slice(2)                  // single index on 1D
     /// arr.slice((1..4,))            // range on axis 0
     /// arr.slice((1..4, 2..5))       // range on both axes (2D)
@@ -475,7 +497,7 @@ impl<T: Float> NdArray<T> {
     /// arr.slice((1, 0..4, 3))       // mixed for 3D
     /// ```
     #[cfg(feature = "views")]
-    pub fn slice<S: IntoSlice>(&self, sel: S) -> NdArrayV<T> {
+    pub fn slice<S: IntoSlice>(self: &Arc<Self>, sel: S) -> NdArrayV<T> {
         let axes = sel.into_slice();
         assert_eq!(
             axes.len(), self.ndim(),
@@ -513,7 +535,7 @@ impl<T: Float> NdArray<T> {
         }
 
         NdArrayV::new(
-            Arc::new(self.clone()),
+            self.clone(),
             new_offset,
             &new_shape,
             &new_strides,
@@ -564,10 +586,11 @@ impl<T: Float> NdArray<T> {
 // *** f64 conversions to the Array/Table/Matrix enum boundary *****
 
 impl NdArray<f64> {
-    /// Convert a 2D NdArray to a Table with zero-copy column sharing.
+    /// Convert a 2D NdArray to a Table.
     ///
-    /// Each column becomes a `FloatArray<f64>` backed by a window into
-    /// the shared allocation. `fields` must have exactly `n_cols` entries.
+    /// Each column is copied into its own 64-byte aligned `FloatArray<f64>`,
+    /// since the compact tensor layout does not place column starts on
+    /// alignment boundaries. `fields` must have exactly `n_cols` entries.
     pub fn to_table(self, fields: Vec<Field>) -> Result<Table, MinarrowError> {
         let shape = self.dims.shape();
         if shape.len() != 2 {
@@ -587,18 +610,13 @@ impl NdArray<f64> {
         }
         let stride = self.dims.strides()[1];
         let name = self.name;
-
-        // Surface the backing SharedBuffer and its element-level base offset.
-        // Owned data is frozen into a new SharedBuffer; already-shared data
-        // reuses its owner so to_table stays zero-copy across repeat calls.
-        // SAFETY: f64 has no drop logic or interior invariants.
-        let (shared, base_offset, _len) = unsafe { self.data.into_shared_parts() };
+        let buf = self.data.as_slice();
 
         let mut cols = Vec::with_capacity(n_cols);
         for (i, field) in fields.into_iter().enumerate() {
-            let col_offset = base_offset + i * stride;
-            let buf: Buffer<f64> = Buffer::from_shared_column(shared.clone(), col_offset, n_rows);
-            let float_arr = FloatArray::new(buf, None);
+            let col_start = i * stride;
+            let col: Buffer<f64> = Buffer::from_slice(&buf[col_start..col_start + n_rows]);
+            let float_arr = FloatArray::new(col, None);
             let array = Array::NumericArray(NumericArray::Float64(Arc::new(float_arr)));
             cols.push(FieldArray::new(field, array));
         }
@@ -638,6 +656,11 @@ impl NdArray<f64> {
     }
 
     /// Convert a 2D NdArray to a Matrix.
+    ///
+    /// Matrix pads each column to a 64-byte boundary for BLAS/LAPACK and
+    /// SIMD access, so compact tensor data is re-laid out into the padded
+    /// form. An array whose stride already matches the padded layout, such
+    /// as one built from a Matrix, moves across zero-copy.
     #[cfg(feature = "matrix")]
     pub fn to_matrix(self) -> Result<Matrix, MinarrowError> {
         let shape = self.dims.shape();
@@ -648,9 +671,21 @@ impl NdArray<f64> {
         }
         let n_rows = shape[0];
         let n_cols = shape[1];
-        let stride = self.dims.strides()[1];
+        let strides = self.dims.strides();
 
-        Ok(Matrix { n_rows, n_cols, stride, data: self.data, name: self.name })
+        if strides[0] == 1 && strides[1] == aligned_stride(n_rows) {
+            return Ok(Matrix {
+                n_rows,
+                n_cols,
+                stride: strides[1],
+                data: self.data,
+                name: self.name,
+            });
+        }
+
+        let name = self.name.clone();
+        let compact: Vec64<f64> = self.into_iter().collect();
+        Ok(Matrix::from_f64_unaligned(&compact, n_rows, n_cols, name))
     }
 }
 
@@ -862,32 +897,18 @@ macro_rules! nd {
 // Stride computation
 // ****************************************************************
 
-/// Number of f64 elements per 64-byte alignment boundary.
-const ALIGN_ELEMS: usize = 64 / std::mem::size_of::<f64>(); // 8
-
-/// Round up to the next multiple of ALIGN_ELEMS for 64-byte column alignment.
-#[inline]
-pub(crate) const fn aligned_stride(n: usize) -> usize {
-    (n + ALIGN_ELEMS - 1) & !(ALIGN_ELEMS - 1)
-}
-
-/// Compute column-major strides with 64-byte alignment on the leading dimension.
+/// Compute compact column-major strides with no inter-dimension padding.
 ///
-/// For a shape `[a, b, c]`, the strides are:
-///   `[1, aligned_stride(a), aligned_stride(a) * b]`
-///
-/// Every column and every higher-dimensional slice start at a 64-byte
-/// boundary, since all strides are multiples of the aligned leading
-/// dimension.
+/// For a shape `[a, b, c]`, the strides are `[1, a, a * b]`. The buffer is
+/// fully contiguous, so DLPack consumers receive a dense tensor and range
+/// indexing over the outermost axis reads logical data with no gaps. The
+/// backing allocation start remains 64-byte aligned through `Vec64`.
 pub(crate) fn col_major_strides(shape: &[usize]) -> Vec<usize> {
     assert!(!shape.is_empty(), "NdArray: shape must have at least one dimension");
     let mut strides = Vec::with_capacity(shape.len());
     strides.push(1);
-    if shape.len() > 1 {
-        strides.push(aligned_stride(shape[0]));
-        for d in 2..shape.len() {
-            strides.push(strides[d - 1] * shape[d - 1]);
-        }
+    for d in 1..shape.len() {
+        strides.push(strides[d - 1] * shape[d - 1]);
     }
     strides
 }
@@ -1047,47 +1068,6 @@ pub(crate) fn offset_of_impl(indices: &[usize], shape: &[usize], strides: &[usiz
     offset
 }
 
-/// Copy unpadded column-major data into a strided buffer.
-fn copy_unpadded_to_strided<T: Copy>(src: &[T], shape: &[usize], strides: &[usize], dst: &mut [T]) {
-    if shape.len() == 2 {
-        // Fast path for 2D
-        let n_rows = shape[0];
-        let n_cols = shape[1];
-        let stride = strides[1];
-        for c in 0..n_cols {
-            let src_start = c * n_rows;
-            let dst_start = c * stride;
-            dst[dst_start..dst_start + n_rows]
-                .copy_from_slice(&src[src_start..src_start + n_rows]);
-        }
-        return;
-    }
-    // General N-D: walk logical elements and place them
-    let mut src_idx = 0;
-    let mut indices = vec![0usize; shape.len()];
-    let total: usize = shape.iter().product();
-    for _ in 0..total {
-        let offset: usize = indices.iter()
-            .zip(strides.iter())
-            .map(|(&i, &s)| i * s)
-            .sum();
-        dst[offset] = src[src_idx];
-        src_idx += 1;
-
-        let mut carry = true;
-        for d in 0..shape.len() {
-            if carry {
-                indices[d] += 1;
-                if indices[d] < shape[d] {
-                    carry = false;
-                } else {
-                    indices[d] = 0;
-                }
-            }
-        }
-    }
-}
-
 // ****************************************************************
 // Trait implementations
 // ****************************************************************
@@ -1188,13 +1168,14 @@ impl<T: Float> Index<usize> for NdArray<T> {
             }
             n => {
                 // Index the outermost axis (last), return the contiguous inner slab
+                assert!(
+                    self.is_contiguous(),
+                    "outermost-axis indexing on 3D+ requires a contiguous layout, use slice() for strided access"
+                );
                 let last = n - 1;
                 debug_assert!(idx < shape[last], "index out of bounds for axis {}", last);
                 let start = idx * strides[last];
-                let inner_len: usize = shape[..last].iter().zip(&strides[..last])
-                    .map(|(&s, &st)| (s - 1) * st)
-                    .sum::<usize>() + 1;
-                &self.data.as_slice()[start..start + inner_len]
+                &self.data.as_slice()[start..start + strides[last]]
             }
         }
     }
@@ -1217,13 +1198,14 @@ impl<T: Float> IndexMut<usize> for NdArray<T> {
                 &mut self.data.as_mut_slice()[start..start + n_rows]
             }
             n => {
+                assert!(
+                    self.is_contiguous(),
+                    "outermost-axis indexing on 3D+ requires a contiguous layout, use slice() for strided access"
+                );
                 let last = n - 1;
                 debug_assert!(idx < shape[last], "index out of bounds for axis {}", last);
                 let start = idx * strides[last];
-                let inner_len: usize = shape[..last].iter().zip(&strides[..last])
-                    .map(|(&s, &st)| (s - 1) * st)
-                    .sum::<usize>() + 1;
-                &mut self.data.as_mut_slice()[start..start + inner_len]
+                &mut self.data.as_mut_slice()[start..start + strides[last]]
             }
         }
     }
@@ -1234,7 +1216,10 @@ impl<T: Float> IndexMut<usize> for NdArray<T> {
 /// `arr[start..end]` selects a contiguous range along the outermost axis.
 ///
 /// For 1D, returns the element slice directly.
-/// For 2D, selects a range of columns as a contiguous slab.
+/// For 2D and above, selects a range of outermost-axis entries as one
+/// contiguous slab of logical data. Requires a contiguous layout, since a
+/// padded or transposed stride pattern has no gap-free slab to return.
+/// Non-contiguous arrays panic with guidance to use `slice()`.
 impl<T: Float> Index<Range<usize>> for NdArray<T> {
     type Output = [T];
 
@@ -1245,14 +1230,15 @@ impl<T: Float> Index<Range<usize>> for NdArray<T> {
         match shape.len() {
             1 => &self.data.as_slice()[range],
             _ => {
+                assert!(
+                    self.is_contiguous(),
+                    "range indexing requires a contiguous layout, use slice() for strided access"
+                );
                 let last = shape.len() - 1;
                 debug_assert!(range.end <= shape[last], "range end out of bounds");
                 let start = range.start * strides[last];
-                let end_offset = (range.end - 1) * strides[last];
-                let inner_len: usize = shape[..last].iter().zip(&strides[..last])
-                    .map(|(&s, &st)| (s - 1) * st)
-                    .sum::<usize>() + 1;
-                &self.data.as_slice()[start..end_offset + inner_len]
+                let end = range.end * strides[last];
+                &self.data.as_slice()[start..end]
             }
         }
     }
@@ -1266,14 +1252,15 @@ impl<T: Float> IndexMut<Range<usize>> for NdArray<T> {
         match shape.len() {
             1 => &mut self.data.as_mut_slice()[range],
             _ => {
+                assert!(
+                    self.is_contiguous(),
+                    "range indexing requires a contiguous layout, use slice() for strided access"
+                );
                 let last = shape.len() - 1;
                 debug_assert!(range.end <= shape[last], "range end out of bounds");
                 let start = range.start * strides[last];
-                let end_offset = (range.end - 1) * strides[last];
-                let inner_len: usize = shape[..last].iter().zip(&strides[..last])
-                    .map(|(&s, &st)| (s - 1) * st)
-                    .sum::<usize>() + 1;
-                &mut self.data.as_mut_slice()[start..end_offset + inner_len]
+                let end = range.end * strides[last];
+                &mut self.data.as_mut_slice()[start..end]
             }
         }
     }
@@ -1285,7 +1272,7 @@ impl<T: Float> Index<RangeFrom<usize>> for NdArray<T> {
     #[inline]
     fn index(&self, range: RangeFrom<usize>) -> &[T] {
         let last_dim = self.dims.shape().len() - 1;
-        let end = self.dims.shape()[last_dim.max(0)];
+        let end = self.dims.shape()[last_dim];
         &self[range.start..end]
     }
 }
@@ -1467,7 +1454,9 @@ impl<T: Float> From<&[FloatArray<T>]> for NdArray<T> {
     }
 }
 
-/// From Matrix - zero-copy, moves the Buffer straight across.
+/// From Matrix - zero-copy, moves the Buffer straight across. The Matrix's
+/// padded column stride carries through, so the resulting array reports
+/// non-contiguous. Call `to_contiguous` to re-lay out compactly.
 #[cfg(feature = "matrix")]
 impl From<Matrix> for NdArray<f64> {
     fn from(mat: Matrix) -> Self {
@@ -1774,11 +1763,12 @@ mod tests {
     }
 
     #[test]
-    fn iter_2d_with_stride_padding() {
-        // 10 rows triggers stride=16, but iteration yields only logical rows
+    fn iter_2d_compact_layout() {
+        // Compact strides place columns back to back, so iteration reads
+        // the buffer straight through.
         let data: Vec<f64> = (1..=30).map(|x| x as f64).collect();
         let a = NdArray::from_slice(&data, &[10, 3]);
-        assert_eq!(a.strides()[1], 16);
+        assert_eq!(a.strides()[1], 10);
         let vals: Vec<f64> = (&a).into_iter().collect();
         assert_eq!(vals.len(), 30);
         assert_eq!(&vals[..10], &data[..10]);
@@ -1923,7 +1913,7 @@ mod tests {
     }
 
     #[test]
-    fn col_with_stride_padding() {
+    fn col_access_2d() {
         let data: Vec<f64> = (1..=20).map(|x| x as f64).collect();
         let a = NdArray::from_slice(&data, &[10, 2]);
         assert_eq!(a.col(0).len(), 10);
@@ -1941,7 +1931,7 @@ mod tests {
         let a = NdArray::<f64>::new(&[10, 5]);
         assert_eq!(a.m(), 10);
         assert_eq!(a.n(), 5);
-        assert_eq!(a.lda(), 16);
+        assert_eq!(a.lda(), 10);
     }
 
     #[test]
@@ -1953,26 +1943,26 @@ mod tests {
     }
 
     // ****************************************************************
-    // Stride alignment
+    // Compact strides
     // ****************************************************************
 
     #[test]
-    fn stride_alignment_2d() {
+    fn compact_strides_2d() {
         for n_rows in 1..=20 {
             let a = NdArray::<f64>::new(&[n_rows, 3]);
-            let stride = a.strides()[1];
-            assert!(stride >= n_rows);
-            assert_eq!(stride % 8, 0);
+            assert_eq!(a.strides()[1], n_rows);
+            assert!(a.is_contiguous());
         }
     }
 
     #[test]
-    fn stride_alignment_3d() {
+    fn compact_strides_3d() {
         let a = NdArray::<f64>::new(&[10, 3, 4]);
         let strides = a.strides();
         assert_eq!(strides[0], 1);
-        assert_eq!(strides[1], 16);
-        assert_eq!(strides[2], 16 * 3);
+        assert_eq!(strides[1], 10);
+        assert_eq!(strides[2], 10 * 3);
+        assert!(a.is_contiguous());
     }
 
     // ****************************************************************
@@ -2388,12 +2378,63 @@ mod tests {
 
     #[test]
     fn range_index_2d_columns() {
-        // Selecting a range of columns returns contiguous slab
+        // Selecting a range of columns returns the exact logical data,
+        // since the compact layout has no padding between columns.
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         let slab = &a[0..2];
-        // Should contain col0 data + padding + col1 data
-        // col0 at buf[0..3], col1 at buf[stride..stride+3]
-        assert!(slab.len() > 0);
+        assert_eq!(slab, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let col1 = &a[1..2];
+        assert_eq!(col1, &[4.0, 5.0, 6.0]);
+    }
+
+    #[cfg(feature = "matrix")]
+    #[test]
+    #[should_panic(expected = "contiguous")]
+    fn range_index_non_contiguous_panics() {
+        // A Matrix-imported array carries the padded stride, so range
+        // indexing has no gap-free slab to return and panics.
+        let mat = Matrix::from_f64_unaligned(
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2, None,
+        );
+        let a = NdArray::from(mat);
+        if a.is_contiguous() {
+            // Padding only appears when rows are off the alignment boundary,
+            // which holds for 3 rows. Guard the premise.
+            panic!("premise failed: expected non-contiguous import");
+        }
+        let _ = &a[0..2];
+    }
+
+    #[cfg(feature = "matrix")]
+    #[test]
+    fn to_matrix_repacks_compact_layout() {
+        // Compact tensor data re-lays into Matrix's padded column layout.
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let mat = a.to_matrix().unwrap();
+        assert_eq!(mat.n_rows, 3);
+        assert_eq!(mat.n_cols, 2);
+        assert_eq!(mat.stride, 8);
+        assert_eq!(&mat.data.as_slice()[..3], &[1.0, 2.0, 3.0]);
+        assert_eq!(&mat.data.as_slice()[8..11], &[4.0, 5.0, 6.0]);
+    }
+
+    #[cfg(feature = "matrix")]
+    #[test]
+    fn matrix_roundtrip_via_contiguous() {
+        // Matrix -> NdArray is zero-copy with the padded stride carried
+        // through. to_contiguous compacts, and to_matrix re-pads.
+        let mat = Matrix::from_f64_unaligned(
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2, None,
+        );
+        let a = NdArray::from(mat);
+        assert!(!a.is_contiguous());
+        assert_eq!(a.get(&[2, 1]), 6.0);
+        let compact = a.to_contiguous();
+        assert!(compact.is_contiguous());
+        assert_eq!(&compact[0..2], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let back = compact.to_matrix().unwrap();
+        assert_eq!(back.stride, 8);
+        assert_eq!(&back.data.as_slice()[8..11], &[4.0, 5.0, 6.0]);
     }
 
     #[test]
@@ -2421,7 +2462,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_1d_single_index() {
-        let a = NdArray::from_slice(&[10.0, 20.0, 30.0], &[3]);
+        let a = Arc::new(NdArray::from_slice(&[10.0, 20.0, 30.0], &[3]));
         let v = a.slice(1);
         assert_eq!(v.shape(), &[1]);
         assert_eq!(v[(0,)], 20.0);
@@ -2430,7 +2471,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_1d_range() {
-        let a = NdArray::from_slice(&[10.0, 20.0, 30.0, 40.0], &[4]);
+        let a = Arc::new(NdArray::from_slice(&[10.0, 20.0, 30.0, 40.0], &[4]));
         let v = a.slice(1..3);
         assert_eq!(v.shape(), &[2]);
         assert_eq!(v[(0,)], 20.0);
@@ -2440,7 +2481,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_2d_row_range_single_col() {
-        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
         // Rows 0..2 of column 1
         let v = a.slice((0..2, 1));
         assert_eq!(v.shape(), &[2]);
@@ -2451,7 +2492,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_2d_single_row_col_range() {
-        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
         // Row 1, columns 0..2 - collapses row axis
         let v = a.slice((1, 0..2));
         assert_eq!(v.shape(), &[2]);
@@ -2463,7 +2504,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_2d_both_ranges() {
-        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
         // Rows 0..2, columns 0..2 - sub-matrix
         let v = a.slice((0..2, 0..2));
         assert_eq!(v.shape(), &[2, 2]);
@@ -2476,7 +2517,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_2d_both_indices_scalar() {
-        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
         // Single element as 1D view
         let v = a.slice((2, 1));
         assert_eq!(v.shape(), &[1]);
@@ -2488,7 +2529,7 @@ mod tests {
     fn slice_3d_mixed() {
         // 2x3x4 array
         let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
-        let a = NdArray::from_slice(&data, &[2, 3, 4]);
+        let a = Arc::new(NdArray::from_slice(&data, &[2, 3, 4]));
         // All rows, column 1, slices 0..2
         let v = a.slice((0..2, 1, 0..2));
         assert_eq!(v.shape(), &[2, 2]);
@@ -2503,7 +2544,7 @@ mod tests {
     #[test]
     fn slice_with_nd_macro() {
         let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
-        let a = NdArray::from_slice(&data, &[2, 3, 4]);
+        let a = Arc::new(NdArray::from_slice(&data, &[2, 3, 4]));
         let v = a.slice(nd![0..2, 0..3, 0..4]);
         assert_eq!(v.shape(), &[2, 3, 4]);
         assert_eq!(v.len(), 24);
@@ -2512,7 +2553,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_preserves_data_through_iteration() {
-        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
         let v = a.slice((1..3, 0..2));
         // Sub-matrix: rows 1..3, cols 0..2
         let vals: Vec<f64> = (&v).into_iter().collect();
@@ -2521,10 +2562,10 @@ mod tests {
 
     #[cfg(feature = "views")]
     #[test]
-    fn slice_with_stride_padding() {
-        // 10 rows → stride=16, slice rows 2..5 from col 1
+    fn slice_column_window() {
+        // Slice rows 2..5 from column 1 of a [10, 2] array
         let data: Vec<f64> = (1..=20).map(|x| x as f64).collect();
-        let a = NdArray::from_slice(&data, &[10, 2]);
+        let a = Arc::new(NdArray::from_slice(&data, &[10, 2]));
         let v = a.slice((2..5, 1));
         assert_eq!(v.shape(), &[3]);
         assert_eq!(v[(0,)], 13.0);

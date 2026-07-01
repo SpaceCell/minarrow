@@ -399,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn iteration_with_padding() {
+    fn iteration_2d() {
         let data: Vec<f64> = (1..=20).map(|x| x as f64).collect();
         let a = Arc::new(NdArray::from_slice(&data, &[10, 2]));
         let v = NdArrayV::from_ndarray(a);
@@ -446,7 +446,7 @@ mod tests {
         let v = NdArrayV::from_ndarray(a);
         assert_eq!(v.m(), 10);
         assert_eq!(v.n(), 5);
-        assert_eq!(v.lda(), 16);
+        assert_eq!(v.lda(), 10);
     }
 
     #[test]

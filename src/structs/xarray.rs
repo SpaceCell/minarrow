@@ -25,6 +25,7 @@
 
 use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
@@ -160,7 +161,7 @@ impl<T: Float> XArray<T> {
             "XArray: {} dim names for {}D array", dim_names.len(), data.ndim()
         );
         let axes = dim_names.iter().map(|n| Axis::named(*n)).collect();
-        XArray { data: NdArrayE::Owned(data), axes }
+        XArray { data: NdArrayE::Owned(Arc::new(data)), axes }
     }
 
     /// Create with fully specified axes.
@@ -178,7 +179,7 @@ impl<T: Float> XArray<T> {
                 );
             }
         }
-        XArray { data: NdArrayE::Owned(data), axes }
+        XArray { data: NdArrayE::Owned(Arc::new(data)), axes }
     }
 
     /// Create from NdArray with auto-generated dim names.
@@ -186,7 +187,7 @@ impl<T: Float> XArray<T> {
         let axes = (0..data.ndim())
             .map(|i| Axis::named(format!("dim_{}", i)))
             .collect();
-        XArray { data: NdArrayE::Owned(data), axes }
+        XArray { data: NdArrayE::Owned(Arc::new(data)), axes }
     }
 
     /// Wrap a SuperNdArray with axes.
@@ -253,7 +254,7 @@ impl<T: Float> XArray<T> {
     /// materialising if a view.
     pub fn into_ndarray(self) -> NdArray<T> {
         match self.data {
-            NdArrayE::Owned(nd) => nd,
+            NdArrayE::Owned(nd) => Arc::try_unwrap(nd).unwrap_or_else(|a| (*a).clone()),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => v.to_ndarray(),
             #[cfg(feature = "chunked")]
@@ -269,13 +270,13 @@ impl<T: Float> XArray<T> {
             NdArrayE::Owned(_) => self.clone(),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => XArray {
-                data: NdArrayE::Owned(v.to_ndarray()),
+                data: NdArrayE::Owned(Arc::new(v.to_ndarray())),
                 axes: self.axes.clone(),
             },
             #[cfg(feature = "chunked")]
             NdArrayE::Chunked(snd) => {
                 XArray {
-                    data: NdArrayE::Owned(snd.clone().consolidate()),
+                    data: NdArrayE::Owned(Arc::new(snd.clone().consolidate())),
                     axes: self.axes.clone(),
                 }
             }
@@ -316,10 +317,7 @@ impl<T: Float> XArray<T> {
     #[cfg(feature = "views")]
     pub fn obs(&self, idx: usize) -> NdArrayV<T> {
         match &self.data {
-            NdArrayE::Owned(nd) => {
-                let arc = std::sync::Arc::new(nd.clone());
-                arc.as_view().obs(idx)
-            }
+            NdArrayE::Owned(nd) => nd.as_view().obs(idx),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => v.obs(idx),
             #[cfg(feature = "chunked")]
@@ -340,9 +338,10 @@ impl<T: Float> XArray<T> {
     pub fn get(&self, indices: &[usize]) -> T { delegate!(self, get(indices)) }
 
     /// Mutable element access. Only works on owned or batched data.
+    /// Triggers copy-on-write if the owned array is shared with views.
     pub fn set(&mut self, indices: &[usize], value: T) {
         match &mut self.data {
-            NdArrayE::Owned(nd) => nd.set(indices, value),
+            NdArrayE::Owned(nd) => Arc::make_mut(nd).set(indices, value),
             #[cfg(feature = "views")]
             NdArrayE::View(_) => panic!("XArray: cannot mutate a view"),
             #[cfg(feature = "chunked")]
@@ -439,7 +438,9 @@ impl<T: Float> XArray<T> {
         XArray { data: NdArrayE::View(view), axes: result_axes }
     }
 
-    /// Slice the underlying NdArray/NdArrayV positionally. Zero-copy.
+    /// Slice the underlying NdArray/NdArrayV positionally. Zero-copy for
+    /// owned and view storage. Chunked storage consolidates first, since a
+    /// single strided view cannot span separate batch allocations.
     /// For named axis selection, use `.select()` instead.
     #[cfg(feature = "views")]
     pub fn slice(&self, sel: Vec<AxisSel>) -> NdArrayV<T> {
@@ -448,7 +449,7 @@ impl<T: Float> XArray<T> {
             NdArrayE::View(v) => v.slice(sel),
             #[cfg(feature = "chunked")]
             NdArrayE::Chunked(snd) => {
-                snd.clone().consolidate().slice(sel)
+                Arc::new(snd.clone().consolidate()).slice(sel)
             }
         }
     }
@@ -550,7 +551,7 @@ impl<T: Float> XArray<T> {
         let new_axes = dim_order.iter()
             .map(|name| self.ax(name).clone())
             .collect();
-        Ok(XArray { data: NdArrayE::Owned(inner), axes: new_axes })
+        Ok(XArray { data: NdArrayE::Owned(Arc::new(inner)), axes: new_axes })
     }
 
     // ****************************************************************
@@ -651,7 +652,10 @@ impl XArray<f64> {
 /// Enables XArray to be a single type regardless of ownership.
 #[derive(Clone)]
 pub(crate) enum NdArrayE<T> {
-    Owned(NdArray<T>),
+    /// The `Arc` wrap makes clones a refcount bump and lets views borrow
+    /// the parent zero-copy, with copy-on-write mutation through
+    /// `Arc::make_mut`.
+    Owned(Arc<NdArray<T>>),
     #[cfg(feature = "views")]
     View(NdArrayV<T>),
     #[cfg(feature = "chunked")]
@@ -747,7 +751,7 @@ impl<T: Into<AxisSelection>> IntoAxisSelections for (&str, T) {
 impl<T: Float> Shape for XArray<T> {
     fn shape(&self) -> ShapeDim {
         match &self.data {
-            NdArrayE::Owned(nd) => Shape::shape(nd),
+            NdArrayE::Owned(nd) => Shape::shape(nd.as_ref()),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => Shape::shape(v),
             #[cfg(feature = "chunked")]
@@ -779,7 +783,7 @@ impl<T: Float> Concatenate for XArray<T> {
 
         let to_ndarray = |data: NdArrayE<T>| -> NdArray<T> {
             match data {
-                NdArrayE::Owned(nd) => nd,
+                NdArrayE::Owned(nd) => Arc::try_unwrap(nd).unwrap_or_else(|a| (*a).clone()),
                 #[cfg(feature = "views")]
                 NdArrayE::View(v) => v.to_ndarray(),
                 #[cfg(feature = "chunked")]
@@ -806,7 +810,7 @@ impl<T: Float> Concatenate for XArray<T> {
             }
         }
 
-        Ok(XArray { data: NdArrayE::Owned(new_data), axes: new_axes })
+        Ok(XArray { data: NdArrayE::Owned(Arc::new(new_data)), axes: new_axes })
     }
 }
 
@@ -816,7 +820,7 @@ impl<'a, T: Float> IntoIterator for &'a XArray<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         match &self.data {
-            NdArrayE::Owned(nd) => Box::new(nd.into_iter()),
+            NdArrayE::Owned(nd) => Box::new(nd.as_ref().into_iter()),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => Box::new(v.into_iter()),
             #[cfg(feature = "chunked")]
@@ -871,7 +875,7 @@ impl TryFrom<Table> for XArray<f64> {
             )),
         );
 
-        Ok(XArray { data: NdArrayE::Owned(data), axes: vec![obs_axis, feat_axis] })
+        Ok(XArray { data: NdArrayE::Owned(Arc::new(data)), axes: vec![obs_axis, feat_axis] })
     }
 }
 

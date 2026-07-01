@@ -10,15 +10,17 @@
 //! - Import: [`import_from_dlpack`] wraps a foreign DLManagedTensor as an NdArray
 //!
 //! ## Layout compatibility
-//! NdArray's column-major layout with 64-byte aligned strides is expressed
-//! through DLPack's strides field. Column-major is fully supported by
+//! NdArray's compact column-major layout is expressed through DLPack's
+//! strides field, and the buffer is fully contiguous, so consumers receive
+//! a dense tensor with no dead bytes. Column-major is fully supported by
 //! PyTorch and NumPy with zero copy. TensorFlow may copy to row-major
 //! internally.
 //!
 //! ## Notes
 //! - DLPack uses element strides, matching NdArray's convention
 //! - DLPack has no null mask concept - NaN-based missing values align with this
-//! - The 64-byte padding between columns is transparent to consumers via strides
+//! - The allocation start is 64-byte aligned, matching the DLPack
+//!   recommendation for aligned data pointers
 
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -411,7 +413,7 @@ mod tests {
 
         let strides = unsafe { std::slice::from_raw_parts(tensor.strides, 2) };
         assert_eq!(strides[0], 1);
-        assert_eq!(strides[1], 8);
+        assert_eq!(strides[1], 3);
 
         let data = tensor.data as *const f64;
         assert_eq!(unsafe { *data }, 1.0);
@@ -467,8 +469,8 @@ mod tests {
 
         let strides = unsafe { std::slice::from_raw_parts(tensor.strides, 3) };
         assert_eq!(strides[0], 1);
-        assert_eq!(strides[1], 8);
-        assert_eq!(strides[2], 24);
+        assert_eq!(strides[1], 2);
+        assert_eq!(strides[2], 6);
     }
 
     #[test]
