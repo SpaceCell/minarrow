@@ -31,10 +31,14 @@ use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::buffer::Buffer;
 use crate::traits::{concatenate::Concatenate, shape::Shape};
-use crate::{Array, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
+use crate::{Array, ArrowType, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
 
 #[cfg(feature = "matrix")]
 use crate::structs::matrix::Matrix;
+#[cfg(feature = "views")]
+use crate::structs::views::ndarray_view::NdArrayV;
+#[cfg(feature = "dlpack")]
+use crate::ffi::dlpack::{export_to_dlpack, DLPackTensor};
 
 // ****************************************************************
 // NdArray
@@ -343,8 +347,8 @@ impl NdArray {
     /// Call `.obs(i)` on the returned view to get individual observations
     /// without re-cloning the buffer each time.
     #[cfg(feature = "views")]
-    pub fn as_view(self: &Arc<Self>) -> crate::structs::views::ndarray_view::NdArrayV {
-        crate::structs::views::ndarray_view::NdArrayV::from_ndarray(self.clone())
+    pub fn as_view(self: &Arc<Self>) -> NdArrayV {
+        NdArrayV::from_ndarray(self.clone())
     }
 
     /// Zero-copy view of a single observation (axis-0 element).
@@ -356,7 +360,7 @@ impl NdArray {
     /// For repeated access in a loop, prefer `Arc::new(nd).as_view()`
     /// then call `.obs()` on the view to avoid re-wrapping each time.
     #[cfg(feature = "views")]
-    pub fn obs(self: &Arc<Self>, idx: usize) -> crate::structs::views::ndarray_view::NdArrayV {
+    pub fn obs(self: &Arc<Self>, idx: usize) -> NdArrayV {
         self.as_view().obs(idx)
     }
 
@@ -467,7 +471,7 @@ impl NdArray {
     /// arr.slice((1, 0..4, 3))       // mixed for 3D
     /// ```
     #[cfg(feature = "views")]
-    pub fn slice<S: IntoSlice>(&self, sel: S) -> crate::structs::views::ndarray_view::NdArrayV {
+    pub fn slice<S: IntoSlice>(&self, sel: S) -> NdArrayV {
         let axes = sel.into_slice();
         assert_eq!(
             axes.len(), self.ndim(),
@@ -504,7 +508,7 @@ impl NdArray {
             new_strides.push(1);
         }
 
-        crate::structs::views::ndarray_view::NdArrayV::new(
+        NdArrayV::new(
             Arc::new(self.clone()),
             new_offset,
             &new_shape,
@@ -568,7 +572,7 @@ impl NdArray {
         let fields: Vec<Field> = (0..n_cols)
             .map(|i| Field::new(
                 format!("col_{}", i),
-                crate::ffi::arrow_dtype::ArrowType::Float64,
+                ArrowType::Float64,
                 false,
                 None,
             ))
@@ -610,8 +614,8 @@ impl NdArray {
     /// release, or call `.into_raw()` to transfer ownership to an FFI
     /// consumer such as a PyCapsule.
     #[cfg(feature = "dlpack")]
-    pub fn to_dlpack(self) -> crate::ffi::dlpack::DLPackTensor {
-        crate::ffi::dlpack::export_to_dlpack(Arc::new(self))
+    pub fn to_dlpack(self) -> DLPackTensor {
+        export_to_dlpack(Arc::new(self))
     }
 
     // *** Parallel iteration (rayon) ******************************
@@ -635,7 +639,7 @@ impl NdArray {
     /// Parallel iterator over axis-0 observations. Each item is the
     /// observation index and a zero-copy `NdArrayV` view.
     #[cfg(all(feature = "parallel_proc", feature = "views"))]
-    pub fn par_iter_obs(self: &Arc<Self>) -> impl rayon::iter::ParallelIterator<Item = (usize, crate::structs::views::ndarray_view::NdArrayV)> + '_ {
+    pub fn par_iter_obs(self: &Arc<Self>) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV)> + '_ {
         use rayon::prelude::*;
         let n_obs = self.dims.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
@@ -1570,6 +1574,7 @@ impl fmt::Debug for NdArray {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StringArray;
     use crate::structs::bitmask::Bitmask;
 
     // ****************************************************************
@@ -2155,7 +2160,7 @@ mod tests {
         // does not parse as a number coerces to nulls, which surface as NaN
         // in the dense NdArray rather than failing the conversion.
         let c0 = FieldArray::from_arr("name", Array::from_string32(
-            crate::structs::variants::string::StringArray::from_slice(&["a", "b"])
+            StringArray::from_slice(&["a", "b"])
         ));
         let table = Table::new("text".to_string(), Some(vec![c0]));
         let a = NdArray::try_from(&table).unwrap();
@@ -2169,8 +2174,8 @@ mod tests {
         let data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let a = NdArray::from_slice(&data, &[3, 2]);
         let fields = vec![
-            Field::new("x", crate::ffi::arrow_dtype::ArrowType::Float64, false, None),
-            Field::new("y", crate::ffi::arrow_dtype::ArrowType::Float64, false, None),
+            Field::new("x", ArrowType::Float64, false, None),
+            Field::new("y", ArrowType::Float64, false, None),
         ];
         let table = a.to_table(fields).unwrap();
         assert_eq!(table.n_rows(), 3);

@@ -2,8 +2,8 @@
 //!
 //! Holds an `Arc<NdArray>` to keep the parent alive, plus its own offset
 //! and dimension metadata. Views can have different shapes and strides
-//! from the parent, enabling slicing, transposition, and axis selection
-//! without copying data.
+//! from the parent, enabling slicing and axis selection without copying
+//! data.
 
 use std::fmt;
 use std::ops::Index;
@@ -22,8 +22,8 @@ use crate::structs::matrix::Matrix;
 /// Zero-copy view into an [`NdArray`].
 ///
 /// Holds an `Arc<NdArray>` to keep the parent buffer alive, with its
-/// own offset and dimension metadata. This enables slicing, axis
-/// selection, and transposed views without copying the underlying data.
+/// own offset and dimension metadata. This enables slicing and axis
+/// selection without copying the underlying data.
 #[derive(Clone)]
 pub struct NdArrayV {
     source: Arc<NdArray>,

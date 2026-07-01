@@ -28,15 +28,18 @@ use std::ops::Range;
 
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
+use crate::ffi::arrow_dtype::ArrowType;
 use crate::structs::ndarray::{AxisSel, NdArray};
 use crate::traits::{concatenate::Concatenate, shape::Shape};
-use crate::{Array, Field, Table};
+use crate::{Array, Field, StringArray, Table};
 
 #[cfg(feature = "views")]
 use crate::structs::views::ndarray_view::NdArrayV;
 
 #[cfg(feature = "chunked")]
 use crate::structs::chunked::super_ndarray::SuperNdArray;
+#[cfg(feature = "chunked")]
+use crate::traits::consolidate::Consolidate;
 
 // ****************************************************************
 // Dispatch macros
@@ -254,7 +257,6 @@ impl XArray {
             NdArrayE::View(v) => v.to_ndarray(),
             #[cfg(feature = "chunked")]
             NdArrayE::Chunked(snd) => {
-                use crate::traits::consolidate::Consolidate;
                 snd.consolidate()
             }
         }
@@ -271,7 +273,6 @@ impl XArray {
             },
             #[cfg(feature = "chunked")]
             NdArrayE::Chunked(snd) => {
-                use crate::traits::consolidate::Consolidate;
                 XArray {
                     data: NdArrayE::Owned(snd.clone().consolidate()),
                     axes: self.axes.clone(),
@@ -446,7 +447,6 @@ impl XArray {
             NdArrayE::View(v) => v.slice(sel),
             #[cfg(feature = "chunked")]
             NdArrayE::Chunked(snd) => {
-                use crate::traits::consolidate::Consolidate;
                 snd.clone().consolidate().slice(sel)
             }
         }
@@ -543,7 +543,6 @@ impl XArray {
             NdArrayE::View(v) => v.to_ndarray().transpose()?,
             #[cfg(feature = "chunked")]
             NdArrayE::Chunked(snd) => {
-                use crate::traits::consolidate::Consolidate;
                 snd.clone().consolidate().transpose()?
             }
         };
@@ -569,13 +568,13 @@ impl XArray {
         let fields: Vec<Field> = if let Some(ref coords) = self.axes[1].coords {
             (0..n_cols).map(|i| {
                 let name = coords.value_to_string(i);
-                Field::new(name, crate::ffi::arrow_dtype::ArrowType::Float64, false, None)
+                Field::new(name, ArrowType::Float64, false, None)
             }).collect()
         } else {
             (0..n_cols).map(|i| {
                 Field::new(
                     format!("{}_{}", self.axes[1].name, i),
-                    crate::ffi::arrow_dtype::ArrowType::Float64, false, None,
+                    ArrowType::Float64, false, None,
                 )
             }).collect()
         };
@@ -667,10 +666,10 @@ pub(crate) enum NdArrayE {
 /// A named dimension with optional coordinate labels.
 ///
 /// The coords array, when present, must have the same length as the
-/// corresponding NdArray dimension. Coordinate values can be any
-/// Minarrow Array type - float for spatial axes, string for
-/// categorical axes, datetime for temporal axes, etc.
-#[derive(Clone, Debug)]
+/// corresponding NdArray dimension. Coordinates may be stored as any
+/// Minarrow Array type, but value-based selection currently resolves
+/// floating-point coordinates only.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Axis {
     pub name: String,
     pub coords: Option<Array>,
@@ -685,12 +684,6 @@ impl Axis {
     /// Named axis with coordinate labels.
     pub fn with_coords(name: impl Into<String>, coords: Array) -> Self {
         Axis { name: name.into(), coords: Some(coords) }
-    }
-}
-
-impl PartialEq for Axis {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
     }
 }
 
@@ -792,7 +785,6 @@ impl Concatenate for XArray {
                 NdArrayE::View(v) => v.to_ndarray(),
                 #[cfg(feature = "chunked")]
                 NdArrayE::Chunked(snd) => {
-                    use crate::traits::consolidate::Consolidate;
                     snd.consolidate()
                 }
             }
@@ -875,7 +867,7 @@ impl TryFrom<Table> for XArray {
         );
         let feat_axis = Axis::with_coords(
             "feature",
-            Array::from_string32(crate::StringArray::from_slice(
+            Array::from_string32(StringArray::from_slice(
                 &col_names.iter().map(|s| s.as_str()).collect::<Vec<_>>()
             )),
         );
@@ -1150,7 +1142,7 @@ mod tests {
     fn to_table_with_coord_names() {
         let mut xa = XArray::new(make_2d(), &["obs", "feat"]);
         xa.assign_coords("feat", Array::from_string32(
-            crate::StringArray::from_slice(&["height", "weight"])
+            StringArray::from_slice(&["height", "weight"])
         ));
         let table = xa.to_table().unwrap();
         assert_eq!(table.col_names(), vec!["height", "weight"]);
