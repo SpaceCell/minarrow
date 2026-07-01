@@ -138,6 +138,19 @@ views = []
 # with large data sizes.
 matrix = []
 
+# N-dimensional dense array for scientific and statistical computing.
+# Column-major layout, Buffer<f64>-backed with zero-copy Table/Matrix interop.
+# NaN-based null semantics for BLAS/LAPACK compatibility.
+ndarray = []
+
+# DLPack tensor interchange for zero-copy sharing with PyTorch, TensorFlow, JAX.
+# Requires `ndarray` feature.
+dlpack = ["ndarray"]
+
+# Labelled N-dimensional array wrapping NdArray with named dimensions
+# and optional coordinate labels per axis. Requires `ndarray` feature.
+xarray = ["ndarray"]
+
 # Adds `to_apache_arrow()` for casting into that library.
 cast_arrow = ["arrow", "arrow-schema"]
 
@@ -294,6 +307,9 @@ default = [
     "large_string",
     "simd",
     "select",
+    "ndarray",
+    "xarray",
+    "dlpack"
 ]
 
 [package.metadata.cargo-all-features]

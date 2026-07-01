@@ -328,6 +328,18 @@ impl ByteSize for Matrix {
     }
 }
 
+/// ByteSize for NdArray (when ndarray feature is enabled)
+#[cfg(feature = "ndarray")]
+use crate::structs::ndarray::NdArray;
+
+#[cfg(feature = "ndarray")]
+impl ByteSize for NdArray {
+    fn est_bytes(&self) -> usize {
+        // Dense f64 backing buffer for the full logical shape.
+        self.data.est_bytes()
+    }
+}
+
 /// ByteSize for Cube (when cube feature is enabled)
 #[cfg(feature = "cube")]
 use crate::Cube;

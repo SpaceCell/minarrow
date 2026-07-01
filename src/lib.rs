@@ -164,6 +164,8 @@ pub mod structs {
     #[cfg(feature = "chunked")]
     pub mod chunked {
         pub mod super_array;
+        #[cfg(feature = "ndarray")]
+        pub mod super_ndarray;
         pub mod super_table;
     }
 
@@ -194,6 +196,9 @@ pub mod structs {
         #[cfg(feature = "views")]
         pub mod array_view;
         pub mod bitmask_view;
+        #[cfg(feature = "views")]
+        #[cfg(feature = "ndarray")]
+        pub mod ndarray_view;
 
         #[cfg(feature = "views")]
         pub mod table_view;
@@ -211,8 +216,12 @@ pub mod structs {
     pub mod lbuffer;
     #[cfg(feature = "matrix")]
     pub mod matrix;
+    #[cfg(feature = "ndarray")]
+    pub mod ndarray;
     pub mod shared_buffer;
     pub mod table;
+    #[cfg(feature = "xarray")]
+    pub mod xarray;
 }
 
 /// **Shared Memory** - *For sending data to other runtime(s) over FFI.*
@@ -223,6 +232,8 @@ pub mod ffi {
     pub mod arrow_rs;
     #[cfg(feature = "cast_polars")]
     pub mod polars;
+    #[cfg(feature = "dlpack")]
+    pub mod dlpack;
     pub mod schema;
 }
 
@@ -280,6 +291,8 @@ pub use structs::chunked::{
     super_array::{RechunkStrategy, SuperArray},
     super_table::SuperTable,
 };
+#[cfg(all(feature = "chunked", feature = "ndarray"))]
+pub use structs::chunked::super_ndarray::SuperNdArray;
 #[cfg(feature = "lbuffer")]
 pub use structs::lbuffer::{LBuffer, LBufferV};
 #[cfg(feature = "views")]
@@ -297,8 +310,12 @@ pub use structs::views::collections::numeric_array_view::NumericArrayV;
 pub use structs::views::collections::temporal_array_view::TemporalArrayV;
 #[cfg(feature = "views")]
 pub use structs::views::collections::text_array_view::TextArrayV;
+#[cfg(all(feature = "views", feature = "ndarray"))]
+pub use structs::views::ndarray_view::NdArrayV;
 
 pub use ffi::arrow_dtype::ArrowType;
+#[cfg(feature = "dlpack")]
+pub use ffi::dlpack::DLPackTensor;
 pub use structs::column::{Column, column};
 #[cfg(feature = "cube")]
 pub use structs::cube::Cube;
@@ -308,6 +325,10 @@ pub use structs::field::Field;
 pub use structs::field_array::{FieldArray, field_array};
 #[cfg(feature = "matrix")]
 pub use structs::matrix::Matrix;
+#[cfg(feature = "ndarray")]
+pub use structs::ndarray::NdArray;
+#[cfg(feature = "xarray")]
+pub use structs::xarray::XArray;
 pub use structs::shared_buffer::SharedBuffer;
 pub use structs::table::Table;
 pub use structs::variants::boolean::BooleanArray;
