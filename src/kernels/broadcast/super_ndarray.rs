@@ -29,6 +29,7 @@ use crate::kernels::broadcast::ndarray::{
     broadcast_ndarray_scalar_add, broadcast_ndarray_scalar_div, broadcast_ndarray_scalar_mul,
     broadcast_ndarray_scalar_sub, broadcast_scalar_ndarray_add, broadcast_scalar_ndarray_div,
     broadcast_scalar_ndarray_mul, broadcast_scalar_ndarray_sub, resolve_ndarray_arithmetic,
+    resolve_ndarray_scalar_arithmetic, resolve_scalar_ndarray_arithmetic,
 };
 use crate::structs::chunked::super_ndarray::SuperNdArray;
 use crate::structs::ndarray::NdArray;
@@ -38,7 +39,7 @@ use crate::traits::type_unions::Float;
 ///
 /// Batches combine pairwise, so both operands must share the same chunk
 /// boundaries as well as the same logical shape.
-fn resolve_super_ndarray_arithmetic<T: Float>(
+pub(crate) fn resolve_super_ndarray_arithmetic<T: Float>(
     op: ArithmeticOperator,
     lhs: &SuperNdArray<T>,
     rhs: &SuperNdArray<T>,
@@ -85,6 +86,26 @@ fn map_super_ndarray<T: Float>(
     Ok(SuperNdArray::from_batches(batches?, arr.name.clone()))
 }
 
+/// Resolve an elementwise operation between a chunked array and a scalar,
+/// preserving chunk boundaries.
+pub(crate) fn resolve_super_ndarray_scalar_arithmetic<T: Float>(
+    op: ArithmeticOperator,
+    lhs: &SuperNdArray<T>,
+    scalar: T,
+) -> Result<SuperNdArray<T>, MinarrowError> {
+    map_super_ndarray(lhs, |b| resolve_ndarray_scalar_arithmetic(op, b, scalar))
+}
+
+/// Resolve an elementwise operation with the scalar on the left,
+/// preserving chunk boundaries.
+pub(crate) fn resolve_scalar_super_ndarray_arithmetic<T: Float>(
+    op: ArithmeticOperator,
+    scalar: T,
+    rhs: &SuperNdArray<T>,
+) -> Result<SuperNdArray<T>, MinarrowError> {
+    map_super_ndarray(rhs, |b| resolve_scalar_ndarray_arithmetic(op, scalar, b))
+}
+
 /// Broadcast addition: `lhs + rhs` batch by batch.
 pub fn broadcast_super_ndarray_add<T: Float>(
     lhs: &SuperNdArray<T>,
@@ -116,6 +137,15 @@ pub fn broadcast_super_ndarray_div<T: Float>(
     rhs: &SuperNdArray<T>,
 ) -> Result<SuperNdArray<T>, MinarrowError> {
     resolve_super_ndarray_arithmetic(ArithmeticOperator::Divide, lhs, rhs)
+}
+
+/// Broadcast remainder: `lhs % rhs` batch by batch.
+/// Follows IEEE 754, yielding NaN on a zero divisor.
+pub fn broadcast_super_ndarray_rem<T: Float>(
+    lhs: &SuperNdArray<T>,
+    rhs: &SuperNdArray<T>,
+) -> Result<SuperNdArray<T>, MinarrowError> {
+    resolve_super_ndarray_arithmetic(ArithmeticOperator::Remainder, lhs, rhs)
 }
 
 /// Broadcast scalar addition: `lhs + scalar` over every element.
@@ -281,5 +311,31 @@ mod tests {
         let c = broadcast_super_ndarray_scalar_add(&a, 1.0f32).unwrap();
         let vals: Vec<f32> = (&c).into_iter().collect();
         assert_eq!(vals, vec![2.0f32, 3.0]);
+    }
+
+    #[test]
+    fn native_operators() {
+        let a = chunked(&[&[1.0, 2.0], &[3.0]], &[], "a");
+        let b = chunked(&[&[10.0, 10.0], &[10.0]], &[], "b");
+        let sum = (a.clone() + b.clone()).unwrap();
+        assert_eq!((&sum).into_iter().collect::<Vec<f64>>(), vec![11.0, 12.0, 13.0]);
+        let prod = (a * b).unwrap();
+        assert_eq!((&prod).into_iter().collect::<Vec<f64>>(), vec![10.0, 20.0, 30.0]);
+    }
+
+    #[cfg(feature = "value_type")]
+    #[test]
+    fn value_pair_preserves_chunking() {
+        use std::sync::Arc;
+        use crate::Value;
+
+        let a = Value::SuperNdArray(Arc::new(chunked(&[&[1.0, 2.0], &[3.0]], &[], "a")));
+        let b = Value::SuperNdArray(Arc::new(chunked(&[&[1.0, 1.0], &[1.0]], &[], "b")));
+        let sum = (a + b).unwrap();
+        let Value::SuperNdArray(snd) = sum else {
+            panic!("expected Value::SuperNdArray");
+        };
+        assert_eq!(snd.n_batches(), 2);
+        assert_eq!((&*snd).into_iter().collect::<Vec<f64>>(), vec![2.0, 3.0, 4.0]);
     }
 }

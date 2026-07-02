@@ -183,6 +183,8 @@ pub mod structs {
         #[cfg(feature = "chunked")]
         pub mod chunked {
             pub mod super_array_view;
+            #[cfg(feature = "ndarray")]
+            pub mod super_ndarray_view;
             pub mod super_table_view;
         }
         #[cfg(feature = "views")]
@@ -301,6 +303,8 @@ pub use structs::views::bitmask_view::BitmaskV;
 #[cfg(feature = "views")]
 #[cfg(feature = "chunked")]
 pub use structs::views::chunked::{super_array_view::SuperArrayV, super_table_view::SuperTableV};
+#[cfg(all(feature = "views", feature = "chunked", feature = "ndarray"))]
+pub use structs::views::chunked::super_ndarray_view::SuperNdArrayV;
 #[cfg(feature = "views")]
 pub use structs::views::collections::boolean_array_view::BooleanArrayV;
 #[cfg(feature = "views")]

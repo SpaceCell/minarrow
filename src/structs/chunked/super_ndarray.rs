@@ -30,6 +30,10 @@ use crate::traits::shape::Shape;
 use crate::traits::type_unions::Float;
 use crate::structs::ndarray::NdArrayIter;
 #[cfg(feature = "views")]
+use crate::structs::ndarray::AxisSel;
+#[cfg(feature = "views")]
+use crate::structs::views::chunked::super_ndarray_view::SuperNdArrayV;
+#[cfg(feature = "views")]
 use crate::structs::views::ndarray_view::NdArrayV;
 
 #[cfg(feature = "parallel_proc")]
@@ -162,6 +166,38 @@ impl<T: Float> SuperNdArray<T> {
             result.extend_from_slice(batch.col(c));
         }
         result
+    }
+
+    /// Returns a zero-copy [`SuperNdArrayV`] over `[offset .. offset + len)`
+    /// axis-0 observations, spanning batch boundaries. Each overlapped batch
+    /// contributes a windowed slice view.
+    #[cfg(feature = "views")]
+    pub fn slice(&self, mut offset: usize, mut len: usize) -> SuperNdArrayV<T> {
+        assert!(offset + len <= self.n_obs(), "slice out of bounds");
+
+        let mut slices = Vec::new();
+        for batch in &self.batches {
+            let base_obs = batch.shape()[0];
+            if offset >= base_obs {
+                offset -= base_obs;
+                continue;
+            }
+
+            let take = (base_obs - offset).min(len);
+            let mut sel = vec![AxisSel::Range(offset, offset + take)];
+            for d in 1..batch.ndim() {
+                sel.push(AxisSel::Range(0, batch.shape()[d]));
+            }
+            slices.push(batch.slice(sel));
+
+            len -= take;
+            if len == 0 {
+                break;
+            }
+            offset = 0;
+        }
+
+        SuperNdArrayV::from_slices(slices, self.ndim, self.inner_shape.clone())
     }
 
     /// Zero-copy view of a single observation (axis-0 element)

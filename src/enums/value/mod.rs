@@ -36,8 +36,20 @@ mod conversions;
 use crate::Cube;
 #[cfg(feature = "matrix")]
 use crate::Matrix;
+#[cfg(feature = "ndarray")]
+use crate::NdArray;
+#[cfg(all(feature = "ndarray", feature = "views"))]
+use crate::structs::ndarray::AxisSel;
+#[cfg(all(feature = "ndarray", feature = "views"))]
+use crate::NdArrayV;
 #[cfg(feature = "scalar_type")]
 use crate::Scalar;
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+use crate::SuperNdArray;
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+use crate::SuperNdArrayV;
+#[cfg(feature = "xarray")]
+use crate::XArray;
 use crate::{Array, FieldArray, Table, traits::custom_value::CustomValue};
 use std::sync::Arc;
 
@@ -91,6 +103,16 @@ pub enum Value {
     SuperTableView(Arc<SuperTableV>),
     #[cfg(feature = "matrix")]
     Matrix(Arc<Matrix>),
+    #[cfg(feature = "ndarray")]
+    NdArray(Arc<NdArray<f64>>),
+    #[cfg(all(feature = "ndarray", feature = "views"))]
+    NdArrayView(Arc<NdArrayV<f64>>),
+    #[cfg(all(feature = "ndarray", feature = "chunked"))]
+    SuperNdArray(Arc<SuperNdArray<f64>>),
+    #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+    SuperNdArrayView(Arc<SuperNdArrayV<f64>>),
+    #[cfg(feature = "xarray")]
+    XArray(Arc<XArray<f64>>),
     #[cfg(feature = "cube")]
     Cube(Arc<Cube>),
     VecValue(Arc<Vec<Value>>),
@@ -156,6 +178,21 @@ impl Value {
 
             #[cfg(feature = "matrix")]
             Value::Matrix(m) => m.len(),
+
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(nd) => nd.len(),
+
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(v) => v.len(),
+
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(snd) => snd.len(),
+
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(v) => v.len(),
+
+            #[cfg(feature = "xarray")]
+            Value::XArray(xa) => xa.len(),
 
             #[cfg(feature = "cube")]
             Value::Cube(c) => c.len(),
@@ -226,6 +263,32 @@ impl Value {
 
             #[cfg(feature = "matrix")]
             Value::Matrix(_) => unimplemented!("Matrix slicing"),
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(nd) => {
+                let mut sel = vec![AxisSel::Range(offset, offset + length)];
+                for d in 1..nd.ndim() {
+                    sel.push(AxisSel::Range(0, nd.shape()[d]));
+                }
+                Value::NdArrayView(Arc::new(nd.slice(sel)))
+            }
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(v) => {
+                let mut sel = vec![AxisSel::Range(offset, offset + length)];
+                for d in 1..v.ndim() {
+                    sel.push(AxisSel::Range(0, v.shape()[d]));
+                }
+                Value::NdArrayView(Arc::new(v.slice(sel)))
+            }
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(snd) => {
+                Value::SuperNdArrayView(Arc::new(snd.slice(offset, length)))
+            }
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(v) => {
+                Value::SuperNdArrayView(Arc::new(v.slice(offset, length)))
+            }
+            #[cfg(feature = "xarray")]
+            Value::XArray(_) => unimplemented!("XArray slicing"),
             #[cfg(feature = "cube")]
             Value::Cube(_) => unimplemented!("Cube slicing"),
 

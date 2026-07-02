@@ -44,6 +44,8 @@ pub mod scalar;
 pub mod super_array;
 #[cfg(all(feature = "ndarray", feature = "chunked"))]
 pub mod super_ndarray;
+#[cfg(feature = "xarray")]
+pub mod xarray;
 pub mod super_array_view;
 pub mod super_table;
 pub mod super_table_view;
@@ -110,6 +112,8 @@ use crate::Scalar;
 use crate::SuperTableV;
 use crate::enums::error::MinarrowError;
 use crate::enums::operators::ArithmeticOperator;
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+use crate::traits::consolidate::Consolidate;
 use crate::enums::value::Value;
 #[cfg(feature = "chunked")]
 use crate::{SuperArray, SuperTable};
@@ -411,6 +415,187 @@ pub fn broadcast_value(
             to: "compatible broadcasting type",
             message: Some(
                 "Matrix can only be broadcast with Matrix, Scalar, or Array types".to_string(),
+            ),
+        }),
+
+        // NdArray broadcasting operations
+        #[cfg(feature = "ndarray")]
+        (Value::NdArray(l), Value::NdArray(r)) => {
+            ndarray::resolve_ndarray_arithmetic(op, l.as_ref(), r.as_ref())
+                .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "views"))]
+        (Value::NdArrayView(l), Value::NdArrayView(r)) => {
+            ndarray::resolve_ndarray_arithmetic(op, &l.to_ndarray(), &r.to_ndarray())
+                .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "views"))]
+        (Value::NdArray(l), Value::NdArrayView(r)) => {
+            ndarray::resolve_ndarray_arithmetic(op, l.as_ref(), &r.to_ndarray())
+                .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "views"))]
+        (Value::NdArrayView(l), Value::NdArray(r)) => {
+            ndarray::resolve_ndarray_arithmetic(op, &l.to_ndarray(), r.as_ref())
+                .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "scalar_type"))]
+        (Value::NdArray(l), Value::Scalar(r)) => {
+            ndarray::resolve_ndarray_scalar_arithmetic(op, l.as_ref(), r.f64())
+                .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "scalar_type"))]
+        (Value::Scalar(l), Value::NdArray(r)) => {
+            ndarray::resolve_scalar_ndarray_arithmetic(op, l.f64(), r.as_ref())
+                .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "views", feature = "scalar_type"))]
+        (Value::NdArrayView(l), Value::Scalar(r)) => {
+            ndarray::resolve_ndarray_scalar_arithmetic(op, &l.to_ndarray(), r.f64())
+                .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "views", feature = "scalar_type"))]
+        (Value::Scalar(l), Value::NdArrayView(r)) => {
+            ndarray::resolve_scalar_ndarray_arithmetic(op, l.f64(), &r.to_ndarray())
+                .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        // SuperNdArray broadcasting operations - chunk boundaries preserved
+        #[cfg(all(feature = "ndarray", feature = "chunked"))]
+        (Value::SuperNdArray(l), Value::SuperNdArray(r)) => {
+            super_ndarray::resolve_super_ndarray_arithmetic(op, l.as_ref(), r.as_ref())
+                .map(|snd| Value::SuperNdArray(Arc::new(snd)))
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "chunked", feature = "scalar_type"))]
+        (Value::SuperNdArray(l), Value::Scalar(r)) => {
+            super_ndarray::resolve_super_ndarray_scalar_arithmetic(op, l.as_ref(), r.f64())
+                .map(|snd| Value::SuperNdArray(Arc::new(snd)))
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "chunked", feature = "scalar_type"))]
+        (Value::Scalar(l), Value::SuperNdArray(r)) => {
+            super_ndarray::resolve_scalar_super_ndarray_arithmetic(op, l.f64(), r.as_ref())
+                .map(|snd| Value::SuperNdArray(Arc::new(snd)))
+        }
+
+        // SuperNdArrayView pairs materialise their windows and combine as
+        // owned arrays, mirroring NdArrayView semantics.
+        #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+        (Value::SuperNdArrayView(l), Value::SuperNdArrayView(r)) => {
+            let a = l.as_ref().clone().consolidate();
+            let b = r.as_ref().clone().consolidate();
+            ndarray::resolve_ndarray_arithmetic(op, &a, &b)
+                .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        #[cfg(all(
+            feature = "ndarray",
+            feature = "chunked",
+            feature = "views",
+            feature = "scalar_type"
+        ))]
+        (Value::SuperNdArrayView(l), Value::Scalar(r)) => {
+            ndarray::resolve_ndarray_scalar_arithmetic(
+                op,
+                &l.as_ref().clone().consolidate(),
+                r.f64(),
+            )
+            .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        #[cfg(all(
+            feature = "ndarray",
+            feature = "chunked",
+            feature = "views",
+            feature = "scalar_type"
+        ))]
+        (Value::Scalar(l), Value::SuperNdArrayView(r)) => {
+            ndarray::resolve_scalar_ndarray_arithmetic(
+                op,
+                l.f64(),
+                &r.as_ref().clone().consolidate(),
+            )
+            .map(|nd| Value::NdArray(Arc::new(nd)))
+        }
+
+        // XArray broadcasting operations - axes must match
+        #[cfg(feature = "xarray")]
+        (Value::XArray(l), Value::XArray(r)) => {
+            xarray::resolve_xarray_arithmetic(op, l.as_ref(), r.as_ref())
+                .map(|xa| Value::XArray(Arc::new(xa)))
+        }
+
+        #[cfg(all(feature = "xarray", feature = "scalar_type"))]
+        (Value::XArray(l), Value::Scalar(r)) => {
+            xarray::resolve_xarray_scalar_arithmetic(op, l.as_ref(), r.f64())
+                .map(|xa| Value::XArray(Arc::new(xa)))
+        }
+
+        #[cfg(all(feature = "xarray", feature = "scalar_type"))]
+        (Value::Scalar(l), Value::XArray(r)) => {
+            xarray::resolve_scalar_xarray_arithmetic(op, l.f64(), r.as_ref())
+                .map(|xa| Value::XArray(Arc::new(xa)))
+        }
+
+        // NdArray family with other complex types - return specific error
+        #[cfg(feature = "ndarray")]
+        (Value::NdArray(_), _) | (_, Value::NdArray(_)) => Err(MinarrowError::TypeError {
+            from: "NdArray",
+            to: "compatible broadcasting type",
+            message: Some(
+                "NdArray can only be broadcast with NdArray, NdArrayView, or Scalar types"
+                    .to_string(),
+            ),
+        }),
+
+        #[cfg(all(feature = "ndarray", feature = "views"))]
+        (Value::NdArrayView(_), _) | (_, Value::NdArrayView(_)) => Err(MinarrowError::TypeError {
+            from: "NdArrayView",
+            to: "compatible broadcasting type",
+            message: Some(
+                "NdArrayView can only be broadcast with NdArray, NdArrayView, or Scalar types"
+                    .to_string(),
+            ),
+        }),
+
+        #[cfg(all(feature = "ndarray", feature = "chunked"))]
+        (Value::SuperNdArray(_), _) | (_, Value::SuperNdArray(_)) => {
+            Err(MinarrowError::TypeError {
+                from: "SuperNdArray",
+                to: "compatible broadcasting type",
+                message: Some(
+                    "SuperNdArray can only be broadcast with SuperNdArray or Scalar types"
+                        .to_string(),
+                ),
+            })
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+        (Value::SuperNdArrayView(_), _) | (_, Value::SuperNdArrayView(_)) => {
+            Err(MinarrowError::TypeError {
+                from: "SuperNdArrayView",
+                to: "compatible broadcasting type",
+                message: Some(
+                    "SuperNdArrayView can only be broadcast with SuperNdArrayView or Scalar types"
+                        .to_string(),
+                ),
+            })
+        }
+
+        #[cfg(feature = "xarray")]
+        (Value::XArray(_), _) | (_, Value::XArray(_)) => Err(MinarrowError::TypeError {
+            from: "XArray",
+            to: "compatible broadcasting type",
+            message: Some(
+                "XArray can only be broadcast with XArray or Scalar types".to_string(),
             ),
         }),
 

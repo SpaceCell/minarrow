@@ -288,6 +288,20 @@ impl<T: Float> XArray<T> {
         matches!(&self.data, NdArrayE::Owned(_))
     }
 
+    /// Borrow the inner storage for crate-internal dispatch.
+    #[cfg(feature = "broadcast")]
+    #[inline]
+    pub(crate) fn storage(&self) -> &NdArrayE<T> {
+        &self.data
+    }
+
+    /// Assemble from storage and axes for crate-internal construction.
+    #[cfg(feature = "broadcast")]
+    #[inline]
+    pub(crate) fn from_storage(data: NdArrayE<T>, axes: Vec<Axis>) -> Self {
+        XArray { data, axes }
+    }
+
     #[inline]
     pub fn ndim(&self) -> usize { delegate!(self, ndim()) }
 

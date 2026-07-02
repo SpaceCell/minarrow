@@ -74,7 +74,8 @@ fn apply_op<T: Float>(op: ArithmeticOperator, a: T, b: T) -> T {
         ArithmeticOperator::Subtract => a - b,
         ArithmeticOperator::Multiply => a * b,
         ArithmeticOperator::Divide => a / b,
-        _ => unreachable!("broadcast ndarray supports add, subtract, multiply, divide"),
+        ArithmeticOperator::Remainder => a % b,
+        _ => unreachable!("broadcast ndarray supports add, subtract, multiply, divide, remainder"),
     }
 }
 
@@ -88,6 +89,24 @@ fn map_ndarray<T: Float>(
     let mut result = NdArray::from_slice(&flat, arr.shape());
     result.name = arr.name.clone();
     Ok(result)
+}
+
+/// Resolve an elementwise operation between an array and a scalar.
+pub(crate) fn resolve_ndarray_scalar_arithmetic<T: Float>(
+    op: ArithmeticOperator,
+    lhs: &NdArray<T>,
+    scalar: T,
+) -> Result<NdArray<T>, MinarrowError> {
+    map_ndarray(lhs, |a| apply_op(op, a, scalar))
+}
+
+/// Resolve an elementwise operation with the scalar on the left.
+pub(crate) fn resolve_scalar_ndarray_arithmetic<T: Float>(
+    op: ArithmeticOperator,
+    scalar: T,
+    rhs: &NdArray<T>,
+) -> Result<NdArray<T>, MinarrowError> {
+    map_ndarray(rhs, |b| apply_op(op, scalar, b))
 }
 
 /// Broadcast addition: `lhs + rhs` with single-element expansion.
@@ -121,6 +140,15 @@ pub fn broadcast_ndarray_div<T: Float>(
     rhs: &NdArray<T>,
 ) -> Result<NdArray<T>, MinarrowError> {
     resolve_ndarray_arithmetic(ArithmeticOperator::Divide, lhs, rhs)
+}
+
+/// Broadcast remainder: `lhs % rhs` with single-element expansion.
+/// Follows IEEE 754, yielding NaN on a zero divisor.
+pub fn broadcast_ndarray_rem<T: Float>(
+    lhs: &NdArray<T>,
+    rhs: &NdArray<T>,
+) -> Result<NdArray<T>, MinarrowError> {
+    resolve_ndarray_arithmetic(ArithmeticOperator::Remainder, lhs, rhs)
 }
 
 /// Broadcast scalar addition: `lhs + scalar` over every element.
@@ -289,5 +317,65 @@ mod tests {
         let b = NdArray::from_slice(&[1.0, 1.0], &[2]);
         let c = broadcast_ndarray_add(&a, &b).unwrap();
         assert_eq!(c.name.as_deref(), Some("prices"));
+    }
+
+    #[test]
+    fn native_operators() {
+        let a = NdArray::from_slice(&[10.0, 20.0, 30.0], &[3]);
+        let b = NdArray::from_slice(&[2.0, 4.0, 5.0], &[3]);
+        let sum = (a.clone() + b.clone()).unwrap();
+        assert_eq!((&sum).into_iter().collect::<Vec<f64>>(), vec![12.0, 24.0, 35.0]);
+        let diff = (a.clone() - b.clone()).unwrap();
+        assert_eq!((&diff).into_iter().collect::<Vec<f64>>(), vec![8.0, 16.0, 25.0]);
+        let prod = (a.clone() * b.clone()).unwrap();
+        assert_eq!((&prod).into_iter().collect::<Vec<f64>>(), vec![20.0, 80.0, 150.0]);
+        let quot = (a.clone() / b.clone()).unwrap();
+        assert_eq!((&quot).into_iter().collect::<Vec<f64>>(), vec![5.0, 5.0, 6.0]);
+        let rem = (a % b).unwrap();
+        assert_eq!((&rem).into_iter().collect::<Vec<f64>>(), vec![0.0, 0.0, 0.0]);
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn native_operators_on_views() {
+        use std::sync::Arc;
+        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]));
+        let b = Arc::new(NdArray::from_slice(&[1.0, 1.0, 1.0, 1.0], &[2, 2]));
+        let sum = (a.as_view() + b.as_view()).unwrap();
+        assert_eq!(sum.get(&[1, 1]), 5.0);
+    }
+
+    #[cfg(feature = "value_type")]
+    #[test]
+    fn value_pair_and_scalar() {
+        use std::sync::Arc;
+        use crate::{Scalar, Value};
+
+        let a = Value::NdArray(Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0], &[3])));
+        let b = Value::NdArray(Arc::new(NdArray::from_slice(&[10.0, 10.0, 10.0], &[3])));
+        let sum = (a.clone() + b).unwrap();
+        let Value::NdArray(nd) = sum else {
+            panic!("expected Value::NdArray");
+        };
+        assert_eq!((&*nd).into_iter().collect::<Vec<f64>>(), vec![11.0, 12.0, 13.0]);
+
+        let scaled = (a * Value::Scalar(Scalar::Float64(3.0))).unwrap();
+        let Value::NdArray(nd) = scaled else {
+            panic!("expected Value::NdArray");
+        };
+        assert_eq!((&*nd).into_iter().collect::<Vec<f64>>(), vec![3.0, 6.0, 9.0]);
+    }
+
+    #[cfg(feature = "value_type")]
+    #[test]
+    fn value_rejects_mixed_container() {
+        use std::sync::Arc;
+        use crate::{Array, FloatArray, Value};
+
+        let nd = Value::NdArray(Arc::new(NdArray::from_slice(&[1.0, 2.0], &[2])));
+        let arr = Value::Array(Arc::new(Array::from_float64(FloatArray::from_slice(&[
+            1.0, 2.0,
+        ]))));
+        assert!((nd + arr).is_err());
     }
 }

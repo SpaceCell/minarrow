@@ -22,8 +22,18 @@ use super::impls::value_variant_name;
 use crate::Cube;
 #[cfg(feature = "matrix")]
 use crate::Matrix;
+#[cfg(feature = "ndarray")]
+use crate::NdArray;
+#[cfg(all(feature = "ndarray", feature = "views"))]
+use crate::NdArrayV;
 #[cfg(feature = "scalar_type")]
 use crate::Scalar;
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+use crate::SuperNdArray;
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+use crate::SuperNdArrayV;
+#[cfg(feature = "xarray")]
+use crate::XArray;
 use crate::traits::concatenate::Concatenate;
 use crate::traits::masked_array::MaskedArray;
 use crate::{Array, FieldArray, Table, enums::error::MinarrowError};
@@ -895,6 +905,46 @@ impl From<Matrix> for Value {
     }
 }
 
+#[cfg(feature = "ndarray")]
+impl From<NdArray<f64>> for Value {
+    #[inline]
+    fn from(v: NdArray<f64>) -> Self {
+        Value::NdArray(Arc::new(v))
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "views"))]
+impl From<NdArrayV<f64>> for Value {
+    #[inline]
+    fn from(v: NdArrayV<f64>) -> Self {
+        Value::NdArrayView(Arc::new(v))
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+impl From<SuperNdArray<f64>> for Value {
+    #[inline]
+    fn from(v: SuperNdArray<f64>) -> Self {
+        Value::SuperNdArray(Arc::new(v))
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+impl From<SuperNdArrayV<f64>> for Value {
+    #[inline]
+    fn from(v: SuperNdArrayV<f64>) -> Self {
+        Value::SuperNdArrayView(Arc::new(v))
+    }
+}
+
+#[cfg(feature = "xarray")]
+impl From<XArray<f64>> for Value {
+    #[inline]
+    fn from(v: XArray<f64>) -> Self {
+        Value::XArray(Arc::new(v))
+    }
+}
+
 /// Wrap a `NumericArrayV` as `Value::ArrayView`. The view's offset and length
 /// are preserved; the inner `NumericArray` flows through `Array::NumericArray`.
 #[cfg(feature = "views")]
@@ -996,6 +1046,19 @@ impl TryFrom<Value> for Array {
             Value::SuperTableView(_) => Err(err()),
             #[cfg(feature = "matrix")]
             Value::Matrix(_) => Err(err()),
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(inner) => {
+                let nd = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                nd.to_array()
+            }
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(_) => Err(err()),
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(_) => Err(err()),
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(_) => Err(err()),
+            #[cfg(feature = "xarray")]
+            Value::XArray(_) => Err(err()),
             #[cfg(feature = "cube")]
             Value::Cube(_) => Err(err()),
             Value::VecValue(inner) => {
@@ -1302,6 +1365,22 @@ impl TryFrom<Value> for Table {
             Value::SuperTableView(_) => Err(err()),
             #[cfg(feature = "matrix")]
             Value::Matrix(_) => Err(err()),
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(inner) => {
+                let nd = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                nd.to_table_gen()
+            }
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(_) => Err(err()),
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(_) => Err(err()),
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(_) => Err(err()),
+            #[cfg(feature = "xarray")]
+            Value::XArray(inner) => {
+                let xa = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                xa.to_table()
+            }
             #[cfg(feature = "cube")]
             Value::Cube(_) => Err(err()),
             // VecValue terminal coercion: engine wire produced by `Long` fan-out gather.

@@ -47,6 +47,16 @@ impl PartialEq for Value {
             (FieldArray(a), FieldArray(b)) => **a == **b,
             #[cfg(feature = "matrix")]
             (Matrix(a), Matrix(b)) => a == b,
+            #[cfg(feature = "ndarray")]
+            (NdArray(a), NdArray(b)) => **a == **b,
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            (NdArrayView(a), NdArrayView(b)) => **a == **b,
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            (SuperNdArray(a), SuperNdArray(b)) => **a == **b,
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            (SuperNdArrayView(a), SuperNdArrayView(b)) => **a == **b,
+            #[cfg(feature = "xarray")]
+            (XArray(a), XArray(b)) => **a == **b,
             #[cfg(feature = "cube")]
             (Cube(a), Cube(b)) => **a == **b,
             (Custom(a), Custom(b)) => a.eq_box(&**b),
@@ -99,6 +109,16 @@ impl Shape for Value {
             Value::FieldArray(field_array) => field_array.shape(),
             #[cfg(feature = "matrix")]
             Value::Matrix(matrix) => matrix.shape(),
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(nd) => Shape::shape(nd.as_ref()),
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(v) => Shape::shape(v.as_ref()),
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(snd) => Shape::shape(snd.as_ref()),
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(v) => Shape::shape(v.as_ref()),
+            #[cfg(feature = "xarray")]
+            Value::XArray(xa) => Shape::shape(xa.as_ref()),
             #[cfg(feature = "cube")]
             Value::Cube(cube) => cube.shape(),
             Value::VecValue(vec_value) => {
@@ -263,6 +283,38 @@ impl Concatenate for Value {
                 let a = Arc::try_unwrap(a).unwrap_or_else(|arc| (*arc).clone());
                 let b = Arc::try_unwrap(b).unwrap_or_else(|arc| (*arc).clone());
                 Ok(Value::Cube(Arc::new(a.concat(b)?)))
+            }
+
+            // NdArray + NdArray -> NdArray
+            #[cfg(feature = "ndarray")]
+            (NdArray(a), NdArray(b)) => {
+                let a = Arc::try_unwrap(a).unwrap_or_else(|arc| (*arc).clone());
+                let b = Arc::try_unwrap(b).unwrap_or_else(|arc| (*arc).clone());
+                Ok(Value::NdArray(Arc::new(a.concat(b)?)))
+            }
+
+            // SuperNdArray + SuperNdArray -> SuperNdArray
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            (SuperNdArray(a), SuperNdArray(b)) => {
+                let a = Arc::try_unwrap(a).unwrap_or_else(|arc| (*arc).clone());
+                let b = Arc::try_unwrap(b).unwrap_or_else(|arc| (*arc).clone());
+                Ok(Value::SuperNdArray(Arc::new(a.concat(b)?)))
+            }
+
+            // SuperNdArrayView + SuperNdArrayView -> SuperNdArrayView, zero-copy
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            (SuperNdArrayView(a), SuperNdArrayView(b)) => {
+                let a = Arc::try_unwrap(a).unwrap_or_else(|arc| (*arc).clone());
+                let b = Arc::try_unwrap(b).unwrap_or_else(|arc| (*arc).clone());
+                Ok(Value::SuperNdArrayView(Arc::new(a.concat(b)?)))
+            }
+
+            // XArray + XArray -> XArray
+            #[cfg(feature = "xarray")]
+            (XArray(a), XArray(b)) => {
+                let a = Arc::try_unwrap(a).unwrap_or_else(|arc| (*arc).clone());
+                let b = Arc::try_unwrap(b).unwrap_or_else(|arc| (*arc).clone());
+                Ok(Value::XArray(Arc::new(a.concat(b)?)))
             }
 
             // Chunked types
@@ -490,6 +542,16 @@ pub(crate) fn value_variant_name(value: &Value) -> &'static str {
         Value::FieldArray(_) => "FieldArray",
         #[cfg(feature = "matrix")]
         Value::Matrix(_) => "Matrix",
+        #[cfg(feature = "ndarray")]
+        Value::NdArray(_) => "NdArray",
+        #[cfg(all(feature = "ndarray", feature = "views"))]
+        Value::NdArrayView(_) => "NdArrayView",
+        #[cfg(all(feature = "ndarray", feature = "chunked"))]
+        Value::SuperNdArray(_) => "SuperNdArray",
+        #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+        Value::SuperNdArrayView(_) => "SuperNdArrayView",
+        #[cfg(feature = "xarray")]
+        Value::XArray(_) => "XArray",
         #[cfg(feature = "cube")]
         Value::Cube(_) => "Cube",
         Value::VecValue(_) => "VecValue",

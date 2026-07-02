@@ -56,6 +56,13 @@ use crate::{
 #[cfg(feature = "chunked")]
 use crate::SuperTable;
 
+#[cfg(feature = "ndarray")]
+use crate::NdArray;
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+use crate::SuperNdArray;
+#[cfg(feature = "xarray")]
+use crate::XArray;
+
 /// # RecordBatch
 ///
 /// Standard Arrow `Record Batch`. Alias of *Minarrow* `Table`.
@@ -149,6 +156,22 @@ pub type ArrayVT<'a> = (&'a Array, Offset, Length);
 
 /// Windowed ***V**iew **T**uple* for Bitmask
 pub type BitmaskVT<'a> = (&'a Bitmask, Offset, Length);
+
+/// Windowed ***V**iew **T**uple* for NdArray. Offset and length are
+/// axis-0 observation counts.
+#[cfg(feature = "ndarray")]
+pub type NdArrayVT<'a, T> = (&'a NdArray<T>, Offset, Length);
+
+/// Windowed ***V**iew **T**uple* for SuperNdArray. Offset and length are
+/// axis-0 observation counts across batches. For chunk-spanning access
+/// with methods, use [`SuperNdArrayV`](crate::SuperNdArrayV).
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+pub type SuperNdArrayVT<'a, T> = (&'a SuperNdArray<T>, Offset, Length);
+
+/// Windowed ***V**iew **T**uple* for XArray. Offset and length are
+/// axis-0 observation counts.
+#[cfg(feature = "xarray")]
+pub type XArrayVT<'a, T> = (&'a XArray<T>, Offset, Length);
 
 /// Subset per respective table within the cube
 ///
