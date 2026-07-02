@@ -38,8 +38,12 @@ pub mod cube;
 pub mod field_array;
 #[cfg(feature = "matrix")]
 pub mod matrix;
+#[cfg(feature = "ndarray")]
+pub mod ndarray;
 pub mod scalar;
 pub mod super_array;
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+pub mod super_ndarray;
 pub mod super_array_view;
 pub mod super_table;
 pub mod super_table_view;

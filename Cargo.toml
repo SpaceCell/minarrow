@@ -251,8 +251,10 @@ fast_dict = [
     "dep:parking_lot",
 ]
 
-# Adds typed arithmetic broadcasting for add, sub, mult, div, rem
-broadcast = []
+# Adds typed arithmetic broadcasting for add, sub, mult, div, rem.
+# The kernels dispatch over Value, Scalar, and DatetimeArray, so those
+# features are required for the module to compile.
+broadcast = ["value_type", "scalar_type", "datetime"]
 
 # Adds Hash and Eq implementations for Scalar, and hash_element_at for Array.
 # Floats use to_bits() so NaN == NaN under this convention.
