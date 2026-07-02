@@ -379,7 +379,8 @@ impl<T: Float> NdArray<T> {
     ///
     /// Returns an (N-1)-dimensional `NdArrayV` view. For a 2D array
     /// with shape [n, m], returns a 1D view of shape [m]. For 3D
-    /// [n, m, k], returns 2D [m, k]. For 1D, returns a single-element view.
+    /// [n, m, k], returns 2D [m, k]. Requires rank 2 or higher - for
+    /// scalar access on a 1D array use `get(&[i])`.
     ///
     /// For repeated access in a loop, prefer `Arc::new(nd).as_view()`
     /// then call `.obs()` on the view to avoid re-wrapping each time.
@@ -431,28 +432,68 @@ impl<T: Float> NdArray<T> {
         Ok(NdArray::from_slice(&flat, new_shape))
     }
 
-    /// Transpose a 2D array. Returns a new NdArray with swapped axes.
-    pub fn transpose(&self) -> Result<NdArray<T>, MinarrowError> {
-        if self.ndim() != 2 {
-            return Err(MinarrowError::ShapeError {
-                message: format!("transpose requires a 2D array, got {}D", self.ndim()),
-            });
-        }
+    /// Transpose by reversing the axis order. Returns a new NdArray with
+    /// re-laid out data. A 1D array copies through unchanged.
+    ///
+    /// For a zero-copy transposed view, wrap the array in an `Arc`, call
+    /// `as_view()`, and use the view's `transpose()`.
+    pub fn transpose(&self) -> NdArray<T> {
         let shape = self.dims.shape();
-        let (n_rows, n_cols) = (shape[0], shape[1]);
-        let new_shape = [n_cols, n_rows];
-        let mut result = NdArray::new(&new_shape);
-        let src_stride = self.dims.strides()[1];
-        let dst_stride = result.dims.strides()[1];
+        let ndim = shape.len();
+        if ndim <= 1 {
+            let mut result = self.to_contiguous();
+            result.name = self.name.clone();
+            return result;
+        }
+        if ndim == 2 {
+            let (n_rows, n_cols) = (shape[0], shape[1]);
+            let new_shape = [n_cols, n_rows];
+            let mut result = NdArray::new(&new_shape);
+            let src_stride = self.dims.strides()[1];
+            let dst_stride = result.dims.strides()[1];
+            let src = self.data.as_slice();
+            let dst = result.data.as_mut_slice();
+            for r in 0..n_rows {
+                for c in 0..n_cols {
+                    dst[r * dst_stride + c] = src[c * src_stride + r];
+                }
+            }
+            result.name = self.name.clone();
+            return result;
+        }
+
+        // General N-D. Walking the result's logical positions in column-major
+        // order reads the source at the reversed index, which is the source
+        // walked with reversed strides.
+        let new_shape: Vec<usize> = shape.iter().rev().copied().collect();
+        let rev_strides: Vec<usize> = self.dims.strides().iter().rev().copied().collect();
         let src = self.data.as_slice();
-        let dst = result.data.as_mut_slice();
-        for r in 0..n_rows {
-            for c in 0..n_cols {
-                dst[r * dst_stride + c] = src[c * src_stride + r];
+        let total = self.len();
+        let mut buf = Vec64::with_capacity(total);
+        let mut indices = vec![0usize; ndim];
+        for _ in 0..total {
+            let offset: usize = indices.iter()
+                .zip(rev_strides.iter())
+                .map(|(&i, &s)| i * s)
+                .sum();
+            buf.push(src[offset]);
+            let mut carry = true;
+            for d in 0..ndim {
+                if carry {
+                    indices[d] += 1;
+                    if indices[d] < new_shape[d] {
+                        carry = false;
+                    } else {
+                        indices[d] = 0;
+                    }
+                }
             }
         }
-        result.name = self.name.clone();
-        Ok(result)
+        NdArray {
+            data: Buffer::from_vec64(buf),
+            dims: NdDims::from_shape(&new_shape),
+            name: self.name.clone(),
+        }
     }
 
     /// Flatten to a contiguous 1D array.
@@ -1989,7 +2030,7 @@ mod tests {
     #[test]
     fn transpose_2d() {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
-        let t = a.transpose().unwrap();
+        let t = a.transpose();
         assert_eq!(t.shape(), &[2, 3]);
         assert_eq!(t.get(&[0, 0]), 1.0);
         assert_eq!(t.get(&[1, 0]), 4.0);
@@ -2000,9 +2041,28 @@ mod tests {
     }
 
     #[test]
-    fn transpose_non_2d_fails() {
-        let a = NdArray::<f64>::new(&[2, 3, 4]);
-        assert!(a.transpose().is_err());
+    fn transpose_3d_reverses_axes() {
+        let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
+        let a = NdArray::from_slice(&data, &[2, 3, 4]);
+        let t = a.transpose();
+        assert_eq!(t.shape(), &[4, 3, 2]);
+        assert!(t.is_contiguous());
+        // Every element lands at its reversed index.
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    assert_eq!(t.get(&[k, j, i]), a.get(&[i, j, k]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn transpose_1d_copies_through() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]);
+        let t = a.transpose();
+        assert_eq!(t.shape(), &[3]);
+        assert_eq!(t, a);
     }
 
     #[test]

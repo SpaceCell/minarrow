@@ -540,12 +540,12 @@ impl<T: Float> XArray<T> {
             });
         }
         let inner = match &self.data {
-            NdArrayE::Owned(nd) => nd.transpose()?,
+            NdArrayE::Owned(nd) => nd.transpose(),
             #[cfg(feature = "views")]
-            NdArrayE::View(v) => v.to_ndarray().transpose()?,
+            NdArrayE::View(v) => v.transpose().to_ndarray(),
             #[cfg(feature = "chunked")]
             NdArrayE::Chunked(snd) => {
-                snd.clone().consolidate().transpose()?
+                snd.clone().consolidate().transpose()
             }
         };
         let new_axes = dim_order.iter()

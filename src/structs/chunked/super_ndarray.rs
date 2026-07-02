@@ -144,10 +144,10 @@ impl<T: Float> SuperNdArray<T> {
         s
     }
 
-    /// Strides of the first batch. Each batch pads its leading axis
-    /// independently for 64-byte alignment, so these strides describe the
-    /// first batch only and are not shared across batches. Use them for
-    /// per-batch access rather than for the consolidated array.
+    /// Strides of the first batch. Strides above axis 0 scale with each
+    /// batch's own leading-axis length, so these describe the first batch
+    /// only and are not shared across batches. Use them for per-batch
+    /// access rather than for the consolidated array.
     pub fn strides(&self) -> &[usize] {
         if self.batches.is_empty() { return &[]; }
         self.batches[0].strides()
@@ -169,7 +169,8 @@ impl<T: Float> SuperNdArray<T> {
     ///
     /// Returns an (N-1)-dimensional `NdArrayV` view. For a 2D chunked
     /// array with shape [n, m], returns a 1D view of shape [m]. For 3D
-    /// [n, m, k], returns 2D [m, k]. For 1D, returns a single-element view.
+    /// [n, m, k], returns 2D [m, k]. Requires rank 2 or higher - for
+    /// scalar access on a 1D array use `get(&[i])`.
     #[cfg(feature = "views")]
     pub fn obs(&self, idx: usize) -> NdArrayV<T> {
         let (chunk_idx, local) = self.resolve(idx);
@@ -190,9 +191,9 @@ impl<T: Float> SuperNdArray<T> {
         self.inner_shape[0] as i32
     }
 
-    /// BLAS leading dimension of the first batch (2D). Each batch pads its
-    /// leading axis independently, so this value applies to the first batch
-    /// only, not to the whole chunked array.
+    /// BLAS leading dimension of the first batch (2D). The leading dimension
+    /// equals each batch's own row count, so this value applies to the first
+    /// batch only, not to the whole chunked array.
     #[inline]
     pub fn lda(&self) -> i32 {
         assert_eq!(self.ndim, 2, "lda() requires a 2D array");

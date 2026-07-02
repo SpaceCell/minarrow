@@ -2,8 +2,8 @@
 //!
 //! Holds an `Arc<NdArray>` to keep the parent alive, plus its own offset
 //! and dimension metadata. Views can have different shapes and strides
-//! from the parent, enabling slicing and axis selection without copying
-//! data.
+//! from the parent, enabling slicing, axis selection, transposition, and
+//! axis permutation without copying data.
 
 use std::fmt;
 use std::ops::Index;
@@ -23,8 +23,9 @@ use crate::structs::matrix::Matrix;
 /// Zero-copy view into an [`NdArray`].
 ///
 /// Holds an `Arc<NdArray>` to keep the parent buffer alive, with its
-/// own offset and dimension metadata. This enables slicing and axis
-/// selection without copying the underlying data.
+/// own offset and dimension metadata. This enables slicing, axis
+/// selection, transposition, and axis permutation without copying the
+/// underlying data.
 #[derive(Clone)]
 pub struct NdArrayV<T> {
     source: Arc<NdArray<T>>,
@@ -133,18 +134,19 @@ impl<T: Float> NdArrayV<T> {
     ///
     /// Returns an (N-1)-dimensional view. For a 2D view with shape
     /// [n, m], returns a 1D view of shape [m]. For 3D [n, m, k],
-    /// returns 2D [m, k]. For 1D, returns a single-element view.
+    /// returns 2D [m, k]. Requires rank 2 or higher - a 1D view has no
+    /// sub-array observations, so scalar access goes through `get(&[i])`.
     pub fn obs(&self, idx: usize) -> NdArrayV<T> {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
+        assert!(
+            shape.len() >= 2,
+            "obs() requires a 2D or higher view, use get(&[i]) for scalar access on 1D"
+        );
         debug_assert!(idx < shape[0], "obs: index {} out of bounds for axis 0 (size {})", idx, shape[0]);
 
         let new_offset = self.offset + idx * strides[0];
-        if shape.len() <= 1 {
-            NdArrayV::new(self.source.clone(), new_offset, &[1], &[1])
-        } else {
-            NdArrayV::new(self.source.clone(), new_offset, &shape[1..], &strides[1..])
-        }
+        NdArrayV::new(self.source.clone(), new_offset, &shape[1..], &strides[1..])
     }
 
     /// Slice this view, producing a sub-view. Zero-copy - shares the
@@ -183,6 +185,54 @@ impl<T: Float> NdArrayV<T> {
         }
 
         NdArrayV::new(self.source.clone(), new_offset, &new_shape, &new_strides)
+    }
+
+    // *** Axis manipulation ***************************************
+
+    /// Transposed view with the axis order reversed. Zero-copy - only
+    /// the shape and stride metadata reorder. A 1D view returns itself
+    /// unchanged.
+    pub fn transpose(&self) -> NdArrayV<T> {
+        let shape: Vec<usize> = self.dims.shape().iter().rev().copied().collect();
+        let strides: Vec<usize> = self.dims.strides().iter().rev().copied().collect();
+        NdArrayV::new(self.source.clone(), self.offset, &shape, &strides)
+    }
+
+    /// View with axes reordered by the given permutation. Zero-copy.
+    ///
+    /// `perm[d]` names the source axis that becomes axis `d` of the
+    /// result. Panics unless `perm` is a permutation of `0..ndim`.
+    pub fn permute_axes(&self, perm: &[usize]) -> NdArrayV<T> {
+        let shape = self.dims.shape();
+        let strides = self.dims.strides();
+        let ndim = shape.len();
+        assert_eq!(
+            perm.len(), ndim,
+            "permute_axes: expected {} axes, got {}", ndim, perm.len()
+        );
+        let mut seen = vec![false; ndim];
+        for &ax in perm {
+            assert!(ax < ndim, "permute_axes: axis {} out of bounds for {}D view", ax, ndim);
+            assert!(!seen[ax], "permute_axes: axis {} repeated", ax);
+            seen[ax] = true;
+        }
+        let new_shape: Vec<usize> = perm.iter().map(|&ax| shape[ax]).collect();
+        let new_strides: Vec<usize> = perm.iter().map(|&ax| strides[ax]).collect();
+        NdArrayV::new(self.source.clone(), self.offset, &new_shape, &new_strides)
+    }
+
+    /// View with two axes swapped. Zero-copy.
+    pub fn swap_axes(&self, a: usize, b: usize) -> NdArrayV<T> {
+        let ndim = self.dims.ndim();
+        assert!(
+            a < ndim && b < ndim,
+            "swap_axes: axes ({}, {}) out of bounds for {}D view", a, b, ndim
+        );
+        let mut shape = self.dims.shape().to_vec();
+        let mut strides = self.dims.strides().to_vec();
+        shape.swap(a, b);
+        strides.swap(a, b);
+        NdArrayV::new(self.source.clone(), self.offset, &shape, &strides)
     }
 
     // *** Materialisation *****************************************
@@ -428,6 +478,76 @@ mod tests {
         let b = v.to_ndarray();
         assert_eq!(b.shape(), &[3, 2]);
         assert_eq!(b.col(0), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn transpose_2d_view() {
+        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
+        let t = NdArrayV::from_ndarray(a).transpose();
+        assert_eq!(t.shape(), &[2, 3]);
+        assert_eq!(t[(0, 0)], 1.0);
+        assert_eq!(t[(1, 0)], 4.0);
+        assert_eq!(t[(0, 2)], 3.0);
+        assert_eq!(t[(1, 2)], 6.0);
+        // Materialising the transposed view matches the owned transpose.
+        let owned = t.to_ndarray();
+        assert_eq!(owned.shape(), &[2, 3]);
+        assert_eq!(owned.get(&[1, 1]), 5.0);
+    }
+
+    #[test]
+    fn transpose_3d_view_matches_materialised() {
+        let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
+        let a = Arc::new(NdArray::from_slice(&data, &[2, 3, 4]));
+        let t = a.as_view().transpose();
+        assert_eq!(t.shape(), &[4, 3, 2]);
+        let materialised = a.transpose();
+        for i in 0..4 {
+            for j in 0..3 {
+                for k in 0..2 {
+                    assert_eq!(t[(i, j, k)], materialised.get(&[i, j, k]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn permute_axes_view() {
+        let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
+        let a = Arc::new(NdArray::from_slice(&data, &[2, 3, 4]));
+        let p = a.as_view().permute_axes(&[2, 0, 1]);
+        assert_eq!(p.shape(), &[4, 2, 3]);
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    assert_eq!(p[(k, i, j)], a.get(&[i, j, k]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "permute_axes")]
+    fn permute_axes_rejects_repeat() {
+        let a = Arc::new(NdArray::<f64>::new(&[2, 3, 4]));
+        let _ = a.as_view().permute_axes(&[0, 0, 1]);
+    }
+
+    #[test]
+    fn swap_axes_view() {
+        let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
+        let a = Arc::new(NdArray::from_slice(&data, &[2, 3, 4]));
+        let s = a.as_view().swap_axes(0, 2);
+        assert_eq!(s.shape(), &[4, 3, 2]);
+        assert_eq!(s[(3, 2, 1)], a.get(&[1, 2, 3]));
+        assert_eq!(s[(0, 0, 0)], a.get(&[0, 0, 0]));
+    }
+
+    #[test]
+    #[should_panic(expected = "obs()")]
+    fn obs_on_1d_panics() {
+        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]));
+        let _ = a.as_view().obs(1);
     }
 
     #[cfg(feature = "matrix")]
