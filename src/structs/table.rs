@@ -59,6 +59,8 @@ use crate::traits::{
     print::{MAX_PREVIEW, print_ellipsis_row, print_header_row, print_rule, value_to_string},
     shape::Shape,
 };
+#[cfg(all(feature = "views", feature = "select"))]
+use crate::Bitmask;
 #[cfg(feature = "views")]
 use crate::{Array, BitmaskV, NumericArrayV, TableV, TextArrayV};
 
@@ -462,6 +464,20 @@ impl Table {
         assert!(offset <= self.n_rows, "offset out of bounds");
         assert!(offset + len <= self.n_rows, "slice window out of bounds");
         TableV::from_table(self.clone(), offset, len)
+    }
+
+    /// Gather the rows at the given indices into a new materialised Table.
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub fn gather_rows(&self, indices: &[usize]) -> Table {
+        self.slice(0, self.n_rows).gather_rows(indices)
+    }
+
+    /// Gather the rows at set mask bits into a new materialised Table.
+    ///
+    /// The mask must match the row count.
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub fn gather_rows_mask(&self, mask: &Bitmask) -> Table {
+        self.slice(0, self.n_rows).gather_rows_mask(mask)
     }
 
     /// Maps a function over a single column by name, returning the result.
