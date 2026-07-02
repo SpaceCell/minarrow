@@ -59,6 +59,8 @@ use std::sync::Arc;
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::buffer::Buffer;
+#[cfg(all(feature = "views", feature = "select"))]
+use crate::traits::selection::{DataSelector, RowSelection};
 use crate::traits::type_unions::Float;
 use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::{Array, ArrowType, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
@@ -82,7 +84,7 @@ use crate::ffi::dlpack::{export_to_dlpack, DLPackTensor};
 /// See the [module-level documentation](self) for design rationale.
 #[derive(Clone, PartialEq)]
 pub struct NdArray<T> {
-    pub(crate) data: Buffer<T>,
+    pub(crate) data: Arc<Buffer<T>>,
     pub(crate) dims: NdDims,
     pub name: Option<String>,
 }
@@ -96,7 +98,7 @@ impl<T: Float> NdArray<T> {
         let total = buffer_len(dims.shape(), dims.strides());
         let mut v = Vec64::with_capacity(total);
         v.0.resize(total, T::default());
-        NdArray { data: Buffer::from_vec64(v), dims, name: None }
+        NdArray { data: Arc::new(Buffer::from_vec64(v)), dims, name: None }
     }
 
     /// Create a zeroed NdArray with a name.
@@ -119,7 +121,7 @@ impl<T: Float> NdArray<T> {
         );
         let dims = NdDims::from_shape(shape);
         NdArray {
-            data: Buffer::from_slice(data),
+            data: Arc::new(Buffer::from_slice(data)),
             dims,
             name: None,
         }
@@ -137,7 +139,7 @@ impl<T: Float> NdArray<T> {
             data.len(), required
         );
         let dims = NdDims::from_shape_and_strides(shape, strides);
-        NdArray { data, dims, name: None }
+        NdArray { data: Arc::new(data), dims, name: None }
     }
 
     /// Create an NdArray filled with a constant value.
@@ -146,7 +148,7 @@ impl<T: Float> NdArray<T> {
         let total = buffer_len(dims.shape(), dims.strides());
         let mut v = Vec64::with_capacity(total);
         v.0.resize(total, value);
-        NdArray { data: Buffer::from_vec64(v), dims, name: None }
+        NdArray { data: Arc::new(Buffer::from_vec64(v)), dims, name: None }
     }
 
     /// Create an NdArray of ones.
@@ -158,7 +160,7 @@ impl<T: Float> NdArray<T> {
     pub fn eye(n: usize) -> Self {
         let mut arr = Self::new(&[n, n]);
         let stride = arr.dims.strides()[1];
-        let buf = arr.data.as_mut_slice();
+        let buf = Arc::make_mut(&mut arr.data).as_mut_slice();
         for i in 0..n {
             buf[i * stride + i] = T::one();
         }
@@ -171,7 +173,7 @@ impl<T: Float> NdArray<T> {
         let step = (end - start) / T::from(n - 1).unwrap();
         let v: Vec64<T> = (0..n).map(|i| start + step * T::from(i).unwrap()).collect();
         NdArray {
-            data: Buffer::from_vec64(v),
+            data: Arc::new(Buffer::from_vec64(v)),
             dims: NdDims::from_shape(&[n]),
             name: None,
         }
@@ -182,7 +184,7 @@ impl<T: Float> NdArray<T> {
     pub fn arange(start: T, step: T, n: usize) -> Self {
         let v: Vec64<T> = (0..n).map(|i| start + step * T::from(i).unwrap()).collect();
         NdArray {
-            data: Buffer::from_vec64(v),
+            data: Arc::new(Buffer::from_vec64(v)),
             dims: NdDims::from_shape(&[n]),
             name: None,
         }
@@ -244,11 +246,11 @@ impl<T: Float> NdArray<T> {
     }
 
     /// Set element by N-dimensional index. Panics if out of bounds.
-    /// Triggers copy-on-write if the buffer is shared.
+    /// Triggers copy-on-write when views share the buffer.
     #[inline]
     pub fn set(&mut self, indices: &[usize], value: T) {
         let off = self.offset_of(indices);
-        self.data.as_mut_slice()[off] = value;
+        Arc::make_mut(&mut self.data).as_mut_slice()[off] = value;
     }
 
     /// Compute flat buffer offset for an N-dimensional index.
@@ -272,17 +274,17 @@ impl<T: Float> NdArray<T> {
     }
 
     /// Mutable reference to the full flat buffer. Triggers copy-on-write
-    /// if the underlying buffer is shared.
+    /// when views share the buffer.
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        self.data.as_mut_slice()
+        Arc::make_mut(&mut self.data).as_mut_slice()
     }
 
     /// Fill every logical element with a value.
     pub fn fill_with(&mut self, value: T) {
         // For contiguous arrays, fill the whole buffer
         if self.is_contiguous() {
-            self.data.as_mut_slice().fill(value);
+            Arc::make_mut(&mut self.data).as_mut_slice().fill(value);
             return;
         }
         // Walk logical positions for non-contiguous layouts
@@ -303,7 +305,7 @@ impl<T: Float> NdArray<T> {
             }
             result
         };
-        let buf = self.data.as_mut_slice();
+        let buf = Arc::make_mut(&mut self.data).as_mut_slice();
         for off in offsets { buf[off] = value; }
     }
 
@@ -330,7 +332,7 @@ impl<T: Float> NdArray<T> {
         let stride = self.dims.strides()[1];
         let n_rows = shape[0];
         let start = col * stride;
-        &mut self.data.as_mut_slice()[start..start + n_rows]
+        &mut Arc::make_mut(&mut self.data).as_mut_slice()[start..start + n_rows]
     }
 
     /// All columns as immutable slices. 2D only.
@@ -352,7 +354,7 @@ impl<T: Float> NdArray<T> {
         let n_rows = shape[0];
         let n_cols = shape[1];
         let stride = self.dims.strides()[1];
-        let ptr = self.data.as_mut_slice().as_mut_ptr();
+        let ptr = Arc::make_mut(&mut self.data).as_mut_slice().as_mut_ptr();
         let mut result = Vec::with_capacity(n_cols);
         for c in 0..n_cols {
             let start = c * stride;
@@ -368,10 +370,11 @@ impl<T: Float> NdArray<T> {
 
     /// Wrap as a full `NdArrayV` view for repeated observation access.
     ///
-    /// Call `.obs(i)` on the returned view to get individual observations
-    /// without re-cloning the buffer each time.
+    /// Call `.obs(i)` on the returned view to get individual observations.
+    /// The view holds the parent through the array's shared internal
+    /// buffer, so this is a refcount bump.
     #[cfg(feature = "views")]
-    pub fn as_view(self: &Arc<Self>) -> NdArrayV<T> {
+    pub fn as_view(&self) -> NdArrayV<T> {
         NdArrayV::from_ndarray(self.clone())
     }
 
@@ -382,10 +385,10 @@ impl<T: Float> NdArray<T> {
     /// [n, m, k], returns 2D [m, k]. Requires rank 2 or higher - for
     /// scalar access on a 1D array use `get(&[i])`.
     ///
-    /// For repeated access in a loop, prefer `Arc::new(nd).as_view()`
-    /// then call `.obs()` on the view to avoid re-wrapping each time.
+    /// For repeated access in a loop, prefer `nd.as_view()` then call
+    /// `.obs()` on the view to avoid re-wrapping each time.
     #[cfg(feature = "views")]
-    pub fn obs(self: &Arc<Self>, idx: usize) -> NdArrayV<T> {
+    pub fn obs(&self, idx: usize) -> NdArrayV<T> {
         self.as_view().obs(idx)
     }
 
@@ -435,8 +438,8 @@ impl<T: Float> NdArray<T> {
     /// Transpose by reversing the axis order. Returns a new NdArray with
     /// re-laid out data. A 1D array copies through unchanged.
     ///
-    /// For a zero-copy transposed view, wrap the array in an `Arc`, call
-    /// `as_view()`, and use the view's `transpose()`.
+    /// For a zero-copy transposed view, call `as_view()` and use the
+    /// view's `transpose()`.
     pub fn transpose(&self) -> NdArray<T> {
         let shape = self.dims.shape();
         let ndim = shape.len();
@@ -452,7 +455,7 @@ impl<T: Float> NdArray<T> {
             let src_stride = self.dims.strides()[1];
             let dst_stride = result.dims.strides()[1];
             let src = self.data.as_slice();
-            let dst = result.data.as_mut_slice();
+            let dst = Arc::make_mut(&mut result.data).as_mut_slice();
             for r in 0..n_rows {
                 for c in 0..n_cols {
                     dst[r * dst_stride + c] = src[c * src_stride + r];
@@ -490,7 +493,7 @@ impl<T: Float> NdArray<T> {
             }
         }
         NdArray {
-            data: Buffer::from_vec64(buf),
+            data: Arc::new(Buffer::from_vec64(buf)),
             dims: NdDims::from_shape(&new_shape),
             name: self.name.clone(),
         }
@@ -501,7 +504,7 @@ impl<T: Float> NdArray<T> {
         let flat: Vec64<T> = self.into_iter().collect();
         let n = flat.len();
         NdArray {
-            data: Buffer::from_vec64(flat),
+            data: Arc::new(Buffer::from_vec64(flat)),
             dims: NdDims::from_shape(&[n]),
             name: self.name.clone(),
         }
@@ -525,12 +528,11 @@ impl<T: Float> NdArray<T> {
     ///
     /// Each axis takes either a single index (collapses that dimension)
     /// or a range (keeps it). Returns a zero-copy `NdArrayV` view that
-    /// keeps the parent alive through an `Arc` bump, matching `as_view`
-    /// and `obs`.
+    /// holds the parent through the array's shared internal buffer, so
+    /// this is a refcount bump, matching `as_view` and `obs`.
     ///
     /// # Examples
     /// ```ignore
-    /// let arr = Arc::new(arr);
     /// arr.slice(2)                  // single index on 1D
     /// arr.slice((1..4,))            // range on axis 0
     /// arr.slice((1..4, 2..5))       // range on both axes (2D)
@@ -538,7 +540,7 @@ impl<T: Float> NdArray<T> {
     /// arr.slice((1, 0..4, 3))       // mixed for 3D
     /// ```
     #[cfg(feature = "views")]
-    pub fn slice<S: IntoSlice>(self: &Arc<Self>, sel: S) -> NdArrayV<T> {
+    pub fn slice<S: IntoSlice>(&self, sel: S) -> NdArrayV<T> {
         let axes = sel.into_slice();
         assert_eq!(
             axes.len(), self.ndim(),
@@ -583,6 +585,106 @@ impl<T: Float> NdArray<T> {
         )
     }
 
+    // *** Apply ***************************************************
+
+    /// Apply a function to every logical element, returning a new compact
+    /// array with this array's shape and name. The closure brings the
+    /// computation, so any kernel under `kernels` runs through this
+    /// entry point.
+    pub fn apply(&self, f: impl Fn(T) -> T) -> NdArray<T> {
+        let flat: Vec64<T> = self.into_iter().map(f).collect();
+        let mut result = NdArray::from_slice(&flat, self.shape());
+        result.name = self.name.clone();
+        result
+    }
+
+    /// Apply a function to every logical element in place, with no
+    /// allocation. Copy-on-write triggers first when views share the
+    /// buffer.
+    pub fn apply_mut(&mut self, f: impl Fn(T) -> T) {
+        if self.is_contiguous() {
+            for v in Arc::make_mut(&mut self.data).as_mut_slice() {
+                *v = f(*v);
+            }
+            return;
+        }
+        // Walk logical positions for non-contiguous layouts so stride
+        // padding stays untouched.
+        let shape = self.dims.shape().to_vec();
+        let strides = self.dims.strides().to_vec();
+        let total = self.len();
+        let buf = Arc::make_mut(&mut self.data).as_mut_slice();
+        let mut indices = vec![0usize; shape.len()];
+        for _ in 0..total {
+            let offset: usize = indices.iter().zip(strides.iter()).map(|(&i, &s)| i * s).sum();
+            buf[offset] = f(buf[offset]);
+            let mut carry = true;
+            for d in 0..shape.len() {
+                if carry {
+                    indices[d] += 1;
+                    if indices[d] < shape[d] {
+                        carry = false;
+                    } else {
+                        indices[d] = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply a function to every 1D lane along the given axis, collapsing
+    /// that axis. Each lane arrives as a zero-copy [`NdArrayV`] and the
+    /// closure returns one value for it, so the output shape drops `axis`.
+    /// Requires rank 2 or higher - a 1D array is itself a single lane.
+    #[cfg(feature = "views")]
+    pub fn apply_axis(&self, axis: usize, mut f: impl FnMut(NdArrayV<T>) -> T) -> NdArray<T> {
+        let shape = self.dims.shape();
+        let strides = self.dims.strides();
+        let ndim = shape.len();
+        assert!(ndim >= 2, "apply_axis requires a 2D or higher array");
+        assert!(axis < ndim, "apply_axis: axis {} out of bounds for {}D array", axis, ndim);
+
+        let out_shape: Vec<usize> = shape
+            .iter()
+            .enumerate()
+            .filter(|(d, _)| *d != axis)
+            .map(|(_, &s)| s)
+            .collect();
+        let out_dims: Vec<usize> = (0..ndim).filter(|&d| d != axis).collect();
+        let total: usize = out_shape.iter().product();
+
+        let lane_shape = [shape[axis]];
+        let lane_strides = [strides[axis]];
+
+        // Walk the output positions in column-major order. Each position
+        // anchors one lane's base offset in the source.
+        let mut flat = Vec64::with_capacity(total);
+        let mut indices = vec![0usize; out_shape.len()];
+        for _ in 0..total {
+            let offset: usize = indices
+                .iter()
+                .zip(out_dims.iter())
+                .map(|(&i, &d)| i * strides[d])
+                .sum();
+            let lane = NdArrayV::new(self.clone(), offset, &lane_shape, &lane_strides);
+            flat.push(f(lane));
+            let mut carry = true;
+            for d in 0..out_shape.len() {
+                if carry {
+                    indices[d] += 1;
+                    if indices[d] < out_shape[d] {
+                        carry = false;
+                    } else {
+                        indices[d] = 0;
+                    }
+                }
+            }
+        }
+        let mut result = NdArray::from_slice(&flat, &out_shape);
+        result.name = self.name.clone();
+        result
+    }
+
     // *** Conversions *********************************************
 
     /// Export as a DLPack tensor for zero-copy sharing with PyTorch,
@@ -593,7 +695,7 @@ impl<T: Float> NdArray<T> {
     /// consumer such as a PyCapsule.
     #[cfg(feature = "dlpack")]
     pub fn to_dlpack(self) -> DLPackTensor {
-        export_to_dlpack(Arc::new(self))
+        export_to_dlpack(self)
     }
 
     // *** Parallel iteration (rayon) ******************************
@@ -617,7 +719,7 @@ impl<T: Float> NdArray<T> {
     /// Parallel iterator over axis-0 observations. Each item is the
     /// observation index and a zero-copy `NdArrayV` view.
     #[cfg(all(feature = "parallel_proc", feature = "views"))]
-    pub fn par_iter_obs(self: &Arc<Self>) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_ {
+    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_ {
         use rayon::prelude::*;
         let n_obs = self.dims.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
@@ -692,7 +794,8 @@ impl NdArray<f64> {
                 message: format!("to_array requires a 1D array, got {}D", self.ndim()),
             });
         }
-        let float_arr = FloatArray::new(self.data, None);
+        let buffer = Arc::try_unwrap(self.data).unwrap_or_else(|arc| (*arc).clone());
+        let float_arr = FloatArray::new(buffer, None);
         Ok(Array::NumericArray(NumericArray::Float64(Arc::new(float_arr))))
     }
 
@@ -719,7 +822,7 @@ impl NdArray<f64> {
                 n_rows,
                 n_cols,
                 stride: strides[1],
-                data: self.data,
+                data: Arc::try_unwrap(self.data).unwrap_or_else(|arc| (*arc).clone()),
                 name: self.name,
             });
         }
@@ -1169,7 +1272,7 @@ impl<T: Float> Concatenate for NdArray<T> {
                 dst[dst_start + s1[0]..dst_start + s1[0] + s2[0]].copy_from_slice(other.col(c));
             }
             return Ok(NdArray {
-                data: Buffer::from_vec64(buf),
+                data: Arc::new(Buffer::from_vec64(buf)),
                 dims: new_dims,
                 name: None,
             });
@@ -1181,6 +1284,81 @@ impl<T: Float> Concatenate for NdArray<T> {
         flat.extend(&other);
         Ok(NdArray::from_slice(&flat, &new_shape))
     }
+}
+
+// *** Row selection: arr.r(0..10) *********************************
+
+/// Axis-0 observation selection. Contiguous ranges return a zero-copy
+/// window view. Index arrays gather the selected observations into an
+/// owned array wrapped in a full view, matching `Table`'s behaviour.
+#[cfg(all(feature = "views", feature = "select"))]
+impl<T: Float> RowSelection for NdArray<T> {
+    type View = NdArrayV<T>;
+
+    fn r<S: DataSelector>(&self, selection: S) -> NdArrayV<T> {
+        let n_obs = self.shape()[0];
+        let indices = selection.resolve_indices(n_obs);
+        if selection.is_contiguous() {
+            let start = indices.first().copied().unwrap_or(0);
+            let mut sel = vec![AxisSel::Range(start, start + indices.len())];
+            for d in 1..self.ndim() {
+                sel.push(AxisSel::Range(0, self.shape()[d]));
+            }
+            return self.slice(sel);
+        }
+        NdArrayV::from_ndarray(gather_obs_impl(
+            &indices,
+            self.shape(),
+            self.name.clone(),
+            |idx| self.get(idx),
+        ))
+    }
+
+    fn get_row_count(&self) -> usize {
+        self.shape()[0]
+    }
+}
+
+/// Materialise selected axis-0 observations into a compact owned array.
+/// Walks the output positions in column-major order, reading each source
+/// element through the provided accessor, so any stride layout gathers
+/// correctly.
+#[cfg(all(feature = "views", feature = "select"))]
+pub(crate) fn gather_obs_impl<T: Float>(
+    indices: &[usize],
+    shape: &[usize],
+    name: Option<String>,
+    get: impl Fn(&[usize]) -> T,
+) -> NdArray<T> {
+    let mut out_shape = shape.to_vec();
+    out_shape[0] = indices.len();
+    let total: usize = out_shape.iter().product();
+
+    let mut flat = Vec64::with_capacity(total);
+    let ndim = shape.len();
+    let mut idx = vec![0usize; ndim];
+    let inner_runs: usize = shape[1..].iter().product::<usize>().max(1);
+    for _ in 0..inner_runs {
+        for &obs in indices {
+            idx[0] = obs;
+            flat.push(get(&idx));
+        }
+        // Advance the inner multi-index in column-major order.
+        let mut carry = true;
+        for d in 1..ndim {
+            if carry {
+                idx[d] += 1;
+                if idx[d] < shape[d] {
+                    carry = false;
+                } else {
+                    idx[d] = 0;
+                }
+            }
+        }
+    }
+    let mut result = NdArray::from_slice(&flat, &out_shape);
+    result.name = name;
+    result
 }
 
 // *** Bracket indexing: arr[col][row] ******************************
@@ -1230,13 +1408,13 @@ impl<T: Float> IndexMut<usize> for NdArray<T> {
         match shape.len() {
             1 => {
                 debug_assert!(idx < shape[0], "index out of bounds");
-                &mut self.data.as_mut_slice()[idx..idx + 1]
+                &mut Arc::make_mut(&mut self.data).as_mut_slice()[idx..idx + 1]
             }
             2 => {
                 debug_assert!(idx < shape[1], "column index out of bounds");
                 let start = idx * strides[1];
                 let n_rows = shape[0];
-                &mut self.data.as_mut_slice()[start..start + n_rows]
+                &mut Arc::make_mut(&mut self.data).as_mut_slice()[start..start + n_rows]
             }
             n => {
                 assert!(
@@ -1246,7 +1424,7 @@ impl<T: Float> IndexMut<usize> for NdArray<T> {
                 let last = n - 1;
                 debug_assert!(idx < shape[last], "index out of bounds for axis {}", last);
                 let start = idx * strides[last];
-                &mut self.data.as_mut_slice()[start..start + strides[last]]
+                &mut Arc::make_mut(&mut self.data).as_mut_slice()[start..start + strides[last]]
             }
         }
     }
@@ -1291,7 +1469,7 @@ impl<T: Float> IndexMut<Range<usize>> for NdArray<T> {
         let shape = self.dims.shape().to_vec();
         let strides = self.dims.strides().to_vec();
         match shape.len() {
-            1 => &mut self.data.as_mut_slice()[range],
+            1 => &mut Arc::make_mut(&mut self.data).as_mut_slice()[range],
             _ => {
                 assert!(
                     self.is_contiguous(),
@@ -1301,7 +1479,7 @@ impl<T: Float> IndexMut<Range<usize>> for NdArray<T> {
                 debug_assert!(range.end <= shape[last], "range end out of bounds");
                 let start = range.start * strides[last];
                 let end = range.end * strides[last];
-                &mut self.data.as_mut_slice()[start..end]
+                &mut Arc::make_mut(&mut self.data).as_mut_slice()[start..end]
             }
         }
     }
@@ -1384,7 +1562,7 @@ impl<T: Float> IndexMut<(usize,)> for NdArray<T> {
     #[inline]
     fn index_mut(&mut self, (i,): (usize,)) -> &mut T {
         let off = self.offset_of(&[i]);
-        &mut self.data.as_mut_slice()[off]
+        &mut Arc::make_mut(&mut self.data).as_mut_slice()[off]
     }
 }
 
@@ -1392,7 +1570,7 @@ impl<T: Float> IndexMut<(usize, usize)> for NdArray<T> {
     #[inline]
     fn index_mut(&mut self, (i, j): (usize, usize)) -> &mut T {
         let off = self.offset_of(&[i, j]);
-        &mut self.data.as_mut_slice()[off]
+        &mut Arc::make_mut(&mut self.data).as_mut_slice()[off]
     }
 }
 
@@ -1400,7 +1578,7 @@ impl<T: Float> IndexMut<(usize, usize, usize)> for NdArray<T> {
     #[inline]
     fn index_mut(&mut self, (i, j, k): (usize, usize, usize)) -> &mut T {
         let off = self.offset_of(&[i, j, k]);
-        &mut self.data.as_mut_slice()[off]
+        &mut Arc::make_mut(&mut self.data).as_mut_slice()[off]
     }
 }
 
@@ -1408,7 +1586,7 @@ impl<T: Float> IndexMut<(usize, usize, usize, usize)> for NdArray<T> {
     #[inline]
     fn index_mut(&mut self, (i, j, k, l): (usize, usize, usize, usize)) -> &mut T {
         let off = self.offset_of(&[i, j, k, l]);
-        &mut self.data.as_mut_slice()[off]
+        &mut Arc::make_mut(&mut self.data).as_mut_slice()[off]
     }
 }
 
@@ -1416,7 +1594,7 @@ impl<T: Float> IndexMut<(usize, usize, usize, usize, usize)> for NdArray<T> {
     #[inline]
     fn index_mut(&mut self, (i, j, k, l, m): (usize, usize, usize, usize, usize)) -> &mut T {
         let off = self.offset_of(&[i, j, k, l, m]);
-        &mut self.data.as_mut_slice()[off]
+        &mut Arc::make_mut(&mut self.data).as_mut_slice()[off]
     }
 }
 
@@ -1426,7 +1604,7 @@ impl<T: Float> IndexMut<(usize, usize, usize, usize, usize)> for NdArray<T> {
 impl<T: Float> From<&[T]> for NdArray<T> {
     fn from(data: &[T]) -> Self {
         NdArray {
-            data: Buffer::from_slice(data),
+            data: Arc::new(Buffer::from_slice(data)),
             dims: NdDims::from_shape(&[data.len()]),
             name: None,
         }
@@ -1438,7 +1616,7 @@ impl<T: Float> From<Vec64<T>> for NdArray<T> {
     fn from(v: Vec64<T>) -> Self {
         let n = v.len();
         NdArray {
-            data: Buffer::from_vec64(v),
+            data: Arc::new(Buffer::from_vec64(v)),
             dims: NdDims::from_shape(&[n]),
             name: None,
         }
@@ -1466,7 +1644,7 @@ impl<T: Float> From<&[Vec<T>]> for NdArray<T> {
             let start = c * stride;
             buf.as_mut_slice()[start..start + n_rows].copy_from_slice(col);
         }
-        NdArray { data: Buffer::from_vec64(buf), dims, name: None }
+        NdArray { data: Arc::new(Buffer::from_vec64(buf)), dims, name: None }
     }
 }
 
@@ -1491,7 +1669,7 @@ impl<T: Float> From<&[FloatArray<T>]> for NdArray<T> {
             let start = c * stride;
             buf.as_mut_slice()[start..start + n_rows].copy_from_slice(col.data.as_slice());
         }
-        NdArray { data: Buffer::from_vec64(buf), dims, name: None }
+        NdArray { data: Arc::new(Buffer::from_vec64(buf)), dims, name: None }
     }
 }
 
@@ -1504,7 +1682,7 @@ impl From<Matrix> for NdArray<f64> {
         let shape = [mat.n_rows, mat.n_cols];
         let strides = [1, mat.stride];
         NdArray {
-            data: mat.data,
+            data: Arc::new(mat.data),
             dims: NdDims::from_shape_and_strides(&shape, &strides),
             name: mat.name,
         }
@@ -1560,7 +1738,7 @@ impl TryFrom<&Table> for NdArray<f64> {
         }
 
         let name = if table.name.is_empty() { None } else { Some(table.name.clone()) };
-        Ok(NdArray { data: Buffer::from_vec64(buf), dims, name })
+        Ok(NdArray { data: Arc::new(Buffer::from_vec64(buf)), dims, name })
     }
 }
 
@@ -1614,6 +1792,92 @@ mod tests {
     use super::*;
     use crate::StringArray;
     use crate::structs::bitmask::Bitmask;
+
+    // *** Row selection and apply *************************************
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn row_selection_contiguous() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let v = a.r(1..3);
+        assert_eq!(v.shape(), &[2, 2]);
+        assert_eq!(v.get(&[0, 0]), 2.0);
+        assert_eq!(v.get(&[1, 1]), 6.0);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn row_selection_gathers_indices() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let v = a.r(&[2, 0]);
+        assert_eq!(v.shape(), &[2, 2]);
+        // Gathered rows follow selection order.
+        assert_eq!(v.get(&[0, 0]), 3.0);
+        assert_eq!(v.get(&[0, 1]), 6.0);
+        assert_eq!(v.get(&[1, 0]), 1.0);
+        assert_eq!(v.get(&[1, 1]), 4.0);
+    }
+
+    #[test]
+    fn apply_maps_elements() {
+        let mut a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        a.set_name("m");
+        let b = a.apply(|x| x * 10.0);
+        assert_eq!(b.get(&[1, 1]), 40.0);
+        assert_eq!(b.name.as_deref(), Some("m"));
+        // The source is untouched.
+        assert_eq!(a.get(&[1, 1]), 4.0);
+    }
+
+    #[test]
+    fn apply_mut_in_place() {
+        let mut a = NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]);
+        a.apply_mut(|x| x + 0.5);
+        assert_eq!((&a).into_iter().collect::<Vec<f64>>(), vec![1.5, 2.5, 3.5]);
+    }
+
+    #[cfg(feature = "matrix")]
+    #[test]
+    fn apply_mut_non_contiguous_touches_logical_only() {
+        // A Matrix-imported array carries stride padding. The logical walk
+        // mutates only real elements.
+        let mat = Matrix::from_f64_unaligned(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2, None);
+        let mut a = NdArray::from(mat);
+        assert!(!a.is_contiguous());
+        a.apply_mut(|x| x * 2.0);
+        assert_eq!(a.get(&[0, 0]), 2.0);
+        assert_eq!(a.get(&[2, 1]), 12.0);
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn apply_axis_collapses_axis() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        // Sum each column lane (axis 0) - output shape [2].
+        let col_sums = a.apply_axis(0, |lane| (&lane).into_iter().sum());
+        assert_eq!(col_sums.shape(), &[2]);
+        assert_eq!(col_sums.get(&[0]), 6.0);
+        assert_eq!(col_sums.get(&[1]), 15.0);
+        // Sum each row lane (axis 1) - output shape [3].
+        let row_sums = a.apply_axis(1, |lane| (&lane).into_iter().sum());
+        assert_eq!(row_sums.shape(), &[3]);
+        assert_eq!(row_sums.get(&[0]), 5.0);
+        assert_eq!(row_sums.get(&[2]), 9.0);
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn apply_axis_3d() {
+        let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
+        let a = NdArray::from_slice(&data, &[2, 3, 4]);
+        let maxes = a.apply_axis(1, |lane| {
+            (&lane).into_iter().fold(f64::MIN, f64::max)
+        });
+        assert_eq!(maxes.shape(), &[2, 4]);
+        // Lane over axis 1 at [0, .., 0] holds values at [0,j,0].
+        assert_eq!(maxes.get(&[0, 0]), a.get(&[0, 2, 0]));
+        assert_eq!(maxes.get(&[1, 3]), a.get(&[1, 2, 3]));
+    }
 
     // ****************************************************************
     // Construction
@@ -1935,7 +2199,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn obs_access() {
-        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         let v = a.as_view();
         let obs0: Vec<f64> = (&v.obs(0)).into_iter().collect();
         let obs1: Vec<f64> = (&v.obs(1)).into_iter().collect();
@@ -1944,11 +2208,11 @@ mod tests {
         assert_eq!(obs1, vec![2.0, 5.0]);
         assert_eq!(obs2, vec![3.0, 6.0]);
 
-        // Single-shot .obs() on Arc<NdArray> also works
+        // Single-shot .obs() on NdArray also works
         assert_eq!((&a.obs(1)).into_iter().collect::<Vec<f64>>(), vec![2.0, 5.0]);
 
         // 3D obs returns a 2D view
-        let b = Arc::new(NdArray::from_slice(&(1..=24).map(|x| x as f64).collect::<Vec<_>>(), &[2, 3, 4]));
+        let b = NdArray::from_slice(&(1..=24).map(|x| x as f64).collect::<Vec<_>>(), &[2, 3, 4]);
         let obs0_3d = b.obs(0);
         assert_eq!(obs0_3d.shape(), &[3, 4]);
     }
@@ -2522,7 +2786,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_1d_single_index() {
-        let a = Arc::new(NdArray::from_slice(&[10.0, 20.0, 30.0], &[3]));
+        let a = NdArray::from_slice(&[10.0, 20.0, 30.0], &[3]);
         let v = a.slice(1);
         assert_eq!(v.shape(), &[1]);
         assert_eq!(v[(0,)], 20.0);
@@ -2531,7 +2795,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_1d_range() {
-        let a = Arc::new(NdArray::from_slice(&[10.0, 20.0, 30.0, 40.0], &[4]));
+        let a = NdArray::from_slice(&[10.0, 20.0, 30.0, 40.0], &[4]);
         let v = a.slice(1..3);
         assert_eq!(v.shape(), &[2]);
         assert_eq!(v[(0,)], 20.0);
@@ -2541,7 +2805,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_2d_row_range_single_col() {
-        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         // Rows 0..2 of column 1
         let v = a.slice((0..2, 1));
         assert_eq!(v.shape(), &[2]);
@@ -2552,7 +2816,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_2d_single_row_col_range() {
-        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         // Row 1, columns 0..2 - collapses row axis
         let v = a.slice((1, 0..2));
         assert_eq!(v.shape(), &[2]);
@@ -2564,7 +2828,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_2d_both_ranges() {
-        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         // Rows 0..2, columns 0..2 - sub-matrix
         let v = a.slice((0..2, 0..2));
         assert_eq!(v.shape(), &[2, 2]);
@@ -2577,7 +2841,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_2d_both_indices_scalar() {
-        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         // Single element as 1D view
         let v = a.slice((2, 1));
         assert_eq!(v.shape(), &[1]);
@@ -2589,7 +2853,7 @@ mod tests {
     fn slice_3d_mixed() {
         // 2x3x4 array
         let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
-        let a = Arc::new(NdArray::from_slice(&data, &[2, 3, 4]));
+        let a = NdArray::from_slice(&data, &[2, 3, 4]);
         // All rows, column 1, slices 0..2
         let v = a.slice((0..2, 1, 0..2));
         assert_eq!(v.shape(), &[2, 2]);
@@ -2604,7 +2868,7 @@ mod tests {
     #[test]
     fn slice_with_nd_macro() {
         let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
-        let a = Arc::new(NdArray::from_slice(&data, &[2, 3, 4]));
+        let a = NdArray::from_slice(&data, &[2, 3, 4]);
         let v = a.slice(nd![0..2, 0..3, 0..4]);
         assert_eq!(v.shape(), &[2, 3, 4]);
         assert_eq!(v.len(), 24);
@@ -2613,7 +2877,7 @@ mod tests {
     #[cfg(feature = "views")]
     #[test]
     fn slice_preserves_data_through_iteration() {
-        let a = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]));
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         let v = a.slice((1..3, 0..2));
         // Sub-matrix: rows 1..3, cols 0..2
         let vals: Vec<f64> = (&v).into_iter().collect();
@@ -2625,7 +2889,7 @@ mod tests {
     fn slice_column_window() {
         // Slice rows 2..5 from column 1 of a [10, 2] array
         let data: Vec<f64> = (1..=20).map(|x| x as f64).collect();
-        let a = Arc::new(NdArray::from_slice(&data, &[10, 2]));
+        let a = NdArray::from_slice(&data, &[10, 2]);
         let v = a.slice((2..5, 1));
         assert_eq!(v.shape(), &[3]);
         assert_eq!(v[(0,)], 13.0);

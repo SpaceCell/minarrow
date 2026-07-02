@@ -22,8 +22,6 @@
 //! boundaries. Every other storage pairing materialises to owned arrays
 //! first, since view and chunked layouts cannot combine in place.
 
-use std::sync::Arc;
-
 use crate::enums::error::MinarrowError;
 use crate::enums::operators::ArithmeticOperator;
 use crate::kernels::broadcast::ndarray::resolve_ndarray_arithmetic;
@@ -71,9 +69,9 @@ pub(crate) fn resolve_xarray_arithmetic<T: Float>(
     let (NdArrayE::Owned(a), NdArrayE::Owned(b)) = (l.storage(), r.storage()) else {
         unreachable!("to_owned yields owned storage");
     };
-    let out = resolve_ndarray_arithmetic(op, a.as_ref(), b.as_ref())?;
+    let out = resolve_ndarray_arithmetic(op, a, b)?;
     Ok(XArray::from_storage(
-        NdArrayE::Owned(Arc::new(out)),
+        NdArrayE::Owned(out),
         lhs.axes().to_vec(),
     ))
 }
@@ -132,9 +130,9 @@ pub(crate) fn resolve_xarray_scalar_arithmetic<T: Float>(
         unreachable!("to_owned yields owned storage");
     };
     let single = NdArray::from_slice(&[scalar], &[1]);
-    let out = resolve_ndarray_arithmetic(op, a.as_ref(), &single)?;
+    let out = resolve_ndarray_arithmetic(op, a, &single)?;
     Ok(XArray::from_storage(
-        NdArrayE::Owned(Arc::new(out)),
+        NdArrayE::Owned(out),
         lhs.axes().to_vec(),
     ))
 }
@@ -151,9 +149,9 @@ pub(crate) fn resolve_scalar_xarray_arithmetic<T: Float>(
         unreachable!("to_owned yields owned storage");
     };
     let single = NdArray::from_slice(&[scalar], &[1]);
-    let out = resolve_ndarray_arithmetic(op, &single, b.as_ref())?;
+    let out = resolve_ndarray_arithmetic(op, &single, b)?;
     Ok(XArray::from_storage(
-        NdArrayE::Owned(Arc::new(out)),
+        NdArrayE::Owned(out),
         rhs.axes().to_vec(),
     ))
 }
@@ -231,6 +229,8 @@ mod tests {
     #[cfg(feature = "value_type")]
     #[test]
     fn value_pair_and_scalar() {
+        use std::sync::Arc;
+
         use crate::{Scalar, Value};
 
         let a = Value::XArray(Arc::new(XArray::new(

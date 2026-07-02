@@ -41,8 +41,12 @@ use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::chunked::super_ndarray::SuperNdArray;
 use crate::structs::ndarray::{AxisSel, NdArray};
+#[cfg(feature = "select")]
+use crate::structs::ndarray::gather_obs_impl;
 use crate::structs::views::ndarray_view::NdArrayV;
 use crate::traits::concatenate::Concatenate;
+#[cfg(feature = "select")]
+use crate::traits::selection::{DataSelector, RowSelection};
 use crate::traits::consolidate::Consolidate;
 use crate::traits::shape::Shape;
 use crate::traits::type_unions::Float;
@@ -181,6 +185,43 @@ impl<T: Float> SuperNdArrayV<T> {
         }
         panic!("get: index out of bounds (n_obs {})", self.n_obs());
     }
+
+    /// Apply a function to every logical element, materialising a new
+    /// compact [`NdArray`] with this window's shape.
+    pub fn apply(&self, f: impl Fn(T) -> T) -> NdArray<T> {
+        self.clone().consolidate().apply(f)
+    }
+}
+
+// *** Row selection: view.r(0..10) ********************************
+
+/// Axis-0 observation selection over a chunked window. Contiguous ranges
+/// narrow the window zero-copy. Index arrays gather into one owned batch
+/// wrapped in a single-slice view.
+#[cfg(feature = "select")]
+impl<T: Float> RowSelection for SuperNdArrayV<T> {
+    type View = SuperNdArrayV<T>;
+
+    fn r<S: DataSelector>(&self, selection: S) -> SuperNdArrayV<T> {
+        if self.slices.is_empty() {
+            return SuperNdArrayV::from_slices(Vec::new(), self.ndim, self.inner_shape.clone());
+        }
+        let indices = selection.resolve_indices(self.n_obs());
+        if selection.is_contiguous() {
+            let start = indices.first().copied().unwrap_or(0);
+            return self.slice(start, indices.len());
+        }
+        let gathered = gather_obs_impl(&indices, &self.shape(), None, |idx| self.get(idx));
+        SuperNdArrayV::from_slices(
+            vec![NdArrayV::from_ndarray(gathered)],
+            self.ndim,
+            self.inner_shape.clone(),
+        )
+    }
+
+    fn get_row_count(&self) -> usize {
+        self.n_obs()
+    }
 }
 
 // *** IntoIterator ************************************************
@@ -299,7 +340,8 @@ impl<T: Float> fmt::Debug for SuperNdArrayV<T> {
 }
 
 /// SuperNdArray -> SuperNdArrayV conversion. Each batch becomes a full
-/// axis-0 slice view, keeping the parent batches alive through their Arcs.
+/// axis-0 slice view, keeping the parent batches alive through each
+/// batch's shared internal buffer.
 impl<T: Float> From<SuperNdArray<T>> for SuperNdArrayV<T> {
     fn from(super_nd: SuperNdArray<T>) -> Self {
         let ndim = super_nd.ndim();
@@ -408,6 +450,31 @@ mod tests {
             "one",
         ));
         assert_eq!(whole, single);
+    }
+
+    #[cfg(feature = "select")]
+    #[test]
+    fn row_selection_on_window() {
+        let snd = two_batch_2d();
+        let v = snd.slice(0, 5);
+        // Contiguous sub-selection narrows zero-copy.
+        let sub = v.r(1..4);
+        assert_eq!(sub.n_obs(), 3);
+        assert_eq!(sub.get(&[0, 0]), 2.0);
+        // Index selection gathers in order.
+        let picked = v.r(&[4, 0]);
+        assert_eq!(picked.n_slices(), 1);
+        assert_eq!(picked.get(&[0, 1]), 50.0);
+        assert_eq!(picked.get(&[1, 0]), 1.0);
+    }
+
+    #[test]
+    fn apply_materialises_window() {
+        let snd = two_batch_2d();
+        let out = snd.slice(1, 3).apply(|x| x * 2.0);
+        assert_eq!(out.shape(), &[3, 2]);
+        assert_eq!(out.get(&[0, 0]), 4.0);
+        assert_eq!(out.get(&[2, 1]), 80.0);
     }
 
     #[test]

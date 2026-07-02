@@ -23,7 +23,6 @@
 //!   recommendation for aligned data pointers
 
 use std::ffi::c_void;
-use std::sync::Arc;
 
 use crate::structs::buffer::Buffer;
 use crate::structs::ndarray::NdArray;
@@ -111,7 +110,7 @@ unsafe impl Sync for DLManagedTensor {}
 /// Keeps the NdArray and the i64 shape/strides arrays alive for the
 /// lifetime of the exported DLManagedTensor.
 struct DLPackHolder<T> {
-    _ndarray: Arc<NdArray<T>>,
+    _ndarray: NdArray<T>,
     shape_i64: Vec<i64>,
     strides_i64: Vec<i64>,
 }
@@ -119,12 +118,12 @@ struct DLPackHolder<T> {
 /// Export an NdArray as a DLPack managed tensor for zero-copy sharing.
 ///
 /// Returns an `DLPackTensor` that manages the lifecycle. The NdArray's
-/// buffer stays alive via Arc reference counting. When the owned tensor is
-/// dropped, the backing data is released.
+/// buffer stays alive through its internal shared reference count. When
+/// the owned tensor is dropped, the backing data is released.
 ///
 /// For FFI handoff (e.g. creating a PyCapsule), call `.into_raw()` to
 /// transfer ownership to the consumer.
-pub fn export_to_dlpack<T: Float>(ndarray: Arc<NdArray<T>>) -> DLPackTensor {
+pub fn export_to_dlpack<T: Float>(ndarray: NdArray<T>) -> DLPackTensor {
     let ndim = ndarray.ndim();
     let shape = ndarray.shape();
     let strides = ndarray.strides();
@@ -162,7 +161,7 @@ pub fn export_to_dlpack<T: Float>(ndarray: Arc<NdArray<T>>) -> DLPackTensor {
 }
 
 /// Release callback invoked by the foreign consumer when it is done
-/// with the tensor. Drops the holder which releases the Arc<NdArray>.
+/// with the tensor. Drops the holder which releases the NdArray.
 ///
 /// # Safety
 /// Must only be called once per DLManagedTensor.
@@ -173,7 +172,7 @@ unsafe extern "C" fn dlpack_deleter<T>(managed: *mut DLManagedTensor) {
         let _holder: Box<DLPackHolder<T>> = unsafe {
             Box::from_raw(managed.manager_ctx as *mut DLPackHolder<T>)
         };
-        // holder drops here, releasing the Arc<NdArray>
+        // holder drops here, releasing the NdArray
     }
 }
 
@@ -375,8 +374,8 @@ mod tests {
 
     #[test]
     fn export_roundtrip_1d() {
-        let arr = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]));
-        let owned = export_to_dlpack(arr.clone());
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]);
+        let owned = export_to_dlpack(arr);
         let tensor = owned.tensor();
 
         assert_eq!(tensor.ndim, 1);
@@ -399,10 +398,10 @@ mod tests {
 
     #[test]
     fn export_2d_column_major_strides() {
-        let arr = Arc::new(NdArray::from_slice(
+        let arr = NdArray::from_slice(
             &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]
-        ));
-        let owned = export_to_dlpack(arr.clone());
+        );
+        let owned = export_to_dlpack(arr);
         let tensor = owned.tensor();
 
         assert_eq!(tensor.ndim, 2);
@@ -425,7 +424,7 @@ mod tests {
     #[test]
     fn export_preserves_data_lifetime() {
         let owned = {
-            let arr = Arc::new(NdArray::from_slice(&[42.0, 99.0], &[2]));
+            let arr = NdArray::from_slice(&[42.0, 99.0], &[2]);
             export_to_dlpack(arr)
         };
         let data = owned.tensor().data as *const f64;
@@ -435,10 +434,10 @@ mod tests {
 
     #[test]
     fn import_from_exported() {
-        let original = Arc::new(NdArray::from_slice(
+        let original = NdArray::from_slice(
             &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]
-        ));
-        let owned = export_to_dlpack(original.clone());
+        );
+        let owned = export_to_dlpack(original);
         let raw = owned.into_raw();
 
         let imported = unsafe { import_from_dlpack::<f64>(raw) }.unwrap();
@@ -458,7 +457,7 @@ mod tests {
     #[test]
     fn export_3d_strides() {
         let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
-        let arr = Arc::new(NdArray::from_slice(&data, &[2, 3, 4]));
+        let arr = NdArray::from_slice(&data, &[2, 3, 4]);
         let owned = export_to_dlpack(arr);
         let tensor = owned.tensor();
 
@@ -485,10 +484,10 @@ mod tests {
 
     #[test]
     fn export_roundtrip_f32() {
-        let original = Arc::new(NdArray::<f32>::from_slice(
+        let original = NdArray::<f32>::from_slice(
             &[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]
-        ));
-        let owned = export_to_dlpack(original.clone());
+        );
+        let owned = export_to_dlpack(original);
         let raw = owned.into_raw();
 
         let imported = unsafe { import_from_dlpack::<f32>(raw) }.unwrap();
@@ -501,7 +500,7 @@ mod tests {
 
     #[test]
     fn export_f32_dtype_bits() {
-        let arr = Arc::new(NdArray::<f32>::from_slice(&[1.0f32, 2.0, 3.0], &[3]));
+        let arr = NdArray::<f32>::from_slice(&[1.0f32, 2.0, 3.0], &[3]);
         let owned = export_to_dlpack(arr);
         let tensor = owned.tensor();
         assert_eq!(tensor.dtype.code, 2);
@@ -511,13 +510,13 @@ mod tests {
     #[test]
     fn import_dtype_mismatch_fails() {
         // Export f64, then import as f32 - the bit width mismatch rejects.
-        let f64_arr = Arc::new(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]));
+        let f64_arr = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
         let raw = export_to_dlpack(f64_arr).into_raw();
         let result = unsafe { import_from_dlpack::<f32>(raw) };
         assert!(result.is_err());
 
         // Export f32, then import as f64 - likewise rejected.
-        let f32_arr = Arc::new(NdArray::<f32>::from_slice(&[1.0f32, 2.0, 3.0, 4.0], &[2, 2]));
+        let f32_arr = NdArray::<f32>::from_slice(&[1.0f32, 2.0, 3.0, 4.0], &[2, 2]);
         let raw = export_to_dlpack(f32_arr).into_raw();
         let result = unsafe { import_from_dlpack::<f64>(raw) };
         assert!(result.is_err());

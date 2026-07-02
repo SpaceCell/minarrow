@@ -18,8 +18,6 @@
 
 use std::fmt;
 
-use std::sync::Arc;
-
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::chunked::super_array::RechunkStrategy;
@@ -31,6 +29,10 @@ use crate::traits::type_unions::Float;
 use crate::structs::ndarray::NdArrayIter;
 #[cfg(feature = "views")]
 use crate::structs::ndarray::AxisSel;
+#[cfg(all(feature = "views", feature = "select"))]
+use crate::structs::ndarray::gather_obs_impl;
+#[cfg(all(feature = "views", feature = "select"))]
+use crate::traits::selection::{DataSelector, RowSelection};
 #[cfg(feature = "views")]
 use crate::structs::views::chunked::super_ndarray_view::SuperNdArrayV;
 #[cfg(feature = "views")]
@@ -47,7 +49,7 @@ use rayon::prelude::*;
 /// is resolved internally.
 #[derive(Clone)]
 pub struct SuperNdArray<T> {
-    pub batches: Vec<Arc<NdArray<T>>>,
+    pub batches: Vec<NdArray<T>>,
     ndim: usize,
     inner_shape: Vec<usize>,
     pub name: String,
@@ -81,7 +83,6 @@ impl<T: Float> SuperNdArray<T> {
                 "SuperNdArray: chunk {} inner shape mismatch", i
             );
         }
-        let batches = batches.into_iter().map(Arc::new).collect();
         SuperNdArray { batches, ndim, inner_shape, name: name.into() }
     }
 
@@ -101,7 +102,7 @@ impl<T: Float> SuperNdArray<T> {
                 &chunk.shape()[1..], self.inner_shape
             );
         }
-        self.batches.push(Arc::new(chunk));
+        self.batches.push(chunk);
     }
 
     // ****************************************************************
@@ -137,7 +138,7 @@ impl<T: Float> SuperNdArray<T> {
 
     /// Get chunk by index.
     #[inline]
-    pub fn chunk(&self, idx: usize) -> Option<&Arc<NdArray<T>>> { self.batches.get(idx) }
+    pub fn chunk(&self, idx: usize) -> Option<&NdArray<T>> { self.batches.get(idx) }
 
     /// Logical shape as if consolidated. Returns a temporary vec, not a
     /// slice reference, since the full shape doesn't exist as a contiguous
@@ -256,7 +257,7 @@ impl<T: Float> SuperNdArray<T> {
         let (chunk_idx, local_row) = self.resolve(indices[0]);
         let mut local = indices.to_vec();
         local[0] = local_row;
-        Arc::make_mut(&mut self.batches[chunk_idx]).set(&local, value);
+        self.batches[chunk_idx].set(&local, value);
     }
 
     /// Resolve a global axis-0 index to (batch_index, local_index).
@@ -287,20 +288,20 @@ impl<T: Float> SuperNdArray<T> {
 
     /// Iterate over batches.
     #[inline]
-    pub fn iter_batches(&self) -> std::slice::Iter<'_, Arc<NdArray<T>>> {
+    pub fn iter_batches(&self) -> std::slice::Iter<'_, NdArray<T>> {
         self.batches.iter()
     }
 
     /// Mutable iteration over batches.
     #[inline]
-    pub fn iter_batches_mut(&mut self) -> std::slice::IterMut<'_, Arc<NdArray<T>>> {
+    pub fn iter_batches_mut(&mut self) -> std::slice::IterMut<'_, NdArray<T>> {
         self.batches.iter_mut()
     }
 
     /// Parallel iteration over batches.
     #[cfg(feature = "parallel_proc")]
     #[inline]
-    pub fn par_iter_batches(&self) -> rayon::slice::Iter<'_, Arc<NdArray<T>>> {
+    pub fn par_iter_batches(&self) -> rayon::slice::Iter<'_, NdArray<T>> {
         self.batches.par_iter()
     }
 
@@ -312,6 +313,57 @@ impl<T: Float> SuperNdArray<T> {
         use rayon::prelude::*;
         let n_obs = self.n_obs();
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
+    }
+
+    // ****************************************************************
+    // Apply
+    // ****************************************************************
+
+    /// Apply a function to every logical element, returning a new chunked
+    /// array with the same batch boundaries and name. The closure brings
+    /// the computation, so any kernel under `kernels` runs through this
+    /// entry point.
+    pub fn apply(&self, f: impl Fn(T) -> T) -> SuperNdArray<T> {
+        let batches: Vec<NdArray<T>> = self.batches.iter().map(|b| b.apply(&f)).collect();
+        SuperNdArray::from_batches(batches, self.name.clone())
+    }
+
+    /// Apply a function to every logical element in place, with no
+    /// allocation. Copy-on-write triggers per batch when views share a
+    /// batch's buffer.
+    pub fn apply_mut(&mut self, f: impl Fn(T) -> T) {
+        for batch in &mut self.batches {
+            batch.apply_mut(&f);
+        }
+    }
+
+    /// Apply a transformation to each batch, producing a new chunked array.
+    ///
+    /// The closure receives each batch and returns a transformed batch,
+    /// mirroring `Table::apply_cols` with the batch as the unit of work.
+    /// Returned batches must share rank and trailing shape.
+    pub fn apply_batches<E>(
+        &self,
+        mut f: impl FnMut(&NdArray<T>) -> Result<NdArray<T>, E>,
+    ) -> Result<SuperNdArray<T>, E> {
+        let batches = self
+            .batches
+            .iter()
+            .map(|b| f(b))
+            .collect::<Result<Vec<_>, E>>()?;
+        Ok(SuperNdArray::from_batches(batches, self.name.clone()))
+    }
+
+    /// Apply an in-place transformation to each batch, with no allocation
+    /// beyond what the closure itself performs.
+    pub fn apply_batches_mut<E>(
+        &mut self,
+        mut f: impl FnMut(&mut NdArray<T>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for batch in &mut self.batches {
+            f(batch)?;
+        }
+        Ok(())
     }
 
     // ****************************************************************
@@ -375,7 +427,7 @@ impl<T: Float> SuperNdArray<T> {
 
             if ndim <= 1 {
                 let chunk = NdArray::from_slice(&buf[row_offset..row_offset + n], &chunk_shape);
-                new_batches.push(Arc::new(chunk));
+                new_batches.push(chunk);
             } else {
                 let mut chunk = NdArray::new(&chunk_shape);
                 let dst_stride = chunk.strides()[1];
@@ -387,13 +439,50 @@ impl<T: Float> SuperNdArray<T> {
                     dst[dst_start..dst_start + n]
                         .copy_from_slice(&buf[src_start..src_start + n]);
                 }
-                new_batches.push(Arc::new(chunk));
+                new_batches.push(chunk);
             }
             row_offset += n;
         }
 
         *self = SuperNdArray { ndim, inner_shape, batches: new_batches, name };
         Ok(())
+    }
+}
+
+// *** Row selection: snd.r(0..10) *********************************
+
+/// Axis-0 observation selection across batch boundaries. Contiguous
+/// ranges return a zero-copy [`SuperNdArrayV`] window. Index arrays
+/// gather the selected observations into one owned batch wrapped in a
+/// single-slice view.
+#[cfg(all(feature = "views", feature = "select"))]
+impl<T: Float> RowSelection for SuperNdArray<T> {
+    type View = SuperNdArrayV<T>;
+
+    fn r<S: DataSelector>(&self, selection: S) -> SuperNdArrayV<T> {
+        if self.batches.is_empty() {
+            return SuperNdArrayV::from_slices(Vec::new(), self.ndim, self.inner_shape.clone());
+        }
+        let indices = selection.resolve_indices(self.n_obs());
+        if selection.is_contiguous() {
+            let start = indices.first().copied().unwrap_or(0);
+            return self.slice(start, indices.len());
+        }
+        let gathered = gather_obs_impl(
+            &indices,
+            &self.shape(),
+            Some(self.name.clone()),
+            |idx| self.get(idx),
+        );
+        SuperNdArrayV::from_slices(
+            vec![NdArrayV::from_ndarray(gathered)],
+            self.ndim,
+            self.inner_shape.clone(),
+        )
+    }
+
+    fn get_row_count(&self) -> usize {
+        self.n_obs()
     }
 }
 
@@ -418,7 +507,7 @@ impl<'a, T: Float> IntoIterator for &'a SuperNdArray<T> {
 
 /// Iterator that chains across chunk boundaries transparently.
 pub struct SuperNdArrayIter<'a, T> {
-    batches: &'a [Arc<NdArray<T>>],
+    batches: &'a [NdArray<T>],
     chunk_idx: usize,
     inner: Option<NdArrayIter<'a, T>>,
 }
@@ -437,7 +526,7 @@ impl<'a, T: Float> Iterator for SuperNdArrayIter<'a, T> {
             if self.chunk_idx >= self.batches.len() {
                 return None;
             }
-            self.inner = Some(self.batches[self.chunk_idx].as_ref().into_iter());
+            self.inner = Some((&self.batches[self.chunk_idx]).into_iter());
             self.chunk_idx += 1;
         }
     }
@@ -467,8 +556,7 @@ impl<T: Float> Consolidate for SuperNdArray<T> {
             return NdArray::new(&[0]);
         }
         if self.batches.len() == 1 {
-            let arc = self.batches.into_iter().next().unwrap();
-            return Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone());
+            return self.batches.into_iter().next().unwrap();
         }
 
         let total_axis0: usize = self.batches.iter().map(|c| c.shape()[0]).sum();
@@ -609,6 +697,121 @@ impl<T: Float> fmt::Debug for SuperNdArray<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // *** Row selection and apply *************************************
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn row_selection_contiguous_crosses_batches() {
+        let snd = SuperNdArray::from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0, 10.0, 20.0], &[2, 2]),
+                NdArray::from_slice(&[3.0, 4.0, 5.0, 30.0, 40.0, 50.0], &[3, 2]),
+            ],
+            "data",
+        );
+        let v = snd.r(1..4);
+        assert_eq!(v.n_slices(), 2);
+        assert_eq!(v.n_obs(), 3);
+        assert_eq!(v.get(&[0, 0]), 2.0);
+        assert_eq!(v.get(&[2, 1]), 40.0);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn row_selection_gathers_across_batches() {
+        let snd = SuperNdArray::from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0], &[2]),
+                NdArray::from_slice(&[3.0, 4.0], &[2]),
+            ],
+            "data",
+        );
+        let v = snd.r(&[3, 0]);
+        assert_eq!(v.n_slices(), 1);
+        let vals: Vec<f64> = (&v).into_iter().collect();
+        assert_eq!(vals, vec![4.0, 1.0]);
+    }
+
+    #[test]
+    fn apply_preserves_chunking() {
+        let snd = SuperNdArray::from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0], &[2]),
+                NdArray::from_slice(&[3.0], &[1]),
+            ],
+            "stream",
+        );
+        let out = snd.apply(|x| x * 10.0);
+        assert_eq!(out.n_batches(), 2);
+        assert_eq!(out.name, "stream");
+        let vals: Vec<f64> = (&out).into_iter().collect();
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn apply_mut_in_place() {
+        let mut snd = SuperNdArray::from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0], &[2]),
+                NdArray::from_slice(&[3.0], &[1]),
+            ],
+            "stream",
+        );
+        snd.apply_mut(|x| x + 1.0);
+        assert_eq!(snd.n_batches(), 2);
+        let vals: Vec<f64> = (&snd).into_iter().collect();
+        assert_eq!(vals, vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn apply_batches_transforms_each_batch() {
+        let snd = SuperNdArray::from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0], &[2]),
+                NdArray::from_slice(&[3.0], &[1]),
+            ],
+            "stream",
+        );
+        let out = snd
+            .apply_batches(|b| Ok::<_, MinarrowError>(b.apply(|x| x - 1.0)))
+            .unwrap();
+        assert_eq!(out.n_batches(), 2);
+        let vals: Vec<f64> = (&out).into_iter().collect();
+        assert_eq!(vals, vec![0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn apply_batches_propagates_errors() {
+        let snd = SuperNdArray::from_batches(
+            vec![NdArray::from_slice(&[1.0], &[1])],
+            "stream",
+        );
+        let result = snd.apply_batches(|_| {
+            Err::<NdArray<f64>, MinarrowError>(MinarrowError::KernelError(Some(
+                "boom".to_string(),
+            )))
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_batches_mut_in_place() {
+        let mut snd = SuperNdArray::from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0], &[2]),
+                NdArray::from_slice(&[3.0], &[1]),
+            ],
+            "stream",
+        );
+        snd.apply_batches_mut(|b| {
+            b.apply_mut(|x| x * 3.0);
+            Ok::<_, MinarrowError>(())
+        })
+        .unwrap();
+        let vals: Vec<f64> = (&snd).into_iter().collect();
+        assert_eq!(vals, vec![3.0, 6.0, 9.0]);
+    }
 
     #[test]
     fn empty() {
