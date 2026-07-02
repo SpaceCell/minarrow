@@ -1094,6 +1094,20 @@ impl Array {
         (self, offset, len)
     }
 
+    /// Gather the elements at the given indices into a new materialised Array.
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub fn gather_indices(&self, indices: &[usize]) -> Array {
+        self.view(0, self.len()).gather_indices(indices)
+    }
+
+    /// Gather the elements at set mask bits into a new materialised Array.
+    ///
+    /// The mask must match the array length.
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub fn gather_mask(&self, mask: &Bitmask) -> Array {
+        self.view(0, self.len()).gather_mask(mask)
+    }
+
     /// Returns a reference to the inner array as type `Arc<T>`.
     ///
     /// This is compile-time safe if `T` matches the actual payload, but will panic otherwise.

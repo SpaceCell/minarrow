@@ -51,7 +51,7 @@ use crate::traits::print::MAX_PREVIEW;
 #[cfg(feature = "select")]
 use crate::traits::selection::{DataSelector, RowSelection};
 use crate::traits::shape::Shape;
-use crate::{Array, BitmaskV, FieldArray, MaskedArray, TextArray};
+use crate::{Array, Bitmask, BitmaskV, FieldArray, MaskedArray, TextArray};
 
 /// # ArrayView
 ///
@@ -657,6 +657,283 @@ impl ArrayV {
         }
     }
 
+    /// Gather the elements at set mask bits from this view into a new materialised Array.
+    ///
+    /// The mask is relative to this view's window and must match its length. A set
+    /// bit keeps the element at that position, so the selection stays bit-packed
+    /// end to end with no index-list materialisation. The walk is word-based -
+    /// zero words skip 64 elements at a time and fully-set words copy their whole
+    /// run with one slice copy. Null mask bits carry through to gathered positions.
+    #[cfg(feature = "select")]
+    pub fn gather_mask(&self, mask: &Bitmask) -> Array {
+        use crate::{
+            BooleanArray, CategoricalArray, FloatArray, IntegerArray, NumericArray, StringArray,
+            Vec64,
+        };
+        #[cfg(feature = "datetime")]
+        use crate::{DatetimeArray, TemporalArray};
+
+        let len = self.len();
+        assert_eq!(
+            mask.len(),
+            len,
+            "ArrayV::gather_mask: mask length {} does not match view length {}",
+            mask.len(),
+            len
+        );
+        let kept = mask.count_ones();
+
+        // Walks the selection mask one u64 word at a time. Zero words skip their
+        // 64 positions, fully-set words run the `$run` block once for the whole
+        // span, and partial words run the `$bit` block per set bit.
+        macro_rules! walk_mask {
+            ($mask:expr, $len:expr, |$base:ident, $n:ident| $run:block, |$idx:ident| $bit:block) => {{
+                let bytes: &[u8] = $mask.bits.as_slice();
+                let n_words = bytes.len().div_ceil(8);
+                for w in 0..n_words {
+                    let start = w * 8;
+                    let end = (start + 8).min(bytes.len());
+                    let mut buf = [0u8; 8];
+                    buf[..end - start].copy_from_slice(&bytes[start..end]);
+                    let word = u64::from_le_bytes(buf);
+                    if word == 0 {
+                        continue;
+                    }
+                    let $base = w * 64;
+                    let $n = ($len - $base).min(64);
+                    if word == u64::MAX && $n == 64 {
+                        $run
+                    } else {
+                        let mut bits = word;
+                        while bits != 0 {
+                            let $idx = $base + bits.trailing_zeros() as usize;
+                            if $idx >= $len {
+                                break;
+                            }
+                            $bit
+                            bits &= bits - 1;
+                        }
+                    }
+                }
+            }};
+        }
+
+        // Gathers a primitive-typed window into (Vec64<T>, Option<Bitmask>) with
+        // run copies for fully-set words and null bits appended per kept span.
+        macro_rules! gather_mask_prim {
+            ($self_:expr, $arr:expr, $mask:expr, $kept:expr, $T:ty) => {{
+                let offset = $self_.offset;
+                let view_len = $self_.len();
+                let data = &$arr.data.as_slice()[offset..offset + view_len];
+                let src_mask = $arr.null_mask.as_ref();
+                let mut out = Vec64::<$T>::with_capacity($kept);
+                // Starts at length zero - appends from the walk set the final
+                // length. `with_capacity` would set `len` to the bit count.
+                let mut out_mask = src_mask.map(|_| Bitmask::new_set_all(0, false));
+                walk_mask!(
+                    $mask,
+                    view_len,
+                    |base, n| {
+                        out.extend_from_slice(&data[base..base + n]);
+                        if let (Some(om), Some(sm)) = (out_mask.as_mut(), src_mask) {
+                            om.extend_from_bitmask_range(sm, offset + base, n);
+                        }
+                    },
+                    |idx| {
+                        out.push(data[idx]);
+                        if let (Some(om), Some(sm)) = (out_mask.as_mut(), src_mask) {
+                            om.extend_from_bitmask_range(sm, offset + idx, 1);
+                        }
+                    }
+                );
+                (out, out_mask)
+            }};
+        }
+
+        // Gathers a string-family window through `get_str`, recording null
+        // positions to restore after construction. Zero words still skip.
+        macro_rules! gather_mask_str {
+            ($self_:expr, $mask:expr, $len:expr, $kept:expr, $ArrTy:ty, $from:path) => {{
+                let mut values: Vec<&str> = Vec::with_capacity($kept);
+                let mut null_at: Vec<usize> = Vec::new();
+                walk_mask!(
+                    $mask,
+                    $len,
+                    |base, n| {
+                        for j in base..base + n {
+                            match $self_.get_str(j) {
+                                Some(v) => values.push(v),
+                                None => {
+                                    null_at.push(values.len());
+                                    values.push("");
+                                }
+                            }
+                        }
+                    },
+                    |idx| {
+                        match $self_.get_str(idx) {
+                            Some(v) => values.push(v),
+                            None => {
+                                null_at.push(values.len());
+                                values.push("");
+                            }
+                        }
+                    }
+                );
+                let mut new_arr = <$ArrTy>::from_vec(values, None);
+                for &i in &null_at {
+                    new_arr.set_null(i);
+                }
+                $from(new_arr)
+            }};
+        }
+
+        match &self.array {
+            Array::Null => Array::Null,
+            Array::NumericArray(num_arr) => match num_arr {
+                NumericArray::Int32(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, i32);
+                    Array::from_int32(IntegerArray::new(d, m))
+                }
+                NumericArray::Int64(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, i64);
+                    Array::from_int64(IntegerArray::new(d, m))
+                }
+                NumericArray::Float32(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, f32);
+                    Array::from_float32(FloatArray::new(d, m))
+                }
+                NumericArray::Float64(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, f64);
+                    Array::from_float64(FloatArray::new(d, m))
+                }
+                NumericArray::UInt32(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, u32);
+                    Array::from_uint32(IntegerArray::new(d, m))
+                }
+                NumericArray::UInt64(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, u64);
+                    Array::from_uint64(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, i8);
+                    Array::from_int8(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, i16);
+                    Array::from_int16(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, u8);
+                    Array::from_uint8(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, u16);
+                    Array::from_uint16(IntegerArray::new(d, m))
+                }
+                NumericArray::Null => Array::Null,
+            },
+            Array::TextArray(text_arr) => match text_arr {
+                TextArray::String32(_) => {
+                    gather_mask_str!(self, mask, len, kept, StringArray<u32>, Array::from_string32)
+                }
+                #[cfg(feature = "large_string")]
+                TextArray::String64(_) => {
+                    gather_mask_str!(self, mask, len, kept, StringArray<u64>, Array::from_string64)
+                }
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
+                TextArray::Categorical32(_) => {
+                    gather_mask_str!(
+                        self,
+                        mask,
+                        len,
+                        kept,
+                        CategoricalArray<u32>,
+                        Array::from_categorical32
+                    )
+                }
+                #[cfg(feature = "default_categorical_8")]
+                TextArray::Categorical8(_) => {
+                    gather_mask_str!(
+                        self,
+                        mask,
+                        len,
+                        kept,
+                        CategoricalArray<u8>,
+                        Array::from_categorical8
+                    )
+                }
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical16(_) => {
+                    gather_mask_str!(
+                        self,
+                        mask,
+                        len,
+                        kept,
+                        CategoricalArray<u16>,
+                        Array::from_categorical16
+                    )
+                }
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical64(_) => {
+                    gather_mask_str!(
+                        self,
+                        mask,
+                        len,
+                        kept,
+                        CategoricalArray<u64>,
+                        Array::from_categorical64
+                    )
+                }
+                TextArray::Null => Array::Null,
+            },
+            Array::BooleanArray(arr) => {
+                let offset = self.offset;
+                let src_mask = arr.null_mask.as_ref();
+                // Both start at length zero - appends from the walk set the
+                // final length. `with_capacity` would set `len` to the bit count.
+                let mut bits = Bitmask::new_set_all(0, false);
+                let mut out_mask = src_mask.map(|_| Bitmask::new_set_all(0, false));
+                walk_mask!(
+                    mask,
+                    len,
+                    |base, n| {
+                        bits.extend_from_bitmask_range(&arr.data, offset + base, n);
+                        if let (Some(om), Some(sm)) = (out_mask.as_mut(), src_mask) {
+                            om.extend_from_bitmask_range(sm, offset + base, n);
+                        }
+                    },
+                    |idx| {
+                        bits.extend_from_bitmask_range(&arr.data, offset + idx, 1);
+                        if let (Some(om), Some(sm)) = (out_mask.as_mut(), src_mask) {
+                            om.extend_from_bitmask_range(sm, offset + idx, 1);
+                        }
+                    }
+                );
+                Array::from_bool(BooleanArray::new(bits, out_mask))
+            }
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(temp_arr) => match temp_arr {
+                TemporalArray::Datetime32(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, i32);
+                    Array::from_datetime_i32(DatetimeArray::new(d, m, Some(arr.time_unit)))
+                }
+                TemporalArray::Datetime64(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, i64);
+                    Array::from_datetime_i64(DatetimeArray::new(d, m, Some(arr.time_unit)))
+                }
+                TemporalArray::Null => Array::Null,
+            },
+        }
+    }
+
     /// Returns a pointer and metadata for raw access
     ///
     /// This is not logical length - it is total raw bytes in the buffer,
@@ -1058,5 +1335,116 @@ mod tests {
         // Should map to bits 1 and 2 of original mask
         assert!(mask_view.get(0));
         assert!(mask_view.get(1));
+    }
+
+    #[cfg(feature = "select")]
+    #[test]
+    fn test_gather_mask_multiword_i32() {
+        // 200 elements exercise a fully-set word, a zero word, a partial word
+        // and a tail word in one walk.
+        let arr = IntegerArray::<i32>::from_slice(
+            &(0..200).collect::<Vec<i32>>(),
+        );
+        let array = Array::from_int32(arr);
+        let view = ArrayV::new(array, 0, 200);
+
+        let mut mask = Bitmask::new_set_all(200, false);
+        for i in 0..64 {
+            mask.set(i, true); // word 0 fully set - run copy
+        }
+        // word 1 (64..128) stays zero - skipped
+        for i in (128..192).step_by(2) {
+            mask.set(i, true); // word 2 partial - bit walk
+        }
+        for i in 192..196 {
+            mask.set(i, true); // tail word
+        }
+
+        let result = view.gather_mask(&mask);
+        let Array::NumericArray(NumericArray::Int32(out)) = &result else {
+            panic!("Expected Int32");
+        };
+        let mut expected: Vec<i32> = (0..64).collect();
+        expected.extend((128..192).step_by(2));
+        expected.extend(192..196);
+        assert_eq!(out.data.as_slice(), expected.as_slice());
+        assert!(out.null_mask.is_none());
+    }
+
+    #[cfg(feature = "select")]
+    #[test]
+    fn test_gather_mask_carries_nulls() {
+        let mut arr = IntegerArray::<i32>::from_slice(&[10, 20, 30, 40, 50]);
+        let mut nulls = Bitmask::new_set_all(5, true);
+        nulls.set(2, false);
+        arr.null_mask = Some(nulls);
+        let view = ArrayV::new(Array::from_int32(arr), 0, 5);
+
+        let mut mask = Bitmask::new_set_all(5, false);
+        mask.set(1, true);
+        mask.set(2, true);
+        mask.set(4, true);
+
+        let result = view.gather_mask(&mask);
+        let Array::NumericArray(NumericArray::Int32(out)) = &result else {
+            panic!("Expected Int32");
+        };
+        assert_eq!(out.data.as_slice(), &[20, 30, 50]);
+        let out_nulls = out.null_mask.as_ref().expect("null mask carries");
+        assert!(out_nulls.get(0));
+        assert!(!out_nulls.get(1));
+        assert!(out_nulls.get(2));
+    }
+
+    #[cfg(feature = "select")]
+    #[test]
+    fn test_gather_mask_windowed_offset() {
+        // A view over [10, 90) checks the offset arithmetic on both the run
+        // and bit paths.
+        let arr = IntegerArray::<i32>::from_slice(
+            &(0..100).collect::<Vec<i32>>(),
+        );
+        let view = ArrayV::new(Array::from_int32(arr), 10, 80);
+
+        let mut mask = Bitmask::new_set_all(80, false);
+        for i in 0..64 {
+            mask.set(i, true); // run over window positions 0..64 = values 10..74
+        }
+        mask.set(70, true); // value 80
+
+        let result = view.gather_mask(&mask);
+        let Array::NumericArray(NumericArray::Int32(out)) = &result else {
+            panic!("Expected Int32");
+        };
+        let mut expected: Vec<i32> = (10..74).collect();
+        expected.push(80);
+        assert_eq!(out.data.as_slice(), expected.as_slice());
+    }
+
+    #[cfg(feature = "select")]
+    #[test]
+    fn test_gather_mask_string_and_empty() {
+        use crate::StringArray;
+
+        let mut arr = StringArray::<u32>::from_slice(&["a", "b", "c", "d"]);
+        arr.set_null(1);
+        let view = ArrayV::new(Array::from_string32(arr), 0, 4);
+
+        let mut mask = Bitmask::new_set_all(4, false);
+        mask.set(0, true);
+        mask.set(1, true);
+        mask.set(3, true);
+
+        let result = view.gather_mask(&mask);
+        let Array::TextArray(TextArray::String32(out)) = &result else {
+            panic!("Expected String32");
+        };
+        assert_eq!(out.get_str(0), Some("a"));
+        assert_eq!(out.get_str(1), None);
+        assert_eq!(out.get_str(2), Some("d"));
+
+        // An all-false mask yields a typed empty array.
+        let empty = view.gather_mask(&Bitmask::new_set_all(4, false));
+        assert_eq!(empty.len(), 0);
     }
 }

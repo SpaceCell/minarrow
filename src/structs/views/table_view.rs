@@ -840,6 +840,48 @@ impl TableV {
 
         Table::build(cols, indices.len(), self.name.clone())
     }
+
+    /// Gather the rows at set mask bits from this view into a materialised Table.
+    ///
+    /// The mask is relative to this view's window and must match its row count.
+    /// Every column gathers through the one bit-packed selection, so the result
+    /// stays rectangular and no index list is materialised. Columns keep their
+    /// schema when the mask keeps no rows.
+    #[cfg(feature = "select")]
+    pub fn gather_rows_mask(&self, mask: &crate::Bitmask) -> Table {
+        use crate::Array;
+
+        assert_eq!(
+            mask.len(),
+            self.n_rows(),
+            "TableV::gather_rows_mask: mask length {} does not match row count {}",
+            mask.len(),
+            self.n_rows()
+        );
+        let kept = mask.count_ones();
+
+        let active = self.active_col_indices();
+        let cols: Vec<_> = active
+            .iter()
+            .filter_map(|&col_idx| {
+                let field = self.fields.get(col_idx)?;
+                let window = self.cols.get(col_idx)?;
+                let gathered_array = window.gather_mask(mask);
+                if matches!(gathered_array, Array::Null) {
+                    return None;
+                }
+                let null_count = gathered_array.null_count();
+
+                Some(FieldArray {
+                    field: field.clone(),
+                    array: gathered_array,
+                    null_count,
+                })
+            })
+            .collect();
+
+        Table::build(cols, kept, self.name.clone())
+    }
 }
 
 impl Display for TableV {
@@ -1320,5 +1362,47 @@ mod tests {
             Arc::ptr_eq(&src_c, &out_c),
             "kept column c should share Arc under projection"
         );
+    }
+
+    #[cfg(feature = "select")]
+    #[test]
+    fn test_gather_rows_mask() {
+        use crate::{Bitmask, NumericArray, fa_str32};
+
+        // 130 rows cross a word boundary so the walk covers a run word, a
+        // partial word and the tail.
+        let ids: Vec<i32> = (0..130).collect();
+        let names: Vec<String> = (0..130).map(|i| format!("r{i}")).collect();
+        let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+
+        let mut tbl = Table::new_empty();
+        tbl.add_col(crate::fa_i32!("id", @slice ids.as_slice()));
+        tbl.add_col(fa_str32!("name", @slice name_refs.as_slice()));
+
+        let mut mask = Bitmask::new_set_all(130, false);
+        for i in (0..130).step_by(3) {
+            mask.set(i, true);
+        }
+
+        let view = TableV::from_table(tbl, 0, 130);
+        let result = view.gather_rows_mask(&mask);
+
+        let expected: Vec<i32> = (0..130).step_by(3).collect();
+        assert_eq!(result.n_rows, expected.len());
+        let Array::NumericArray(NumericArray::Int32(out_ids)) = &result.cols[0].array else {
+            panic!("Expected Int32 id column");
+        };
+        assert_eq!(out_ids.data.as_slice(), expected.as_slice());
+        let Array::TextArray(crate::TextArray::String32(out_names)) = &result.cols[1].array
+        else {
+            panic!("Expected String32 name column");
+        };
+        assert_eq!(out_names.get_str(1), Some("r3"));
+        assert_eq!(out_names.get_str(43), Some("r129"));
+
+        // An all-false mask keeps the schema at zero rows.
+        let empty = view.gather_rows_mask(&Bitmask::new_set_all(130, false));
+        assert_eq!(empty.n_rows, 0);
+        assert_eq!(empty.n_cols(), 2);
     }
 }
