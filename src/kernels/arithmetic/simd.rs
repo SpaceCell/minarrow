@@ -26,6 +26,8 @@
 //! - **Safety**: All unsafe operations are bounds-checked or guaranteed by caller invariants
 //!
 //! ## Architecture Notes
+//! - Each kernel dispatches on the `ArithmeticOperator` once and runs a dedicated
+//!   branch-free loop per operation
 //! - Building blocks for higher-level dispatch layers, or for low-level hot loops
 //! where one wants to fully avoid abstraction overhead.
 //! - Parallelisation intentionally excluded to allow flexible chunking strategies
@@ -63,44 +65,42 @@ pub fn int_dense_body_simd<T, const LANES: usize>(
         + Rem<Output = Simd<T, LANES>>,
 {
     let n = lhs.len();
-    let mut vectorisable = n / LANES * LANES;
-    let mut i = 0;
-    while i < vectorisable {
-        let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
-        let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
-        let r = match op {
-            ArithmeticOperator::Add => a + b,
-            ArithmeticOperator::Subtract => a - b,
-            ArithmeticOperator::Multiply => a * b,
-            ArithmeticOperator::Divide => a / b, // Panics if divisor is zero
-            ArithmeticOperator::Remainder => a % b, // Panics if divisor is zero
-            ArithmeticOperator::Power | ArithmeticOperator::FloorDiv => {
-                vectorisable = 0;
-                break;
+    macro_rules! run {
+        ($vec_op:tt) => {{
+            let vectorisable = n / LANES * LANES;
+            let mut i = 0;
+            while i < vectorisable {
+                let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
+                let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
+                (a $vec_op b).copy_to_slice(&mut out[i..i + LANES]);
+                i += LANES;
             }
-        };
-        r.copy_to_slice(&mut out[i..i + LANES]);
-        i += LANES;
+            // Scalar tail
+            for idx in vectorisable..n {
+                out[idx] = lhs[idx] $vec_op rhs[idx];
+            }
+        }};
     }
-
-    // Scalar tail
-    for idx in vectorisable..n {
-        out[idx] = match op {
-            ArithmeticOperator::Add => lhs[idx] + rhs[idx],
-            ArithmeticOperator::Subtract => lhs[idx] - rhs[idx],
-            ArithmeticOperator::Multiply => lhs[idx] * rhs[idx],
-            ArithmeticOperator::Divide => lhs[idx] / rhs[idx], // Panics if divisor is zero
-            ArithmeticOperator::Remainder => lhs[idx] % rhs[idx], // Panics if divisor is zero
-            ArithmeticOperator::Power => {
+    match op {
+        ArithmeticOperator::Add => run!(+),
+        ArithmeticOperator::Subtract => run!(-),
+        ArithmeticOperator::Multiply => run!(*),
+        ArithmeticOperator::Divide => run!(/),    // Panics if divisor is zero
+        ArithmeticOperator::Remainder => run!(%), // Panics if divisor is zero
+        // Power and floor division run per element on the whole input.
+        ArithmeticOperator::Power => {
+            for idx in 0..n {
                 let mut acc = T::one();
                 let exp = rhs[idx].to_u32().unwrap_or(0);
                 for _ in 0..exp {
                     acc = acc.wrapping_mul(&lhs[idx]);
                 }
-                acc
+                out[idx] = acc;
             }
-            ArithmeticOperator::FloorDiv => {
-                if rhs[idx] == T::zero() {
+        }
+        ArithmeticOperator::FloorDiv => {
+            for idx in 0..n {
+                out[idx] = if rhs[idx] == T::zero() {
                     panic!("Floor division by zero")
                 } else {
                     let d = lhs[idx] / rhs[idx];
@@ -110,9 +110,9 @@ pub fn int_dense_body_simd<T, const LANES: usize>(
                     } else {
                         d
                     }
-                }
+                };
             }
-        };
+        }
     }
 }
 
@@ -153,45 +153,75 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
     but substitutes the null mask when any div/0 issues occur. */
 
     if dense {
-        // This block replaces the int_dense_body_simd call and handles masking for div/rem
+        // This block replaces the int_dense_body_simd call and handles masking for div/rem.
         let vectorisable = n / LANES * LANES;
-        let mut i = 0;
-        while i < vectorisable {
-            let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
-            let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
-
-            let (r, valid): (Simd<T, LANES>, Mask<<T as SimdElement>::Mask, LANES>) = match op {
-                ArithmeticOperator::Add => (a + b, Mask::splat(true)),
-                ArithmeticOperator::Subtract => (a - b, Mask::splat(true)),
-                ArithmeticOperator::Multiply => (a * b, Mask::splat(true)),
-                ArithmeticOperator::Power => {
+        macro_rules! run {
+            ($vec_op:tt) => {{
+                let mut i = 0;
+                while i < vectorisable {
+                    let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
+                    let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
+                    (a $vec_op b).copy_to_slice(&mut out[i..i + LANES]);
+                    write_simd_mask_bits(
+                        out_mask,
+                        i,
+                        Mask::<<T as SimdElement>::Mask, LANES>::splat(true),
+                    );
+                    i += LANES;
+                }
+            }};
+        }
+        // Division-family arms substitute a divisor of one where the true
+        // divisor is zero, zero the affected lanes, and mark them null.
+        macro_rules! run_div {
+            ($vec_op:tt) => {{
+                let mut i = 0;
+                while i < vectorisable {
+                    let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
+                    let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
+                    let div_zero = b.simd_eq(Simd::splat(T::zero()));
+                    let safe_b = div_zero.select(Simd::splat(T::one()), b);
+                    let r = div_zero.select(Simd::splat(T::zero()), a $vec_op safe_b);
+                    r.copy_to_slice(&mut out[i..i + LANES]);
+                    write_simd_mask_bits(out_mask, i, !div_zero);
+                    i += LANES;
+                }
+            }};
+        }
+        match op {
+            ArithmeticOperator::Add => run!(+),
+            ArithmeticOperator::Subtract => run!(-),
+            ArithmeticOperator::Multiply => run!(*),
+            ArithmeticOperator::Divide => run_div!(/),
+            ArithmeticOperator::Remainder => run_div!(%),
+            ArithmeticOperator::Power => {
+                let mut i = 0;
+                while i < vectorisable {
+                    let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
+                    let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
                     let mut tmp = [T::zero(); LANES];
                     for l in 0..LANES {
                         tmp[l] = a[l].pow(b[l].to_u32().unwrap_or(0));
                     }
-                    (Simd::<T, LANES>::from_array(tmp), Mask::splat(true))
+                    Simd::<T, LANES>::from_array(tmp).copy_to_slice(&mut out[i..i + LANES]);
+                    write_simd_mask_bits(
+                        out_mask,
+                        i,
+                        Mask::<<T as SimdElement>::Mask, LANES>::splat(true),
+                    );
+                    i += LANES;
                 }
-                ArithmeticOperator::Divide | ArithmeticOperator::Remainder => {
+            }
+            ArithmeticOperator::FloorDiv => {
+                let mut i = 0;
+                while i < vectorisable {
+                    let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
+                    let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
                     let div_zero = b.simd_eq(Simd::splat(T::zero()));
-                    let valid = !div_zero;
-                    let safe_b = div_zero.select(Simd::splat(T::one()), b);
-                    let r = match op {
-                        ArithmeticOperator::Divide => a / safe_b,
-                        ArithmeticOperator::Remainder => a % safe_b,
-                        _ => unreachable!(),
-                    };
-                    let r = div_zero.select(Simd::splat(T::zero()), r);
-                    (r, valid)
-                }
-                ArithmeticOperator::FloorDiv => {
-                    let div_zero = b.simd_eq(Simd::splat(T::zero()));
-                    let valid = !div_zero;
                     // Per-lane floor division with sign correction
                     let mut tmp = [T::zero(); LANES];
                     for l in 0..LANES {
-                        if b[l] == T::zero() {
-                            tmp[l] = T::zero();
-                        } else {
+                        if b[l] != T::zero() {
                             let d = a[l] / b[l];
                             let r = a[l] % b[l];
                             tmp[l] = if r != T::zero() && (a[l] ^ b[l]) < T::zero() {
@@ -201,13 +231,11 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
                             };
                         }
                     }
-                    (Simd::<T, LANES>::from_array(tmp), valid)
+                    Simd::<T, LANES>::from_array(tmp).copy_to_slice(&mut out[i..i + LANES]);
+                    write_simd_mask_bits(out_mask, i, !div_zero);
+                    i += LANES;
                 }
-            };
-            r.copy_to_slice(&mut out[i..i + LANES]);
-            // Write the out_mask based on the op
-            write_simd_mask_bits(out_mask, i, valid);
-            i += LANES;
+            }
         }
         // Scalar tail
         for idx in vectorisable..n {
@@ -278,38 +306,64 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
     }
 
     let mut i = 0;
-    while i + LANES <= n {
-        let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
-        let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
-        let m_src: Mask<_, LANES> = simd_mask::<_, LANES>(mask, i, n); // validity mask
-
-        // divisor-is-zero mask
-        let div_zero: Mask<_, LANES> = b.simd_eq(Simd::splat(T::zero()));
-
-        // ── compute result ───────────────────────────────────────────────────
-        let res = match op {
-            ArithmeticOperator::Add => a + b,
-            ArithmeticOperator::Subtract => a - b,
-            ArithmeticOperator::Multiply => a * b,
-            ArithmeticOperator::Divide => {
+    macro_rules! run {
+        ($vec_op:tt) => {{
+            while i + LANES <= n {
+                let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
+                let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
+                let m_src: Mask<<T as SimdElement>::Mask, LANES> = simd_mask(mask, i, n);
+                let selected = m_src.select(a $vec_op b, Simd::splat(T::zero()));
+                selected.copy_to_slice(&mut out[i..i + LANES]);
+                write_simd_mask_bits(out_mask, i, m_src);
+                i += LANES;
+            }
+        }};
+    }
+    macro_rules! run_div {
+        ($vec_op:tt) => {{
+            while i + LANES <= n {
+                let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
+                let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
+                let m_src: Mask<<T as SimdElement>::Mask, LANES> = simd_mask(mask, i, n);
+                let div_zero: Mask<_, LANES> = b.simd_eq(Simd::splat(T::zero()));
                 let safe_b = div_zero.select(Simd::splat(T::one()), b); // 0 -> 1
-                let q = a / safe_b;
-                div_zero.select(Simd::splat(T::zero()), q) // restore 0
+                let res = div_zero.select(Simd::splat(T::zero()), a $vec_op safe_b);
+                let selected = m_src.select(res, Simd::splat(T::zero()));
+                selected.copy_to_slice(&mut out[i..i + LANES]);
+                write_simd_mask_bits(out_mask, i, m_src & !div_zero);
+                i += LANES;
             }
-            ArithmeticOperator::Remainder => {
-                let safe_b = div_zero.select(Simd::splat(T::one()), b);
-                let r = a % safe_b;
-                div_zero.select(Simd::splat(T::zero()), r)
-            }
-            ArithmeticOperator::Power => {
+        }};
+    }
+    match op {
+        ArithmeticOperator::Add => run!(+),
+        ArithmeticOperator::Subtract => run!(-),
+        ArithmeticOperator::Multiply => run!(*),
+        ArithmeticOperator::Divide => run_div!(/),
+        ArithmeticOperator::Remainder => run_div!(%),
+        ArithmeticOperator::Power => {
+            while i + LANES <= n {
+                let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
+                let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
+                let m_src: Mask<<T as SimdElement>::Mask, LANES> = simd_mask(mask, i, n);
                 // scalar per-lane power
                 let mut tmp = [T::zero(); LANES];
                 for l in 0..LANES {
                     tmp[l] = a[l].pow(b[l].to_u32().unwrap_or(0));
                 }
-                Simd::<T, LANES>::from_array(tmp)
+                let selected =
+                    m_src.select(Simd::<T, LANES>::from_array(tmp), Simd::splat(T::zero()));
+                selected.copy_to_slice(&mut out[i..i + LANES]);
+                write_simd_mask_bits(out_mask, i, m_src);
+                i += LANES;
             }
-            ArithmeticOperator::FloorDiv => {
+        }
+        ArithmeticOperator::FloorDiv => {
+            while i + LANES <= n {
+                let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
+                let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
+                let m_src: Mask<<T as SimdElement>::Mask, LANES> = simd_mask(mask, i, n);
+                let div_zero: Mask<_, LANES> = b.simd_eq(Simd::splat(T::zero()));
                 // Per-lane floor division with sign correction
                 let mut tmp = [T::zero(); LANES];
                 for l in 0..LANES {
@@ -323,26 +377,13 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
                         };
                     }
                 }
-                Simd::<T, LANES>::from_array(tmp)
+                let selected =
+                    m_src.select(Simd::<T, LANES>::from_array(tmp), Simd::splat(T::zero()));
+                selected.copy_to_slice(&mut out[i..i + LANES]);
+                write_simd_mask_bits(out_mask, i, m_src & !div_zero);
+                i += LANES;
             }
-        };
-
-        // apply source validity mask, write results
-        let selected = m_src.select(res, Simd::splat(T::zero()));
-        selected.copy_to_slice(&mut out[i..i + LANES]);
-
-        // write out-mask bits: combine source mask with div-by-zero validity
-        let final_mask = match op {
-            ArithmeticOperator::Divide
-            | ArithmeticOperator::Remainder
-            | ArithmeticOperator::FloorDiv => {
-                // Valid iff source is valid and not dividing by zero
-                m_src & !div_zero
-            }
-            _ => m_src,
-        };
-        write_simd_mask_bits(out_mask, i, final_mask);
-        i += LANES;
+        }
     }
 
     // scalar tail
@@ -414,47 +455,45 @@ pub fn float_masked_body_f32_simd<const LANES: usize>(
         return;
     }
 
-    let mut i = 0;
-    while i + LANES <= n {
-        let a = Simd::<f32, LANES>::from_slice(&lhs[i..i + LANES]);
-        let b = Simd::<f32, LANES>::from_slice(&rhs[i..i + LANES]);
-        let m: Mask<M, LANES> = simd_mask::<M, LANES>(mask, i, n);
+    macro_rules! run {
+        (|$a:ident, $b:ident| $vec:expr, |$x:ident, $y:ident| $scalar:expr) => {{
+            let mut i = 0;
+            while i + LANES <= n {
+                let $a = Simd::<f32, LANES>::from_slice(&lhs[i..i + LANES]);
+                let $b = Simd::<f32, LANES>::from_slice(&rhs[i..i + LANES]);
+                let m: Mask<M, LANES> = simd_mask::<M, LANES>(mask, i, n);
 
-        let res = match op {
-            ArithmeticOperator::Add => a + b,
-            ArithmeticOperator::Subtract => a - b,
-            ArithmeticOperator::Multiply => a * b,
-            ArithmeticOperator::Divide => a / b,
-            ArithmeticOperator::Remainder => a % b,
-            ArithmeticOperator::Power => (b * a.ln()).exp(),
-            ArithmeticOperator::FloorDiv => (a / b).floor(),
-        };
+                let res = $vec;
+                let selected = m.select(res, Simd::<f32, LANES>::splat(0.0));
+                selected.copy_to_slice(&mut out[i..i + LANES]);
 
-        let selected = m.select(res, Simd::<f32, LANES>::splat(0.0));
-        selected.copy_to_slice(&mut out[i..i + LANES]);
+                write_simd_mask_bits(out_mask, i, m);
+                i += LANES;
+            }
 
-        write_simd_mask_bits(out_mask, i, m);
-        i += LANES;
+            // The tail covers the final `n % LANES` rows with the scalar form
+            for j in i..n {
+                let valid = unsafe { mask.get_unchecked(j) };
+                if valid {
+                    let $x = lhs[j];
+                    let $y = rhs[j];
+                    out[j] = $scalar;
+                    unsafe { out_mask.set_unchecked(j, true) };
+                } else {
+                    out[j] = 0.0;
+                    unsafe { out_mask.set_unchecked(j, false) };
+                }
+            }
+        }};
     }
-
-    // Tail often caused by `n % LANES != 0`; uses scalar fallback
-    for j in i..n {
-        let valid = unsafe { mask.get_unchecked(j) };
-        if valid {
-            out[j] = match op {
-                ArithmeticOperator::Add => lhs[j] + rhs[j],
-                ArithmeticOperator::Subtract => lhs[j] - rhs[j],
-                ArithmeticOperator::Multiply => lhs[j] * rhs[j],
-                ArithmeticOperator::Divide => lhs[j] / rhs[j],
-                ArithmeticOperator::Remainder => lhs[j] % rhs[j],
-                ArithmeticOperator::Power => (rhs[j] * lhs[j].ln()).exp(),
-                ArithmeticOperator::FloorDiv => (lhs[j] / rhs[j]).floor(),
-            };
-            unsafe { out_mask.set_unchecked(j, true) };
-        } else {
-            out[j] = 0.0;
-            unsafe { out_mask.set_unchecked(j, false) };
-        }
+    match op {
+        ArithmeticOperator::Add => run!(|a, b| a + b, |x, y| x + y),
+        ArithmeticOperator::Subtract => run!(|a, b| a - b, |x, y| x - y),
+        ArithmeticOperator::Multiply => run!(|a, b| a * b, |x, y| x * y),
+        ArithmeticOperator::Divide => run!(|a, b| a / b, |x, y| x / y),
+        ArithmeticOperator::Remainder => run!(|a, b| a % b, |x, y| x % y),
+        ArithmeticOperator::Power => run!(|a, b| (b * a.ln()).exp(), |x, y| (y * x.ln()).exp()),
+        ArithmeticOperator::FloorDiv => run!(|a, b| (a / b).floor(), |x, y| (x / y).floor()),
     }
 }
 
@@ -482,47 +521,45 @@ pub fn float_masked_body_f64_simd<const LANES: usize>(
         return;
     }
 
-    let mut i = 0;
-    while i + LANES <= n {
-        let a = Simd::<f64, LANES>::from_slice(&lhs[i..i + LANES]);
-        let b = Simd::<f64, LANES>::from_slice(&rhs[i..i + LANES]);
-        let m: Mask<M, LANES> = simd_mask::<M, LANES>(mask, i, n);
+    macro_rules! run {
+        (|$a:ident, $b:ident| $vec:expr, |$x:ident, $y:ident| $scalar:expr) => {{
+            let mut i = 0;
+            while i + LANES <= n {
+                let $a = Simd::<f64, LANES>::from_slice(&lhs[i..i + LANES]);
+                let $b = Simd::<f64, LANES>::from_slice(&rhs[i..i + LANES]);
+                let m: Mask<M, LANES> = simd_mask::<M, LANES>(mask, i, n);
 
-        let res = match op {
-            ArithmeticOperator::Add => a + b,
-            ArithmeticOperator::Subtract => a - b,
-            ArithmeticOperator::Multiply => a * b,
-            ArithmeticOperator::Divide => a / b,
-            ArithmeticOperator::Remainder => a % b,
-            ArithmeticOperator::Power => (b * a.ln()).exp(),
-            ArithmeticOperator::FloorDiv => (a / b).floor(),
-        };
+                let res = $vec;
+                let selected = m.select(res, Simd::<f64, LANES>::splat(0.0));
+                selected.copy_to_slice(&mut out[i..i + LANES]);
 
-        let selected = m.select(res, Simd::<f64, LANES>::splat(0.0));
-        selected.copy_to_slice(&mut out[i..i + LANES]);
+                write_simd_mask_bits(out_mask, i, m);
+                i += LANES;
+            }
 
-        write_simd_mask_bits(out_mask, i, m);
-        i += LANES;
+            // The tail covers the final `n % LANES` rows with the scalar form
+            for j in i..n {
+                let valid = unsafe { mask.get_unchecked(j) };
+                if valid {
+                    let $x = lhs[j];
+                    let $y = rhs[j];
+                    out[j] = $scalar;
+                    unsafe { out_mask.set_unchecked(j, true) };
+                } else {
+                    out[j] = 0.0;
+                    unsafe { out_mask.set_unchecked(j, false) };
+                }
+            }
+        }};
     }
-
-    // Tail often caused by `n % LANES =! 0`; uses scalar fallback
-    for j in i..n {
-        let valid = unsafe { mask.get_unchecked(j) };
-        if valid {
-            out[j] = match op {
-                ArithmeticOperator::Add => lhs[j] + rhs[j],
-                ArithmeticOperator::Subtract => lhs[j] - rhs[j],
-                ArithmeticOperator::Multiply => lhs[j] * rhs[j],
-                ArithmeticOperator::Divide => lhs[j] / rhs[j],
-                ArithmeticOperator::Remainder => lhs[j] % rhs[j],
-                ArithmeticOperator::Power => (rhs[j] * lhs[j].ln()).exp(),
-                ArithmeticOperator::FloorDiv => (lhs[j] / rhs[j]).floor(),
-            };
-            unsafe { out_mask.set_unchecked(j, true) };
-        } else {
-            out[j] = 0.0;
-            unsafe { out_mask.set_unchecked(j, false) };
-        }
+    match op {
+        ArithmeticOperator::Add => run!(|a, b| a + b, |x, y| x + y),
+        ArithmeticOperator::Subtract => run!(|a, b| a - b, |x, y| x - y),
+        ArithmeticOperator::Multiply => run!(|a, b| a * b, |x, y| x * y),
+        ArithmeticOperator::Divide => run!(|a, b| a / b, |x, y| x / y),
+        ArithmeticOperator::Remainder => run!(|a, b| a % b, |x, y| x % y),
+        ArithmeticOperator::Power => run!(|a, b| (b * a.ln()).exp(), |x, y| (y * x.ln()).exp()),
+        ArithmeticOperator::FloorDiv => run!(|a, b| (a / b).floor(), |x, y| (x / y).floor()),
     }
 }
 
@@ -537,34 +574,32 @@ pub fn float_dense_body_f32_simd<const LANES: usize>(
     out: &mut [f32],
 ) {
     let n = lhs.len();
-    let mut i = 0;
-    while i + LANES <= n {
-        let a = Simd::<f32, LANES>::from_slice(&lhs[i..i + LANES]);
-        let b = Simd::<f32, LANES>::from_slice(&rhs[i..i + LANES]);
-        let res = match op {
-            ArithmeticOperator::Add => a + b,
-            ArithmeticOperator::Subtract => a - b,
-            ArithmeticOperator::Multiply => a * b,
-            ArithmeticOperator::Divide => a / b,
-            ArithmeticOperator::Remainder => a % b,
-            ArithmeticOperator::Power => (b * a.ln()).exp(),
-            ArithmeticOperator::FloorDiv => (a / b).floor(),
-        };
-        res.copy_to_slice(&mut out[i..i + LANES]);
-        i += LANES;
+    macro_rules! run {
+        (|$a:ident, $b:ident| $vec:expr, |$x:ident, $y:ident| $scalar:expr) => {{
+            let mut i = 0;
+            while i + LANES <= n {
+                let $a = Simd::<f32, LANES>::from_slice(&lhs[i..i + LANES]);
+                let $b = Simd::<f32, LANES>::from_slice(&rhs[i..i + LANES]);
+                let res = $vec;
+                res.copy_to_slice(&mut out[i..i + LANES]);
+                i += LANES;
+            }
+            // The tail covers the final `n % LANES` rows with the scalar form
+            for j in i..n {
+                let $x = lhs[j];
+                let $y = rhs[j];
+                out[j] = $scalar;
+            }
+        }};
     }
-
-    // Tail often caused by `n % LANES =! 0`; uses scalar fallback
-    for j in i..n {
-        out[j] = match op {
-            ArithmeticOperator::Add => lhs[j] + rhs[j],
-            ArithmeticOperator::Subtract => lhs[j] - rhs[j],
-            ArithmeticOperator::Multiply => lhs[j] * rhs[j],
-            ArithmeticOperator::Divide => lhs[j] / rhs[j],
-            ArithmeticOperator::Remainder => lhs[j] % rhs[j],
-            ArithmeticOperator::Power => (rhs[j] * lhs[j].ln()).exp(),
-            ArithmeticOperator::FloorDiv => (lhs[j] / rhs[j]).floor(),
-        };
+    match op {
+        ArithmeticOperator::Add => run!(|a, b| a + b, |x, y| x + y),
+        ArithmeticOperator::Subtract => run!(|a, b| a - b, |x, y| x - y),
+        ArithmeticOperator::Multiply => run!(|a, b| a * b, |x, y| x * y),
+        ArithmeticOperator::Divide => run!(|a, b| a / b, |x, y| x / y),
+        ArithmeticOperator::Remainder => run!(|a, b| a % b, |x, y| x % y),
+        ArithmeticOperator::Power => run!(|a, b| (b * a.ln()).exp(), |x, y| (y * x.ln()).exp()),
+        ArithmeticOperator::FloorDiv => run!(|a, b| (a / b).floor(), |x, y| (x / y).floor()),
     }
 }
 
@@ -579,34 +614,32 @@ pub fn float_dense_body_f64_simd<const LANES: usize>(
     out: &mut [f64],
 ) {
     let n = lhs.len();
-    let mut i = 0;
-    while i + LANES <= n {
-        let a = Simd::<f64, LANES>::from_slice(&lhs[i..i + LANES]);
-        let b = Simd::<f64, LANES>::from_slice(&rhs[i..i + LANES]);
-        let res = match op {
-            ArithmeticOperator::Add => a + b,
-            ArithmeticOperator::Subtract => a - b,
-            ArithmeticOperator::Multiply => a * b,
-            ArithmeticOperator::Divide => a / b,
-            ArithmeticOperator::Remainder => a % b,
-            ArithmeticOperator::Power => (b * a.ln()).exp(),
-            ArithmeticOperator::FloorDiv => (a / b).floor(),
-        };
-        res.copy_to_slice(&mut out[i..i + LANES]);
-        i += LANES;
+    macro_rules! run {
+        (|$a:ident, $b:ident| $vec:expr, |$x:ident, $y:ident| $scalar:expr) => {{
+            let mut i = 0;
+            while i + LANES <= n {
+                let $a = Simd::<f64, LANES>::from_slice(&lhs[i..i + LANES]);
+                let $b = Simd::<f64, LANES>::from_slice(&rhs[i..i + LANES]);
+                let res = $vec;
+                res.copy_to_slice(&mut out[i..i + LANES]);
+                i += LANES;
+            }
+            // The tail covers the final `n % LANES` rows with the scalar form
+            for j in i..n {
+                let $x = lhs[j];
+                let $y = rhs[j];
+                out[j] = $scalar;
+            }
+        }};
     }
-
-    // Tail often caused by `n % LANES =! 0`; uses scalar fallback
-    for j in i..n {
-        out[j] = match op {
-            ArithmeticOperator::Add => lhs[j] + rhs[j],
-            ArithmeticOperator::Subtract => lhs[j] - rhs[j],
-            ArithmeticOperator::Multiply => lhs[j] * rhs[j],
-            ArithmeticOperator::Divide => lhs[j] / rhs[j],
-            ArithmeticOperator::Remainder => lhs[j] % rhs[j],
-            ArithmeticOperator::Power => (rhs[j] * lhs[j].ln()).exp(),
-            ArithmeticOperator::FloorDiv => (lhs[j] / rhs[j]).floor(),
-        };
+    match op {
+        ArithmeticOperator::Add => run!(|a, b| a + b, |x, y| x + y),
+        ArithmeticOperator::Subtract => run!(|a, b| a - b, |x, y| x - y),
+        ArithmeticOperator::Multiply => run!(|a, b| a * b, |x, y| x * y),
+        ArithmeticOperator::Divide => run!(|a, b| a / b, |x, y| x / y),
+        ArithmeticOperator::Remainder => run!(|a, b| a % b, |x, y| x % y),
+        ArithmeticOperator::Power => run!(|a, b| (b * a.ln()).exp(), |x, y| (y * x.ln()).exp()),
+        ArithmeticOperator::FloorDiv => run!(|a, b| (a / b).floor(), |x, y| (x / y).floor()),
     }
 }
 

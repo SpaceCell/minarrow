@@ -26,6 +26,8 @@
 //! - **Null-aware**: Supports Arrow-compatible null mask propagation
 //!
 //! ## Design Notes
+//! - Each kernel dispatches on the `ArithmeticOperator` once and runs a dedicated
+//!   branch-free loop per operation
 //! - Intentionally avoids parallelisation to allow higher-level chunking strategies
 //! - Wrapping arithmetic for integers to prevent overflow panics
 //! - Division by zero handling: panics for integers, produces Inf/NaN for floats
@@ -45,41 +47,48 @@ pub fn int_dense_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub +
     out: &mut [T],
 ) {
     let n = lhs.len();
-    for i in 0..n {
-        out[i] = match op {
-            ArithmeticOperator::Add => lhs[i].wrapping_add(&rhs[i]),
-            ArithmeticOperator::Subtract => lhs[i].wrapping_sub(&rhs[i]),
-            ArithmeticOperator::Multiply => lhs[i].wrapping_mul(&rhs[i]),
-            ArithmeticOperator::Divide => {
-                if rhs[i] == T::zero() {
-                    panic!("Division by zero")
+    macro_rules! run {
+        (|$x:ident, $y:ident| $scalar:expr) => {{
+            for i in 0..n {
+                let $x = lhs[i];
+                let $y = rhs[i];
+                out[i] = $scalar;
+            }
+        }};
+    }
+    match op {
+        ArithmeticOperator::Add => run!(|x, y| x.wrapping_add(&y)),
+        ArithmeticOperator::Subtract => run!(|x, y| x.wrapping_sub(&y)),
+        ArithmeticOperator::Multiply => run!(|x, y| x.wrapping_mul(&y)),
+        ArithmeticOperator::Divide => run!(|x, y| {
+            if y == T::zero() {
+                panic!("Division by zero")
+            } else {
+                x / y
+            }
+        }),
+        ArithmeticOperator::Remainder => run!(|x, y| {
+            if y == T::zero() {
+                panic!("Remainder by zero")
+            } else {
+                x % y
+            }
+        }),
+        ArithmeticOperator::Power => run!(|x, y| x.pow(y.to_u32().unwrap_or(0))),
+        ArithmeticOperator::FloorDiv => run!(|x, y| {
+            if y == T::zero() {
+                panic!("Floor division by zero")
+            } else {
+                let d = x / y;
+                let r = x % y;
+                // If remainder is non-zero and signs differ, floor toward -inf
+                if r != T::zero() && (x ^ y) < T::zero() {
+                    d - T::one()
                 } else {
-                    lhs[i] / rhs[i]
+                    d
                 }
             }
-            ArithmeticOperator::Remainder => {
-                if rhs[i] == T::zero() {
-                    panic!("Remainder by zero")
-                } else {
-                    lhs[i] % rhs[i]
-                }
-            }
-            ArithmeticOperator::Power => lhs[i].pow(rhs[i].to_u32().unwrap_or(0)),
-            ArithmeticOperator::FloorDiv => {
-                if rhs[i] == T::zero() {
-                    panic!("Floor division by zero")
-                } else {
-                    let d = lhs[i] / rhs[i];
-                    let r = lhs[i] % rhs[i];
-                    // If remainder is non-zero and signs differ, floor toward -inf
-                    if r != T::zero() && (lhs[i] ^ rhs[i]) < T::zero() {
-                        d - T::one()
-                    } else {
-                        d
-                    }
-                }
-            }
-        };
+        }),
     }
 }
 
@@ -96,52 +105,59 @@ pub fn int_masked_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub 
     out_mask: &mut Bitmask,
 ) {
     let n = lhs.len();
-    for i in 0..n {
-        let valid = unsafe { mask.get_unchecked(i) };
-        if valid {
-            let (result, final_valid) = match op {
-                ArithmeticOperator::Add => (lhs[i].wrapping_add(&rhs[i]), true),
-                ArithmeticOperator::Subtract => (lhs[i].wrapping_sub(&rhs[i]), true),
-                ArithmeticOperator::Multiply => (lhs[i].wrapping_mul(&rhs[i]), true),
-                ArithmeticOperator::Divide => {
-                    if rhs[i] == T::zero() {
-                        (T::zero(), false) // division by zero -> invalid
-                    } else {
-                        (lhs[i] / rhs[i], true)
+    macro_rules! run {
+        (|$x:ident, $y:ident| $scalar:expr) => {{
+            for i in 0..n {
+                let valid = unsafe { mask.get_unchecked(i) };
+                if valid {
+                    let $x = lhs[i];
+                    let $y = rhs[i];
+                    let (result, final_valid) = $scalar;
+                    out[i] = result;
+                    unsafe {
+                        out_mask.set_unchecked(i, final_valid);
+                    }
+                } else {
+                    out[i] = T::zero();
+                    unsafe {
+                        out_mask.set_unchecked(i, false);
                     }
                 }
-                ArithmeticOperator::Remainder => {
-                    if rhs[i] == T::zero() {
-                        (T::zero(), false) // remainder by zero -> invalid
-                    } else {
-                        (lhs[i] % rhs[i], true)
-                    }
-                }
-                ArithmeticOperator::Power => (lhs[i].pow(rhs[i].to_u32().unwrap_or(0)), true),
-                ArithmeticOperator::FloorDiv => {
-                    if rhs[i] == T::zero() {
-                        (T::zero(), false)
-                    } else {
-                        let d = lhs[i] / rhs[i];
-                        let r = lhs[i] % rhs[i];
-                        if r != T::zero() && (lhs[i] ^ rhs[i]) < T::zero() {
-                            (d - T::one(), true)
-                        } else {
-                            (d, true)
-                        }
-                    }
-                }
-            };
-            out[i] = result;
-            unsafe {
-                out_mask.set_unchecked(i, final_valid);
             }
-        } else {
-            out[i] = T::zero();
-            unsafe {
-                out_mask.set_unchecked(i, false);
+        }};
+    }
+    match op {
+        ArithmeticOperator::Add => run!(|x, y| (x.wrapping_add(&y), true)),
+        ArithmeticOperator::Subtract => run!(|x, y| (x.wrapping_sub(&y), true)),
+        ArithmeticOperator::Multiply => run!(|x, y| (x.wrapping_mul(&y), true)),
+        ArithmeticOperator::Divide => run!(|x, y| {
+            if y == T::zero() {
+                (T::zero(), false) // division by zero -> invalid
+            } else {
+                (x / y, true)
             }
-        }
+        }),
+        ArithmeticOperator::Remainder => run!(|x, y| {
+            if y == T::zero() {
+                (T::zero(), false) // remainder by zero -> invalid
+            } else {
+                (x % y, true)
+            }
+        }),
+        ArithmeticOperator::Power => run!(|x, y| (x.pow(y.to_u32().unwrap_or(0)), true)),
+        ArithmeticOperator::FloorDiv => run!(|x, y| {
+            if y == T::zero() {
+                (T::zero(), false)
+            } else {
+                let d = x / y;
+                let r = x % y;
+                if r != T::zero() && (x ^ y) < T::zero() {
+                    (d - T::one(), true)
+                } else {
+                    (d, true)
+                }
+            }
+        }),
     }
 }
 
@@ -151,16 +167,23 @@ pub fn int_masked_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub 
 #[inline(always)]
 pub fn float_dense_body_std<T: Float>(op: ArithmeticOperator, lhs: &[T], rhs: &[T], out: &mut [T]) {
     let n = lhs.len();
-    for i in 0..n {
-        out[i] = match op {
-            ArithmeticOperator::Add => lhs[i] + rhs[i],
-            ArithmeticOperator::Subtract => lhs[i] - rhs[i],
-            ArithmeticOperator::Multiply => lhs[i] * rhs[i],
-            ArithmeticOperator::Divide => lhs[i] / rhs[i],
-            ArithmeticOperator::Remainder => lhs[i] % rhs[i],
-            ArithmeticOperator::Power => (rhs[i] * lhs[i].ln()).exp(),
-            ArithmeticOperator::FloorDiv => (lhs[i] / rhs[i]).floor(),
-        };
+    macro_rules! run {
+        (|$x:ident, $y:ident| $scalar:expr) => {{
+            for i in 0..n {
+                let $x = lhs[i];
+                let $y = rhs[i];
+                out[i] = $scalar;
+            }
+        }};
+    }
+    match op {
+        ArithmeticOperator::Add => run!(|x, y| x + y),
+        ArithmeticOperator::Subtract => run!(|x, y| x - y),
+        ArithmeticOperator::Multiply => run!(|x, y| x * y),
+        ArithmeticOperator::Divide => run!(|x, y| x / y),
+        ArithmeticOperator::Remainder => run!(|x, y| x % y),
+        ArithmeticOperator::Power => run!(|x, y| (y * x.ln()).exp()),
+        ArithmeticOperator::FloorDiv => run!(|x, y| (x / y).floor()),
     }
 }
 
@@ -177,27 +200,34 @@ pub fn float_masked_body_std<T: Float>(
     out_mask: &mut Bitmask,
 ) {
     let n = lhs.len();
-    for i in 0..n {
-        let valid = unsafe { mask.get_unchecked(i) };
-        if valid {
-            out[i] = match op {
-                ArithmeticOperator::Add => lhs[i] + rhs[i],
-                ArithmeticOperator::Subtract => lhs[i] - rhs[i],
-                ArithmeticOperator::Multiply => lhs[i] * rhs[i],
-                ArithmeticOperator::Divide => lhs[i] / rhs[i],
-                ArithmeticOperator::Remainder => lhs[i] % rhs[i],
-                ArithmeticOperator::Power => (rhs[i] * lhs[i].ln()).exp(),
-                ArithmeticOperator::FloorDiv => (lhs[i] / rhs[i]).floor(),
-            };
-            unsafe {
-                out_mask.set_unchecked(i, true);
+    macro_rules! run {
+        (|$x:ident, $y:ident| $scalar:expr) => {{
+            for i in 0..n {
+                let valid = unsafe { mask.get_unchecked(i) };
+                if valid {
+                    let $x = lhs[i];
+                    let $y = rhs[i];
+                    out[i] = $scalar;
+                    unsafe {
+                        out_mask.set_unchecked(i, true);
+                    }
+                } else {
+                    out[i] = T::zero();
+                    unsafe {
+                        out_mask.set_unchecked(i, false);
+                    }
+                }
             }
-        } else {
-            out[i] = T::zero();
-            unsafe {
-                out_mask.set_unchecked(i, false);
-            }
-        }
+        }};
+    }
+    match op {
+        ArithmeticOperator::Add => run!(|x, y| x + y),
+        ArithmeticOperator::Subtract => run!(|x, y| x - y),
+        ArithmeticOperator::Multiply => run!(|x, y| x * y),
+        ArithmeticOperator::Divide => run!(|x, y| x / y),
+        ArithmeticOperator::Remainder => run!(|x, y| x % y),
+        ArithmeticOperator::Power => run!(|x, y| (y * x.ln()).exp()),
+        ArithmeticOperator::FloorDiv => run!(|x, y| (x / y).floor()),
     }
 }
 
