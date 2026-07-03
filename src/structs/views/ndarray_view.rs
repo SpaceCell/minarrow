@@ -305,7 +305,7 @@ impl<T: Float> NdArrayV<T> {
     }
 }
 
-// *** Axis selection: view.s((1..4, 2)) ***************************
+// *** Axis selection: view.s(nd![1..4, 2]) ************************
 
 /// Selection across every axis at once, delegating to `slice`. Single
 /// indices collapse their dimension, and contiguous ranges keep it.

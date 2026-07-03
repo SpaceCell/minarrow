@@ -188,7 +188,7 @@ mod tests {
     fn chunked_pair_preserves_batches() {
         use crate::structs::chunked::super_ndarray::SuperNdArray;
 
-        let a = XArray::from_batched(
+        let a = XArray::from_batches(
             SuperNdArray::from_batches(
                 vec![
                     NdArray::from_slice(&[1.0, 2.0], &[2]),
@@ -198,7 +198,7 @@ mod tests {
             ),
             &["time"],
         );
-        let b = XArray::from_batched(
+        let b = XArray::from_batches(
             SuperNdArray::from_batches(
                 vec![
                     NdArray::from_slice(&[10.0, 10.0], &[2]),

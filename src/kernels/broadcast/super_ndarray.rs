@@ -278,8 +278,8 @@ mod tests {
         let a = chunked(&[&[1.0, 2.0], &[3.0]], &[], "stream");
         let c = broadcast_super_ndarray_scalar_mul(&a, 10.0).unwrap();
         assert_eq!(c.n_batches(), 2);
-        assert_eq!(c.chunk(0).unwrap().shape(), &[2]);
-        assert_eq!(c.chunk(1).unwrap().shape(), &[1]);
+        assert_eq!(c.batch(0).unwrap().shape(), &[2]);
+        assert_eq!(c.batch(1).unwrap().shape(), &[1]);
         let vals: Vec<f64> = (&c).into_iter().collect();
         assert_eq!(vals, vec![10.0, 20.0, 30.0]);
     }

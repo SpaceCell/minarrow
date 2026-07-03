@@ -203,7 +203,7 @@ impl<T: Float> XArray<T> {
 
     /// Wrap a SuperNdArray with axes.
     #[cfg(feature = "chunked")]
-    pub fn from_batched(data: SuperNdArray<T>, dim_names: &[&str]) -> Self {
+    pub fn from_batches(data: SuperNdArray<T>, dim_names: &[&str]) -> Self {
         assert_eq!(
             data.ndim(), dim_names.len(),
             "XArray: {} dim names for {}D batched array", dim_names.len(), data.ndim()

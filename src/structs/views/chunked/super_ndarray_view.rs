@@ -58,19 +58,25 @@ use crate::Vec64;
 /// ## Fields
 /// - `slices`: constituent [`NdArrayV`] windows spanning the range, ordered
 ///   and sharing rank and trailing shape.
-/// - Rank and trailing shape are cached so an empty window keeps its
-///   dimensionality.
+/// - Rank, trailing shape, and the parent's name are cached so an empty
+///   window keeps its dimensionality and identity.
 #[derive(Clone)]
 pub struct SuperNdArrayV<T> {
     pub slices: Vec<NdArrayV<T>>,
     ndim: usize,
     inner_shape: Vec<usize>,
+    name: String,
 }
 
 impl<T: Float> SuperNdArrayV<T> {
     /// Assemble from ordered axis-0 window slices. Panics if the slices
     /// disagree on rank or trailing shape.
-    pub fn from_slices(slices: Vec<NdArrayV<T>>, ndim: usize, inner_shape: Vec<usize>) -> Self {
+    pub fn from_slices(
+        slices: Vec<NdArrayV<T>>,
+        ndim: usize,
+        inner_shape: Vec<usize>,
+        name: String,
+    ) -> Self {
         for (i, s) in slices.iter().enumerate() {
             assert_eq!(
                 s.ndim(), ndim,
@@ -81,8 +87,12 @@ impl<T: Float> SuperNdArrayV<T> {
                 "SuperNdArrayV: slice {} inner shape mismatch", i
             );
         }
-        SuperNdArrayV { slices, ndim, inner_shape }
+        SuperNdArrayV { slices, ndim, inner_shape, name }
     }
+
+    /// The parent array's name.
+    #[inline]
+    pub fn name(&self) -> &str { &self.name }
 
     /// Number of constituent slices.
     #[inline]
@@ -128,7 +138,11 @@ impl<T: Float> SuperNdArrayV<T> {
     /// axis-0 observations. Zero-copy - the new view narrows each
     /// constituent slice as needed.
     pub fn slice(&self, mut offset: usize, mut len: usize) -> Self {
-        assert!(offset + len <= self.n_obs(), "slice out of bounds");
+        assert!(
+            offset + len <= self.n_obs(),
+            "SuperNdArrayV::slice: window [{}, {}) out of bounds (n_obs {})",
+            offset, offset + len, self.n_obs()
+        );
 
         let mut slices = Vec::new();
         for view in &self.slices {
@@ -159,6 +173,7 @@ impl<T: Float> SuperNdArrayV<T> {
             slices,
             ndim: self.ndim,
             inner_shape: self.inner_shape.clone(),
+            name: self.name.clone(),
         }
     }
 
@@ -172,7 +187,7 @@ impl<T: Float> SuperNdArrayV<T> {
             }
             idx -= n;
         }
-        panic!("obs: index out of bounds (n_obs {})", self.n_obs());
+        panic!("SuperNdArrayV::obs: index out of bounds (n_obs {})", self.n_obs());
     }
 
     /// Get element by global N-dimensional index. The first index is the
@@ -186,7 +201,7 @@ impl<T: Float> SuperNdArrayV<T> {
             }
             local[0] -= n;
         }
-        panic!("get: index out of bounds (n_obs {})", self.n_obs());
+        panic!("SuperNdArrayV::get: index out of bounds (n_obs {})", self.n_obs());
     }
 
     /// Apply a function to every logical element, materialising a new
@@ -196,7 +211,7 @@ impl<T: Float> SuperNdArrayV<T> {
     }
 }
 
-// *** Axis selection: view.s((1..4, 2)) ***************************
+// *** Axis selection: view.s(nd![1..4, 2]) ************************
 
 /// Selection across every axis at once over a chunked window. The
 /// axis-0 selection narrows the window, and trailing-axis selections
@@ -239,7 +254,7 @@ impl<T: Float> AxisSelection for SuperNdArrayV<T> {
                 sv.slice(&refs)
             })
             .collect();
-        SuperNdArrayV::from_slices(slices, ndim, inner_shape)
+        SuperNdArrayV::from_slices(slices, ndim, inner_shape, self.name.clone())
     }
 
     fn get_axis_count(&self) -> usize {
@@ -258,18 +273,29 @@ impl<T: Float> RowSelection for SuperNdArrayV<T> {
 
     fn r<S: DataSelector>(&self, selection: S) -> SuperNdArrayV<T> {
         if self.slices.is_empty() {
-            return SuperNdArrayV::from_slices(Vec::new(), self.ndim, self.inner_shape.clone());
+            return SuperNdArrayV::from_slices(
+                Vec::new(),
+                self.ndim,
+                self.inner_shape.clone(),
+                self.name.clone(),
+            );
         }
         let indices = selection.resolve_indices(self.n_obs());
         if selection.is_contiguous() {
             let start = indices.first().copied().unwrap_or(0);
             return self.slice(start, indices.len());
         }
-        let gathered = gather_obs_impl(&indices, &self.shape(), None, |idx| self.get(idx));
+        let gathered = gather_obs_impl(
+            &indices,
+            &self.shape(),
+            Some(self.name.clone()),
+            |idx| self.get(idx),
+        );
         SuperNdArrayV::from_slices(
             vec![NdArrayV::from_ndarray(gathered)],
             self.ndim,
             self.inner_shape.clone(),
+            self.name.clone(),
         )
     }
 
@@ -336,7 +362,9 @@ impl<T: Float> Consolidate for SuperNdArrayV<T> {
                 flat.extend_from_slice(&elems[c * obs..(c + 1) * obs]);
             }
         }
-        NdArray::from_slice(&flat, &full_shape)
+        let mut result = NdArray::from_slice(&flat, &full_shape);
+        result.name = Some(self.name);
+        result
     }
 }
 
@@ -405,7 +433,7 @@ impl<T: Float> From<SuperNdArray<T>> for SuperNdArrayV<T> {
             .iter()
             .map(|b| NdArrayV::from_ndarray(b.clone()))
             .collect();
-        SuperNdArrayV { slices, ndim, inner_shape }
+        SuperNdArrayV { slices, ndim, inner_shape, name: super_nd.name }
     }
 }
 
