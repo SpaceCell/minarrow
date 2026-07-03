@@ -1,0 +1,14 @@
+# x86-64-v3 (AVX2, FMA, BMI2) is the SIMD floor for repo builds, tests, and
+# benches. The kernel lane detection reads the target features at build time
+# and doubles the SIMD lane count for every element width relative to the SSE2
+# baseline. Runs on Intel Xeon from late 2014 (Haswell-EP) and AMD EPYC from
+# 2017 (Zen) onward.
+#
+# Downstream consumers compile with their own flags. This file applies only to
+# builds invoked from this repository.
+#
+# The RUSTFLAGS environment variable overrides this file. Use RUSTFLAGS="" for
+# the baseline target, or on AVX-512 hardware RUSTFLAGS="-C target-cpu=x86-64-v4"
+# (or target-cpu=native), which doubles the lane counts again.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
