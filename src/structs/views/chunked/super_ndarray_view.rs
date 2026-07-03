@@ -40,13 +40,13 @@ use std::fmt;
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::chunked::super_ndarray::SuperNdArray;
-use crate::structs::ndarray::{AxisSel, NdArray};
+use crate::structs::ndarray::NdArray;
 #[cfg(feature = "select")]
 use crate::structs::ndarray::gather_obs_impl;
 use crate::structs::views::ndarray_view::NdArrayV;
 use crate::traits::concatenate::Concatenate;
 #[cfg(feature = "select")]
-use crate::traits::selection::{DataSelector, RowSelection};
+use crate::traits::selection::{AxisSelection, DataSelector, RowSelection};
 use crate::traits::consolidate::Consolidate;
 use crate::traits::shape::Shape;
 use crate::traits::type_unions::Float;
@@ -139,11 +139,14 @@ impl<T: Float> SuperNdArrayV<T> {
             }
 
             let take = (base_obs - offset).min(len);
-            let mut sel = vec![AxisSel::Range(offset, offset + take)];
-            for d in 1..view.ndim() {
-                sel.push(AxisSel::Range(0, view.shape()[d]));
-            }
-            slices.push(view.slice(sel));
+            let mut window_shape = vec![take];
+            window_shape.extend_from_slice(&view.shape()[1..]);
+            slices.push(NdArrayV::new(
+                view.source.clone(),
+                view.offset + offset * view.strides()[0],
+                &window_shape,
+                view.strides(),
+            ));
 
             len -= take;
             if len == 0 {
@@ -190,6 +193,57 @@ impl<T: Float> SuperNdArrayV<T> {
     /// compact [`NdArray`] with this window's shape.
     pub fn apply(&self, f: impl Fn(T) -> T) -> NdArray<T> {
         self.clone().consolidate().apply(f)
+    }
+}
+
+// *** Axis selection: view.s((1..4, 2)) ***************************
+
+/// Selection across every axis at once over a chunked window. The
+/// axis-0 selection narrows the window, and trailing-axis selections
+/// narrow each slice. Zero-copy. An axis-0 single index keeps the
+/// dimension as a one-observation window - use `obs` to collapse.
+/// The resulting rank and trailing shape derive from the selections,
+/// so an empty window keeps its dimensionality.
+#[cfg(feature = "select")]
+impl<T: Float> AxisSelection for SuperNdArrayV<T> {
+    type View = SuperNdArrayV<T>;
+
+    fn s(&self, selection: &[&dyn DataSelector]) -> SuperNdArrayV<T> {
+        assert_eq!(
+            selection.len(), self.ndim,
+            "s(): expected {} axes, got {}", self.ndim, selection.len()
+        );
+        let (start, end, _) = selection[0].resolve_axis(self.n_obs());
+        let window = self.slice(start, end - start);
+        if self.ndim == 1 {
+            return window;
+        }
+
+        let inner = &selection[1..];
+        let mut inner_shape = Vec::new();
+        for (d, sel) in inner.iter().enumerate() {
+            let (start, end, collapse) = sel.resolve_axis(window.inner_shape()[d]);
+            if !collapse {
+                inner_shape.push(end - start);
+            }
+        }
+        let ndim = 1 + inner_shape.len();
+
+        let slices: Vec<NdArrayV<T>> = window
+            .slices
+            .iter()
+            .map(|sv| {
+                let full = 0..sv.shape()[0];
+                let mut refs: Vec<&dyn DataSelector> = vec![&full];
+                refs.extend_from_slice(inner);
+                sv.slice(&refs)
+            })
+            .collect();
+        SuperNdArrayV::from_slices(slices, ndim, inner_shape)
+    }
+
+    fn get_axis_count(&self) -> usize {
+        self.ndim()
     }
 }
 

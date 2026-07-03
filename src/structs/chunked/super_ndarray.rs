@@ -28,11 +28,11 @@ use crate::traits::shape::Shape;
 use crate::traits::type_unions::Float;
 use crate::structs::ndarray::NdArrayIter;
 #[cfg(feature = "views")]
-use crate::structs::ndarray::AxisSel;
+use crate::Vec64;
 #[cfg(all(feature = "views", feature = "select"))]
 use crate::structs::ndarray::gather_obs_impl;
 #[cfg(all(feature = "views", feature = "select"))]
-use crate::traits::selection::{DataSelector, RowSelection};
+use crate::traits::selection::{AxisSelection, DataSelector, RowSelection};
 #[cfg(feature = "views")]
 use crate::structs::views::chunked::super_ndarray_view::SuperNdArrayV;
 #[cfg(feature = "views")]
@@ -185,11 +185,14 @@ impl<T: Float> SuperNdArray<T> {
             }
 
             let take = (base_obs - offset).min(len);
-            let mut sel = vec![AxisSel::Range(offset, offset + take)];
-            for d in 1..batch.ndim() {
-                sel.push(AxisSel::Range(0, batch.shape()[d]));
-            }
-            slices.push(batch.slice(sel));
+            let mut window_shape = vec![take];
+            window_shape.extend_from_slice(&batch.shape()[1..]);
+            slices.push(NdArrayV::new(
+                batch.clone(),
+                offset * batch.strides()[0],
+                &window_shape,
+                batch.strides(),
+            ));
 
             len -= take;
             if len == 0 {
@@ -337,6 +340,69 @@ impl<T: Float> SuperNdArray<T> {
         }
     }
 
+    /// Apply a function to every 1D lane along the given axis, collapsing
+    /// that axis. Each lane arrives as an [`NdArrayV`] and the closure
+    /// returns one value for it, mirroring [`NdArray::apply_axis`].
+    ///
+    /// Lanes along axis 1 and above live inside single batches, so the
+    /// result keeps this array's chunk boundaries. Lanes along axis 0
+    /// cross batch boundaries, so each gathers into a contiguous buffer
+    /// and the result holds one batch with the trailing shape.
+    #[cfg(feature = "views")]
+    pub fn apply_axis(&self, axis: usize, mut f: impl FnMut(NdArrayV<T>) -> T) -> SuperNdArray<T> {
+        assert!(self.ndim >= 2, "apply_axis requires a 2D or higher array");
+        assert!(
+            axis < self.ndim,
+            "apply_axis: axis {} out of bounds for {}D array", axis, self.ndim
+        );
+
+        if axis > 0 {
+            let batches: Vec<NdArray<T>> = self
+                .batches
+                .iter()
+                .map(|b| b.apply_axis(axis, &mut f))
+                .collect();
+            return SuperNdArray::from_batches(batches, self.name.clone());
+        }
+
+        // Axis-0 lanes span batches. Walk the inner positions in
+        // column-major order, gathering each lane batch by batch.
+        let n_obs = self.n_obs();
+        let inner_positions: usize = self.inner_shape.iter().product();
+        let mut results = Vec64::with_capacity(inner_positions);
+        let mut inner_idx = vec![0usize; self.inner_shape.len()];
+        let mut lane_idx = vec![0usize; self.ndim];
+        for _ in 0..inner_positions {
+            let mut lane = Vec64::with_capacity(n_obs);
+            lane_idx[1..].copy_from_slice(&inner_idx);
+            for batch in &self.batches {
+                let obs = batch.shape()[0];
+                for i in 0..obs {
+                    lane_idx[0] = i;
+                    lane.push(batch.get(&lane_idx));
+                }
+            }
+            let lane_arr = NdArray::from_slice(&lane, &[n_obs]);
+            results.push(f(lane_arr.as_view()));
+
+            let mut carry = true;
+            for d in 0..inner_idx.len() {
+                if carry {
+                    inner_idx[d] += 1;
+                    if inner_idx[d] < self.inner_shape[d] {
+                        carry = false;
+                    } else {
+                        inner_idx[d] = 0;
+                    }
+                }
+            }
+        }
+        SuperNdArray::from_batches(
+            vec![NdArray::from_slice(&results, &self.inner_shape)],
+            self.name.clone(),
+        )
+    }
+
     /// Apply a transformation to each batch, producing a new chunked array.
     ///
     /// The closure receives each batch and returns a transformed batch,
@@ -446,6 +512,29 @@ impl<T: Float> SuperNdArray<T> {
 
         *self = SuperNdArray { ndim, inner_shape, batches: new_batches, name };
         Ok(())
+    }
+}
+
+// *** Axis selection: snd.s((1..4, 2)) ****************************
+
+/// Selection across every axis at once. The axis-0 selection windows
+/// across batch boundaries, and trailing-axis selections narrow each
+/// slice. Zero-copy. Delegates to the full-window [`SuperNdArrayV`].
+///
+/// An axis-0 single index keeps the dimension as a one-observation
+/// window, since a chunked view cannot collapse its chunking axis - use
+/// `obs` to collapse a single observation. Trailing single indices
+/// collapse their dimensions as usual.
+#[cfg(all(feature = "views", feature = "select"))]
+impl<T: Float> AxisSelection for SuperNdArray<T> {
+    type View = SuperNdArrayV<T>;
+
+    fn s(&self, selection: &[&dyn DataSelector]) -> SuperNdArrayV<T> {
+        self.slice(0, self.n_obs()).s(selection)
+    }
+
+    fn get_axis_count(&self) -> usize {
+        self.ndim
     }
 }
 
@@ -697,8 +786,34 @@ impl<T: Float> fmt::Debug for SuperNdArray<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(feature = "views", feature = "select"))]
+    use crate::nd;
 
     // *** Row selection and apply *************************************
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn axis_selection_windows_and_narrows() {
+        // col0 = [1..5], col1 = [10..50] across two batches.
+        let snd = SuperNdArray::from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0, 10.0, 20.0], &[2, 2]),
+                NdArray::from_slice(&[3.0, 4.0, 5.0, 30.0, 40.0, 50.0], &[3, 2]),
+            ],
+            "data",
+        );
+        // Axis-0 range crosses the batch boundary, trailing index collapses.
+        let v = snd.s(nd![1..4, 1]);
+        assert_eq!(v.ndim(), 1);
+        assert_eq!(v.n_obs(), 3);
+        assert_eq!(v.get(&[0]), 20.0);
+        assert_eq!(v.get(&[2]), 40.0);
+        // Axis-0 single index keeps the dimension as a one-observation window.
+        let one = snd.s(nd![3, 0..2]);
+        assert_eq!(one.n_obs(), 1);
+        assert_eq!(one.get(&[0, 0]), 4.0);
+        assert_eq!(one.get(&[0, 1]), 40.0);
+    }
 
     #[cfg(all(feature = "views", feature = "select"))]
     #[test]
@@ -762,6 +877,43 @@ mod tests {
         assert_eq!(snd.n_batches(), 2);
         let vals: Vec<f64> = (&snd).into_iter().collect();
         assert_eq!(vals, vec![2.0, 3.0, 4.0]);
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn apply_axis_zero_crosses_batches() {
+        // col0 = [1, 2, 3, 4], col1 = [10, 20, 30, 40] across two batches.
+        let snd = SuperNdArray::from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0, 10.0, 20.0], &[2, 2]),
+                NdArray::from_slice(&[3.0, 4.0, 30.0, 40.0], &[2, 2]),
+            ],
+            "data",
+        );
+        let sums = snd.apply_axis(0, |lane| (&lane).into_iter().sum());
+        assert_eq!(sums.n_batches(), 1);
+        assert_eq!(sums.shape(), vec![2]);
+        assert_eq!(sums.get(&[0]), 10.0);
+        assert_eq!(sums.get(&[1]), 100.0);
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn apply_axis_inner_preserves_chunking() {
+        let snd = SuperNdArray::from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0, 10.0, 20.0], &[2, 2]),
+                NdArray::from_slice(&[3.0, 30.0], &[1, 2]),
+            ],
+            "data",
+        );
+        // Sum each row lane (axis 1) - per-batch, boundaries kept.
+        let row_sums = snd.apply_axis(1, |lane| (&lane).into_iter().sum());
+        assert_eq!(row_sums.n_batches(), 2);
+        assert_eq!(row_sums.shape(), vec![3]);
+        assert_eq!(row_sums.get(&[0]), 11.0);
+        assert_eq!(row_sums.get(&[1]), 22.0);
+        assert_eq!(row_sums.get(&[2]), 33.0);
     }
 
     #[test]

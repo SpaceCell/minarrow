@@ -20,16 +20,19 @@
 //! xa.dim("feature");                      // axis position -> 1
 //! xa.at("feature", 2.0);                 // select by coordinate value
 //! xa.between("observation", 0.0, 50.0);  // coordinate range
-//! xa.select(("lat", 0..3));              // positional selection
+//! xa.select(&[("lat", &(0..3))]);        // positional selection
 //! ```
 
 use std::fmt;
-use std::ops::Range;
 
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::ffi::arrow_dtype::ArrowType;
-use crate::structs::ndarray::{AxisSel, NdArray};
+use crate::structs::ndarray::NdArray;
+#[cfg(all(feature = "views", feature = "select"))]
+use crate::traits::selection::{AxisSelection, DataSelector};
+#[cfg(all(feature = "views", feature = "select"))]
+use std::ops::Range;
 use crate::traits::type_unions::Float;
 use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::{Array, Field, StringArray, Table};
@@ -139,11 +142,11 @@ macro_rules! delegate {
 /// let xa = XArray::new(data, &["obs", "feat"]);
 ///
 /// // Range on one axis - keeps the dimension
-/// let sub = xa.select(("obs", 0..2));
+/// let sub = xa.select(&[("obs", &(0..2))]);
 /// assert_eq!(sub.shape(), vec![2, 2]);
 ///
 /// // Single index collapses the dimension
-/// let col0 = xa.select(("feat", 0));
+/// let col0 = xa.select(&[("feat", &0)]);
 /// assert_eq!(col0.ndim(), 1);
 /// ```
 #[derive(Clone)]
@@ -440,43 +443,37 @@ impl<T: Float> XArray<T> {
     ///
     /// # Examples
     /// ```ignore
-    /// xa.select(("lat", 0..3))                     // single axis range
-    /// xa.select((("lat", 0..3), ("lon", 2)))       // multi-axis mixed
+    /// xa.select(&[("lat", &(0..3))])                  // single axis range
+    /// xa.select(&[("lat", &(0..3)), ("lon", &2)])     // multi-axis mixed
     /// ```
-    #[cfg(feature = "views")]
-    pub fn select<S: IntoAxisSelections>(&self, sel: S) -> XArray<T> {
-        let selections = sel.into_selections();
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub fn select(&self, selection: &[(&str, &dyn DataSelector)]) -> XArray<T> {
         let shape = self.shape();
 
-        let mut nd_sel = Vec::with_capacity(self.ndim());
-        let mut new_axes: Vec<Option<Axis>> = Vec::with_capacity(self.ndim());
-
         // Default: full range on every axis
-        for (i, ax) in self.axes.iter().enumerate() {
-            nd_sel.push(AxisSel::Range(0, shape[i]));
-            new_axes.push(Some(ax.clone()));
-        }
+        let full_ranges: Vec<Range<usize>> = shape.iter().map(|&n| 0..n).collect();
+        let mut refs: Vec<&dyn DataSelector> = full_ranges.iter().map(|r| r as _).collect();
+        let mut new_axes: Vec<Option<Axis>> =
+            self.axes.iter().cloned().map(Some).collect();
 
-        // Apply named selections
-        for (name, axis_sel) in &selections {
+        // Apply named selections. Collapsed axes drop their labels, and
+        // windowed axes carry their coordinates through, narrowed.
+        for (name, sel) in selection {
             let idx = self.dim(name);
-            match axis_sel {
-                AxisSelection::Index(pos) => {
-                    nd_sel[idx] = AxisSel::Index(*pos);
-                    new_axes[idx] = None;
+            refs[idx] = *sel;
+            let (start, end, collapse) = sel.resolve_axis(shape[idx]);
+            if collapse {
+                new_axes[idx] = None;
+            } else {
+                let mut narrowed = Axis::named(&self.axes[idx].name);
+                if let Some(ref coords) = self.axes[idx].coords {
+                    narrowed.coords = Some(coords.slice_clone(start, end - start));
                 }
-                AxisSelection::Range(range) => {
-                    nd_sel[idx] = AxisSel::Range(range.start, range.end);
-                    let mut narrowed = Axis::named(&self.axes[idx].name);
-                    if let Some(ref coords) = self.axes[idx].coords {
-                        narrowed.coords = Some(coords.slice_clone(range.start, range.end - range.start));
-                    }
-                    new_axes[idx] = Some(narrowed);
-                }
+                new_axes[idx] = Some(narrowed);
             }
         }
 
-        let view = self.slice(nd_sel);
+        let view = self.slice(&refs);
         let result_axes: Vec<Axis> = new_axes.into_iter().flatten().collect();
         XArray { data: NdArrayE::View(view), axes: result_axes }
     }
@@ -485,14 +482,14 @@ impl<T: Float> XArray<T> {
     /// owned and view storage. Chunked storage consolidates first, since a
     /// single strided view cannot span separate batch allocations.
     /// For named axis selection, use `.select()` instead.
-    #[cfg(feature = "views")]
-    pub fn slice(&self, sel: Vec<AxisSel>) -> NdArrayV<T> {
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub fn slice(&self, selection: &[&dyn DataSelector]) -> NdArrayV<T> {
         match &self.data {
-            NdArrayE::Owned(nd) => nd.slice(sel),
-            NdArrayE::View(v) => v.slice(sel),
+            NdArrayE::Owned(nd) => nd.slice(selection),
+            NdArrayE::View(v) => v.slice(selection),
             #[cfg(feature = "chunked")]
             NdArrayE::Chunked(snd) => {
-                snd.clone().consolidate().slice(sel)
+                snd.clone().consolidate().slice(selection)
             }
         }
     }
@@ -503,29 +500,29 @@ impl<T: Float> XArray<T> {
 
     /// Select a single position on a named axis by coordinate value.
     /// Collapses that dimension. Returns an error if the value is not found.
-    #[cfg(feature = "views")]
+    #[cfg(all(feature = "views", feature = "select"))]
     pub fn try_at(&self, dim_name: &str, value: f64) -> Result<XArray<T>, MinarrowError> {
         let dim_idx = self.dim(dim_name);
         let pos = self.try_find_coord_pos(dim_idx, value)?;
 
         let shape = self.shape();
-        let mut nd_sel = Vec::with_capacity(self.ndim());
-        let mut new_axes = Vec::with_capacity(self.ndim() - 1);
-        for (i, ax) in self.axes.iter().enumerate() {
-            if i == dim_idx {
-                nd_sel.push(AxisSel::Index(pos));
-            } else {
-                nd_sel.push(AxisSel::Range(0, shape[i]));
-                new_axes.push(ax.clone());
-            }
-        }
+        let full_ranges: Vec<Range<usize>> = shape.iter().map(|&n| 0..n).collect();
+        let mut refs: Vec<&dyn DataSelector> = full_ranges.iter().map(|r| r as _).collect();
+        refs[dim_idx] = &pos;
+        let new_axes: Vec<Axis> = self
+            .axes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != dim_idx)
+            .map(|(_, ax)| ax.clone())
+            .collect();
 
-        let view = self.slice(nd_sel);
+        let view = self.slice(&refs);
         Ok(XArray { data: NdArrayE::View(view), axes: new_axes })
     }
 
     /// Select a single position by coordinate value. Panics if not found.
-    #[cfg(feature = "views")]
+    #[cfg(all(feature = "views", feature = "select"))]
     pub fn at(&self, dim_name: &str, value: f64) -> XArray<T> {
         self.try_at(dim_name, value)
             .unwrap_or_else(|e| panic!("{}", e))
@@ -533,34 +530,39 @@ impl<T: Float> XArray<T> {
 
     /// Select a range by coordinate value bounds (inclusive).
     /// Returns an error if no values fall in the range.
-    #[cfg(feature = "views")]
+    #[cfg(all(feature = "views", feature = "select"))]
     pub fn try_between(&self, dim_name: &str, low: f64, high: f64) -> Result<XArray<T>, MinarrowError> {
         let dim_idx = self.dim(dim_name);
         let (start, end) = self.try_find_coord_range(dim_idx, low, high)?;
 
         let shape = self.shape();
-        let mut nd_sel = Vec::with_capacity(self.ndim());
-        let mut new_axes = Vec::with_capacity(self.ndim());
-        for (i, ax) in self.axes.iter().enumerate() {
-            if i == dim_idx {
-                nd_sel.push(AxisSel::Range(start, end));
-                let mut narrowed = Axis::named(&ax.name);
-                if let Some(ref coords) = ax.coords {
-                    narrowed.coords = Some(coords.slice_clone(start, end - start));
+        let full_ranges: Vec<Range<usize>> = shape.iter().map(|&n| 0..n).collect();
+        let mut refs: Vec<&dyn DataSelector> = full_ranges.iter().map(|r| r as _).collect();
+        let window = start..end;
+        refs[dim_idx] = &window;
+        let new_axes: Vec<Axis> = self
+            .axes
+            .iter()
+            .enumerate()
+            .map(|(i, ax)| {
+                if i == dim_idx {
+                    let mut narrowed = Axis::named(&ax.name);
+                    if let Some(ref coords) = ax.coords {
+                        narrowed.coords = Some(coords.slice_clone(start, end - start));
+                    }
+                    narrowed
+                } else {
+                    ax.clone()
                 }
-                new_axes.push(narrowed);
-            } else {
-                nd_sel.push(AxisSel::Range(0, shape[i]));
-                new_axes.push(ax.clone());
-            }
-        }
+            })
+            .collect();
 
-        let view = self.slice(nd_sel);
+        let view = self.slice(&refs);
         Ok(XArray { data: NdArrayE::View(view), axes: new_axes })
     }
 
     /// Select a range by coordinate value bounds. Panics if no values match.
-    #[cfg(feature = "views")]
+    #[cfg(all(feature = "views", feature = "select"))]
     pub fn between(&self, dim_name: &str, low: f64, high: f64) -> XArray<T> {
         self.try_between(dim_name, low, high)
             .unwrap_or_else(|e| panic!("{}", e))
@@ -734,62 +736,24 @@ impl Axis {
 }
 
 // ****************************************************************
-// AxisSelection - for .select() tuples
-// ****************************************************************
-
-/// Per-axis positional selection: single index or range.
-pub enum AxisSelection {
-    Index(usize),
-    Range(Range<usize>),
-}
-
-impl From<usize> for AxisSelection {
-    fn from(i: usize) -> Self { AxisSelection::Index(i) }
-}
-
-impl From<i32> for AxisSelection {
-    fn from(i: i32) -> Self { AxisSelection::Index(i as usize) }
-}
-
-impl From<Range<usize>> for AxisSelection {
-    fn from(r: Range<usize>) -> Self { AxisSelection::Range(r) }
-}
-
-impl From<Range<i32>> for AxisSelection {
-    fn from(r: Range<i32>) -> Self { AxisSelection::Range(r.start as usize..r.end as usize) }
-}
-
-/// Converts tuples of (&str, selection) into axis selections.
-pub trait IntoAxisSelections {
-    fn into_selections(self) -> Vec<(String, AxisSelection)>;
-}
-
-macro_rules! impl_axis_selections {
-    ($($idx:tt: $T:ident),+) => {
-        impl<$($T: Into<AxisSelection>),+> IntoAxisSelections for ($((&str, $T),)+) {
-            fn into_selections(self) -> Vec<(String, AxisSelection)> {
-                vec![$(( self.$idx.0.to_string(), self.$idx.1.into() )),+]
-            }
-        }
-    };
-}
-
-impl_axis_selections!(0: A);
-impl_axis_selections!(0: A, 1: B);
-impl_axis_selections!(0: A, 1: B, 2: C);
-impl_axis_selections!(0: A, 1: B, 2: C, 3: D);
-impl_axis_selections!(0: A, 1: B, 2: C, 3: D, 4: E);
-impl_axis_selections!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F);
-
-impl<T: Into<AxisSelection>> IntoAxisSelections for (&str, T) {
-    fn into_selections(self) -> Vec<(String, AxisSelection)> {
-        vec![(self.0.to_string(), self.1.into())]
-    }
-}
-
-// ****************************************************************
 // Trait implementations
 // ****************************************************************
+
+/// Positional selection across every axis at once, delegating to `slice`.
+/// The result is an unlabelled view. For named-axis selection with the
+/// labels carried through, use `.select()`.
+#[cfg(all(feature = "views", feature = "select"))]
+impl<T: Float> AxisSelection for XArray<T> {
+    type View = NdArrayV<T>;
+
+    fn s(&self, selection: &[&dyn DataSelector]) -> NdArrayV<T> {
+        self.slice(selection)
+    }
+
+    fn get_axis_count(&self) -> usize {
+        self.ndim()
+    }
+}
 
 impl<T: Float> Shape for XArray<T> {
     fn shape(&self) -> ShapeDim {
@@ -929,8 +893,23 @@ impl TryFrom<Table> for XArray<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(feature = "views", feature = "select"))]
+    use crate::nd;
     use std::sync::Arc;
     use crate::{FloatArray, NumericArray, FieldArray};
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn axis_selection_positional() {
+        let xa = XArray::new(
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]),
+            &["obs", "feat"],
+        );
+        let v = xa.s(nd![0..2, 1]);
+        assert_eq!(v.shape(), &[2]);
+        assert_eq!(v.get(&[0]), 4.0);
+        assert_eq!(v.get(&[1]), 5.0);
+    }
 
     #[test]
     fn apply_preserves_axes() {
@@ -957,7 +936,7 @@ mod tests {
     #[should_panic(expected = "cannot mutate a view")]
     fn apply_mut_view_panics() {
         let base = XArray::new(NdArray::from_slice(&[1.0, 2.0], &[2]), &["t"]);
-        let mut view = base.select(("t", 0..2));
+        let mut view = base.select(&[("t", &(0..2))]);
         view.apply_mut(|x| x + 1.0);
     }
 
@@ -971,7 +950,7 @@ mod tests {
         let xa = XArray::new(data, &["obs", "feat"]);
         assert_eq!(xa.get(&[0, 0]), 1.0f32);
         assert_eq!(xa.get(&[2, 1]), 6.0f32);
-        let sub = xa.select(("obs", 0..2));
+        let sub = xa.select(&[("obs", &(0..2))]);
         assert_eq!(sub.shape(), vec![2, 2]);
         assert_eq!(sub.get(&[1, 1]), 5.0f32);
     }
@@ -1071,7 +1050,7 @@ mod tests {
     #[test]
     fn select_range() {
         let xa = XArray::new(make_2d(), &["obs", "feat"]);
-        let result = xa.select(("obs", 0..2));
+        let result = xa.select(&[("obs", &(0..2))]);
         assert_eq!(result.shape(), &[2, 2]);
         assert_eq!(result.dim_names(), vec!["obs", "feat"]);
         assert!(!result.is_owned());
@@ -1081,7 +1060,7 @@ mod tests {
     #[test]
     fn select_index_collapses() {
         let xa = XArray::new(make_2d(), &["obs", "feat"]);
-        let result = xa.select(("feat", 0));
+        let result = xa.select(&[("feat", &0)]);
         assert_eq!(result.ndim(), 1);
         assert_eq!(result.dim_names(), vec!["obs"]);
         let vals: Vec<f64> = (&result).into_iter().collect();
@@ -1092,7 +1071,7 @@ mod tests {
     #[test]
     fn select_multi_axis() {
         let xa = XArray::new(make_2d(), &["obs", "feat"]);
-        let result = xa.select((("obs", 1..3), ("feat", 1)));
+        let result = xa.select(&[("obs", &(1..3)), ("feat", &1)]);
         assert_eq!(result.ndim(), 1);
         assert_eq!(result.dim_names(), vec!["obs"]);
         let vals: Vec<f64> = (&result).into_iter().collect();
@@ -1107,7 +1086,7 @@ mod tests {
             &["obs", "feat"],
         );
         xa.assign_coords("obs", float_coords(&[10.0, 20.0, 30.0, 40.0]));
-        let result = xa.select(("obs", 1..3));
+        let result = xa.select(&[("obs", &(1..3))]);
         let coords = result.ax("obs").coords.as_ref().unwrap();
         assert_eq!(coords.len(), 2);
     }
@@ -1256,7 +1235,7 @@ mod tests {
     #[test]
     fn select_produces_view_debug() {
         let xa = XArray::new(make_2d(), &["obs", "feat"]);
-        let result = xa.select(("obs", 0..2));
+        let result = xa.select(&[("obs", &(0..2))]);
         assert!(!result.is_owned());
         assert!(format!("{:?}", result).contains("view"));
     }
@@ -1266,7 +1245,7 @@ mod tests {
         #[cfg(feature = "views")]
         {
             let xa = XArray::new(make_2d(), &["obs", "feat"]);
-            let view = xa.select(("obs", 0..2));
+            let view = xa.select(&[("obs", &(0..2))]);
             assert!(!view.is_owned());
             let owned = view.to_owned();
             assert!(owned.is_owned());

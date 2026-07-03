@@ -12,11 +12,13 @@ use std::ops::Index;
 #[cfg(feature = "matrix")]
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
-use crate::structs::ndarray::{AxisSel, IntoSlice, NdArray, NdArrayIter, NdDims, offset_of_impl};
+use crate::structs::ndarray::{NdArray, NdArrayIter, NdDims, offset_of_impl};
 #[cfg(feature = "select")]
 use crate::structs::ndarray::gather_obs_impl;
 #[cfg(feature = "select")]
-use crate::traits::selection::{DataSelector, RowSelection};
+use crate::traits::selection::{AxisSelection, DataSelector, RowSelection};
+#[cfg(feature = "select")]
+use std::ops::Range;
 use crate::traits::shape::Shape;
 use crate::traits::type_unions::Float;
 use crate::Vec64;
@@ -32,9 +34,9 @@ use crate::structs::matrix::Matrix;
 /// permutation without copying the underlying data.
 #[derive(Clone)]
 pub struct NdArrayV<T> {
-    source: NdArray<T>,
-    offset: usize,
-    dims: NdDims,
+    pub(crate) source: NdArray<T>,
+    pub(crate) offset: usize,
+    pub(crate) dims: NdDims,
 }
 
 impl<T: Float> NdArrayV<T> {
@@ -153,33 +155,33 @@ impl<T: Float> NdArrayV<T> {
         NdArrayV::new(self.source.clone(), new_offset, &shape[1..], &strides[1..])
     }
 
-    /// Slice this view, producing a sub-view. Zero-copy - shares the
-    /// same backing buffer, just adjusts offset and dims.
-    pub fn slice<S: IntoSlice>(&self, sel: S) -> NdArrayV<T> {
-        let axes = sel.into_slice();
+    /// Slice this view, producing a sub-view. Each axis takes any
+    /// [`DataSelector`] - a single index collapses that dimension, and a
+    /// contiguous range keeps it. Zero-copy - shares the same backing
+    /// buffer, just adjusts offset and dims.
+    #[cfg(feature = "select")]
+    pub fn slice(&self, selection: &[&dyn DataSelector]) -> NdArrayV<T> {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
         assert_eq!(
-            axes.len(), shape.len(),
-            "slice(): expected {} axes, got {}", shape.len(), axes.len()
+            selection.len(), shape.len(),
+            "slice(): expected {} axes, got {}", shape.len(), selection.len()
         );
 
         let mut new_offset = self.offset;
         let mut new_shape = Vec::with_capacity(shape.len());
         let mut new_strides = Vec::with_capacity(shape.len());
 
-        for (d, ax) in axes.iter().enumerate() {
-            match ax {
-                AxisSel::Index(i) => {
-                    debug_assert!(*i < shape[d]);
-                    new_offset += i * strides[d];
-                }
-                AxisSel::Range(start, end) => {
-                    debug_assert!(*end <= shape[d]);
-                    new_offset += start * strides[d];
-                    new_shape.push(end - start);
-                    new_strides.push(strides[d]);
-                }
+        for (d, sel) in selection.iter().enumerate() {
+            let (start, end, collapse) = sel.resolve_axis(shape[d]);
+            debug_assert!(
+                end <= shape[d],
+                "slice(): end {} out of bounds for axis {} (size {})", end, d, shape[d]
+            );
+            new_offset += start * strides[d];
+            if !collapse {
+                new_shape.push(end - start);
+                new_strides.push(strides[d]);
             }
         }
 
@@ -281,6 +283,24 @@ impl<T: Float> NdArrayV<T> {
     }
 }
 
+// *** Axis selection: view.s((1..4, 2)) ***************************
+
+/// Selection across every axis at once, delegating to `slice`. Single
+/// indices collapse their dimension, and contiguous ranges keep it.
+/// Zero-copy.
+#[cfg(feature = "select")]
+impl<T: Float> AxisSelection for NdArrayV<T> {
+    type View = NdArrayV<T>;
+
+    fn s(&self, selection: &[&dyn DataSelector]) -> NdArrayV<T> {
+        self.slice(selection)
+    }
+
+    fn get_axis_count(&self) -> usize {
+        self.ndim()
+    }
+}
+
 // *** Row selection: view.r(0..10) ********************************
 
 /// Axis-0 observation selection over a view. Contiguous ranges narrow
@@ -295,11 +315,11 @@ impl<T: Float> RowSelection for NdArrayV<T> {
         let indices = selection.resolve_indices(n_obs);
         if selection.is_contiguous() {
             let start = indices.first().copied().unwrap_or(0);
-            let mut sel = vec![AxisSel::Range(start, start + indices.len())];
-            for d in 1..self.ndim() {
-                sel.push(AxisSel::Range(0, self.dims.shape()[d]));
-            }
-            return self.slice(sel);
+            let ranges: Vec<Range<usize>> = std::iter::once(start..start + indices.len())
+                .chain(self.dims.shape()[1..].iter().map(|&n| 0..n))
+                .collect();
+            let refs: Vec<&dyn DataSelector> = ranges.iter().map(|r| r as _).collect();
+            return self.slice(&refs);
         }
         NdArrayV::from_ndarray(gather_obs_impl(
             &indices,

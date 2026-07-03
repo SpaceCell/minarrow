@@ -357,5 +357,7 @@ pub use traits::datetime_ops::DatetimeOps;
 pub use traits::masked_array::MaskedArray;
 pub use traits::print::Print;
 #[cfg(feature = "select")]
+#[cfg(feature = "ndarray")]
+pub use traits::selection::AxisSelection;
 pub use traits::selection::{ColumnSelection, RowSelection, Selection2D};
 pub use traits::type_unions::{Float, Integer, Numeric, Primitive};

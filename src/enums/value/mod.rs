@@ -39,8 +39,6 @@ use crate::Matrix;
 #[cfg(feature = "ndarray")]
 use crate::NdArray;
 #[cfg(all(feature = "ndarray", feature = "views"))]
-use crate::structs::ndarray::AxisSel;
-#[cfg(all(feature = "ndarray", feature = "views"))]
 use crate::NdArrayV;
 #[cfg(feature = "scalar_type")]
 use crate::Scalar;
@@ -265,19 +263,25 @@ impl Value {
             Value::Matrix(_) => unimplemented!("Matrix slicing"),
             #[cfg(feature = "ndarray")]
             Value::NdArray(nd) => {
-                let mut sel = vec![AxisSel::Range(offset, offset + length)];
-                for d in 1..nd.ndim() {
-                    sel.push(AxisSel::Range(0, nd.shape()[d]));
-                }
-                Value::NdArrayView(Arc::new(nd.slice(sel)))
+                let mut window_shape = vec![length];
+                window_shape.extend_from_slice(&nd.shape()[1..]);
+                Value::NdArrayView(Arc::new(NdArrayV::new(
+                    nd.as_ref().clone(),
+                    offset * nd.strides()[0],
+                    &window_shape,
+                    nd.strides(),
+                )))
             }
             #[cfg(all(feature = "ndarray", feature = "views"))]
             Value::NdArrayView(v) => {
-                let mut sel = vec![AxisSel::Range(offset, offset + length)];
-                for d in 1..v.ndim() {
-                    sel.push(AxisSel::Range(0, v.shape()[d]));
-                }
-                Value::NdArrayView(Arc::new(v.slice(sel)))
+                let mut window_shape = vec![length];
+                window_shape.extend_from_slice(&v.shape()[1..]);
+                Value::NdArrayView(Arc::new(NdArrayV::new(
+                    v.source.clone(),
+                    v.offset + offset * v.strides()[0],
+                    &window_shape,
+                    v.strides(),
+                )))
             }
             #[cfg(all(feature = "ndarray", feature = "chunked"))]
             Value::SuperNdArray(snd) => {

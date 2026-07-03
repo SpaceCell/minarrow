@@ -139,8 +139,9 @@ views = []
 matrix = []
 
 # N-dimensional dense array for scientific and statistical computing.
-# Column-major layout, Buffer<f64>-backed with zero-copy Table/Matrix interop.
-# NaN-based null semantics for BLAS/LAPACK compatibility.
+# Compact column-major layout, generic over f32/f64, with Table/Matrix
+# interop and NaN-based null semantics. Slicing and axis selection are
+# available through the `select` feature.
 ndarray = []
 
 # DLPack tensor interchange for zero-copy sharing with PyTorch, TensorFlow, JAX.

@@ -60,7 +60,7 @@ use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::buffer::Buffer;
 #[cfg(all(feature = "views", feature = "select"))]
-use crate::traits::selection::{DataSelector, RowSelection};
+use crate::traits::selection::{AxisSelection, DataSelector, RowSelection};
 use crate::traits::type_unions::Float;
 use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::{Array, ArrowType, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
@@ -522,29 +522,29 @@ impl<T: Float> NdArray<T> {
         )
     }
 
-    // *** Slicing: arr.slice((1..4, 2..5)) ****************************
+    // *** Slicing: arr.slice(nd![1..4, 2..5]) *************************
 
     /// Slice this array along any combination of axes.
     ///
-    /// Each axis takes either a single index (collapses that dimension)
-    /// or a range (keeps it). Returns a zero-copy `NdArrayV` view that
-    /// holds the parent through the array's shared internal buffer, so
-    /// this is a refcount bump, matching `as_view` and `obs`.
+    /// Each axis takes any [`DataSelector`] - a single index collapses
+    /// that dimension, and a contiguous range keeps it. Returns a
+    /// zero-copy `NdArrayV` view that holds the parent through the
+    /// array's shared internal buffer, so this is a refcount bump,
+    /// matching `as_view` and `obs`.
     ///
     /// # Examples
     /// ```ignore
-    /// arr.slice(2)                  // single index on 1D
-    /// arr.slice((1..4,))            // range on axis 0
-    /// arr.slice((1..4, 2..5))       // range on both axes (2D)
-    /// arr.slice((0..3, 2))          // range on axis 0, single on axis 1
-    /// arr.slice((1, 0..4, 3))       // mixed for 3D
+    /// arr.slice(&[&2])              // single index on 1D
+    /// arr.slice(&[&(1..4)])         // range on axis 0
+    /// arr.slice(nd![1..4, 2..5])    // range on both axes (2D)
+    /// arr.slice(nd![0..3, 2])       // range on axis 0, single on axis 1
+    /// arr.slice(nd![1, 0..4, 3])    // mixed for 3D
     /// ```
-    #[cfg(feature = "views")]
-    pub fn slice<S: IntoSlice>(&self, sel: S) -> NdArrayV<T> {
-        let axes = sel.into_slice();
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub fn slice(&self, selection: &[&dyn DataSelector]) -> NdArrayV<T> {
         assert_eq!(
-            axes.len(), self.ndim(),
-            "slice(): expected {} axes, got {}", self.ndim(), axes.len()
+            selection.len(), self.ndim(),
+            "slice(): expected {} axes, got {}", self.ndim(), selection.len()
         );
 
         let shape = self.dims.shape();
@@ -555,19 +555,16 @@ impl<T: Float> NdArray<T> {
         let mut new_shape = Vec::with_capacity(self.ndim());
         let mut new_strides = Vec::with_capacity(self.ndim());
 
-        for (d, ax) in axes.iter().enumerate() {
-            match ax {
-                AxisSel::Index(i) => {
-                    debug_assert!(*i < shape[d], "s(): index {} out of bounds for axis {} (size {})", i, d, shape[d]);
-                    new_offset += i * strides[d];
-                    // Dimension collapsed, not added to new shape
-                }
-                AxisSel::Range(start, end) => {
-                    debug_assert!(*end <= shape[d], "s(): range end {} out of bounds for axis {} (size {})", end, d, shape[d]);
-                    new_offset += start * strides[d];
-                    new_shape.push(end - start);
-                    new_strides.push(strides[d]);
-                }
+        for (d, sel) in selection.iter().enumerate() {
+            let (start, end, collapse) = sel.resolve_axis(shape[d]);
+            debug_assert!(
+                end <= shape[d],
+                "slice(): end {} out of bounds for axis {} (size {})", end, d, shape[d]
+            );
+            new_offset += start * strides[d];
+            if !collapse {
+                new_shape.push(end - start);
+                new_strides.push(strides[d]);
             }
         }
 
@@ -577,12 +574,7 @@ impl<T: Float> NdArray<T> {
             new_strides.push(1);
         }
 
-        NdArrayV::new(
-            self.clone(),
-            new_offset,
-            &new_shape,
-            &new_strides,
-        )
+        NdArrayV::new(self.clone(), new_offset, &new_shape, &new_strides)
     }
 
     // *** Apply ***************************************************
@@ -852,8 +844,8 @@ pub(crate) enum NdDims {
 }
 
 impl NdDims {
-    /// Build dims from shape slice, computing column-major strides with
-    /// 64-byte alignment on the leading dimension.
+    /// Build dims from a shape slice, computing compact column-major
+    /// strides.
     pub(crate) fn from_shape(shape: &[usize]) -> Self {
         let strides = col_major_strides(shape);
         Self::from_shape_and_strides(shape, &strides)
@@ -937,103 +929,22 @@ impl NdDims {
 }
 
 // ****************************************************************
-// Axis selection for .slice()
+// Axis selection input
 // ****************************************************************
 
-/// Per-axis selector: either a single index that collapses the
-/// dimension, or a range that keeps it.
-#[derive(Debug, Clone)]
-pub enum AxisSel {
-    Index(usize),
-    Range(usize, usize),
-}
-
-impl From<usize> for AxisSel {
-    #[inline]
-    fn from(i: usize) -> Self { AxisSel::Index(i) }
-}
-
-impl From<i32> for AxisSel {
-    #[inline]
-    fn from(i: i32) -> Self { AxisSel::Index(i as usize) }
-}
-
-impl From<Range<usize>> for AxisSel {
-    #[inline]
-    fn from(r: Range<usize>) -> Self { AxisSel::Range(r.start, r.end) }
-}
-
-impl From<Range<i32>> for AxisSel {
-    #[inline]
-    fn from(r: Range<i32>) -> Self { AxisSel::Range(r.start as usize, r.end as usize) }
-}
-
-impl From<RangeTo<usize>> for AxisSel {
-    #[inline]
-    fn from(r: RangeTo<usize>) -> Self { AxisSel::Range(0, r.end) }
-}
-
-impl From<RangeTo<i32>> for AxisSel {
-    #[inline]
-    fn from(r: RangeTo<i32>) -> Self { AxisSel::Range(0, r.end as usize) }
-}
-
-/// Trait for types that can be passed to `.slice()`.
-pub trait IntoSlice {
-    fn into_slice(self) -> Vec<AxisSel>;
-}
-
-impl IntoSlice for usize {
-    fn into_slice(self) -> Vec<AxisSel> { vec![AxisSel::Index(self)] }
-}
-
-impl IntoSlice for i32 {
-    fn into_slice(self) -> Vec<AxisSel> { vec![AxisSel::Index(self as usize)] }
-}
-
-impl IntoSlice for Range<usize> {
-    fn into_slice(self) -> Vec<AxisSel> { vec![AxisSel::Range(self.start, self.end)] }
-}
-
-impl IntoSlice for Range<i32> {
-    fn into_slice(self) -> Vec<AxisSel> { vec![AxisSel::Range(self.start as usize, self.end as usize)] }
-}
-
-impl IntoSlice for &[AxisSel] {
-    fn into_slice(self) -> Vec<AxisSel> { self.to_vec() }
-}
-
-impl IntoSlice for Vec<AxisSel> {
-    fn into_slice(self) -> Vec<AxisSel> { self }
-}
-
-macro_rules! impl_into_slice_tuple {
-    ($($idx:tt: $T:ident),+) => {
-        impl<$($T: Into<AxisSel>),+> IntoSlice for ($($T,)+) {
-            fn into_slice(self) -> Vec<AxisSel> {
-                vec![$(self.$idx.into()),+]
-            }
-        }
-    };
-}
-
-impl_into_slice_tuple!(0: A);
-impl_into_slice_tuple!(0: A, 1: B);
-impl_into_slice_tuple!(0: A, 1: B, 2: C);
-impl_into_slice_tuple!(0: A, 1: B, 2: C, 3: D);
-impl_into_slice_tuple!(0: A, 1: B, 2: C, 3: D, 4: E);
-impl_into_slice_tuple!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F);
-
-/// Build a `Vec<AxisSel>` from mixed indices and ranges for 7+ dimensions.
+/// Build an axis-selection slice from mixed indices and ranges.
+///
+/// Each entry is any [`DataSelector`](crate::DataSelector) - a single
+/// index collapses the dimension, and a contiguous range keeps it.
 ///
 /// # Example
 /// ```ignore
-/// arr.slice(nd![0..3, 2, 1..4, 0, 0..2, 1, 3..7])
+/// arr.slice(nd![0..3, 2, 1..4])
 /// ```
 #[macro_export]
 macro_rules! nd {
     ($($sel:expr),+ $(,)?) => {
-        vec![$($crate::structs::ndarray::AxisSel::from($sel)),+]
+        &[$(&$sel as &dyn $crate::traits::selection::DataSelector),+]
     };
 }
 
@@ -1286,6 +1197,24 @@ impl<T: Float> Concatenate for NdArray<T> {
     }
 }
 
+// *** Axis selection: arr.s((1..4, 2)) ****************************
+
+/// Selection across every axis at once, delegating to `slice`. Single
+/// indices collapse their dimension, and contiguous ranges keep it.
+/// Zero-copy.
+#[cfg(all(feature = "views", feature = "select"))]
+impl<T: Float> AxisSelection for NdArray<T> {
+    type View = NdArrayV<T>;
+
+    fn s(&self, selection: &[&dyn DataSelector]) -> NdArrayV<T> {
+        self.slice(selection)
+    }
+
+    fn get_axis_count(&self) -> usize {
+        self.ndim()
+    }
+}
+
 // *** Row selection: arr.r(0..10) *********************************
 
 /// Axis-0 observation selection. Contiguous ranges return a zero-copy
@@ -1300,11 +1229,11 @@ impl<T: Float> RowSelection for NdArray<T> {
         let indices = selection.resolve_indices(n_obs);
         if selection.is_contiguous() {
             let start = indices.first().copied().unwrap_or(0);
-            let mut sel = vec![AxisSel::Range(start, start + indices.len())];
-            for d in 1..self.ndim() {
-                sel.push(AxisSel::Range(0, self.shape()[d]));
-            }
-            return self.slice(sel);
+            let ranges: Vec<Range<usize>> = std::iter::once(start..start + indices.len())
+                .chain(self.shape()[1..].iter().map(|&n| 0..n))
+                .collect();
+            let refs: Vec<&dyn DataSelector> = ranges.iter().map(|r| r as _).collect();
+            return self.slice(&refs);
         }
         NdArrayV::from_ndarray(gather_obs_impl(
             &indices,
@@ -1797,12 +1726,94 @@ mod tests {
 
     #[cfg(all(feature = "views", feature = "select"))]
     #[test]
+    fn axis_selection_rank10() {
+        let shape = [3, 4, 2, 5, 3, 2, 4, 3, 2, 5];
+        let len: usize = shape.iter().product();
+        let data: Vec<f64> = (0..len).map(|i| i as f64).collect();
+        let a = NdArray::from_slice(&data, &shape);
+
+        // Mixed ranges, single indices, and a full range across all ten axes.
+        let v = a.s(nd![1..3, 0..2, 1, 2..5, .., 0..1, 1..3, 2, 0..2, 3..5]);
+        assert_eq!(v.shape(), &[2, 2, 3, 3, 1, 2, 2, 2]);
+        assert_eq!(
+            v.get(&[0, 0, 0, 0, 0, 0, 0, 0]),
+            a.get(&[1, 0, 1, 2, 0, 0, 1, 2, 0, 3])
+        );
+        assert_eq!(
+            v.get(&[1, 1, 2, 2, 0, 1, 1, 1]),
+            a.get(&[2, 1, 1, 4, 2, 0, 2, 2, 1, 4])
+        );
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn axis_selection_runtime_rank() {
+        // Selections built at runtime for ranks beyond literal syntax.
+        let mut shape = vec![1usize; 100];
+        shape[0] = 3;
+        shape[10] = 4;
+        shape[50] = 5;
+        shape[99] = 2;
+        let len: usize = shape.iter().product();
+        let data: Vec<f64> = (0..len).map(|i| i as f64).collect();
+        let a = NdArray::from_slice(&data, &shape);
+
+        // Full range on every axis, then narrow three and collapse one.
+        let mut sels: Vec<Box<dyn DataSelector>> =
+            shape.iter().map(|&n| Box::new(0..n) as Box<dyn DataSelector>).collect();
+        sels[0] = Box::new(1..3);
+        sels[10] = Box::new(2usize);
+        sels[50] = Box::new(1..4);
+        let refs: Vec<&dyn DataSelector> = sels.iter().map(|s| s.as_ref()).collect();
+
+        let v = a.s(&refs);
+        assert_eq!(v.ndim(), 99);
+        assert_eq!(v.shape()[0], 2);
+        assert_eq!(v.shape()[49], 3);
+        assert_eq!(v.shape()[98], 2);
+
+        let mut view_idx = vec![0usize; 99];
+        view_idx[0] = 1;
+        view_idx[49] = 2;
+        view_idx[98] = 1;
+        let mut source_idx = vec![0usize; 100];
+        source_idx[0] = 2;
+        source_idx[10] = 2;
+        source_idx[50] = 3;
+        source_idx[99] = 1;
+        assert_eq!(v.get(&view_idx), a.get(&source_idx));
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn axis_selection_trait() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        // Range keeps the axis, index collapses it.
+        let v = a.s(nd![1..3, 1]);
+        assert_eq!(v.shape(), &[2]);
+        assert_eq!(v.get(&[0]), 5.0);
+        assert_eq!(v.get(&[1]), 6.0);
+        // Selection composes on the view.
+        let sub = a.s(nd![0..3, 0..2]).s(nd![2, 0..2]);
+        assert_eq!(sub.shape(), &[2]);
+        assert_eq!(sub.get(&[0]), 3.0);
+        assert_eq!(sub.get(&[1]), 6.0);
+        assert_eq!(a.get_axis_count(), 2);
+        assert_eq!(sub.get_axis_count(), 1);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
     fn row_selection_contiguous() {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         let v = a.r(1..3);
         assert_eq!(v.shape(), &[2, 2]);
         assert_eq!(v.get(&[0, 0]), 2.0);
         assert_eq!(v.get(&[1, 1]), 6.0);
+        // The row alias selects a single observation.
+        let single = a.row(2);
+        assert_eq!(single.shape(), &[1, 2]);
+        assert_eq!(single.get(&[0, 1]), 6.0);
     }
 
     #[cfg(all(feature = "views", feature = "select"))]
@@ -2787,7 +2798,7 @@ mod tests {
     #[test]
     fn slice_1d_single_index() {
         let a = NdArray::from_slice(&[10.0, 20.0, 30.0], &[3]);
-        let v = a.slice(1);
+        let v = a.slice(&[&1]);
         assert_eq!(v.shape(), &[1]);
         assert_eq!(v[(0,)], 20.0);
     }
@@ -2796,7 +2807,7 @@ mod tests {
     #[test]
     fn slice_1d_range() {
         let a = NdArray::from_slice(&[10.0, 20.0, 30.0, 40.0], &[4]);
-        let v = a.slice(1..3);
+        let v = a.slice(&[&(1..3)]);
         assert_eq!(v.shape(), &[2]);
         assert_eq!(v[(0,)], 20.0);
         assert_eq!(v[(1,)], 30.0);
@@ -2807,7 +2818,7 @@ mod tests {
     fn slice_2d_row_range_single_col() {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         // Rows 0..2 of column 1
-        let v = a.slice((0..2, 1));
+        let v = a.slice(nd![0..2, 1]);
         assert_eq!(v.shape(), &[2]);
         assert_eq!(v[(0,)], 4.0);
         assert_eq!(v[(1,)], 5.0);
@@ -2818,7 +2829,7 @@ mod tests {
     fn slice_2d_single_row_col_range() {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         // Row 1, columns 0..2 - collapses row axis
-        let v = a.slice((1, 0..2));
+        let v = a.slice(nd![1, 0..2]);
         assert_eq!(v.shape(), &[2]);
         // Should get row 1 values: a[(1,0)]=2.0, a[(1,1)]=5.0
         let vals: Vec<f64> = (&v).into_iter().collect();
@@ -2830,7 +2841,7 @@ mod tests {
     fn slice_2d_both_ranges() {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         // Rows 0..2, columns 0..2 - sub-matrix
-        let v = a.slice((0..2, 0..2));
+        let v = a.slice(nd![0..2, 0..2]);
         assert_eq!(v.shape(), &[2, 2]);
         assert_eq!(v[(0, 0)], 1.0);
         assert_eq!(v[(1, 0)], 2.0);
@@ -2843,7 +2854,7 @@ mod tests {
     fn slice_2d_both_indices_scalar() {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         // Single element as 1D view
-        let v = a.slice((2, 1));
+        let v = a.slice(nd![2, 1]);
         assert_eq!(v.shape(), &[1]);
         assert_eq!(v[(0,)], 6.0);
     }
@@ -2855,7 +2866,7 @@ mod tests {
         let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
         let a = NdArray::from_slice(&data, &[2, 3, 4]);
         // All rows, column 1, slices 0..2
-        let v = a.slice((0..2, 1, 0..2));
+        let v = a.slice(nd![0..2, 1, 0..2]);
         assert_eq!(v.shape(), &[2, 2]);
         // a[(0,1,0)]=3, a[(1,1,0)]=4, a[(0,1,1)]=9, a[(1,1,1)]=10
         assert_eq!(v[(0, 0)], 3.0);
@@ -2878,7 +2889,7 @@ mod tests {
     #[test]
     fn slice_preserves_data_through_iteration() {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
-        let v = a.slice((1..3, 0..2));
+        let v = a.slice(nd![1..3, 0..2]);
         // Sub-matrix: rows 1..3, cols 0..2
         let vals: Vec<f64> = (&v).into_iter().collect();
         assert_eq!(vals, vec![2.0, 3.0, 5.0, 6.0]);
@@ -2890,7 +2901,7 @@ mod tests {
         // Slice rows 2..5 from column 1 of a [10, 2] array
         let data: Vec<f64> = (1..=20).map(|x| x as f64).collect();
         let a = NdArray::from_slice(&data, &[10, 2]);
-        let v = a.slice((2..5, 1));
+        let v = a.slice(nd![2..5, 1]);
         assert_eq!(v.shape(), &[3]);
         assert_eq!(v[(0,)], 13.0);
         assert_eq!(v[(1,)], 14.0);
