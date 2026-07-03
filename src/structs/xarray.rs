@@ -19,6 +19,9 @@
 //! xa.ax("feature");                       // axis metadata
 //! xa.dim("feature");                      // axis position -> 1
 //! xa.at("feature", 2.0);                 // select by coordinate value
+//! xa.at("ticker", "NQ");                 // string coordinates
+//! xa.at("time", 1_700_000_000_000i64);   // datetime tick coordinates
+//! xa.nearest("time", ts);                // closest coordinate
 //! xa.between("observation", 0.0, 50.0);  // coordinate range
 //! xa.select(&[("lat", &(0..3))]);        // positional selection
 //! ```
@@ -31,6 +34,12 @@ use crate::ffi::arrow_dtype::ArrowType;
 use crate::structs::ndarray::NdArray;
 #[cfg(all(feature = "views", feature = "select"))]
 use crate::traits::selection::{AxisSelection, DataSelector};
+#[cfg(all(feature = "views", feature = "select"))]
+use crate::Scalar;
+#[cfg(all(feature = "views", feature = "select"))]
+use crate::{NumericArray, TextArray};
+#[cfg(all(feature = "views", feature = "select", feature = "datetime"))]
+use crate::TemporalArray;
 #[cfg(all(feature = "views", feature = "select"))]
 use std::ops::Range;
 use crate::traits::type_unions::Float;
@@ -499,11 +508,12 @@ impl<T: Float> XArray<T> {
     // ****************************************************************
 
     /// Select a single position on a named axis by coordinate value.
-    /// Collapses that dimension. Returns an error if the value is not found.
+    /// Accepts numeric, string, and datetime values. Collapses that
+    /// dimension. Returns an error if the value is not found.
     #[cfg(all(feature = "views", feature = "select"))]
-    pub fn try_at(&self, dim_name: &str, value: f64) -> Result<XArray<T>, MinarrowError> {
+    pub fn try_at(&self, dim_name: &str, value: impl Into<Scalar>) -> Result<XArray<T>, MinarrowError> {
         let dim_idx = self.dim(dim_name);
-        let pos = self.try_find_coord_pos(dim_idx, value)?;
+        let pos = self.axes[dim_idx].try_coord_pos(&value.into())?;
 
         let shape = self.shape();
         let full_ranges: Vec<Range<usize>> = shape.iter().map(|&n| 0..n).collect();
@@ -523,17 +533,23 @@ impl<T: Float> XArray<T> {
 
     /// Select a single position by coordinate value. Panics if not found.
     #[cfg(all(feature = "views", feature = "select"))]
-    pub fn at(&self, dim_name: &str, value: f64) -> XArray<T> {
+    pub fn at(&self, dim_name: &str, value: impl Into<Scalar>) -> XArray<T> {
         self.try_at(dim_name, value)
             .unwrap_or_else(|e| panic!("{}", e))
     }
 
     /// Select a range by coordinate value bounds (inclusive).
-    /// Returns an error if no values fall in the range.
+    /// Accepts numeric, string, and datetime bounds. Returns an error
+    /// if no values fall in the range.
     #[cfg(all(feature = "views", feature = "select"))]
-    pub fn try_between(&self, dim_name: &str, low: f64, high: f64) -> Result<XArray<T>, MinarrowError> {
+    pub fn try_between(
+        &self,
+        dim_name: &str,
+        low: impl Into<Scalar>,
+        high: impl Into<Scalar>,
+    ) -> Result<XArray<T>, MinarrowError> {
         let dim_idx = self.dim(dim_name);
-        let (start, end) = self.try_find_coord_range(dim_idx, low, high)?;
+        let (start, end) = self.axes[dim_idx].try_coord_range(&low.into(), &high.into())?;
 
         let shape = self.shape();
         let full_ranges: Vec<Range<usize>> = shape.iter().map(|&n| 0..n).collect();
@@ -563,8 +579,46 @@ impl<T: Float> XArray<T> {
 
     /// Select a range by coordinate value bounds. Panics if no values match.
     #[cfg(all(feature = "views", feature = "select"))]
-    pub fn between(&self, dim_name: &str, low: f64, high: f64) -> XArray<T> {
+    pub fn between(
+        &self,
+        dim_name: &str,
+        low: impl Into<Scalar>,
+        high: impl Into<Scalar>,
+    ) -> XArray<T> {
         self.try_between(dim_name, low, high)
+            .unwrap_or_else(|e| panic!("{}", e))
+    }
+
+    /// Select the position whose coordinate is closest to `value` on a
+    /// named axis. Collapses that dimension. Numeric and datetime
+    /// coordinates only, since text has no distance metric. Returns an
+    /// error if the axis has no comparable coordinates.
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub fn try_nearest(&self, dim_name: &str, value: impl Into<Scalar>) -> Result<XArray<T>, MinarrowError> {
+        let dim_idx = self.dim(dim_name);
+        let pos = self.axes[dim_idx].try_coord_nearest(&value.into())?;
+
+        let shape = self.shape();
+        let full_ranges: Vec<Range<usize>> = shape.iter().map(|&n| 0..n).collect();
+        let mut refs: Vec<&dyn DataSelector> = full_ranges.iter().map(|r| r as _).collect();
+        refs[dim_idx] = &pos;
+        let new_axes: Vec<Axis> = self
+            .axes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != dim_idx)
+            .map(|(_, ax)| ax.clone())
+            .collect();
+
+        let view = self.slice(&refs);
+        Ok(XArray { data: NdArrayE::View(view), axes: new_axes })
+    }
+
+    /// Select the position whose coordinate is closest to `value`.
+    /// Panics if the axis has no comparable coordinates.
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub fn nearest(&self, dim_name: &str, value: impl Into<Scalar>) -> XArray<T> {
+        self.try_nearest(dim_name, value)
             .unwrap_or_else(|e| panic!("{}", e))
     }
 
@@ -599,67 +653,6 @@ impl<T: Float> XArray<T> {
         Ok(XArray { data: NdArrayE::Owned(inner), axes: new_axes })
     }
 
-    // ****************************************************************
-    // Internal
-    // ****************************************************************
-
-    /// Find the position of a coordinate value on an axis.
-    fn try_find_coord_pos(&self, dim_idx: usize, value: f64) -> Result<usize, MinarrowError> {
-        let ax = &self.axes[dim_idx];
-        let coords = ax.coords.as_ref().ok_or_else(|| MinarrowError::ShapeError {
-            message: format!("axis '{}' has no coordinates for value lookup", ax.name),
-        })?;
-        let f64_arr = coords.try_num()
-            .map_err(|_| MinarrowError::TypeError {
-                from: "non-numeric", to: "Float64",
-                message: Some(format!("axis '{}' coords are not numeric", ax.name)),
-            })?
-            .try_f64()
-            .map_err(|_| MinarrowError::TypeError {
-                from: "numeric", to: "Float64",
-                message: Some(format!("axis '{}' coords cannot convert to f64", ax.name)),
-            })?;
-        let data = f64_arr.data.as_slice();
-        for i in 0..data.len() {
-            if data[i] == value { return Ok(i); }
-        }
-        Err(MinarrowError::IndexError(
-            format!("value {} not found on axis '{}'", value, ax.name)
-        ))
-    }
-
-    /// Find the start/end positions for a coordinate range on an axis.
-    fn try_find_coord_range(&self, dim_idx: usize, low: f64, high: f64) -> Result<(usize, usize), MinarrowError> {
-        let ax = &self.axes[dim_idx];
-        let coords = ax.coords.as_ref().ok_or_else(|| MinarrowError::ShapeError {
-            message: format!("axis '{}' has no coordinates for range lookup", ax.name),
-        })?;
-        let f64_arr = coords.try_num()
-            .map_err(|_| MinarrowError::TypeError {
-                from: "non-numeric", to: "Float64",
-                message: Some(format!("axis '{}' coords are not numeric", ax.name)),
-            })?
-            .try_f64()
-            .map_err(|_| MinarrowError::TypeError {
-                from: "numeric", to: "Float64",
-                message: Some(format!("axis '{}' coords cannot convert to f64", ax.name)),
-            })?;
-        let data = f64_arr.data.as_slice();
-        let mut start = data.len();
-        let mut end = 0;
-        for i in 0..data.len() {
-            if data[i] >= low && data[i] <= high {
-                if i < start { start = i; }
-                if i + 1 > end { end = i + 1; }
-            }
-        }
-        if start >= end {
-            return Err(MinarrowError::IndexError(
-                format!("no values in [{}, {}] on axis '{}'", low, high, ax.name)
-            ));
-        }
-        Ok((start, end))
-    }
 }
 
 impl XArray<f64> {
@@ -690,10 +683,10 @@ impl XArray<f64> {
 }
 
 // ****************************************************************
-// NdArrayE - owned or view storage
+// NdArrayEnum - owned or view storage
 // ****************************************************************
 
-/// Internal storage: either owned NdArray or zero-copy NdArrayV.
+/// Either owned NdArray or zero-copy NdArrayV.
 /// Enables XArray to be a single type regardless of ownership.
 #[derive(Clone)]
 pub(crate) enum NdArrayE<T> {
@@ -715,12 +708,58 @@ pub(crate) enum NdArrayE<T> {
 ///
 /// The coords array, when present, must have the same length as the
 /// corresponding NdArray dimension. Coordinates may be stored as any
-/// Minarrow Array type, but value-based selection currently resolves
-/// floating-point coordinates only.
+/// Minarrow Array type. Value-based selection resolves numeric, string,
+/// and datetime coordinates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Axis {
     pub name: String,
     pub coords: Option<Array>,
+}
+
+/// Scans a typed coordinate slice and widens `start`/`end` over positions
+/// within the inclusive `[lo, hi]` window.
+#[cfg(all(feature = "views", feature = "select"))]
+macro_rules! coord_window {
+    ($data:expr, $lo:expr, $hi:expr, $domain:ty, $start:ident, $end:ident) => {
+        for (i, &v) in $data.iter().enumerate() {
+            if (v as $domain) >= $lo && (v as $domain) <= $hi {
+                if i < $start { $start = i; }
+                if i + 1 > $end { $end = i + 1; }
+            }
+        }
+    };
+}
+
+/// Scans string-valued coordinates and widens `start`/`end` over positions
+/// within the inclusive lexicographic `[lo, hi]` window.
+#[cfg(all(feature = "views", feature = "select"))]
+macro_rules! coord_window_str {
+    ($arr:expr, $n:expr, $lo:expr, $hi:expr, $start:ident, $end:ident) => {
+        for i in 0..$n {
+            if let Some(s) = $arr.get_str(i) {
+                if s >= $lo && s <= $hi {
+                    if i < $start { $start = i; }
+                    if i + 1 > $end { $end = i + 1; }
+                }
+            }
+        }
+    };
+}
+
+/// Scans a typed coordinate slice for the position with the smallest
+/// distance to the target. Ties resolve to the earliest position.
+#[cfg(all(feature = "views", feature = "select"))]
+macro_rules! coord_nearest {
+    ($data:expr, |$v:ident| $dist:expr) => {{
+        let mut best = None;
+        for (i, &$v) in $data.iter().enumerate() {
+            let dist = $dist;
+            if best.is_none_or(|(_, bd)| dist < bd) {
+                best = Some((i, dist));
+            }
+        }
+        best.map(|(i, _)| i)
+    }};
 }
 
 impl Axis {
@@ -732,6 +771,276 @@ impl Axis {
     /// Named axis with coordinate labels.
     pub fn with_coords(name: impl Into<String>, coords: Array) -> Self {
         Axis { name: name.into(), coords: Some(coords) }
+    }
+
+    /// Position of a coordinate value on this axis. String and
+    /// categorical coordinates match by string equality, datetime
+    /// coordinates by tick value in the axis's time unit, and numeric
+    /// coordinates in their native domain (i64, u64, or f64).
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub(crate) fn try_coord_pos(&self, value: &Scalar) -> Result<usize, MinarrowError> {
+        let coords = self.coords.as_ref().ok_or_else(|| MinarrowError::ShapeError {
+            message: format!("axis '{}' has no coordinates for value lookup", self.name),
+        })?;
+        let n = coords.len();
+        let found = match coords {
+            Array::TextArray(text) => {
+                let target = value.try_str().ok_or_else(|| MinarrowError::TypeError {
+                    from: "scalar", to: "string",
+                    message: Some(format!("axis '{}' holds text coordinates", self.name)),
+                })?;
+                let target = target.as_str();
+                match text {
+                    TextArray::String32(a) => (0..n).find(|&i| a.get_str(i) == Some(target)),
+                    #[cfg(feature = "large_string")]
+                    TextArray::String64(a) => (0..n).find(|&i| a.get_str(i) == Some(target)),
+                    #[cfg(feature = "default_categorical_8")]
+                    TextArray::Categorical8(a) => (0..n).find(|&i| a.get_str(i) == Some(target)),
+                    #[cfg(feature = "extended_categorical")]
+                    TextArray::Categorical16(a) => (0..n).find(|&i| a.get_str(i) == Some(target)),
+                    #[cfg(any(
+                        not(feature = "default_categorical_8"),
+                        feature = "extended_categorical"
+                    ))]
+                    TextArray::Categorical32(a) => (0..n).find(|&i| a.get_str(i) == Some(target)),
+                    #[cfg(feature = "extended_categorical")]
+                    TextArray::Categorical64(a) => (0..n).find(|&i| a.get_str(i) == Some(target)),
+                    TextArray::Null => None,
+                }
+            }
+            Array::NumericArray(num) => match num {
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(a) =>
+                    value.try_i64().and_then(|t| a.data.iter().position(|&v| v as i64 == t)),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(a) =>
+                    value.try_i64().and_then(|t| a.data.iter().position(|&v| v as i64 == t)),
+                NumericArray::Int32(a) =>
+                    value.try_i64().and_then(|t| a.data.iter().position(|&v| v as i64 == t)),
+                NumericArray::Int64(a) =>
+                    value.try_i64().and_then(|t| a.data.iter().position(|&v| v == t)),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(a) =>
+                    value.try_u64().and_then(|t| a.data.iter().position(|&v| v as u64 == t)),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(a) =>
+                    value.try_u64().and_then(|t| a.data.iter().position(|&v| v as u64 == t)),
+                NumericArray::UInt32(a) =>
+                    value.try_u64().and_then(|t| a.data.iter().position(|&v| v as u64 == t)),
+                NumericArray::UInt64(a) =>
+                    value.try_u64().and_then(|t| a.data.iter().position(|&v| v == t)),
+                NumericArray::Float32(a) =>
+                    value.try_f64().and_then(|t| a.data.iter().position(|&v| v as f64 == t)),
+                NumericArray::Float64(a) =>
+                    value.try_f64().and_then(|t| a.data.iter().position(|&v| v == t)),
+                NumericArray::Null => None,
+            },
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(temporal) => {
+                let target = value.try_i64().ok_or_else(|| MinarrowError::TypeError {
+                    from: "scalar", to: "datetime ticks",
+                    message: Some(format!("axis '{}' holds datetime coordinates", self.name)),
+                })?;
+                match temporal {
+                    TemporalArray::Datetime32(a) => a.data.iter().position(|&t| t as i64 == target),
+                    TemporalArray::Datetime64(a) => a.data.iter().position(|&t| t == target),
+                    TemporalArray::Null => None,
+                }
+            }
+            _ => return Err(MinarrowError::TypeError {
+                from: "coordinate array", to: "comparable value",
+                message: Some(format!(
+                    "axis '{}' coordinates do not support value lookup", self.name
+                )),
+            }),
+        };
+        found.ok_or_else(|| MinarrowError::IndexError(format!(
+            "value {:?} not found on axis '{}'", value, self.name
+        )))
+    }
+
+    /// Start and end positions covering all coordinates within the
+    /// inclusive `[low, high]` bounds. String and categorical coordinates
+    /// compare lexicographically, datetime coordinates by tick value, and
+    /// numeric coordinates in their native domain (i64, u64, or f64).
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub(crate) fn try_coord_range(
+        &self,
+        low: &Scalar,
+        high: &Scalar,
+    ) -> Result<(usize, usize), MinarrowError> {
+        let coords = self.coords.as_ref().ok_or_else(|| MinarrowError::ShapeError {
+            message: format!("axis '{}' has no coordinates for range lookup", self.name),
+        })?;
+        let n = coords.len();
+        let mut start = n;
+        let mut end = 0;
+        match coords {
+            Array::TextArray(text) => {
+                let lo = low.try_str().ok_or_else(|| MinarrowError::TypeError {
+                    from: "scalar", to: "string",
+                    message: Some(format!("axis '{}' holds text coordinates", self.name)),
+                })?;
+                let hi = high.try_str().ok_or_else(|| MinarrowError::TypeError {
+                    from: "scalar", to: "string",
+                    message: Some(format!("axis '{}' holds text coordinates", self.name)),
+                })?;
+                let (lo, hi) = (lo.as_str(), hi.as_str());
+                match text {
+                    TextArray::String32(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    #[cfg(feature = "large_string")]
+                    TextArray::String64(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    #[cfg(feature = "default_categorical_8")]
+                    TextArray::Categorical8(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    #[cfg(feature = "extended_categorical")]
+                    TextArray::Categorical16(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    #[cfg(any(
+                        not(feature = "default_categorical_8"),
+                        feature = "extended_categorical"
+                    ))]
+                    TextArray::Categorical32(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    #[cfg(feature = "extended_categorical")]
+                    TextArray::Categorical64(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    TextArray::Null => {}
+                }
+            }
+            Array::NumericArray(num) => match num {
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
+                    coord_window!(a.data, lo, hi, i64, start, end);
+                },
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
+                    coord_window!(a.data, lo, hi, i64, start, end);
+                },
+                NumericArray::Int32(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
+                    coord_window!(a.data, lo, hi, i64, start, end);
+                },
+                NumericArray::Int64(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
+                    coord_window!(a.data, lo, hi, i64, start, end);
+                },
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(a) => if let (Some(lo), Some(hi)) = (low.try_u64(), high.try_u64()) {
+                    coord_window!(a.data, lo, hi, u64, start, end);
+                },
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(a) => if let (Some(lo), Some(hi)) = (low.try_u64(), high.try_u64()) {
+                    coord_window!(a.data, lo, hi, u64, start, end);
+                },
+                NumericArray::UInt32(a) => if let (Some(lo), Some(hi)) = (low.try_u64(), high.try_u64()) {
+                    coord_window!(a.data, lo, hi, u64, start, end);
+                },
+                NumericArray::UInt64(a) => if let (Some(lo), Some(hi)) = (low.try_u64(), high.try_u64()) {
+                    coord_window!(a.data, lo, hi, u64, start, end);
+                },
+                NumericArray::Float32(a) => if let (Some(lo), Some(hi)) = (low.try_f64(), high.try_f64()) {
+                    coord_window!(a.data, lo, hi, f64, start, end);
+                },
+                NumericArray::Float64(a) => if let (Some(lo), Some(hi)) = (low.try_f64(), high.try_f64()) {
+                    coord_window!(a.data, lo, hi, f64, start, end);
+                },
+                NumericArray::Null => {}
+            },
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(temporal) => {
+                let lo = low.try_i64().ok_or_else(|| MinarrowError::TypeError {
+                    from: "scalar", to: "datetime ticks",
+                    message: Some(format!("axis '{}' holds datetime coordinates", self.name)),
+                })?;
+                let hi = high.try_i64().ok_or_else(|| MinarrowError::TypeError {
+                    from: "scalar", to: "datetime ticks",
+                    message: Some(format!("axis '{}' holds datetime coordinates", self.name)),
+                })?;
+                match temporal {
+                    TemporalArray::Datetime32(a) => { coord_window!(a.data, lo, hi, i64, start, end); }
+                    TemporalArray::Datetime64(a) => { coord_window!(a.data, lo, hi, i64, start, end); }
+                    TemporalArray::Null => {}
+                }
+            }
+            _ => return Err(MinarrowError::TypeError {
+                from: "coordinate array", to: "comparable value",
+                message: Some(format!(
+                    "axis '{}' coordinates do not support range lookup", self.name
+                )),
+            }),
+        }
+        if start >= end {
+            return Err(MinarrowError::IndexError(format!(
+                "no values in [{:?}, {:?}] on axis '{}'", low, high, self.name
+            )));
+        }
+        Ok((start, end))
+    }
+
+    /// Position of the coordinate closest to `value`. Numeric coordinates
+    /// measure distance in their native domain (i64, u64, or f64), and
+    /// datetime coordinates as tick difference. String and categorical
+    /// coordinates have no distance metric and return an error - use
+    /// exact lookup instead. Ties resolve to the earliest position.
+    #[cfg(all(feature = "views", feature = "select"))]
+    pub(crate) fn try_coord_nearest(&self, value: &Scalar) -> Result<usize, MinarrowError> {
+        let coords = self.coords.as_ref().ok_or_else(|| MinarrowError::ShapeError {
+            message: format!("axis '{}' has no coordinates for nearest lookup", self.name),
+        })?;
+        let found = match coords {
+            Array::TextArray(_) => return Err(MinarrowError::TypeError {
+                from: "text", to: "numeric",
+                message: Some(format!(
+                    "axis '{}' holds text coordinates with no distance metric - use at",
+                    self.name
+                )),
+            }),
+            Array::NumericArray(num) => match num {
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(a) =>
+                    value.try_i64().and_then(|t| coord_nearest!(a.data, |v| (v as i64).abs_diff(t))),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(a) =>
+                    value.try_i64().and_then(|t| coord_nearest!(a.data, |v| (v as i64).abs_diff(t))),
+                NumericArray::Int32(a) =>
+                    value.try_i64().and_then(|t| coord_nearest!(a.data, |v| (v as i64).abs_diff(t))),
+                NumericArray::Int64(a) =>
+                    value.try_i64().and_then(|t| coord_nearest!(a.data, |v| v.abs_diff(t))),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(a) =>
+                    value.try_u64().and_then(|t| coord_nearest!(a.data, |v| (v as u64).abs_diff(t))),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(a) =>
+                    value.try_u64().and_then(|t| coord_nearest!(a.data, |v| (v as u64).abs_diff(t))),
+                NumericArray::UInt32(a) =>
+                    value.try_u64().and_then(|t| coord_nearest!(a.data, |v| (v as u64).abs_diff(t))),
+                NumericArray::UInt64(a) =>
+                    value.try_u64().and_then(|t| coord_nearest!(a.data, |v| v.abs_diff(t))),
+                NumericArray::Float32(a) =>
+                    value.try_f64().and_then(|t| coord_nearest!(a.data, |v| (v as f64 - t).abs())),
+                NumericArray::Float64(a) =>
+                    value.try_f64().and_then(|t| coord_nearest!(a.data, |v| (v - t).abs())),
+                NumericArray::Null => None,
+            },
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(temporal) => {
+                let target = value.try_i64().ok_or_else(|| MinarrowError::TypeError {
+                    from: "scalar", to: "datetime ticks",
+                    message: Some(format!("axis '{}' holds datetime coordinates", self.name)),
+                })?;
+                match temporal {
+                    TemporalArray::Datetime32(a) =>
+                        coord_nearest!(a.data, |t| (t as i64).abs_diff(target)),
+                    TemporalArray::Datetime64(a) =>
+                        coord_nearest!(a.data, |t| t.abs_diff(target)),
+                    TemporalArray::Null => None,
+                }
+            }
+            _ => return Err(MinarrowError::TypeError {
+                from: "coordinate array", to: "comparable value",
+                message: Some(format!(
+                    "axis '{}' coordinates do not support nearest lookup", self.name
+                )),
+            }),
+        };
+        found.ok_or_else(|| MinarrowError::IndexError(format!(
+            "axis '{}' has no comparable coordinates", self.name
+        )))
     }
 }
 
@@ -1134,6 +1443,139 @@ mod tests {
         let mut xa = XArray::new(make_2d(), &["obs", "feat"]);
         xa.assign_coords("obs", float_coords(&[0.0, 1.0, 2.0]));
         assert!(xa.try_between("obs", 100.0, 200.0).is_err());
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn at_string_coords() {
+        use crate::arr_str32;
+        let mut xa = XArray::new(make_2d(), &["ticker", "feat"]);
+        xa.assign_coords("ticker", arr_str32!(&["ES", "NQ", "CL"]));
+        let result = xa.at("ticker", "NQ");
+        assert_eq!(result.ndim(), 1);
+        assert_eq!(result.dim_names(), vec!["feat"]);
+        let vals: Vec<f64> = (&result).into_iter().collect();
+        assert_eq!(vals, vec![2.0, 5.0]);
+        assert!(xa.try_at("ticker", "ZB").is_err());
+    }
+
+    #[cfg(all(
+        feature = "views",
+        feature = "select",
+        any(not(feature = "default_categorical_8"), feature = "extended_categorical")
+    ))]
+    #[test]
+    fn at_categorical_coords() {
+        use crate::arr_cat32;
+        let mut xa = XArray::new(make_2d(), &["ticker", "feat"]);
+        xa.assign_coords("ticker", arr_cat32!(&["ES", "NQ", "ES"]));
+        let result = xa.at("ticker", "NQ");
+        assert_eq!(result.ndim(), 1);
+        let vals: Vec<f64> = (&result).into_iter().collect();
+        assert_eq!(vals, vec![2.0, 5.0]);
+        assert!(xa.try_at("ticker", "ZB").is_err());
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn coord_lookup_integer_coords() {
+        use crate::arr_i64;
+        let mut xa = XArray::new(make_2d(), &["obs", "feat"]);
+        xa.assign_coords("obs", arr_i64![100, 200, 400]);
+        let result = xa.at("obs", 200);
+        let vals: Vec<f64> = (&result).into_iter().collect();
+        assert_eq!(vals, vec![2.0, 5.0]);
+        let ranged = xa.between("obs", 150, 450);
+        assert_eq!(ranged.shape(), vec![2, 2]);
+        let near = xa.nearest("obs", 230);
+        let vals: Vec<f64> = (&near).into_iter().collect();
+        assert_eq!(vals, vec![2.0, 5.0]);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn between_string_coords() {
+        use crate::arr_str32;
+        let mut xa = XArray::new(make_2d(), &["ticker", "feat"]);
+        xa.assign_coords("ticker", arr_str32!(&["alpha", "bravo", "charlie"]));
+        // Lexicographic inclusive bounds.
+        let result = xa.between("ticker", "bravo", "delta");
+        assert_eq!(result.shape(), vec![2, 2]);
+        let vals: Vec<f64> = (&result).into_iter().take(2).collect();
+        assert_eq!(vals, vec![2.0, 3.0]);
+    }
+
+    #[cfg(all(feature = "views", feature = "select", feature = "datetime"))]
+    #[test]
+    fn at_datetime_coords() {
+        use crate::arr_dt64;
+        use crate::enums::time_units::TimeUnit;
+        let mut xa = XArray::new(make_2d(), &["time", "feat"]);
+        xa.assign_coords("time", arr_dt64!(TimeUnit::Milliseconds; 1_000, 2_000, 3_000));
+        let result = xa.at("time", 2_000);
+        assert_eq!(result.ndim(), 1);
+        let vals: Vec<f64> = (&result).into_iter().collect();
+        assert_eq!(vals, vec![2.0, 5.0]);
+        assert!(xa.try_at("time", 5_000).is_err());
+    }
+
+    #[cfg(all(feature = "views", feature = "select", feature = "datetime"))]
+    #[test]
+    fn between_datetime_coords() {
+        use crate::arr_dt64;
+        use crate::enums::time_units::TimeUnit;
+        let mut xa = XArray::new(make_2d(), &["time", "feat"]);
+        xa.assign_coords("time", arr_dt64!(TimeUnit::Milliseconds; 1_000, 2_000, 3_000));
+        let result = xa.between("time", 1_500, 3_500);
+        assert_eq!(result.shape(), vec![2, 2]);
+        let vals: Vec<f64> = (&result).into_iter().take(2).collect();
+        assert_eq!(vals, vec![2.0, 3.0]);
+    }
+
+    #[cfg(all(feature = "views", feature = "select", feature = "datetime"))]
+    #[test]
+    fn nearest_datetime_coords() {
+        use crate::arr_dt64;
+        use crate::enums::time_units::TimeUnit;
+        let mut xa = XArray::new(make_2d(), &["time", "feat"]);
+        xa.assign_coords("time", arr_dt64!(TimeUnit::Milliseconds; 1_000, 2_000, 4_000));
+        let result = xa.nearest("time", 2_700);
+        let vals: Vec<f64> = (&result).into_iter().collect();
+        assert_eq!(vals, vec![2.0, 5.0]);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn nearest_numeric_coords() {
+        let mut xa = XArray::new(make_2d(), &["obs", "feat"]);
+        xa.assign_coords("obs", float_coords(&[10.0, 20.0, 40.0]));
+        let result = xa.nearest("obs", 24.0);
+        assert_eq!(result.ndim(), 1);
+        let vals: Vec<f64> = (&result).into_iter().collect();
+        assert_eq!(vals, vec![2.0, 5.0]);
+        // Ties resolve to the earliest position.
+        let tied = xa.nearest("obs", 30.0);
+        let vals: Vec<f64> = (&tied).into_iter().collect();
+        assert_eq!(vals, vec![2.0, 5.0]);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn nearest_text_coords_rejected() {
+        use crate::arr_str32;
+        let mut xa = XArray::new(make_2d(), &["ticker", "feat"]);
+        xa.assign_coords("ticker", arr_str32!(&["a", "b", "c"]));
+        assert!(xa.try_nearest("ticker", "b").is_err());
+    }
+
+    #[test]
+    fn axis_equality_includes_coords() {
+        let a = Axis::with_coords("obs", float_coords(&[1.0, 2.0]));
+        let b = Axis::with_coords("obs", float_coords(&[1.0, 2.0]));
+        let c = Axis::with_coords("obs", float_coords(&[1.0, 3.0]));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, Axis::named("obs"));
     }
 
     // *** Transpose ***************************************************

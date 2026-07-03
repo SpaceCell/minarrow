@@ -150,7 +150,8 @@ dlpack = ["ndarray"]
 
 # Labelled N-dimensional array wrapping NdArray with named dimensions
 # and optional coordinate labels per axis. Requires `ndarray` feature.
-xarray = ["ndarray"]
+# Coordinate value lookup resolves through the `Scalar` union.
+xarray = ["ndarray", "scalar_type"]
 
 # Adds `to_apache_arrow()` for casting into that library.
 cast_arrow = ["arrow", "arrow-schema"]
