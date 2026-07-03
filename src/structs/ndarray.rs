@@ -70,7 +70,9 @@ use crate::structs::matrix::{Matrix, aligned_stride};
 #[cfg(feature = "views")]
 use crate::structs::views::ndarray_view::NdArrayV;
 #[cfg(feature = "dlpack")]
-use crate::ffi::dlpack::{export_to_dlpack, DLPackTensor};
+use crate::ffi::dlpack::{
+    export_to_dlpack, export_to_dlpack_versioned, DLPackTensor, DLPackTensorVersioned,
+};
 
 // ****************************************************************
 // NdArray
@@ -688,6 +690,14 @@ impl<T: Float> NdArray<T> {
     #[cfg(feature = "dlpack")]
     pub fn to_dlpack(self) -> DLPackTensor {
         export_to_dlpack(self)
+    }
+
+    /// Export as a DLPack 1.x versioned tensor, carrying the spec version
+    /// and flags fields that PyTorch and JAX negotiate. The read-only
+    /// flag is set when the backing buffer is shared.
+    #[cfg(feature = "dlpack")]
+    pub fn to_dlpack_versioned(self) -> DLPackTensorVersioned {
+        export_to_dlpack_versioned(self)
     }
 
     // *** Parallel iteration (rayon) ******************************

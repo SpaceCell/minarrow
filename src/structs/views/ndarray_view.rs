@@ -19,6 +19,10 @@ use crate::structs::ndarray::gather_obs_impl;
 use crate::traits::selection::{AxisSelection, DataSelector, RowSelection};
 #[cfg(feature = "select")]
 use std::ops::Range;
+#[cfg(feature = "dlpack")]
+use crate::ffi::dlpack::{
+    export_view_to_dlpack, export_view_to_dlpack_versioned, DLPackTensor, DLPackTensorVersioned,
+};
 use crate::traits::shape::Shape;
 use crate::traits::type_unions::Float;
 use crate::Vec64;
@@ -239,6 +243,24 @@ impl<T: Float> NdArrayV<T> {
         shape.swap(a, b);
         strides.swap(a, b);
         NdArrayV::new(self.source.clone(), self.offset, &shape, &strides)
+    }
+
+    // *** Conversions *********************************************
+
+    /// Export this view as a legacy DLPack tensor without copying. The
+    /// window offset carries through DLPack's `byte_offset` field, and
+    /// the view strides carry as element strides.
+    #[cfg(feature = "dlpack")]
+    pub fn to_dlpack(self) -> DLPackTensor {
+        export_view_to_dlpack(self)
+    }
+
+    /// Export this view as a DLPack 1.x versioned tensor without
+    /// copying. The read-only flag is set whenever another reference to
+    /// the source buffer exists.
+    #[cfg(feature = "dlpack")]
+    pub fn to_dlpack_versioned(self) -> DLPackTensorVersioned {
+        export_view_to_dlpack_versioned(self)
     }
 
     // *** Materialisation *****************************************

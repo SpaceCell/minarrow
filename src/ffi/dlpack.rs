@@ -5,9 +5,29 @@
 //! framework boundaries.
 //!
 //! ## Supported protocols
-//! - **DLManagedTensor** (v0.x) - capsule-based ownership transfer
-//! - Export: [`export_to_dlpack`] wraps an NdArray as a DLManagedTensor
-//! - Import: [`import_from_dlpack`] wraps a foreign DLManagedTensor as an NdArray
+//! - **DLManagedTensor** (legacy, pre-1.0) - the capsule payload older
+//!   consumers expect
+//! - **DLManagedTensorVersioned** (DLPack 1.x) - carries the spec version
+//!   and the flags word, including the read-only bit
+//! - Export: [`export_to_dlpack`] / [`export_to_dlpack_versioned`] wrap an
+//!   NdArray, and [`export_view_to_dlpack`] / [`export_view_to_dlpack_versioned`]
+//!   wrap an NdArrayV window without copying
+//! - Import: [`import_from_dlpack`] / [`import_from_dlpack_versioned`] wrap a
+//!   foreign managed tensor as an NdArray
+//!
+//! ## Version negotiation
+//! A Python `__dlpack__(max_version=...)` implementation calls
+//! [`export_to_dlpack_versioned`] when the consumer requests major version 1
+//! or above, and [`export_to_dlpack`] otherwise. The versioned capsule is
+//! named `dltensor_versioned` and the legacy capsule `dltensor`. A consumed
+//! capsule renames with a `used_` prefix per the protocol.
+//!
+//! ## Read-only flag
+//! Versioned exports set `DLPACK_FLAG_BITMASK_READ_ONLY` when the backing
+//! buffer is shared, since a consumer writing through the pointer would be
+//! visible to every other reference. Imported read-only tensors land as
+//! shared buffers, so Minarrow's copy-on-write semantics honour the flag -
+//! the first mutation copies.
 //!
 //! ## Layout compatibility
 //! NdArray's compact column-major layout is expressed through DLPack's
@@ -21,43 +41,86 @@
 //! - DLPack has no null mask concept - NaN-based missing values align with this
 //! - The allocation start is 64-byte aligned, matching the DLPack
 //!   recommendation for aligned data pointers
+//! - Imported foreign buffers that are not 64-byte aligned copy into an
+//!   aligned `Vec64` so the crate's SIMD-alignment invariant holds
 
 use std::ffi::c_void;
+use std::sync::Arc;
 
+use crate::enums::error::MinarrowError;
 use crate::structs::buffer::Buffer;
 use crate::structs::ndarray::NdArray;
 use crate::structs::shared_buffer::SharedBuffer;
+#[cfg(feature = "views")]
+use crate::structs::views::ndarray_view::NdArrayV;
 use crate::traits::type_unions::Float;
 
 // ****************************************************************
 // DLPack C structs (matching the DLPack header)
 // ****************************************************************
 
-/// Device type codes from the DLPack spec.
-#[repr(C)]
+/// The DLPack major version this crate produces and understands.
+pub const DLPACK_MAJOR_VERSION: u32 = 1;
+
+/// The DLPack minor version this crate produces.
+pub const DLPACK_MINOR_VERSION: u32 = 1;
+
+/// Flag bit marking the tensor data as read-only.
+pub const DLPACK_FLAG_BITMASK_READ_ONLY: u64 = 1;
+
+/// Flag bit marking the tensor as a copy of the producer's data.
+pub const DLPACK_FLAG_BITMASK_IS_COPIED: u64 = 2;
+
+/// Flag bit marking sub-byte element types as byte-padded.
+pub const DLPACK_FLAG_BITMASK_IS_SUBBYTE_TYPE_PADDED: u64 = 4;
+
+/// Device type code from the DLPack spec.
+///
+/// Held as a plain integer rather than a Rust enum, since a foreign
+/// producer may send any code the spec defines, including ones added
+/// after this crate was compiled. Reading an unknown discriminant into
+/// a Rust enum would be undefined behaviour.
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DLDeviceType {
-    CPU = 1,
-    CUDA = 2,
-    CUDAHost = 3,
-    ROCm = 10,
-    ROCmHost = 11,
-    Metal = 8,
-    Vulkan = 7,
-    OpenCL = 4,
+pub struct DLDeviceType(pub i32);
+
+impl DLDeviceType {
+    pub const CPU: Self = DLDeviceType(1);
+    pub const CUDA: Self = DLDeviceType(2);
+    pub const CUDA_HOST: Self = DLDeviceType(3);
+    pub const OPENCL: Self = DLDeviceType(4);
+    pub const VULKAN: Self = DLDeviceType(7);
+    pub const METAL: Self = DLDeviceType(8);
+    pub const VPI: Self = DLDeviceType(9);
+    pub const ROCM: Self = DLDeviceType(10);
+    pub const ROCM_HOST: Self = DLDeviceType(11);
+    pub const EXT_DEV: Self = DLDeviceType(12);
+    pub const CUDA_MANAGED: Self = DLDeviceType(13);
+    pub const ONE_API: Self = DLDeviceType(14);
+    pub const WEBGPU: Self = DLDeviceType(15);
+    pub const HEXAGON: Self = DLDeviceType(16);
+    pub const MAIA: Self = DLDeviceType(17);
 }
 
 /// Device descriptor.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DLDevice {
     pub device_type: DLDeviceType,
     pub device_id: i32,
 }
 
+impl DLDevice {
+    /// Host CPU device, id 0. The device every Minarrow buffer lives on,
+    /// and the value a Python `__dlpack_device__` implementation returns.
+    pub const fn cpu() -> Self {
+        DLDevice { device_type: DLDeviceType::CPU, device_id: 0 }
+    }
+}
+
 /// Data type descriptor.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DLDataType {
     /// Type code: 0=int, 1=uint, 2=float, 4=bfloat, 5=complex, 6=bool
     pub code: u8,
@@ -68,8 +131,24 @@ pub struct DLDataType {
 }
 
 impl DLDataType {
+    /// f32 type descriptor.
+    pub const FLOAT32: Self = DLDataType { code: 2, bits: 32, lanes: 1 };
+
     /// f64 type descriptor.
     pub const FLOAT64: Self = DLDataType { code: 2, bits: 64, lanes: 1 };
+
+    /// Float descriptor for a Minarrow element type.
+    pub fn float<T: Float>() -> Self {
+        DLDataType { code: 2, bits: (std::mem::size_of::<T>() * 8) as u8, lanes: 1 }
+    }
+}
+
+/// DLPack spec version carried by the versioned managed tensor.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DLPackVersion {
+    pub major: u32,
+    pub minor: u32,
 }
 
 /// The core DLPack tensor descriptor. Does not own the data.
@@ -91,7 +170,7 @@ pub struct DLTensor {
     pub byte_offset: u64,
 }
 
-/// DLPack v0.x managed tensor with ownership semantics.
+/// DLPack legacy managed tensor with ownership semantics.
 /// The deleter is called when the consumer is done with the tensor.
 #[repr(C)]
 pub struct DLManagedTensor {
@@ -103,84 +182,131 @@ pub struct DLManagedTensor {
 unsafe impl Send for DLManagedTensor {}
 unsafe impl Sync for DLManagedTensor {}
 
+/// DLPack 1.x managed tensor. Extends the legacy layout with the spec
+/// version and a flags word. Field order is ABI - version leads so a
+/// consumer can check compatibility before reading the rest.
+#[repr(C)]
+pub struct DLManagedTensorVersioned {
+    pub version: DLPackVersion,
+    pub manager_ctx: *mut c_void,
+    pub deleter: Option<unsafe extern "C" fn(*mut DLManagedTensorVersioned)>,
+    pub flags: u64,
+    pub dl_tensor: DLTensor,
+}
+
+unsafe impl Send for DLManagedTensorVersioned {}
+unsafe impl Sync for DLManagedTensorVersioned {}
+
 // ****************************************************************
-// Export: NdArray -> DLManagedTensor
+// Export: NdArray / NdArrayV -> managed tensor
 // ****************************************************************
 
-/// Keeps the NdArray and the i64 shape/strides arrays alive for the
-/// lifetime of the exported DLManagedTensor.
-struct DLPackHolder<T> {
-    _ndarray: NdArray<T>,
+/// Keeps the exported source and the i64 shape/strides arrays alive for
+/// the lifetime of the managed tensor.
+struct DLPackHolder<A> {
+    _source: A,
     shape_i64: Vec<i64>,
     strides_i64: Vec<i64>,
 }
 
-/// Export an NdArray as a DLPack managed tensor for zero-copy sharing.
+/// Export an NdArray as a legacy DLPack managed tensor for zero-copy
+/// sharing.
 ///
-/// Returns an `DLPackTensor` that manages the lifecycle. The NdArray's
+/// Returns a [`DLPackTensor`] that manages the lifecycle. The NdArray's
 /// buffer stays alive through its internal shared reference count. When
 /// the owned tensor is dropped, the backing data is released.
 ///
 /// For FFI handoff (e.g. creating a PyCapsule), call `.into_raw()` to
 /// transfer ownership to the consumer.
 pub fn export_to_dlpack<T: Float>(ndarray: NdArray<T>) -> DLPackTensor {
-    let ndim = ndarray.ndim();
-    let shape = ndarray.shape();
-    let strides = ndarray.strides();
-
-    let shape_i64: Vec<i64> = shape.iter().map(|&s| s as i64).collect();
-    let strides_i64: Vec<i64> = strides.iter().map(|&s| s as i64).collect();
-
+    let shape = ndarray.shape().to_vec();
+    let strides = ndarray.strides().to_vec();
     let data_ptr = ndarray.as_slice().as_ptr() as *mut c_void;
+    DLPackTensor::from_parts(ndarray, data_ptr, 0, DLDataType::float::<T>(), &shape, &strides)
+}
 
-    let mut holder = Box::new(DLPackHolder {
-        _ndarray: ndarray,
-        shape_i64,
-        strides_i64,
-    });
+/// Export an NdArray as a DLPack 1.x versioned managed tensor.
+///
+/// Sets `DLPACK_FLAG_BITMASK_READ_ONLY` when the backing buffer is
+/// shared, since a consumer writing through the pointer would be visible
+/// to every other reference. A uniquely owned buffer exports writable.
+pub fn export_to_dlpack_versioned<T: Float>(ndarray: NdArray<T>) -> DLPackTensorVersioned {
+    let read_only = Arc::strong_count(&ndarray.data) > 1 || ndarray.data.is_shared();
+    let flags = if read_only { DLPACK_FLAG_BITMASK_READ_ONLY } else { 0 };
+    let shape = ndarray.shape().to_vec();
+    let strides = ndarray.strides().to_vec();
+    let data_ptr = ndarray.as_slice().as_ptr() as *mut c_void;
+    DLPackTensorVersioned::from_parts(
+        ndarray, data_ptr, 0, DLDataType::float::<T>(), &shape, &strides, flags,
+    )
+}
 
-    let dtype = DLDataType { code: 2, bits: (std::mem::size_of::<T>() * 8) as u8, lanes: 1 };
+/// Export an NdArrayV window as a legacy DLPack managed tensor without
+/// copying. The window offset carries through DLPack's `byte_offset`
+/// field, and the view strides carry as element strides, so sliced,
+/// transposed, and permuted views all hand over zero-copy.
+#[cfg(feature = "views")]
+pub fn export_view_to_dlpack<T: Float>(view: NdArrayV<T>) -> DLPackTensor {
+    let shape = view.shape().to_vec();
+    let strides = view.strides().to_vec();
+    let byte_offset = (view.offset * std::mem::size_of::<T>()) as u64;
+    let data_ptr = view.source.as_slice().as_ptr() as *mut c_void;
+    DLPackTensor::from_parts(view, data_ptr, byte_offset, DLDataType::float::<T>(), &shape, &strides)
+}
 
-    let tensor = DLTensor {
-        data: data_ptr,
-        device: DLDevice { device_type: DLDeviceType::CPU, device_id: 0 },
-        ndim: ndim as i32,
-        dtype,
-        shape: holder.shape_i64.as_mut_ptr(),
-        strides: holder.strides_i64.as_mut_ptr(),
-        byte_offset: 0,
-    };
-
-    let managed = Box::new(DLManagedTensor {
-        dl_tensor: tensor,
-        manager_ctx: Box::into_raw(holder) as *mut c_void,
-        deleter: Some(dlpack_deleter::<T>),
-    });
-
-    DLPackTensor { ptr: Box::into_raw(managed) }
+/// Export an NdArrayV window as a DLPack 1.x versioned managed tensor
+/// without copying. A view shares its source buffer, so the read-only
+/// flag is set whenever another reference to that buffer exists.
+#[cfg(feature = "views")]
+pub fn export_view_to_dlpack_versioned<T: Float>(view: NdArrayV<T>) -> DLPackTensorVersioned {
+    let read_only = Arc::strong_count(&view.source.data) > 1 || view.source.data.is_shared();
+    let flags = if read_only { DLPACK_FLAG_BITMASK_READ_ONLY } else { 0 };
+    let shape = view.shape().to_vec();
+    let strides = view.strides().to_vec();
+    let byte_offset = (view.offset * std::mem::size_of::<T>()) as u64;
+    let data_ptr = view.source.as_slice().as_ptr() as *mut c_void;
+    DLPackTensorVersioned::from_parts(
+        view, data_ptr, byte_offset, DLDataType::float::<T>(), &shape, &strides, flags,
+    )
 }
 
 /// Release callback invoked by the foreign consumer when it is done
-/// with the tensor. Drops the holder which releases the NdArray.
+/// with the tensor. Drops the holder which releases the source.
 ///
 /// # Safety
 /// Must only be called once per DLManagedTensor.
-unsafe extern "C" fn dlpack_deleter<T>(managed: *mut DLManagedTensor) {
+unsafe extern "C" fn dlpack_deleter<A>(managed: *mut DLManagedTensor) {
     if managed.is_null() { return; }
     let managed = unsafe { Box::from_raw(managed) };
     if !managed.manager_ctx.is_null() {
-        let _holder: Box<DLPackHolder<T>> = unsafe {
-            Box::from_raw(managed.manager_ctx as *mut DLPackHolder<T>)
+        let _holder: Box<DLPackHolder<A>> = unsafe {
+            Box::from_raw(managed.manager_ctx as *mut DLPackHolder<A>)
         };
-        // holder drops here, releasing the NdArray
+        // holder drops here, releasing the source
+    }
+}
+
+/// Release callback for the versioned managed tensor.
+///
+/// # Safety
+/// Must only be called once per DLManagedTensorVersioned.
+unsafe extern "C" fn dlpack_deleter_versioned<A>(managed: *mut DLManagedTensorVersioned) {
+    if managed.is_null() { return; }
+    let managed = unsafe { Box::from_raw(managed) };
+    if !managed.manager_ctx.is_null() {
+        let _holder: Box<DLPackHolder<A>> = unsafe {
+            Box::from_raw(managed.manager_ctx as *mut DLPackHolder<A>)
+        };
+        // holder drops here, releasing the source
     }
 }
 
 // ****************************************************************
-// DLPackTensor - safe wrapper with Drop
+// DLPackTensor / DLPackTensorVersioned - safe wrappers with Drop
 // ****************************************************************
 
-/// Safe wrapper owning a DLPack managed tensor. Calls the deleter on drop.
+/// Safe wrapper owning a legacy DLPack managed tensor. Calls the deleter
+/// on drop.
 ///
 /// This is the return type of `NdArray::to_dlpack()`, analogous to how
 /// `to_apache_arrow()` returns an `ArrayRef` that owns its lifecycle.
@@ -189,6 +315,37 @@ pub struct DLPackTensor {
 }
 
 impl DLPackTensor {
+    /// Assemble the managed tensor around a keep-alive source.
+    fn from_parts<A>(
+        source: A,
+        data: *mut c_void,
+        byte_offset: u64,
+        dtype: DLDataType,
+        shape: &[usize],
+        strides: &[usize],
+    ) -> Self {
+        let mut holder = Box::new(DLPackHolder {
+            _source: source,
+            shape_i64: shape.iter().map(|&s| s as i64).collect(),
+            strides_i64: strides.iter().map(|&s| s as i64).collect(),
+        });
+        let tensor = DLTensor {
+            data,
+            device: DLDevice::cpu(),
+            ndim: shape.len() as i32,
+            dtype,
+            shape: holder.shape_i64.as_mut_ptr(),
+            strides: holder.strides_i64.as_mut_ptr(),
+            byte_offset,
+        };
+        let managed = Box::new(DLManagedTensor {
+            dl_tensor: tensor,
+            manager_ctx: Box::into_raw(holder) as *mut c_void,
+            deleter: Some(dlpack_deleter::<A>),
+        });
+        DLPackTensor { ptr: Box::into_raw(managed) }
+    }
+
     /// Raw pointer access for FFI consumers that need to take ownership
     /// e.g. when creating a PyCapsule.
     ///
@@ -219,11 +376,105 @@ impl Drop for DLPackTensor {
     }
 }
 
+/// Safe wrapper owning a DLPack 1.x versioned managed tensor. Calls the
+/// deleter on drop.
+///
+/// This is the return type of `NdArray::to_dlpack_versioned()`, and the
+/// payload a Python `__dlpack__` implementation places in a
+/// `dltensor_versioned` capsule via `.into_raw()`.
+pub struct DLPackTensorVersioned {
+    ptr: *mut DLManagedTensorVersioned,
+}
+
+impl DLPackTensorVersioned {
+    /// Assemble the versioned managed tensor around a keep-alive source.
+    fn from_parts<A>(
+        source: A,
+        data: *mut c_void,
+        byte_offset: u64,
+        dtype: DLDataType,
+        shape: &[usize],
+        strides: &[usize],
+        flags: u64,
+    ) -> Self {
+        let mut holder = Box::new(DLPackHolder {
+            _source: source,
+            shape_i64: shape.iter().map(|&s| s as i64).collect(),
+            strides_i64: strides.iter().map(|&s| s as i64).collect(),
+        });
+        let tensor = DLTensor {
+            data,
+            device: DLDevice::cpu(),
+            ndim: shape.len() as i32,
+            dtype,
+            shape: holder.shape_i64.as_mut_ptr(),
+            strides: holder.strides_i64.as_mut_ptr(),
+            byte_offset,
+        };
+        let managed = Box::new(DLManagedTensorVersioned {
+            version: DLPackVersion {
+                major: DLPACK_MAJOR_VERSION,
+                minor: DLPACK_MINOR_VERSION,
+            },
+            manager_ctx: Box::into_raw(holder) as *mut c_void,
+            deleter: Some(dlpack_deleter_versioned::<A>),
+            flags,
+            dl_tensor: tensor,
+        });
+        DLPackTensorVersioned { ptr: Box::into_raw(managed) }
+    }
+
+    /// Raw pointer access for FFI consumers that need to take ownership
+    /// e.g. when creating a PyCapsule.
+    ///
+    /// After calling this, the DLPackTensorVersioned no longer owns the
+    /// pointer and will not call the deleter on drop. The caller is
+    /// responsible for ensuring the deleter is called.
+    pub fn into_raw(mut self) -> *mut DLManagedTensorVersioned {
+        let ptr = self.ptr;
+        self.ptr = std::ptr::null_mut();
+        ptr
+    }
+
+    /// Access the underlying DLTensor for reading shape, strides, data.
+    pub fn tensor(&self) -> &DLTensor {
+        unsafe { &(*self.ptr).dl_tensor }
+    }
+
+    /// The DLPack spec version stamped on this tensor.
+    pub fn version(&self) -> DLPackVersion {
+        unsafe { (*self.ptr).version }
+    }
+
+    /// The flags word, including `DLPACK_FLAG_BITMASK_READ_ONLY`.
+    pub fn flags(&self) -> u64 {
+        unsafe { (*self.ptr).flags }
+    }
+}
+
+impl Drop for DLPackTensorVersioned {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe {
+                if let Some(deleter) = (*self.ptr).deleter {
+                    deleter(self.ptr);
+                }
+            }
+        }
+    }
+}
+
 // ****************************************************************
-// Import: DLManagedTensor -> NdArray
+// Import: managed tensor -> NdArray
 // ****************************************************************
 
-/// Wrap that owns the foreign DLManagedTensor and calls its deleter on drop.
+/// The foreign managed tensor behind an import, either ABI.
+enum ForeignManaged {
+    Legacy(*mut DLManagedTensor),
+    Versioned(*mut DLManagedTensorVersioned),
+}
+
+/// Owns the foreign managed tensor and calls its deleter on drop.
 ///
 /// The DLPack contract makes the deleter responsible for releasing the
 /// managed tensor allocation, so the raw pointer is held rather than a
@@ -232,7 +483,7 @@ impl Drop for DLPackTensor {
 struct ForeignDLPack {
     ptr: *const u8,
     len_bytes: usize,
-    managed: *mut DLManagedTensor,
+    managed: ForeignManaged,
 }
 
 impl AsRef<[u8]> for ForeignDLPack {
@@ -246,115 +497,133 @@ impl AsRef<[u8]> for ForeignDLPack {
 
 impl Drop for ForeignDLPack {
     fn drop(&mut self) {
-        if self.managed.is_null() {
-            return;
-        }
         unsafe {
-            if let Some(deleter) = (*self.managed).deleter {
-                deleter(self.managed);
+            match self.managed {
+                ForeignManaged::Legacy(m) if !m.is_null() => {
+                    if let Some(deleter) = (*m).deleter {
+                        deleter(m);
+                    }
+                }
+                ForeignManaged::Versioned(m) if !m.is_null() => {
+                    if let Some(deleter) = (*m).deleter {
+                        deleter(m);
+                    }
+                }
+                _ => {}
             }
         }
-        self.managed = std::ptr::null_mut();
+        self.managed = ForeignManaged::Legacy(std::ptr::null_mut());
     }
 }
 
 unsafe impl Send for ForeignDLPack {}
 unsafe impl Sync for ForeignDLPack {}
 
-/// Import a foreign DLManagedTensor as a Minarrow NdArray.
+/// Validation and wrapping pipeline shared by both import entry points.
 ///
-/// Only CPU float tensors matching the element type `T` are supported. The
-/// NdArray takes ownership of the DLManagedTensor and will call its deleter
-/// when dropped.
+/// The guard owns the foreign tensor, so any validation failure drops it
+/// and calls the foreign deleter as the ownership-transfer contract
+/// requires. On the success path the guard moves into the SharedBuffer
+/// and the deleter runs when the NdArray is dropped.
 ///
 /// # Safety
-/// - The DLManagedTensor must be valid and point to accessible CPU memory
-/// - The caller transfers ownership - the tensor must not be used after this call
-/// - The tensor must contain data of element type `T`
-pub unsafe fn import_from_dlpack<T: Float>(managed_ptr: *mut DLManagedTensor) -> Result<NdArray<T>, String> {
-    if managed_ptr.is_null() {
-        return Err("DLPack: null pointer".to_string());
-    }
-
-    // Take ownership of the managed tensor up front. Any early return drops
-    // this guard, which calls the foreign deleter and releases the tensor as
-    // the ownership-transfer contract requires. On the success path the guard
-    // moves into the SharedBuffer instead.
-    let mut foreign = ForeignDLPack {
-        ptr: std::ptr::null(),
-        len_bytes: 0,
-        managed: managed_ptr,
-    };
-
-    let tensor = unsafe { &(*managed_ptr).dl_tensor };
-
-    // Validate device
+/// The DLTensor must belong to the managed tensor held by `foreign` and
+/// point to accessible CPU memory.
+unsafe fn import_dl_tensor<T: Float>(
+    tensor: &DLTensor,
+    mut foreign: ForeignDLPack,
+) -> Result<NdArray<T>, MinarrowError> {
     if tensor.device.device_type != DLDeviceType::CPU {
-        return Err(format!(
-            "DLPack: only CPU tensors supported, got device type {:?}",
-            tensor.device.device_type
-        ));
+        return Err(MinarrowError::BridgeError {
+            source: "dlpack",
+            message: format!(
+                "only CPU tensors are supported, got device type {}",
+                tensor.device.device_type.0
+            ),
+        });
     }
 
-    // Validate dtype
-    if tensor.dtype.code != 2
-        || tensor.dtype.bits != (std::mem::size_of::<T>() * 8) as u8
-        || tensor.dtype.lanes != 1
-    {
-        return Err(format!(
-            "DLPack: dtype mismatch, expected code=2 bits={}, got code={} bits={} lanes={}",
-            std::mem::size_of::<T>() * 8,
-            tensor.dtype.code, tensor.dtype.bits, tensor.dtype.lanes
-        ));
+    let bits = (std::mem::size_of::<T>() * 8) as u8;
+    if tensor.dtype.code != 2 || tensor.dtype.bits != bits || tensor.dtype.lanes != 1 {
+        return Err(MinarrowError::BridgeError {
+            source: "dlpack",
+            message: format!(
+                "dtype mismatch, expected code=2 bits={}, got code={} bits={} lanes={}",
+                bits, tensor.dtype.code, tensor.dtype.bits, tensor.dtype.lanes
+            ),
+        });
     }
 
+    if tensor.ndim <= 0 {
+        return Err(MinarrowError::BridgeError {
+            source: "dlpack",
+            message: format!("tensor requires at least one dimension, got ndim={}", tensor.ndim),
+        });
+    }
     let ndim = tensor.ndim as usize;
-    if ndim == 0 {
-        return Err("DLPack: 0-dimensional tensors not supported".to_string());
+
+    let raw_shape = unsafe { std::slice::from_raw_parts(tensor.shape, ndim) };
+    if raw_shape.iter().any(|&s| s < 0) {
+        return Err(MinarrowError::BridgeError {
+            source: "dlpack",
+            message: format!("negative dimension in shape {:?}", raw_shape),
+        });
     }
+    let shape: Vec<usize> = raw_shape.iter().map(|&s| s as usize).collect();
 
-    // Read shape
-    let shape: Vec<usize> = unsafe {
-        std::slice::from_raw_parts(tensor.shape, ndim)
-            .iter()
-            .map(|&s| s as usize)
-            .collect()
-    };
-
-    // Read strides (null means C-contiguous i.e. row-major)
+    // Null strides mean C-contiguous i.e. row-major.
     let strides: Vec<usize> = if tensor.strides.is_null() {
-        // Row-major strides
         let mut s = vec![1usize; ndim];
         for d in (0..ndim - 1).rev() {
             s[d] = s[d + 1] * shape[d + 1];
         }
         s
     } else {
-        unsafe {
-            std::slice::from_raw_parts(tensor.strides, ndim)
-                .iter()
-                .map(|&s| s as usize)
-                .collect()
+        let raw_strides = unsafe { std::slice::from_raw_parts(tensor.strides, ndim) };
+        if raw_strides.iter().any(|&s| s < 0) {
+            return Err(MinarrowError::BridgeError {
+                source: "dlpack",
+                message: format!(
+                    "negative strides {:?} are not representable in NdArray",
+                    raw_strides
+                ),
+            });
         }
+        raw_strides.iter().map(|&s| s as usize).collect()
     };
 
-    // Compute total buffer length needed
-    let max_offset: usize = shape.iter()
-        .zip(strides.iter())
-        .map(|(&s, &st)| if s == 0 { 0 } else { (s - 1) * st })
-        .sum();
-    let buf_len = if shape.iter().any(|&s| s == 0) { 0 } else { max_offset + 1 };
+    // Buffer length required to reach the last element, overflow-checked.
+    let buf_len = if shape.iter().any(|&s| s == 0) {
+        0
+    } else {
+        let mut max_offset = 0usize;
+        for (&s, &st) in shape.iter().zip(strides.iter()) {
+            let contribution = (s - 1).checked_mul(st).ok_or_else(|| MinarrowError::BridgeError {
+                source: "dlpack",
+                message: format!("shape {:?} with strides {:?} overflows the addressable range", shape, strides),
+            })?;
+            max_offset = max_offset.checked_add(contribution).ok_or_else(|| MinarrowError::BridgeError {
+                source: "dlpack",
+                message: format!("shape {:?} with strides {:?} overflows the addressable range", shape, strides),
+            })?;
+        }
+        max_offset + 1
+    };
 
-    // Data pointer with byte offset
-    let data_ptr = unsafe {
-        (tensor.data as *const u8).add(tensor.byte_offset as usize)
-    } as *const T;
+    // Data pointer with byte offset, checked for element alignment. The
+    // 64-byte SIMD alignment is handled downstream - Buffer::from_shared
+    // copies a non-aligned foreign buffer into an aligned Vec64.
+    let data_ptr = unsafe { (tensor.data as *const u8).add(tensor.byte_offset as usize) };
+    if buf_len > 0 && (data_ptr as usize) % std::mem::align_of::<T>() != 0 {
+        return Err(MinarrowError::BridgeError {
+            source: "dlpack",
+            message: format!("data pointer is not aligned for a {}-bit element", bits),
+        });
+    }
 
-    let buf_len_bytes = buf_len * std::mem::size_of::<T>();
-
-    // Record the data window now that shape and strides are known.
-    foreign.ptr = data_ptr as *const u8;
-    foreign.len_bytes = buf_len_bytes;
+    // Record the data window now that shape and strides are validated.
+    foreign.ptr = data_ptr;
+    foreign.len_bytes = buf_len * std::mem::size_of::<T>();
 
     // Wrap into SharedBuffer -> Buffer -> NdArray. The guard moves into the
     // SharedBuffer, so the deleter now runs when the NdArray is dropped.
@@ -364,6 +633,74 @@ pub unsafe fn import_from_dlpack<T: Float>(managed_ptr: *mut DLManagedTensor) ->
     Ok(NdArray::from_buffer(buffer, &shape, &strides))
 }
 
+/// Import a foreign legacy DLManagedTensor as a Minarrow NdArray.
+///
+/// Only CPU float tensors matching the element type `T` are supported. The
+/// NdArray takes ownership of the DLManagedTensor and will call its deleter
+/// when dropped.
+///
+/// # Safety
+/// - The DLManagedTensor must be valid and point to accessible CPU memory
+/// - The caller transfers ownership - the tensor must not be used after this call
+/// - The tensor must contain data of element type `T`
+pub unsafe fn import_from_dlpack<T: Float>(
+    managed_ptr: *mut DLManagedTensor,
+) -> Result<NdArray<T>, MinarrowError> {
+    if managed_ptr.is_null() {
+        return Err(MinarrowError::BridgeError {
+            source: "dlpack",
+            message: "null DLManagedTensor pointer".to_string(),
+        });
+    }
+    let foreign = ForeignDLPack {
+        ptr: std::ptr::null(),
+        len_bytes: 0,
+        managed: ForeignManaged::Legacy(managed_ptr),
+    };
+    let tensor = unsafe { &(*managed_ptr).dl_tensor };
+    unsafe { import_dl_tensor(tensor, foreign) }
+}
+
+/// Import a foreign DLPack 1.x versioned managed tensor as a Minarrow
+/// NdArray.
+///
+/// Rejects tensors stamped with a major version newer than
+/// [`DLPACK_MAJOR_VERSION`]. A tensor carrying the read-only flag lands
+/// as a shared buffer, so the first mutation copies rather than writing
+/// through to the producer's memory.
+///
+/// # Safety
+/// - The DLManagedTensorVersioned must be valid and point to accessible CPU memory
+/// - The caller transfers ownership - the tensor must not be used after this call
+/// - The tensor must contain data of element type `T`
+pub unsafe fn import_from_dlpack_versioned<T: Float>(
+    managed_ptr: *mut DLManagedTensorVersioned,
+) -> Result<NdArray<T>, MinarrowError> {
+    if managed_ptr.is_null() {
+        return Err(MinarrowError::BridgeError {
+            source: "dlpack",
+            message: "null DLManagedTensorVersioned pointer".to_string(),
+        });
+    }
+    let foreign = ForeignDLPack {
+        ptr: std::ptr::null(),
+        len_bytes: 0,
+        managed: ForeignManaged::Versioned(managed_ptr),
+    };
+    let version = unsafe { (*managed_ptr).version };
+    if version.major > DLPACK_MAJOR_VERSION {
+        return Err(MinarrowError::BridgeError {
+            source: "dlpack",
+            message: format!(
+                "DLPack major version {} is newer than the supported {}",
+                version.major, DLPACK_MAJOR_VERSION
+            ),
+        });
+    }
+    let tensor = unsafe { &(*managed_ptr).dl_tensor };
+    unsafe { import_dl_tensor(tensor, foreign) }
+}
+
 // ****************************************************************
 // Tests
 // ****************************************************************
@@ -371,6 +708,8 @@ pub unsafe fn import_from_dlpack<T: Float>(managed_ptr: *mut DLManagedTensor) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(feature = "views", feature = "select"))]
+    use crate::traits::selection::RowSelection;
 
     #[test]
     fn export_roundtrip_1d() {
@@ -520,5 +859,151 @@ mod tests {
         let raw = export_to_dlpack(f32_arr).into_raw();
         let result = unsafe { import_from_dlpack::<f64>(raw) };
         assert!(result.is_err());
+    }
+
+    // *** Versioned ABI ***********************************************
+
+    #[test]
+    fn versioned_roundtrip() {
+        let original = NdArray::from_slice(
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]
+        );
+        let owned = export_to_dlpack_versioned(original);
+        assert_eq!(owned.version().major, DLPACK_MAJOR_VERSION);
+        assert_eq!(owned.version().minor, DLPACK_MINOR_VERSION);
+        assert_eq!(owned.flags(), 0);
+
+        let raw = owned.into_raw();
+        let imported = unsafe { import_from_dlpack_versioned::<f64>(raw) }.unwrap();
+        assert_eq!(imported.shape(), &[3, 2]);
+        assert_eq!(imported.get(&[0, 0]), 1.0);
+        assert_eq!(imported.get(&[2, 1]), 6.0);
+    }
+
+    #[test]
+    fn versioned_read_only_flag_on_shared_buffer() {
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]);
+        let clone = arr.clone();
+        let owned = export_to_dlpack_versioned(clone);
+        assert_ne!(owned.flags() & DLPACK_FLAG_BITMASK_READ_ONLY, 0);
+        // The original still reads its data after the export drops.
+        drop(owned);
+        assert_eq!(arr.get(&[0]), 1.0);
+    }
+
+    #[test]
+    fn versioned_rejects_newer_major() {
+        let arr = NdArray::from_slice(&[1.0, 2.0], &[2]);
+        let raw = export_to_dlpack_versioned(arr).into_raw();
+        unsafe { (*raw).version.major = DLPACK_MAJOR_VERSION + 1 };
+        let result = unsafe { import_from_dlpack_versioned::<f64>(raw) };
+        assert!(result.is_err());
+    }
+
+    // *** View export *************************************************
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn view_export_carries_byte_offset() {
+        let data: Vec<f64> = (1..=10).map(|x| x as f64).collect();
+        let arr = NdArray::from_slice(&data, &[5, 2]);
+        let view = arr.r(2..5);
+        let owned = export_view_to_dlpack(view);
+        let tensor = owned.tensor();
+
+        assert_eq!(tensor.byte_offset, 2 * std::mem::size_of::<f64>() as u64);
+        let shape = unsafe { std::slice::from_raw_parts(tensor.shape, 2) };
+        assert_eq!(shape, &[3, 2]);
+
+        let raw = owned.into_raw();
+        let imported = unsafe { import_from_dlpack::<f64>(raw) }.unwrap();
+        assert_eq!(imported.shape(), &[3, 2]);
+        assert_eq!(imported.get(&[0, 0]), arr.get(&[2, 0]));
+        assert_eq!(imported.get(&[2, 1]), arr.get(&[4, 1]));
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn view_export_versioned_sets_read_only() {
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        // The view shares the source buffer, so the export is read-only.
+        let owned = export_view_to_dlpack_versioned(arr.r(0..2));
+        assert_ne!(owned.flags() & DLPACK_FLAG_BITMASK_READ_ONLY, 0);
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn transposed_view_export_roundtrip() {
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let raw = export_view_to_dlpack(arr.as_view().transpose()).into_raw();
+        let imported = unsafe { import_from_dlpack::<f64>(raw) }.unwrap();
+        assert_eq!(imported.shape(), &[2, 3]);
+        assert_eq!(imported.get(&[0, 0]), arr.get(&[0, 0]));
+        assert_eq!(imported.get(&[1, 2]), arr.get(&[2, 1]));
+    }
+
+    // *** Import validation *******************************************
+
+    #[test]
+    fn import_rejects_negative_shape() {
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let raw = export_to_dlpack(arr).into_raw();
+        unsafe { *(*raw).dl_tensor.shape = -2 };
+        let result = unsafe { import_from_dlpack::<f64>(raw) };
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn import_rejects_negative_strides() {
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let raw = export_to_dlpack(arr).into_raw();
+        unsafe { *(*raw).dl_tensor.strides = -1 };
+        let result = unsafe { import_from_dlpack::<f64>(raw) };
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn import_rejects_misaligned_byte_offset() {
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[4]);
+        let raw = export_to_dlpack(arr).into_raw();
+        unsafe { (*raw).dl_tensor.byte_offset = 4 };
+        let result = unsafe { import_from_dlpack::<f64>(raw) };
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn import_rejects_overflowing_extents() {
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let raw = export_to_dlpack(arr).into_raw();
+        unsafe {
+            *(*raw).dl_tensor.shape = i64::MAX / 4;
+            *(*raw).dl_tensor.strides = i64::MAX / 4;
+        }
+        let result = unsafe { import_from_dlpack::<f64>(raw) };
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn import_rejects_unknown_device() {
+        let arr = NdArray::from_slice(&[1.0, 2.0], &[2]);
+        let raw = export_to_dlpack(arr).into_raw();
+        // kDLCUDAManaged, a code outside the host-memory set.
+        unsafe { (*raw).dl_tensor.device.device_type = DLDeviceType::CUDA_MANAGED };
+        let result = unsafe { import_from_dlpack::<f64>(raw) };
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn import_null_strides_as_row_major() {
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let raw = export_to_dlpack(arr).into_raw();
+        unsafe { (*raw).dl_tensor.strides = std::ptr::null_mut() };
+        let imported = unsafe { import_from_dlpack::<f64>(raw) }.unwrap();
+        assert_eq!(imported.shape(), &[3, 2]);
+        assert_eq!(imported.strides(), &[2, 1]);
+        // Row-major reinterpretation of the buffer.
+        assert_eq!(imported.get(&[0, 0]), 1.0);
+        assert_eq!(imported.get(&[0, 1]), 2.0);
+        assert_eq!(imported.get(&[1, 0]), 3.0);
     }
 }
