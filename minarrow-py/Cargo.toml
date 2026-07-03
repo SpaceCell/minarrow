@@ -25,10 +25,12 @@ pyo3 = { version = "0.23", features = ["abi3-py39"] }
 thiserror = "2"
 
 [features]
-default = ["datetime", "large_string", "scalar_type", "value_type", "cube", "arrow_interop"]
+default = ["datetime", "large_string", "scalar_type", "value_type", "cube", "arrow_interop", "ndarray"]
 extension-module = ["pyo3/extension-module"]
 arrow_interop = ["dep:minarrow-pyo3", "minarrow-pyo3/datetime"]
 simd = ["minarrow/simd"]
+# N-dimensional tensor with DLPack capsule interchange.
+ndarray = ["minarrow/ndarray", "minarrow/dlpack"]
 
 # Embeds a CPython interpreter so Rust can drive Python through `PyLiquid`.
 # Links libpython - use the default non `extension-module` link mode and 

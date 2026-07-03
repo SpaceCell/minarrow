@@ -504,6 +504,17 @@ impl PyTable {
         Self::from_arrow(obj)
     }
 
+    /// Convert numeric columns to a 2D float64 `NdArray`, one column per
+    /// axis-1 entry. From there `to_numpy`, `to_pytorch`, and the other
+    /// DLPack bridges hand the data to each framework.
+    #[cfg(feature = "ndarray")]
+    fn to_ndarray(&self) -> PyResult<crate::ndarray::PyNdArray> {
+        match &self.0 {
+            PyTableInner::Owned(table) => crate::ndarray::ndarray_from_table(table),
+            PyTableInner::View(view) => crate::ndarray::ndarray_from_table(&view.to_table()),
+        }
+    }
+
     /// Convert to a cuDF `DataFrame` through the Arrow PyCapsule interface. Runs
     /// on GPU and requires the `cudf` package.
     #[cfg(feature = "arrow_interop")]

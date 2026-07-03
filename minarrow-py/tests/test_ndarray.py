@@ -1,0 +1,195 @@
+"""Tests for the native minarrow-py NdArray surface and its DLPack bridges.
+
+Run after `maturin develop`:
+    python -m pytest tests/test_ndarray.py
+
+The framework bridge tests skip when the target library is not installed.
+"""
+
+import pytest
+
+import minarrow as mp
+
+
+# --- Construction and inspection -------------------------------------------
+
+
+def test_construct_and_inspect():
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2])
+    assert a.shape == (3, 2)
+    assert a.strides == (1, 3)
+    assert a.ndim == 2
+    assert a.size == 6
+    assert a.dtype == "float64"
+    assert len(a) == 3
+    assert repr(a) == "NdArray(shape=[3, 2], dtype=float64)"
+
+
+def test_construct_1d_default_shape():
+    a = mp.NdArray([1.0, 2.0, 3.0])
+    assert a.shape == (3,)
+    assert a[1] == 2.0
+
+
+def test_construct_f32():
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0], shape=[2, 2], dtype="float32")
+    assert a.dtype == "float32"
+    assert a[1, 1] == 4.0
+
+
+def test_construct_shape_mismatch():
+    with pytest.raises(ValueError):
+        mp.NdArray([1.0, 2.0, 3.0], shape=[2, 2])
+
+
+def test_construct_bad_dtype():
+    with pytest.raises(ValueError):
+        mp.NdArray([1.0], dtype="int64")
+
+
+def test_getitem_column_major():
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2])
+    assert a[0, 0] == 1.0
+    assert a[2, 0] == 3.0
+    assert a[0, 1] == 4.0
+    assert a[2, 1] == 6.0
+
+
+def test_getitem_out_of_bounds():
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0], shape=[2, 2])
+    with pytest.raises(IndexError):
+        a[2, 0]
+    with pytest.raises(IndexError):
+        a[0]
+
+
+# --- DLPack protocol --------------------------------------------------------
+
+
+def test_dlpack_device():
+    a = mp.NdArray([1.0, 2.0])
+    assert a.__dlpack_device__() == (1, 0)
+
+
+def test_dlpack_capsule_names():
+    a = mp.NdArray([1.0, 2.0, 3.0])
+    legacy = a.__dlpack__()
+    versioned = a.__dlpack__(max_version=(1, 1))
+    assert "dltensor" in repr(legacy)
+    assert "dltensor_versioned" in repr(versioned)
+
+
+def test_dlpack_rejects_foreign_device():
+    a = mp.NdArray([1.0, 2.0])
+    with pytest.raises(ValueError):
+        a.__dlpack__(dl_device=(2, 0))
+
+
+def test_from_dlpack_roundtrip_self():
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2])
+    b = mp.NdArray.from_dlpack(a)
+    assert b.shape == (3, 2)
+    assert b[2, 1] == 6.0
+    assert b.dtype == "float64"
+
+
+def test_from_dlpack_rejects_non_producer():
+    with pytest.raises((ValueError, AttributeError)):
+        mp.NdArray.from_dlpack(object())
+
+
+# --- NumPy bridge -----------------------------------------------------------
+
+
+def test_numpy_roundtrip():
+    np = pytest.importorskip("numpy")
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2])
+    v = np.from_dlpack(a)
+    assert v.shape == (3, 2)
+    assert v[0, 0] == 1.0
+    assert v[2, 1] == 6.0
+
+    back = mp.NdArray.from_dlpack(np.arange(6, dtype="float64").reshape(2, 3))
+    assert back.shape == (2, 3)
+    assert back[0, 0] == 0.0
+    assert back[1, 2] == 5.0
+
+
+def test_to_numpy_method():
+    np = pytest.importorskip("numpy")
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0], shape=[2, 2])
+    v = a.to_numpy()
+    assert isinstance(v, np.ndarray)
+    assert v.dtype == np.float64
+    assert v[1, 1] == 4.0
+
+
+def test_numpy_f32_roundtrip():
+    np = pytest.importorskip("numpy")
+    a = mp.NdArray([1.0, 2.0, 3.0], dtype="float32")
+    v = a.to_numpy()
+    assert v.dtype == np.float32
+    back = mp.NdArray.from_dlpack(np.asarray([1.5, 2.5], dtype="float32"))
+    assert back.dtype == "float32"
+    assert back[1] == 2.5
+
+
+def test_dlpack_copy_is_writable():
+    np = pytest.importorskip("numpy")
+    a = mp.NdArray([1.0, 2.0, 3.0])
+    v = np.from_dlpack(a.__dlpack__(max_version=(1, 1), copy=True))
+    v[0] = 99.0
+    # The copy is independent of the source tensor.
+    assert a[0] == 1.0
+
+
+# --- Framework bridges (skip when the library is absent) --------------------
+
+
+def test_to_pytorch():
+    torch = pytest.importorskip("torch")
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0], shape=[2, 2])
+    t = a.to_pytorch()
+    assert isinstance(t, torch.Tensor)
+    assert t.shape == (2, 2)
+    assert t[1, 1].item() == 4.0
+
+
+def test_to_jax():
+    pytest.importorskip("jax")
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0], shape=[2, 2])
+    t = a.to_jax()
+    assert t.shape == (2, 2)
+    assert float(t[1, 1]) == 4.0
+
+
+def test_to_tensorflow():
+    pytest.importorskip("tensorflow")
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0], shape=[2, 2])
+    t = a.to_tensorflow()
+    assert tuple(t.shape) == (2, 2)
+
+
+def test_to_cupy():
+    cupy = pytest.importorskip("cupy")
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0], shape=[2, 2])
+    t = a.to_cupy()
+    assert t.shape == (2, 2)
+
+
+# --- Table interop ----------------------------------------------------------
+
+
+def test_table_to_ndarray():
+    t = mp.Table({"x": [1.0, 2.0, 3.0], "y": [4.0, 5.0, 6.0]})
+    a = t.to_ndarray()
+    assert a.shape == (3, 2)
+    assert a[0, 0] == 1.0
+    assert a[2, 1] == 6.0
+
+
+def test_ndarray_to_table():
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2])
+    t = a.to_table()
+    assert t.n_rows == 3
+    assert t.n_cols == 2

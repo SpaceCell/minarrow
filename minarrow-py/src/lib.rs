@@ -25,6 +25,8 @@ mod chunked_table;
 mod convert;
 mod dtype;
 mod field;
+#[cfg(feature = "ndarray")]
+mod ndarray;
 #[cfg(feature = "embed")]
 mod pyliquid;
 mod table;
@@ -43,6 +45,8 @@ pub use chunked_table::PyChunkedTable;
 pub use convert::{build_array, resolve_index, scalar_to_py};
 pub use dtype::{dtype_from_arrow, width_from_arrow, DType, TypeClass};
 pub use field::{PyField, PySchema};
+#[cfg(feature = "ndarray")]
+pub use ndarray::{PyNdArray, PyNdArrayInner};
 #[cfg(feature = "embed")]
 pub use pyliquid::{PyInput, PyLiquid};
 pub use table::{build_table, PyTableInner};
@@ -67,6 +71,8 @@ fn minarrow_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<PyArray>()?;
     m.add_class::<PyTable>()?;
+    #[cfg(feature = "ndarray")]
+    m.add_class::<PyNdArray>()?;
     m.add_class::<PyChunkedArray>()?;
     m.add_class::<PyChunkedTable>()?;
     m.add_class::<PyField>()?;
