@@ -146,6 +146,7 @@ pub mod enums {
 pub mod kernels {
     pub mod arithmetic;
     pub mod bitmask;
+    pub mod bitwise;
     #[cfg(feature = "broadcast")]
     pub mod broadcast;
     #[cfg(feature = "datetime_ops")]
