@@ -101,6 +101,20 @@ pub enum LogicalOperator {
     Xor,
 }
 
+/// Bitwise operators for integer values.
+///
+/// These operate on the integer bit patterns element-wise. Unary bitwise
+/// complement is expressed through [`UnaryOperator::Not`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitwiseOperator {
+    /// Bitwise AND (`lhs & rhs`)
+    And,
+    /// Bitwise OR (`lhs | rhs`)
+    Or,
+    /// Bitwise XOR (`lhs ^ rhs`)
+    Xor,
+}
+
 /// Unary operators for single-operand transformations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOperator {
