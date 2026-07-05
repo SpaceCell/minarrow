@@ -562,7 +562,9 @@ macro_rules! cat_to_string {
 
                 for &code in &src.data {
                     let idx = code.to_usize();
-                    let s = &src.unique_values()[idx];
+                    // A code that indexes past the dictionary resolves to the
+                    // empty string rather than indexing out of bounds.
+                    let s = src.unique_values().get(idx).map(|s| s.as_str()).unwrap_or("");
                     let bytes = s.as_bytes();
                     data.extend_from_slice(bytes);
 
