@@ -22,10 +22,10 @@
 //! ## Design
 //!
 //! - One contiguous allocation, fixed capacity, stable base address for the
-//!   buffer's lifetime. `LBuffer` never reallocates; `push` returns
-//!   `Err(value)` once at capacity.
+//!   buffer's lifetime. `LBuffer` never reallocates, and `push` returns
+//!   `Err(value)` when it is at capacity.
 //! - `push` is `&mut self`, so the single-writer invariant is
-//!   compile-enforced.
+//!   compile-time enforced.
 //! - Any number of [`LBufferV`] handles can be created via
 //!   [`LBuffer::view`]. They share the allocation through an `Arc` and may
 //!   outlive the `LBuffer`.
@@ -52,19 +52,18 @@
 //! drops without calling `seal`. The allocation is released through the
 //! shared `Arc` once the `LBuffer` and all views drop.
 //!
-//! ## Validity masks
+//! ## Freezing
+//!
+//! Calling `.freeze()` on a sealed lbuffer turns it into a regular 
+//! `Vec64<T>`-backed `Buffer`. If the buffer isn't already sealed, this
+//! seals it as well.
+//! 
+//! ## Null masks
 //!
 //! [`LBuffer::with_capacity_masked`] pairs the value buffer with a
-//! bit-packed validity buffer. [`LBuffer::push`] and
+//! bit-packed null mask. [`LBuffer::push`] and
 //! [`LBuffer::push_null`] keep the two in step, and
-//! [`LBuffer::as_bitmask`] shares the validity as a [`crate::Bitmask`].
-//!
-//! ## Allocation
-//!
-//! Backing memory is obtained through `Vec64Alloc` (the alias for
-//! `MAllocPg64` under the `mmap` feature). Allocations >= 2 MiB go through
-//! the mmap path and pick up `MADV_HUGEPAGE` automatically; smaller
-//! allocations use the 64-byte aligned heap path.
+//! [`LBuffer::as_bitmask`] shares the null mask as a [`crate::Bitmask`].
 //!
 //! ## Access pattern
 //!
@@ -93,11 +92,12 @@
 //! slice-shaped iteration.
 
 use core::alloc::{Allocator, Layout};
+use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
-use crate::{Bitmask, Buffer, Vec64Alloc};
+use crate::{Bitmask, Buffer, Vec64, Vec64Alloc};
 
 /// # LBuffer
 ///
@@ -108,12 +108,12 @@ use crate::{Bitmask, Buffer, Vec64Alloc};
 /// buffer's lifetime. `push` is `&mut self`, so there is one writer; views
 /// created via [`view`](Self::view) read its published state.
 ///
-/// Dropping the `LBuffer` seals it, so views report sealed via
+/// Note that dropping the `LBuffer` seals it, so views report sealed via
 /// [`LBufferV::is_sealed`] even when [`seal`](Self::seal) was never called.
 pub struct LBuffer<T, const MASK: bool = false> {
     inner: Arc<LBufferInner<T>>,
-    /// Validity buffer for a masked column. `Some` only when `MASK` is true.
-    /// Holds the bit-packed validity bytes plus the [`LMaskTail`] fill
+    /// Null mask buffer for a masked column. `Some` only when `MASK` is true.
+    /// Holds the bit-packed null mask bytes plus the [`LMaskTail`] fill
     /// cursor, and is shared with any [`Bitmask`] created through
     /// [`as_bitmask`](LBuffer::as_bitmask). `None` for an unmasked buffer.
     mask: Option<Arc<LBufferInner<u8>>>,
@@ -133,8 +133,8 @@ struct LBufferInner<T> {
     /// writes will occur; readers `Acquire`-load it. After seal the
     /// published length is fixed and `push` returns `Err`.
     sealed: AtomicBool,
-    /// Fill position of a mask buffer. `Some` only on the cell of a validity
-    /// buffer; `None` on a value buffer. All the validity bytes - settled and
+    /// Fill position of a mask buffer. `Some` only on the cell of a null mask
+    /// buffer; `None` on a value buffer. All the null mask bytes - settled and
     /// the one being filled - live in this cell's allocation; this only
     /// records how far the fill has reached.
     mask_tail: Option<LMaskTail>,
@@ -143,7 +143,7 @@ struct LBufferInner<T> {
 /// Tracks how far a mask buffer has been filled, and marks it as a bit-packed
 /// mask.
 ///
-/// A validity buffer is bit-packed: 8 rows share one byte. The bytes before
+/// A null mask buffer is bit-packed: 8 rows share one byte. The bytes before
 /// the one being filled are settled - never written again - and read as plain
 /// `u8`. The byte being filled is the last used byte of the allocation, held
 /// as an `AtomicU8`. This records its index and how many of its bits are set,
@@ -243,10 +243,10 @@ impl<T> LBuffer<T, false> {
     }
 
     /// Allocate a fixed-capacity *masked* buffer: a value region of
-    /// `capacity` elements plus a bit-packed validity buffer of
+    /// `capacity` elements plus a bit-packed null mask buffer of
     /// `ceil(capacity / 8)` bytes, every bit initialised valid. The handle
     /// writes both halves on each push; [`as_bitmask`](LBuffer::as_bitmask)
-    /// hands out the validity as a [`Bitmask`].
+    /// hands out the null mask as a [`Bitmask`].
     ///
     /// # Panics
     /// Panics if either layout overflows or the allocator returns an error.
@@ -309,7 +309,7 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         unsafe {
             self.inner.base.as_ptr().add(n).write(value);
         }
-        // Advance the validity tail with a valid bit before publishing the
+        // Advance the null mask tail with a valid bit before publishing the
         // value length, so the mask always covers any index a reader can
         // ask for. Const-folded out for an unmasked buffer.
         if MASK {
@@ -320,7 +320,7 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
     }
 
     /// Append a null. Writes `T::default()` into the value slot - the value
-    /// slice still spans it - and clears the corresponding validity bit.
+    /// slice still spans it - and clears the corresponding null mask bit.
     ///
     /// Returns `Err(())` when the buffer is sealed, at capacity, or not a
     /// masked buffer.
@@ -374,7 +374,7 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         Ok(())
     }
 
-    /// Set one validity bit in the last byte and advance the fill position.
+    /// Set one null mask bit in the last byte and advance the fill position.
     /// `valid` keeps the bit set (a fresh byte starts all-valid); a null
     /// clears it. When the byte fills, the position simply advances - the
     /// byte is already in the allocation and becomes settled.
@@ -385,17 +385,17 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         let mask = self
             .mask
             .as_ref()
-            .expect("masked buffer carries a validity cell");
+            .expect("masked buffer carries a null mask cell");
         let tail = mask
             .mask_tail
             .as_ref()
-            .expect("validity buffer carries a tail");
+            .expect("null mask buffer carries a tail");
         let (index, count) = tail.load_relaxed();
         // The byte being filled is the last byte of the allocation, written
         // atomically while it is the one a reader may still be tailing.
         // SAFETY: the value buffer's capacity check bounds the row count, so
         // `index < ceil(capacity / 8)` and `base + index` is within the
-        // validity allocation. The writer (`&mut self`) is the sole mutator,
+        // null mask allocation. The writer (`&mut self`) is the sole mutator,
         // and readers touch this byte only atomically while it is being
         // filled, so atomic access here races nothing.
         let byte = unsafe { AtomicU8::from_ptr(mask.base.as_ptr().add(index)) };
@@ -450,6 +450,67 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         Buffer::from_lbuffer(self.view())
     }
 
+    /// Seal the buffer (if not already sealed) and turn it into a regular
+    /// owned [`Vec64<T>`]-backed [`Buffer<T>`].
+    ///
+    /// With no outstanding views this transfers the backing allocation into
+    /// the `Vec64` without a copy - since an `LBuffer` allocates through
+    /// [`Vec64Alloc`] with `Layout::array::<T>(capacity)`, which is what a
+    /// `Vec64` reconstructs from. If any [`LBufferV`] still shares the
+    /// allocation, the published elements are copied into a fresh buffer
+    /// instead, leaving the shared allocation to be freed when the last view
+    /// drops.
+    pub fn freeze(mut self) -> Buffer<T>
+    where
+        T: Clone
+    {
+        // Only seal if the caller has not already done so - a sealed buffer is
+        // already final, so there is no need to re-finalise the mask byte.
+        if !self.is_sealed() {
+            self.seal();
+        }
+
+        // Move the shared cells out of `self` without running its `Drop`.
+        let this = ManuallyDrop::new(self);
+        // SAFETY: `this` is never used again and never dropped, so reading each
+        // field gives sole logical ownership of the `Arc`.
+        let inner: Arc<LBufferInner<T>> = unsafe { std::ptr::read(&this.inner) };
+        let mask: Option<Arc<LBufferInner<u8>>> = unsafe { std::ptr::read(&this.mask) };
+        // The null mask is not part of the returned value buffer.
+        drop(mask);
+
+        match Arc::try_unwrap(inner) {
+            // Sole owner: hand the backing allocation to a `Vec64` without copying.
+            Ok(cell) => {
+                let cell = ManuallyDrop::new(cell);
+                let len = cell.len.load(Ordering::Acquire);
+                // SAFETY: `base`/`capacity` come from a `Vec64Alloc` allocation
+                // of `Layout::array::<T>(capacity)` - which is what `Vec`
+                // reconstructs from with the same allocator - and the first
+                // `len` elements are initialised. `cell` is wrapped in
+                // `ManuallyDrop` so `LBufferInner::drop` does not also free it.
+                let vec = unsafe {
+                    Vec::from_raw_parts_in(
+                        cell.base.as_ptr(),
+                        len,
+                        cell.capacity,
+                        Vec64Alloc::default()
+                    )
+                };
+                Buffer::from_vec64(Vec64(vec))
+            }
+            // Outstanding views still share the allocation - copy the published
+            // elements into a fresh buffer.
+            Err(cell) => {
+                let len = cell.len.load(Ordering::Acquire);
+                // SAFETY: the first `len` elements are initialised and, once
+                // sealed, immutable for the shared allocation's lifetime.
+                let slice = unsafe { std::slice::from_raw_parts(cell.base.as_ptr(), len) };
+                Buffer::from_slice(slice)
+            }
+        }
+    }
+
     /// Mark this buffer as sealed. After this call, [`push`](Self::push)
     /// returns `Err(value)` and the published length is final. Views
     /// observe the flag via [`LBufferV::is_sealed`].
@@ -475,11 +536,11 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         let tail = mask
             .mask_tail
             .as_ref()
-            .expect("validity buffer carries a tail");
+            .expect("null mask carries a tail");
         let (index, count) = tail.load_relaxed();
         if count > 0 && count < 8 {
             // SAFETY: `index < ceil(capacity / 8)`, so `base + index` is within
-            // the validity allocation. Called from seal/drop with `&mut self`,
+            // the null mask allocation. Called from seal/drop with `&mut self`,
             // so this is the final write to the byte.
             let byte = unsafe { AtomicU8::from_ptr(mask.base.as_ptr().add(index)) };
             let keep = ((1u16 << count) - 1) as u8;
@@ -526,7 +587,7 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
             let dst = self.inner.base.as_ptr().add(n);
             std::ptr::copy_nonoverlapping(values.as_ptr(), dst, take);
         }
-        // A bulk push carries no nulls: advance the validity tail by `take`
+        // A bulk push carries no nulls: advance the null mask tail by `take`
         // valid bits so a masked buffer's mask keeps pace with the values.
         if MASK {
             for _ in 0..take {
@@ -569,7 +630,7 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
 }
 
 impl<T> LBuffer<T, true> {
-    /// The validity as a [`Bitmask`]. The returned mask shares the validity
+    /// The null mask as a [`Bitmask`]. The returned mask shares the null mask
     /// bytes and the [`LMaskTail`] cursor through an `Arc`, the way
     /// [`as_buffer`](LBuffer::as_buffer) shares the values, so it covers
     /// every published element. Suits an array's `null_mask` field
@@ -581,7 +642,7 @@ impl<T> LBuffer<T, true> {
         let mask = self
             .mask
             .as_ref()
-            .expect("masked buffer carries a validity cell");
+            .expect("masked buffer carries a null mask cell");
         Bitmask::from_lbuffer(LBufferV {
             inner: Arc::clone(mask),
         })
@@ -776,6 +837,58 @@ mod tests {
             assert_eq!(v.get(i).copied(), Some(i as u64));
         }
         assert_eq!(v.as_slice(), &(0u64..100).collect::<Vec<_>>()[..]);
+    }
+
+    #[test]
+    fn freeze_transfers_when_sole_owner() {
+        // No outstanding views: freeze seals and hands the allocation to the
+        // returned buffer.
+        let mut buf = LBuffer::<u64>::with_capacity(1024);
+        for i in 0..100u64 {
+            buf.push(i).unwrap();
+        }
+        assert!(!buf.is_sealed());
+        let owned = buf.freeze();
+        assert_eq!(owned.len(), 100);
+        assert_eq!(&owned[..], &(0u64..100).collect::<Vec<_>>()[..]);
+    }
+
+    #[test]
+    fn freeze_copies_when_views_outstanding() {
+        let mut buf = LBuffer::<u64>::with_capacity(16);
+        for i in 0..5u64 {
+            buf.push(i).unwrap();
+        }
+        let view = buf.view();
+        let owned = buf.freeze();
+        assert_eq!(&owned[..], &[0u64, 1, 2, 3, 4]);
+        // The view still shares the original allocation and reads correctly.
+        assert!(view.is_sealed());
+        assert_eq!(view.as_slice(), &[0u64, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn freeze_of_already_sealed_buffer() {
+        let mut buf = LBuffer::<u64>::with_capacity(16);
+        buf.push(1).unwrap();
+        buf.push(2).unwrap();
+        buf.seal();
+        assert!(buf.is_sealed());
+        let owned = buf.freeze();
+        assert_eq!(&owned[..], &[1u64, 2]);
+    }
+
+    #[test]
+    fn freeze_preserves_non_copy_elements() {
+        // A `Clone` (but not `Copy`) element type exercises the copy path's
+        // clone and the transfer path's move-in-place.
+        let mut buf = LBuffer::<String>::with_capacity(8);
+        buf.push("a".to_string()).unwrap();
+        buf.push("bb".to_string()).unwrap();
+        let view = buf.view();
+        let owned = buf.freeze(); // view outstanding -> copy path
+        assert_eq!(&owned[..], &["a".to_string(), "bb".to_string()]);
+        assert_eq!(view.as_slice(), &["a".to_string(), "bb".to_string()]);
     }
 
     #[test]
@@ -1226,7 +1339,7 @@ mod tests {
     }
 
     #[test]
-    fn kernel_validity_merge_over_unsealed_masks() {
+    fn kernel_null_mask_merge_over_unsealed_masks() {
         use crate::kernels::bitmask::merge_bitmasks_to_new;
 
         // Two unsealed masked columns, nulls at different rows.
@@ -1247,7 +1360,7 @@ mod tests {
         let a_mask = a.as_bitmask();
         let b_mask = b.as_bitmask();
 
-        // The exact validity merge the arithmetic/comparison kernels run,
+        // The exact null mask merge the arithmetic/comparison kernels run,
         // reading the unsealed masks via get(), bounded by the published
         // length.
         let merged = merge_bitmasks_to_new(Some(&a_mask), Some(&b_mask), 20).unwrap();
