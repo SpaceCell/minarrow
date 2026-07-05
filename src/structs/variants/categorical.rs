@@ -443,7 +443,9 @@ impl<T: Integer> CategoricalArray<T> {
             return None;
         }
         let dict_idx = self.data[idx].to_usize();
-        Some(&self.unique_values()[dict_idx])
+        // A code that indexes past the dictionary resolves to the empty string
+        // rather than indexing out of bounds.
+        Some(self.unique_values().get(dict_idx).map(|s| s.as_str()).unwrap_or(""))
     }
 
     /// Like `get`, but skips bounds checks.
@@ -621,7 +623,9 @@ impl<T: Integer> CategoricalArray<T> {
                 offsets.push(T::from(data.len()).unwrap());
             } else {
                 let dict_idx = self.data[i].to_usize();
-                let s = &self.unique_values()[dict_idx];
+                // A code that indexes past the dictionary resolves to the empty
+                // string rather than indexing out of bounds.
+                let s = self.unique_values().get(dict_idx).map(|s| s.as_str()).unwrap_or("");
                 data.extend_from_slice(s.as_bytes());
                 offsets.push(T::from(data.len()).unwrap());
             }
@@ -2031,6 +2035,27 @@ mod tests {
         assert_eq!(result.get_str(6), Some("beta"));
         assert_eq!(result.get_str(7), Some("gamma"));
         assert_eq!(result.get_str(8), Some("alpha"));
+    }
+
+    #[test]
+    fn out_of_range_code_resolves_to_empty_string() {
+        // Dictionary holds 2 entries (valid codes 0 and 1); code 5 is out of range.
+        let cat = CategoricalArray::<u32>::from_parts(
+            vec64![0u32, 1, 5],
+            vec64!["a".to_string(), "b".to_string()],
+            None
+        );
+
+        // The accessor resolves the out-of-range code to "" rather than panicking.
+        assert_eq!(cat.get_str(0), Some("a"));
+        assert_eq!(cat.get_str(1), Some("b"));
+        assert_eq!(cat.get_str(2), Some(""));
+
+        // The String cast (the path filters take) does the same.
+        let s: StringArray<u32> = StringArray::try_from(&cat).unwrap();
+        assert_eq!(s.get_str(0), Some("a"));
+        assert_eq!(s.get_str(1), Some("b"));
+        assert_eq!(s.get_str(2), Some(""));
     }
 }
 
