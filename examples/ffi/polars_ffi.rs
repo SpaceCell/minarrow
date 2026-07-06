@@ -30,6 +30,7 @@ use crate::polars_roundtrip::run_example;
 mod polars_roundtrip {
     use std::sync::Arc;
 
+    use minarrow::MaskedArray;
     use minarrow::ffi::arrow_c_ffi::{export_to_c, import_from_c};
     #[cfg(any(
         not(feature = "default_categorical_8"),

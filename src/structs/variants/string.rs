@@ -44,7 +44,7 @@
 //! type are equivalent and exist for backwards-compatibility.
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::ops::{Deref, DerefMut, Index, Range};
+use std::ops::{Index, Range};
 
 use num_traits::{NumCast, Zero};
 #[cfg(feature = "parallel_proc")]
@@ -1494,27 +1494,13 @@ impl<T: Zero> Default for StringArray<T> {
     }
 }
 
-// Raw byte, not string slices
-impl<T> Deref for StringArray<T> {
-    type Target = [u8];
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.data.as_ref()
-    }
-}
-
+// Byte access is via `as_slice`, `AsRef<[u8]>` and `AsMut<[u8]>`. StringArray
+// holds strings, so it does not deref to `[u8]`, as a byte-slice deref would bind
+// `len`, `iter` and index to the data buffer rather than the element surface.
 impl<T> AsRef<[u8]> for StringArray<T> {
     #[inline]
     fn as_ref(&self) -> &[u8] {
         self.data.as_ref()
-    }
-}
-
-impl<T> DerefMut for StringArray<T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut [u8] {
-        self.data.as_mut()
     }
 }
 
