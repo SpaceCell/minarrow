@@ -1368,7 +1368,7 @@ impl TryFrom<Value> for Table {
             #[cfg(feature = "ndarray")]
             Value::NdArray(inner) => {
                 let nd = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                nd.to_table_gen()
+                nd.to_table(None)
             }
             #[cfg(all(feature = "ndarray", feature = "views"))]
             Value::NdArrayView(_) => Err(err()),

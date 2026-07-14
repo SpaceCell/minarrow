@@ -722,7 +722,7 @@ impl XArray<f64> {
                 )
             }).collect()
         };
-        self.into_ndarray().to_table(fields)
+        self.into_ndarray().to_table(Some(fields))
     }
 }
 

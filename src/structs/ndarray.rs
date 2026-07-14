@@ -846,27 +846,39 @@ impl NdArray<f64> {
     ///
     /// Each column is copied into its own 64-byte aligned `FloatArray<f64>`,
     /// since the compact tensor layout does not place column starts on
-    /// alignment boundaries. `fields` must have exactly `n_cols` entries.
-    pub fn to_table(self, fields: Vec<Field>) -> Result<Table, MinarrowError> {
+    /// alignment boundaries. `fields` must have exactly `n_cols` entries
+    /// when supplied, and `None` generates `col_0`, `col_1`, and so on.
+    pub fn to_table(self, fields: Option<Vec<Field>>) -> Result<Table, MinarrowError> {
         let shape = self.dims.shape();
         if shape.len() != 2 {
             return Err(MinarrowError::ShapeError {
                 message: format!("to_table requires a 2D array, got {}D", shape.len()),
             });
         }
-        let n_rows = shape[0];
         let n_cols = shape[1];
-        if fields.len() != n_cols {
-            return Err(MinarrowError::ShapeError {
-                message: format!(
-                    "to_table: expected {} fields for {} columns, got {}",
-                    n_cols, n_cols, fields.len()
-                ),
-            });
-        }
-        let stride = self.dims.strides()[1];
-        let name = self.name;
-        let buf = self.data.as_slice();
+        let fields = match fields {
+            Some(fields) => {
+                if fields.len() != n_cols {
+                    return Err(MinarrowError::ShapeError {
+                        message: format!(
+                            "to_table: expected {} fields for {} columns, got {}",
+                            n_cols, n_cols, fields.len()
+                        ),
+                    });
+                }
+                fields
+            }
+            None => (0..n_cols)
+                .map(|i| Field::new(format!("col_{}", i), ArrowType::Float64, false, None))
+                .collect(),
+        };
+        // The column copies below read unit-stride axis-0 runs, so a
+        // transposed or otherwise strided layout re-lays first.
+        let this = if self.dims.strides()[0] == 1 { self } else { self.to_contiguous() };
+        let n_rows = this.dims.shape()[0];
+        let stride = this.dims.strides()[1];
+        let name = this.name;
+        let buf = this.data.as_slice();
 
         let mut cols = Vec::with_capacity(n_cols);
         for (i, field) in fields.into_iter().enumerate() {
@@ -878,26 +890,6 @@ impl NdArray<f64> {
         }
 
         Ok(Table::new(name.unwrap_or_default(), Some(cols)))
-    }
-
-    /// Convert a 2D NdArray to a Table with auto-generated column names.
-    pub fn to_table_gen(self) -> Result<Table, MinarrowError> {
-        let n_cols = if self.ndim() == 2 {
-            self.dims.shape()[1]
-        } else {
-            return Err(MinarrowError::ShapeError {
-                message: format!("to_table_gen requires a 2D array, got {}D", self.ndim()),
-            });
-        };
-        let fields: Vec<Field> = (0..n_cols)
-            .map(|i| Field::new(
-                format!("col_{}", i),
-                ArrowType::Float64,
-                false,
-                None,
-            ))
-            .collect();
-        self.to_table(fields)
     }
 
     /// Convert a 1D NdArray to an Array (FloatArray<f64>).
@@ -2727,7 +2719,7 @@ mod tests {
             Field::new("x", ArrowType::Float64, false, None),
             Field::new("y", ArrowType::Float64, false, None),
         ];
-        let table = a.to_table(fields).unwrap();
+        let table = a.to_table(Some(fields)).unwrap();
         assert_eq!(table.n_rows(), 3);
         assert_eq!(table.n_cols(), 2);
         assert_eq!(table.col_names(), vec!["x", "y"]);
@@ -2736,16 +2728,16 @@ mod tests {
     }
 
     #[test]
-    fn to_table_gen_auto_names() {
+    fn to_table_generated_names() {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        let table = a.to_table_gen().unwrap();
+        let table = a.to_table(None).unwrap();
         assert_eq!(table.col_names(), vec!["col_0", "col_1"]);
     }
 
     #[test]
     fn to_table_non_2d_fails() {
         let a = NdArray::new(&[5]);
-        assert!(a.to_table_gen().is_err());
+        assert!(a.to_table(None).is_err());
     }
 
     #[test]

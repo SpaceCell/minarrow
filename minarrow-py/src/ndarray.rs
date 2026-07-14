@@ -237,7 +237,7 @@ impl PyNdArray {
         match &self.0 {
             PyNdArrayInner::F64(a) => (**a)
                 .clone()
-                .to_table_gen()
+                .to_table(None)
                 .map(|t| PyTable(PyTableInner::from(t)))
                 .map_err(|e| PyValueError::new_err(e.to_string())),
             PyNdArrayInner::F32(_) => Err(PyValueError::new_err(

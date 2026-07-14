@@ -358,6 +358,22 @@ name = "test_value_macros"
 path = "examples/broadcasting/test_value_macros.rs"
 required-features = ["broadcast"]
 
+# N-dimensional examples
+[[example]]
+name = "ndarray"
+path = "examples/ndarray.rs"
+required-features = ["ndarray"]
+
+[[example]]
+name = "super_ndarray"
+path = "examples/super_ndarray.rs"
+required-features = ["ndarray"]
+
+[[example]]
+name = "xarray"
+path = "examples/xarray.rs"
+required-features = ["xarray"]
+
 [[bench]]
 name = "hotloop_benchmark_simd"
 harness = false

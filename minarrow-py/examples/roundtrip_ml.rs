@@ -53,27 +53,27 @@ fn main() -> PyResult<()> {
         scope.set_item("table", obj)?;
         py.run(
             cr#"
-            import polars as pl
-            from sklearn.ensemble import RandomForestClassifier
-            from sklearn.model_selection import train_test_split
+import polars as pl
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 
-            df = table.to_polars()
-            features = ["x0", "x1", "x2", "x3"]
-            X = df.select(features).to_numpy()
-            y = df["label"].to_numpy()
+df = table.to_polars()
+features = ["x0", "x1", "x2", "x3"]
+X = df.select(features).to_numpy()
+y = df["label"].to_numpy()
 
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0)
-            model = RandomForestClassifier(n_estimators=100, random_state=0)
-            model.fit(X_train, y_train)
-            predicted = model.predict(X_test)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0)
+model = RandomForestClassifier(n_estimators=100, random_state=0)
+model.fit(X_train, y_train)
+predicted = model.predict(X_test)
 
-            result = pl.DataFrame(
-                {
-                    "actual": y_test.astype("int64"),
-                    "predicted": predicted.astype("int64"),
-                }
-            )
-            "#,
+result = pl.DataFrame(
+    {
+        "actual": y_test.astype("int64"),
+        "predicted": predicted.astype("int64"),
+    }
+)
+"#,
             Some(&scope),
             Some(&scope),
         )?;
@@ -85,8 +85,8 @@ fn main() -> PyResult<()> {
     let Value::Table(table) = value else {
         panic!("expected a table, got {value:?}");
     };
-    let actual = table.cols[0].array.try_i64_ref().unwrap();
-    let predicted = table.cols[1].array.try_i64_ref().unwrap();
+    let actual = table.cols[0].array.num().i64();
+    let predicted = table.cols[1].array.num().i64();
 
     let rows = actual.len();
     let correct = (0..rows).filter(|&i| actual.data[i] == predicted.data[i]).count();

@@ -27,7 +27,7 @@ use pyo3::prelude::*;
 
 /// The unit of a temporal type. Mirrors `minarrow::TimeUnit`.
 #[cfg(feature = "datetime")]
-#[pyclass(eq, eq_int, name = "TimeUnit", module = "minarrow")]
+#[pyclass(from_py_object, eq, eq_int, name = "TimeUnit", module = "minarrow")]
 #[derive(Clone, Copy, PartialEq)]
 pub enum PyTimeUnit {
     Seconds,
@@ -65,7 +65,7 @@ impl From<PyTimeUnit> for TimeUnit {
 
 /// The unit of an interval type. Mirrors `minarrow::IntervalUnit`.
 #[cfg(feature = "datetime")]
-#[pyclass(eq, eq_int, name = "IntervalUnit", module = "minarrow")]
+#[pyclass(from_py_object, eq, eq_int, name = "IntervalUnit", module = "minarrow")]
 #[derive(Clone, Copy, PartialEq)]
 pub enum PyIntervalUnit {
     YearMonth,
@@ -97,7 +97,7 @@ impl From<PyIntervalUnit> for IntervalUnit {
 
 /// The dictionary key width of a categorical type. Mirrors
 /// `minarrow::CategoricalIndexType` under its feature gates.
-#[pyclass(eq, eq_int, name = "CategoricalIndexType", module = "minarrow")]
+#[pyclass(from_py_object, eq, eq_int, name = "CategoricalIndexType", module = "minarrow")]
 #[derive(Clone, Copy, PartialEq)]
 pub enum PyCategoricalIndexType {
     #[cfg(feature = "default_categorical_8")]
@@ -144,7 +144,7 @@ impl From<PyCategoricalIndexType> for CategoricalIndexType {
 /// feature gates. Construct it for a `Field`, or read it from `Array.arrow_type`.
 /// pyo3 makes each variant callable, so a non-parametric type is built with a
 /// call: `ArrowType.Int64()`.
-#[pyclass(eq, name = "ArrowType", module = "minarrow")]
+#[pyclass(from_py_object, eq, name = "ArrowType", module = "minarrow")]
 #[derive(Clone, PartialEq)]
 pub enum PyArrowType {
     Null(),

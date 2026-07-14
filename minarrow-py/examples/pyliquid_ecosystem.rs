@@ -269,14 +269,14 @@ fn bridge_costs(small: &Table) -> PyResult<()> {
     let t = Instant::now();
 
     for _ in 0..G {
-        Python::with_gil(|_py| {});
+        Python::attach(|_py| {});
     }
 
     println!("  GIL acquire and release                : {:>11.3?}", t.elapsed() / G);
 
     let large = build_large(1_000_000);
 
-    Python::with_gil(|py| -> PyResult<()> {
+    Python::attach(|py| -> PyResult<()> {
         const N: u32 = 50;
 
         println!();
