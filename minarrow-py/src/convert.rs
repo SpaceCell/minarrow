@@ -347,7 +347,7 @@ pub fn resolve_index(i: isize, len: usize) -> PyResult<usize> {
 /// Temporal values surface as their raw integer. Faithful
 /// `datetime.date`/`time`/`datetime` coercion needs the logical unit and
 /// timezone carried on the `Field` and lands with the temporal family.
-pub fn scalar_to_py(py: Python<'_>, scalar: Scalar) -> PyResult<PyObject> {
+pub fn scalar_to_py(py: Python<'_>, scalar: Scalar) -> PyResult<Py<PyAny>> {
     match scalar {
         Scalar::Null => Ok(py.None()),
         Scalar::Boolean(v) => v.into_py_any(py),

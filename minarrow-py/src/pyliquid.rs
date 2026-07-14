@@ -197,21 +197,21 @@ fn classify(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
 
     // Check Minarrow classes before testing the generic Arrow interfaces so the
     // exact container variant is retained.
-    if obj.downcast::<PyArray>().is_ok() {
+    if obj.cast::<PyArray>().is_ok() {
         return Ok(Value::Array(Arc::new(to_rust::array_to_rust(obj)?.array)));
     }
 
-    if obj.downcast::<PyChunkedTable>().is_ok() {
+    if obj.cast::<PyChunkedTable>().is_ok() {
         return Ok(Value::SuperTable(Arc::new(to_rust::table_to_rust(obj)?)));
     }
 
-    if obj.downcast::<PyChunkedArray>().is_ok() {
+    if obj.cast::<PyChunkedArray>().is_ok() {
         return Ok(Value::SuperArray(Arc::new(to_rust::chunked_array_to_rust(
             obj,
         )?)));
     }
 
-    if obj.downcast::<PyTable>().is_ok() {
+    if obj.cast::<PyTable>().is_ok() {
         return Ok(Value::Table(Arc::new(to_rust::record_batch_to_rust(obj)?)));
     }
 
@@ -231,7 +231,7 @@ fn classify(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::Array(Arc::new(to_rust::array_to_rust(obj)?.array)));
     }
 
-    if let Ok(list) = obj.downcast::<PyList>() {
+    if let Ok(list) = obj.cast::<PyList>() {
         let mut items = Vec::with_capacity(list.len());
 
         for item in list.iter() {
@@ -241,7 +241,7 @@ fn classify(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::VecValue(Arc::new(items)));
     }
 
-    if let Ok(tuple) = obj.downcast::<PyTuple>() {
+    if let Ok(tuple) = obj.cast::<PyTuple>() {
         return classify_tuple(py, tuple);
     }
 

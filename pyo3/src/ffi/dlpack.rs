@@ -116,7 +116,7 @@ pub fn export_dlpack(
     max_version: Option<(u32, u32)>,
     dl_device: Option<(i32, i32)>,
     copy: Option<bool>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if let Some(stream) = stream {
         if !stream.is_none() {
             return Err(PyValueError::new_err("stream must be None for CPU tensors"));
@@ -153,7 +153,7 @@ pub fn dlpack_capsule<T: Float>(
     source: NdArray<T>,
     versioned: bool,
     copied: bool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if versioned {
         let raw = export_to_dlpack_versioned(source).into_raw();
         if copied {
@@ -176,7 +176,7 @@ pub fn dlpack_capsule<T: Float>(
             }
             return Err(PyErr::fetch(py));
         }
-        Ok(unsafe { PyObject::from_owned_ptr(py, capsule) })
+        Ok(unsafe { Bound::from_owned_ptr(py, capsule) }.unbind())
     } else {
         let raw = export_to_dlpack(source).into_raw();
         let capsule = unsafe {
@@ -194,7 +194,7 @@ pub fn dlpack_capsule<T: Float>(
             }
             return Err(PyErr::fetch(py));
         }
-        Ok(unsafe { PyObject::from_owned_ptr(py, capsule) })
+        Ok(unsafe { Bound::from_owned_ptr(py, capsule) }.unbind())
     }
 }
 

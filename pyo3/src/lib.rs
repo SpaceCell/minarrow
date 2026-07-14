@@ -262,7 +262,7 @@ fn export_chunked_stream_capsule(py: Python, arr: PyChunkedArray) -> PyResult<Ar
 /// e.g. `pa.RecordBatchReader.from_stream(obj)` or `nanoarrow.ArrayStream(obj)`.
 #[pyclass(name = "ArrowStream")]
 struct ArrowStream {
-    capsule: Option<PyObject>,
+    capsule: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -272,7 +272,7 @@ impl ArrowStream {
     /// Returns the underlying ArrowArrayStream capsule. The capsule can
     /// only be consumed once - subsequent calls raise ValueError.
     #[pyo3(signature = (requested_schema=None))]
-    fn __arrow_c_stream__(&mut self, requested_schema: Option<PyObject>) -> PyResult<PyObject> {
+    fn __arrow_c_stream__(&mut self, requested_schema: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
         let _ = requested_schema;
         self.capsule.take().ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
@@ -288,8 +288,8 @@ impl ArrowStream {
 /// e.g. `pa.array(obj)`.
 #[pyclass(name = "ArrowArray")]
 struct ArrowArrayWrapper {
-    schema_capsule: Option<PyObject>,
-    array_capsule: Option<PyObject>,
+    schema_capsule: Option<Py<PyAny>>,
+    array_capsule: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -301,8 +301,8 @@ impl ArrowArrayWrapper {
     #[pyo3(signature = (requested_schema=None))]
     fn __arrow_c_array__(
         &mut self,
-        requested_schema: Option<PyObject>,
-    ) -> PyResult<(PyObject, PyObject)> {
+        requested_schema: Option<Py<PyAny>>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         let _ = requested_schema;
         let schema = self.schema_capsule.take();
         let array = self.array_capsule.take();
@@ -413,7 +413,7 @@ impl PyNdArray {
         max_version: Option<(u32, u32)>,
         dl_device: Option<(i32, i32)>,
         copy: Option<bool>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         ffi::dlpack::export_dlpack(py, &self.0, stream, max_version, dl_device, copy)
     }
 
@@ -431,26 +431,26 @@ impl PyNdArray {
     }
 
     /// Hand to NumPy as an `ndarray` via the capsule protocol.
-    fn to_numpy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_numpy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let numpy = py.import("numpy")?;
         Ok(numpy.call_method1("from_dlpack", (slf,))?.unbind())
     }
 
     /// Hand to PyTorch as a `torch.Tensor` via the capsule protocol.
-    fn to_pytorch(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_pytorch(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let torch = py.import("torch")?;
         Ok(torch.call_method1("from_dlpack", (slf,))?.unbind())
     }
 
     /// Hand to JAX as a `jax.Array` via the capsule protocol.
-    fn to_jax(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_jax(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let jax_numpy = py.import("jax.numpy")?;
         Ok(jax_numpy.call_method1("from_dlpack", (slf,))?.unbind())
     }
 
     /// Hand to TensorFlow as a `tf.Tensor`. TensorFlow's DLPack entry
     /// takes the capsule itself rather than the producer object.
-    fn to_tensorflow(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_tensorflow(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let capsule = slf.borrow().__dlpack__(py, None, None, None, None)?;
         let dlpack = py.import("tensorflow.experimental.dlpack")?;
         Ok(dlpack.call_method1("from_dlpack", (capsule,))?.unbind())
@@ -458,7 +458,7 @@ impl PyNdArray {
 
     /// Hand to CuPy via the capsule protocol. CuPy holds device memory,
     /// so this copies host data to the GPU on import.
-    fn to_cupy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_cupy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cupy = py.import("cupy")?;
         Ok(cupy.call_method1("from_dlpack", (slf,))?.unbind())
     }

@@ -182,7 +182,7 @@ impl PyNdArray {
         max_version: Option<(u32, u32)>,
         dl_device: Option<(i32, i32)>,
         copy: Option<bool>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         export_dlpack(py, &self.0, stream, max_version, dl_device, copy)
     }
 
@@ -200,26 +200,26 @@ impl PyNdArray {
     }
 
     /// Hand to NumPy as an `ndarray` via the capsule protocol.
-    fn to_numpy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_numpy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let numpy = py.import("numpy")?;
         Ok(numpy.call_method1("from_dlpack", (slf,))?.unbind())
     }
 
     /// Hand to PyTorch as a `torch.Tensor` via the capsule protocol.
-    fn to_pytorch(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_pytorch(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let torch = py.import("torch")?;
         Ok(torch.call_method1("from_dlpack", (slf,))?.unbind())
     }
 
     /// Hand to JAX as a `jax.Array` via the capsule protocol.
-    fn to_jax(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_jax(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let jax_numpy = py.import("jax.numpy")?;
         Ok(jax_numpy.call_method1("from_dlpack", (slf,))?.unbind())
     }
 
     /// Hand to TensorFlow as a `tf.Tensor`. TensorFlow's DLPack entry
     /// takes the capsule itself rather than the producer object.
-    fn to_tensorflow(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_tensorflow(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let capsule = slf.borrow().__dlpack__(py, None, None, None, None)?;
         let dlpack = py.import("tensorflow.experimental.dlpack")?;
         Ok(dlpack.call_method1("from_dlpack", (capsule,))?.unbind())
@@ -227,7 +227,7 @@ impl PyNdArray {
 
     /// Hand to CuPy via the capsule protocol. CuPy holds device memory,
     /// so this copies host data to the GPU on import.
-    fn to_cupy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_cupy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cupy = py.import("cupy")?;
         Ok(cupy.call_method1("from_dlpack", (slf,))?.unbind())
     }

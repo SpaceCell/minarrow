@@ -482,7 +482,7 @@ pub fn array_to_capsules<'py>(
     array: Arc<Array>,
     field: &Field,
     py: Python<'py>,
-) -> PyResult<(PyObject, PyObject)> {
+) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
     let schema = Schema::from(vec![field.clone()]);
     let (arr_ptr, sch_ptr) = export_to_c(array, schema);
 
@@ -540,7 +540,7 @@ pub fn array_to_capsules<'py>(
 /// Exports a MinArrow Table as an ArrowArrayStream PyCapsule.
 ///
 /// The stream yields one struct array (record batch) corresponding to the table.
-pub fn table_to_stream_capsule<'py>(table: &Table, py: Python<'py>) -> PyResult<PyObject> {
+pub fn table_to_stream_capsule<'py>(table: &Table, py: Python<'py>) -> PyResult<Py<PyAny>> {
     let fields: Vec<Field> = table.cols.iter().map(|fa| (*fa.field).clone()).collect();
     let columns: Vec<(Arc<Array>, Schema)> = table
         .cols
@@ -587,7 +587,7 @@ pub fn table_to_stream_capsule<'py>(table: &Table, py: Python<'py>) -> PyResult<
 pub fn super_table_to_stream_capsule<'py>(
     super_table: &SuperTable,
     py: Python<'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if super_table.batches.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "Cannot export empty SuperTable as stream capsule",
@@ -821,7 +821,7 @@ pub fn array_view_to_capsules<'py>(
     view: &ArrayV,
     field: &Field,
     py: Python<'py>,
-) -> PyResult<(PyObject, PyObject)> {
+) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
     let schema = Schema::from(vec![field.clone()]);
     let array = Arc::new(view.array.clone());
     let (arr_ptr, sch_ptr) =
@@ -882,7 +882,7 @@ pub fn array_view_to_capsules<'py>(
 pub fn table_view_to_stream_capsule<'py>(
     view: &TableV,
     py: Python<'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let fields: Vec<Field> = view.fields.iter().map(|f| (**f).clone()).collect();
 
     let metadata = if view.name.is_empty() {
@@ -926,7 +926,7 @@ pub fn table_view_to_stream_capsule<'py>(
 pub fn super_table_view_to_stream_capsule<'py>(
     view: &SuperTableV,
     py: Python<'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if view.slices.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "Cannot export empty SuperTableV as stream capsule",
@@ -975,7 +975,7 @@ pub fn super_table_view_to_stream_capsule<'py>(
 pub fn super_array_view_to_stream_capsule<'py>(
     view: &SuperArrayV,
     py: Python<'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if view.slices.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "Cannot export empty SuperArrayV as stream capsule",
@@ -1014,7 +1014,7 @@ pub fn super_array_view_to_stream_capsule<'py>(
 pub fn super_array_to_stream_capsule<'py>(
     super_array: &SuperArray,
     py: Python<'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let chunks = super_array.chunks();
     if chunks.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(

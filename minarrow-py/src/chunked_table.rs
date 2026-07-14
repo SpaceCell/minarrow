@@ -164,8 +164,8 @@ impl PyChunkedTable {
     fn __arrow_c_stream__(
         &self,
         py: Python<'_>,
-        requested_schema: Option<PyObject>,
-    ) -> PyResult<PyObject> {
+        requested_schema: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
         let _ = requested_schema;
         to_py::super_table_to_stream_capsule(&self.0, py)
     }

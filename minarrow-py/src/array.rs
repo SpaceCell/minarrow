@@ -188,12 +188,12 @@ impl PyArrayInner {
         &self,
         py: Python<'_>,
         key: &Bound<'_, PyAny>,
-        wrap_window: impl Fn(ArrayV) -> PyResult<PyObject>,
-    ) -> PyResult<PyObject> {
+        wrap_window: impl Fn(ArrayV) -> PyResult<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
         let view: ArrayV = self.into();
         let len = view.len();
 
-        if let Ok(slice) = key.downcast::<PySlice>() {
+        if let Ok(slice) = key.cast::<PySlice>() {
             let ind = slice.indices(len as isize)?;
             let windowed = if ind.step == 1 {
                 view.r((ind.start as usize)..(ind.stop as usize))
@@ -538,7 +538,7 @@ impl PyArray {
         self.0.repr()
     }
 
-    fn __getitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn __getitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.0.get_item(py, key, |window| {
             Ok(Py::new(py, PyArray::from(window))?.into_any())
         })
@@ -599,8 +599,8 @@ impl PyArray {
     fn __arrow_c_array__(
         &self,
         py: Python<'_>,
-        requested_schema: Option<PyObject>,
-    ) -> PyResult<(PyObject, PyObject)> {
+        requested_schema: Option<Py<PyAny>>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         let _ = requested_schema;
         match &self.0 {
             PyArrayInner::Array(array) => {

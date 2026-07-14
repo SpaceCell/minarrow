@@ -117,7 +117,7 @@ fn import_capsule_array(obj: &Bound<PyAny>) -> PyMinarrowResult<FieldArray> {
             PyMinarrowError::PyArrow(format!("Failed to call __arrow_c_array__: {}", e))
         })?;
 
-    let tuple: &Bound<PyTuple> = result.downcast().map_err(|e| {
+    let tuple: &Bound<PyTuple> = result.cast().map_err(|e| {
         PyMinarrowError::PyArrow(format!(
             "__arrow_c_array__ did not return a tuple: {}",
             e
