@@ -2046,7 +2046,6 @@ mod parallel_tests {
     #[test]
     fn test_set_str_without_mask_keeps_others_valid() {
         // A StringArray with no null mask treats every element as valid.
-        // set_str on one index must not fabricate a mask that nulls the rest.
         let mut arr: StringArray<u32> = StringArray::default();
         arr.push_str("a");
         arr.push_str("b");

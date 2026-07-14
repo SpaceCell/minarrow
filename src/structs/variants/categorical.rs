@@ -2107,7 +2107,6 @@ mod parallel_tests {
     #[test]
     fn test_set_str_without_mask_keeps_others_valid() {
         // A CategoricalArray with no null mask treats every element as valid.
-        // set_str on one index must not fabricate a mask that nulls the rest.
         let mut arr = CategoricalArray::<u32>::default();
         arr.push_str("a");
         arr.push_str("b");

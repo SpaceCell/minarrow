@@ -8,7 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 # Minarrow Rust
 
 ## Unreleased
-- Added bitmask-driven gather to Array, Table and their view variants.
+
+- Standardised equality checking for `Scalar` -0.0 == 0.0 and NaN == NaN.
+This addresses cases where users compare Scalars as key values, whilst avoiding
+making direct changes to "non-`Scalar`" `f32`, `f64` IEEE semantics.
+- Fixed null handling bug on String and Categorical set_str method.
+- Added bitmask gather to Array, Table and their view variants.
 
 ## [0.15.0] - 2026-06-30
 
