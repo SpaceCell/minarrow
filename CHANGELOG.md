@@ -11,10 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Fixed null handling bug on String and Categorical set_str method.
-- At `value_at` to `Array` and `ArrayV` for (opt-in) normalised equality checking.
-- Added `get`, `get_unchecked`, `get_str` and `get_str_unchecked` methods to `Array`
-- Added bitmask gather to Array, Table and their view variants.
+**NdArray, XArray and DLPack Feature**:
 - `NdArray` n-dimensional dense array (`ndarray` feature) over `Buffer<T>`,
   generic over f32/f64, with NaN null semantics, `NdArrayV` zero-copy views,
   transpose and axis permutation, and Table/Matrix/Array interop.
@@ -35,10 +32,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PyNdArray` in minarrow-pyo3 (`ndarray` feature) for Rust extensions
   bridging tensors to Python, with the DLPack capsule glue hosted in
   its `ffi::dlpack` and shared by minarrow-py.
+
+**Minor Feature Additions**
+- At `value_at` to `Array` and `ArrayV` for (opt-in) normalised equality checking.
+- Added bitmask-driven gather to Array, Table and their view variants.
+- Added default SIMD chipset behaviour.
+- Added bitwise kernels.
+- Added `LBuffer::freeze()`.
+- Added `NdArray` n-dimensional array with views and chunked variants.
+- Added `XArray` labelled n-dimensional array.
+- Added axis selection, broadcasting, and `Value` support for the n-dimensional types.
+- Added DLPack FFI for zero-copy PyTorch, JAX, and TensorFlow interchange, with `NdArray` in minarrow-py and minarrow-pyo3.
+- Added `get`, `get_unchecked`, `get_str` and `get_str_unchecked` methods to `Array`
+- Added bitmask gather to Array, Table and their view variants.
+
+### Bugfixes
+- Fixed a kernel branching issue in the arithmetic SIMD paths.
+- Fixed out-of-range categorical codes to resolve to the empty string.
+- Fixed `StringArray` length reporting the byte length when `MaskedArray` was not imported.
+- Fixed null handling bug on String and Categorical set_str method.
+
+### Modified
+- Bumped pyo3 to 0.29.
 - Normalised `hash_element_at` so NaN maps to a dummy/sentinel value
 - Normalised equality checking for `Scalar` -0.0 == 0.0 and NaN == NaN.
->>>>>>> 0daabb5 (Harden NdArray, XArray, and DLPack in advance of release)
-
 ## [0.15.0] - 2026-06-30
 
 ### Added
