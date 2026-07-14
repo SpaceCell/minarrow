@@ -43,7 +43,7 @@ use crate::{Array, Bitmask, BooleanArray, FloatArray, IntegerArray, MaskedArray,
 /// - There are also `try_<type>` methods that can be used to attempt it gracefully
 /// without the risk of panicking.
 #[cfg(feature = "scalar_type")]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum Scalar {
     #[default]
     Null,
@@ -1548,6 +1548,44 @@ impl Scalar {
     }
 }
 
+#[cfg(feature = "scalar_type")]
+impl PartialEq for Scalar {
+    fn eq(&self, other: &Self) -> bool {
+        use Scalar::*;
+        match (self, other) {
+            (Null, Null) => true,
+            (Boolean(a), Boolean(b)) => a == b,
+            #[cfg(feature = "extended_numeric_types")]
+            (Int8(a), Int8(b)) => a == b,
+            #[cfg(feature = "extended_numeric_types")]
+            (Int16(a), Int16(b)) => a == b,
+            (Int32(a), Int32(b)) => a == b,
+            (Int64(a), Int64(b)) => a == b,
+            #[cfg(feature = "extended_numeric_types")]
+            (UInt8(a), UInt8(b)) => a == b,
+            #[cfg(feature = "extended_numeric_types")]
+            (UInt16(a), UInt16(b)) => a == b,
+            (UInt32(a), UInt32(b)) => a == b,
+            (UInt64(a), UInt64(b)) => a == b,
+            // Any NaN equals any NaN and -0.0 equals 0.0 so a float Scalar stays
+            // equal to itself when used as a map or group key.
+            (Float32(a), Float32(b)) => if a.is_nan() { b.is_nan() } else { a == b },
+            (Float64(a), Float64(b)) => if a.is_nan() { b.is_nan() } else { a == b },
+            (String32(a), String32(b)) => a == b,
+            #[cfg(feature = "large_string")]
+            (String64(a), String64(b)) => a == b,
+            #[cfg(feature = "datetime")]
+            (Datetime32(a), Datetime32(b)) => a == b,
+            #[cfg(feature = "datetime")]
+            (Datetime64(a), Datetime64(b)) => a == b,
+            #[cfg(feature = "datetime")]
+            (Interval, Interval) => true,
+            // Values of different types are never equal.
+            _ => false,
+        }
+    }
+}
+
 #[cfg(feature = "hash")]
 impl Eq for Scalar {}
 
@@ -1570,8 +1608,17 @@ impl std::hash::Hash for Scalar {
             Scalar::UInt16(v) => v.hash(state),
             Scalar::UInt32(v) => v.hash(state),
             Scalar::UInt64(v) => v.hash(state),
-            Scalar::Float32(v) => v.to_bits().hash(state),
-            Scalar::Float64(v) => v.to_bits().hash(state),
+            // Fold every NaN bit pattern to one value and -0.0 to 0.0 so floats
+            // that compare equal also hash equal.
+            Scalar::Float32(v) => {
+                let bits = if v.is_nan() { 0x7fc0_0000u32 } else { (*v + 0.0).to_bits() };
+                bits.hash(state);
+            }
+            Scalar::Float64(v) => {
+                let bits =
+                    if v.is_nan() { 0x7ff8_0000_0000_0000u64 } else { (*v + 0.0).to_bits() };
+                bits.hash(state);
+            }
             Scalar::String32(v) => v.hash(state),
             #[cfg(feature = "large_string")]
             Scalar::String64(v) => v.hash(state),
@@ -2885,5 +2932,36 @@ mod tests {
     #[should_panic(expected = "Exponent: Cannot parse string as f64")]
     fn test_pow_parse_invalid_string_exponent() {
         let _ = Int32(2).pow(String32("notanumber".into()));
+    }
+
+    #[cfg(feature = "hash")]
+    #[test]
+    fn test_float_eq_hash_agree() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        fn hash_of(s: &Scalar) -> u64 {
+            let mut h = DefaultHasher::new();
+            s.hash(&mut h);
+            h.finish()
+        }
+
+        // NaN equals NaN, so a NaN key stays reachable in a hash map.
+        assert_eq!(Float64(f64::NAN), Float64(f64::NAN));
+        assert_eq!(hash_of(&Float64(f64::NAN)), hash_of(&Float64(f64::NAN)));
+
+        // A NaN with a different payload still equals and hashes alike.
+        let nan_payload = Float64(f64::from_bits(0x7ff8_0000_0000_0001));
+        assert_eq!(Float64(f64::NAN), nan_payload);
+        assert_eq!(hash_of(&Float64(f64::NAN)), hash_of(&nan_payload));
+
+        // -0.0 equals 0.0 and the two hash alike.
+        assert_eq!(Float64(-0.0), Float64(0.0));
+        assert_eq!(hash_of(&Float64(-0.0)), hash_of(&Float64(0.0)));
+        assert_eq!(Float32(-0.0), Float32(0.0));
+        assert_eq!(hash_of(&Float32(-0.0)), hash_of(&Float32(0.0)));
+
+        // Different data types remain unequal.
+        assert_ne!(Int32(3), Float64(3.0));
     }
 }

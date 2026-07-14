@@ -476,12 +476,9 @@ impl<T: Integer> CategoricalArray<T> {
 
         self.data[idx] = code;
 
+        // An absent mask means all values are valid, so only touch an existing mask.
         if let Some(mask) = &mut self.null_mask {
             mask.set(idx, true);
-        } else {
-            let mut m = Bitmask::new_set_all(self.data.len(), false);
-            m.set(idx, true);
-            self.null_mask = Some(m);
         }
     }
 
@@ -498,12 +495,9 @@ impl<T: Integer> CategoricalArray<T> {
         );
         let data = self.data.as_mut_slice();
         data[idx] = code;
+        // An absent mask means all values are valid, so only touch an existing mask.
         if let Some(mask) = &mut self.null_mask {
             mask.set(idx, true);
-        } else {
-            let mut m = Bitmask::new_set_all(self.len(), false);
-            m.set(idx, true);
-            self.null_mask = Some(m);
         }
     }
 
@@ -734,12 +728,9 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
         );
         let data = self.data.as_mut_slice();
         data[idx] = code;
+        // An absent mask means all values are valid, so only touch an existing mask.
         if let Some(mask) = &mut self.null_mask {
             mask.set(idx, true);
-        } else {
-            let mut m = Bitmask::new_set_all(self.len(), false);
-            m.set(idx, true);
-            self.null_mask = Some(m);
         }
     }
 
@@ -2111,5 +2102,23 @@ mod parallel_tests {
                 Some("x")  // 4 (valid)
             ]
         );
+    }
+
+    #[test]
+    fn test_set_str_without_mask_keeps_others_valid() {
+        // A CategoricalArray with no null mask treats every element as valid.
+        let mut arr = CategoricalArray::<u32>::default();
+        arr.push_str("a");
+        arr.push_str("b");
+        arr.push_str("c");
+        assert!(arr.null_mask.is_none());
+
+        arr.set_str(1, "z");
+
+        assert!(arr.null_mask.is_none());
+        assert_eq!(arr.get(0), Some("a"));
+        assert_eq!(arr.get(1), Some("z"));
+        assert_eq!(arr.get(2), Some("c"));
+        assert_eq!(arr.null_count(), 0);
     }
 }
