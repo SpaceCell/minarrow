@@ -677,6 +677,14 @@ impl<T> Buffer<T> {
         matches!(self.storage, Storage::Shared { .. })
     }
 
+    /// Returns true if the buffer owns its allocation as a `Vec64`.
+    /// Owned and shared storage hold a stable base pointer for the
+    /// allocation's lifetime, which FFI export relies on.
+    #[inline]
+    pub fn is_owned(&self) -> bool {
+        matches!(self.storage, Storage::Owned(_))
+    }
+
     /// Creates an owned copy of the buffer data.
     /// If the buffer is already owned, this clones the data.
     /// If the buffer is shared, this copies the data into a new owned Vec64.

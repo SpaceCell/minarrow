@@ -254,9 +254,10 @@ fast_dict = [
 ]
 
 # Adds typed arithmetic broadcasting for add, sub, mult, div, rem.
-# The kernels dispatch over Value, Scalar, and DatetimeArray, so those
-# features are required for the module to compile.
-broadcast = ["value_type", "scalar_type", "datetime"]
+# The kernels dispatch over Value, Scalar, and DatetimeArray, and route
+# through the view and chunked types, so those features are required
+# for the module to compile.
+broadcast = ["value_type", "scalar_type", "datetime", "views", "chunked"]
 
 # Adds Hash and Eq implementations for Scalar, and hash_element_at for Array.
 # Floats use to_bits() so NaN == NaN under this convention.
@@ -311,9 +312,6 @@ default = [
     "large_string",
     "simd",
     "select",
-    "ndarray",
-    "xarray",
-    "dlpack"
 ]
 
 [package.metadata.cargo-all-features]

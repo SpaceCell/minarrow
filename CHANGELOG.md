@@ -9,12 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- Normalised `hash_element_at` so NaN maps to a dummy/sentinel value
-- At `value_at` to `Array` and `ArrayV` for (opt-in) normalised equality checking.
-- Normalised equality checking for `Scalar` -0.0 == 0.0 and NaN == NaN.
+### Added
+
 - Fixed null handling bug on String and Categorical set_str method.
+- At `value_at` to `Array` and `ArrayV` for (opt-in) normalised equality checking.
 - Added `get`, `get_unchecked`, `get_str` and `get_str_unchecked` methods to `Array`
 - Added bitmask gather to Array, Table and their view variants.
+- `NdArray` n-dimensional dense array (`ndarray` feature) over `Buffer<T>`,
+  generic over f32/f64, with NaN null semantics, `NdArrayV` zero-copy views,
+  transpose and axis permutation, and Table/Matrix/Array interop.
+- `SuperNdArray` chunked n-dimensional array with `SuperNdArrayV`
+  chunk-spanning views and rechunking.
+- `XArray` labelled n-dimensional array (`xarray` feature) with named
+  dimensions, coordinate selection via `at`/`between`/`nearest`, and owned,
+  view, or chunked storage behind one type.
+- DLPack tensor interchange (`dlpack` feature) over the legacy and 1.x
+  versioned ABIs for zero-copy sharing with PyTorch, JAX, and TensorFlow.
+- `AxisSelection` trait for `.s()` axis slicing, with `NdArrayVT`,
+  `SuperNdArrayVT`, and `XArrayVT` view tuple aliases.
+- Broadcast kernels for `NdArray`, `SuperNdArray`, and `XArray`, plus
+  `Value` variants, conversions, and concatenation for the new types.
+- `NdArray` in minarrow-py with the DLPack protocol - `__dlpack__`,
+  `from_dlpack`, and named bridges to NumPy, PyTorch, JAX, TensorFlow,
+  and CuPy.
+- `PyNdArray` in minarrow-pyo3 (`ndarray` feature) for Rust extensions
+  bridging tensors to Python, with the DLPack capsule glue hosted in
+  its `ffi::dlpack` and shared by minarrow-py.
+- Normalised `hash_element_at` so NaN maps to a dummy/sentinel value
+- Normalised equality checking for `Scalar` -0.0 == 0.0 and NaN == NaN.
+>>>>>>> 0daabb5 (Harden NdArray, XArray, and DLPack in advance of release)
 
 ## [0.15.0] - 2026-06-30
 

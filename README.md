@@ -93,6 +93,8 @@ Semantic groupings (`NumericArray`, `TextArray`, `TemporalArray`) support flexib
 
 Bonus LAPACK-compatible `Matrix` and `Cube` types support analytical workload variations.
 
+`NdArray` lands n-dimensional numeric data, with chunked (`SuperNdArray`) and labelled (`XArray`) forms, and hands tensors to PyTorch, JAX, and NumPy zero-copy over DLPack.
+
 ### Zero-Copy Views
 
 Ergonomic zero-copy row and column selection.
@@ -262,6 +264,9 @@ Additional types:
 | `value_type` | Catch-all `Value` enum for unified typing |
 | `matrix` | 2D matrix with BLAS/LAPACK-compatible layout |
 | `cube` | Stacks tables along an extra axis |
+| `ndarray` | N-dimensional dense array with zero-copy views and chunked form |
+| `xarray` | Labelled n-dimensional array with named dims and coordinates |
+| `dlpack` | DLPack tensor interchange with PyTorch, JAX, TensorFlow |
 | `shared_dict` | Shared source of truth for categorical dictionaries. |
 
 Performance:

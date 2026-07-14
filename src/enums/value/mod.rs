@@ -143,7 +143,9 @@ impl Value {
     /// Computes the logical row/element count for the batch's input `Value`.
     ///
     /// This normalises the various `Value` representations so callers can consistently pass a
-    /// `[start, len)` range to `execute_fn`.
+    /// `[start, len)` range to `execute_fn`. For the n-dimensional types
+    /// this is the leading-axis observation count, matching the units
+    /// `slice` windows over.
     #[inline]
     pub fn len(&self) -> usize {
         match self {
@@ -178,19 +180,19 @@ impl Value {
             Value::Matrix(m) => m.len(),
 
             #[cfg(feature = "ndarray")]
-            Value::NdArray(nd) => nd.len(),
+            Value::NdArray(nd) => nd.shape()[0],
 
             #[cfg(all(feature = "ndarray", feature = "views"))]
-            Value::NdArrayView(v) => v.len(),
+            Value::NdArrayView(v) => v.shape()[0],
 
             #[cfg(all(feature = "ndarray", feature = "chunked"))]
-            Value::SuperNdArray(snd) => snd.len(),
+            Value::SuperNdArray(snd) => snd.n_obs(),
 
             #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
-            Value::SuperNdArrayView(v) => v.len(),
+            Value::SuperNdArrayView(v) => v.n_obs(),
 
             #[cfg(feature = "xarray")]
-            Value::XArray(xa) => xa.len(),
+            Value::XArray(xa) => xa.shape()[0],
 
             #[cfg(feature = "cube")]
             Value::Cube(c) => c.len(),
@@ -263,6 +265,11 @@ impl Value {
             Value::Matrix(_) => unimplemented!("Matrix slicing"),
             #[cfg(feature = "ndarray")]
             Value::NdArray(nd) => {
+                assert!(
+                    offset + length <= nd.shape()[0],
+                    "Value::slice: window {}..{} out of bounds for axis 0 (size {})",
+                    offset, offset + length, nd.shape()[0]
+                );
                 let mut window_shape = vec![length];
                 window_shape.extend_from_slice(&nd.shape()[1..]);
                 Value::NdArrayView(Arc::new(NdArrayV::new(
@@ -274,6 +281,11 @@ impl Value {
             }
             #[cfg(all(feature = "ndarray", feature = "views"))]
             Value::NdArrayView(v) => {
+                assert!(
+                    offset + length <= v.shape()[0],
+                    "Value::slice: window {}..{} out of bounds for axis 0 (size {})",
+                    offset, offset + length, v.shape()[0]
+                );
                 let mut window_shape = vec![length];
                 window_shape.extend_from_slice(&v.shape()[1..]);
                 Value::NdArrayView(Arc::new(NdArrayV::new(
@@ -291,8 +303,16 @@ impl Value {
             Value::SuperNdArrayView(v) => {
                 Value::SuperNdArrayView(Arc::new(v.slice(offset, length)))
             }
-            #[cfg(feature = "xarray")]
-            Value::XArray(_) => unimplemented!("XArray slicing"),
+            #[cfg(all(feature = "xarray", feature = "select"))]
+            Value::XArray(xa) => {
+                // An axis-0 window through select, which narrows the
+                // leading axis coords alongside the data.
+                let range = offset..offset + length;
+                let dim0 = xa.dim_names()[0].to_string();
+                Value::XArray(Arc::new(xa.select(&[(dim0.as_str(), &range)])))
+            }
+            #[cfg(all(feature = "xarray", not(feature = "select")))]
+            Value::XArray(_) => unimplemented!("XArray slicing requires the select feature"),
             #[cfg(feature = "cube")]
             Value::Cube(_) => unimplemented!("Cube slicing"),
 

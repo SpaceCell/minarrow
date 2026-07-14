@@ -339,14 +339,21 @@ impl<T: Float> Consolidate for SuperNdArrayV<T> {
 
     /// Materialise the window into a contiguous compact [`NdArray`],
     /// interleaving each slice's axis-0 rows one column at a time.
+    /// An empty window keeps its rank, trailing shape, and name.
     fn consolidate(self) -> NdArray<T> {
         if self.slices.is_empty() {
-            return NdArray::new(&[0]);
+            let mut result = if self.ndim == 0 {
+                NdArray::new(&[0])
+            } else {
+                NdArray::from_slice(&[], &self.shape())
+            };
+            result.name = Some(self.name);
+            return result;
         }
 
         let full_shape = self.shape();
         let total_obs = full_shape[0];
-        let n_cols: usize = self.inner_shape.iter().product::<usize>().max(1);
+        let n_cols: usize = self.inner_shape.iter().product::<usize>();
 
         // Each slice's iterator yields column-major logical values, so its
         // column runs arrive in order and interleave by column index.
@@ -602,5 +609,58 @@ mod tests {
             panic!("expected Value::NdArray");
         };
         assert_eq!(nd.get(&[2, 1]), 80.0);
+    }
+
+    #[test]
+    fn window_3d_spans_boundary() {
+        // Batch A holds column-major values 1..=8, batch B holds 9..=16.
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]);
+        let b = NdArray::from_slice(
+            &[9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0],
+            &[2, 2, 2],
+        );
+        let snd = SuperNdArray::from_batches(vec![a, b], "cube");
+        // Rows 1..3 span the batch boundary at row 2.
+        let v = snd.slice(1, 2);
+        assert_eq!(v.n_slices(), 2);
+        assert_eq!(v.shape(), vec![2, 2, 2]);
+        assert_eq!(v.get(&[0, 0, 0]), 2.0);
+        assert_eq!(v.get(&[0, 1, 0]), 4.0);
+        assert_eq!(v.get(&[0, 0, 1]), 6.0);
+        assert_eq!(v.get(&[0, 1, 1]), 8.0);
+        assert_eq!(v.get(&[1, 0, 0]), 9.0);
+        assert_eq!(v.get(&[1, 1, 0]), 11.0);
+        assert_eq!(v.get(&[1, 0, 1]), 13.0);
+        assert_eq!(v.get(&[1, 1, 1]), 15.0);
+
+        let nd = v.consolidate();
+        assert_eq!(nd.shape(), &[2, 2, 2]);
+        assert!(nd.is_contiguous());
+        assert_eq!(nd.get(&[0, 0, 0]), 2.0);
+        assert_eq!(nd.get(&[1, 0, 0]), 9.0);
+        assert_eq!(nd.get(&[0, 1, 1]), 8.0);
+        assert_eq!(nd.get(&[1, 1, 1]), 15.0);
+    }
+
+    #[test]
+    fn consolidate_zero_trailing_dim() {
+        let snd = SuperNdArray::from_batches(
+            vec![NdArray::<f64>::from_slice(&[], &[2, 0])],
+            "hollow",
+        );
+        let v = snd.slice(0, 2);
+        assert_eq!(v.n_obs(), 2);
+        let nd = v.consolidate();
+        assert_eq!(nd.shape(), &[2, 0]);
+        assert_eq!(nd.len(), 0);
+    }
+
+    #[test]
+    fn empty_view_consolidate_keeps_identity() {
+        let v = SuperNdArrayV::<f64>::from_slices(Vec::new(), 2, vec![3], "empty".to_string());
+        let nd = v.consolidate();
+        assert_eq!(nd.ndim(), 2);
+        assert_eq!(nd.shape(), &[0, 3]);
+        assert_eq!(nd.name.as_deref(), Some("empty"));
     }
 }

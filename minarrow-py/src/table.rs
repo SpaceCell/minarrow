@@ -35,6 +35,8 @@ use pyo3::types::{PyDict, PySlice, PyTuple};
 use crate::array::PyArray;
 use crate::convert::{build_array, build_array_typed, resolve_index};
 use crate::dtype::{dtype_from_arrow, DType};
+#[cfg(feature = "ndarray")]
+use crate::ndarray::{ndarray_from_table, PyNdArray};
 use crate::field::PySchema;
 
 /// The natural minarrow form behind a Python `Table`. Carries the whole data
@@ -508,10 +510,10 @@ impl PyTable {
     /// axis-1 entry. From there `to_numpy`, `to_pytorch`, and the other
     /// DLPack bridges hand the data to each framework.
     #[cfg(feature = "ndarray")]
-    fn to_ndarray(&self) -> PyResult<crate::ndarray::PyNdArray> {
+    fn to_ndarray(&self) -> PyResult<PyNdArray> {
         match &self.0 {
-            PyTableInner::Owned(table) => crate::ndarray::ndarray_from_table(table),
-            PyTableInner::View(view) => crate::ndarray::ndarray_from_table(&view.to_table()),
+            PyTableInner::Owned(table) => ndarray_from_table(table),
+            PyTableInner::View(view) => ndarray_from_table(&view.to_table()),
         }
     }
 

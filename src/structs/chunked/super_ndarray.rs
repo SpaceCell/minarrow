@@ -1,6 +1,20 @@
+// Copyright 2025 Peter Garfield Bower
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! # **SuperNdArray** - *Chunked N-dimensional array*
 //!
-//! The N-dimensional equivalent of [`SuperTable`]: groups multiple `NdArray`
+//! The N-dimensional equivalent of [`SuperTable`](crate::SuperTable): groups multiple `NdArray`
 //! batches under a shared rank and trailing shape. Batches vary only in the
 //! size of their leading axis (axis 0), so element access, iteration, and
 //! slicing work transparently across chunk boundaries.
@@ -220,8 +234,8 @@ impl<T: Float> SuperNdArray<T> {
     /// across batch boundaries.
     ///
     /// Returns an (N-1)-dimensional `NdArrayV` view. For a 2D chunked
-    /// array with shape [n, m], returns a 1D view of shape [m]. For 3D
-    /// [n, m, k], returns 2D [m, k]. Requires rank 2 or higher - for
+    /// array with shape `[n, m]`, returns a 1D view of shape `[m]`. For 3D
+    /// `[n, m, k]`, returns 2D `[m, k]`. Requires rank 2 or higher - for
     /// scalar access on a 1D array use `get(&[i])`.
     #[cfg(feature = "views")]
     pub fn obs(&self, idx: usize) -> NdArrayV<T> {
@@ -316,7 +330,10 @@ impl<T: Float> SuperNdArray<T> {
     /// Parallel iteration over batches.
     #[cfg(feature = "parallel_proc")]
     #[inline]
-    pub fn par_iter_batches(&self) -> rayon::slice::Iter<'_, NdArray<T>> {
+    pub fn par_iter_batches(&self) -> rayon::slice::Iter<'_, NdArray<T>>
+    where
+        T: Send + Sync,
+    {
         self.batches.par_iter()
     }
 
@@ -324,7 +341,10 @@ impl<T: Float> SuperNdArray<T> {
     /// Each item is the global observation index and a zero-copy
     /// `NdArrayV` view. Batch boundaries are resolved transparently.
     #[cfg(all(feature = "parallel_proc", feature = "views"))]
-    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_ {
+    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_
+    where
+        T: Send + Sync,
+    {
         use rayon::prelude::*;
         let n_obs = self.n_obs();
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
@@ -495,7 +515,7 @@ impl<T: Float> SuperNdArray<T> {
         let strides = consolidated.strides().to_vec();
         let buf = consolidated.as_slice();
 
-        let mut new_batches = Vec::with_capacity((total_obs + chunk_size - 1) / chunk_size);
+        let mut new_batches = Vec::with_capacity(total_obs.div_ceil(chunk_size));
         let mut row_offset = 0;
 
         while row_offset < total_obs {
@@ -597,7 +617,7 @@ impl<T: Float> RowSelection for SuperNdArray<T> {
 // IntoIterator - element-wise iteration across batches
 // ****************************************************************
 
-/// Iterating a SuperNdArray yields f64 values in column-major order,
+/// Iterating a SuperNdArray yields `T` values in column-major order,
 /// seamlessly crossing chunk boundaries.
 impl<'a, T: Float> IntoIterator for &'a SuperNdArray<T> {
     type Item = T;
@@ -658,12 +678,21 @@ impl<'a, T: Float> ExactSizeIterator for SuperNdArrayIter<'a, T> {}
 impl<T: Float> Consolidate for SuperNdArray<T> {
     type Output = NdArray<T>;
 
+    /// Materialise into a single contiguous column-major [`NdArray`].
+    /// Each source batch reads at its own strides and writes straight
+    /// into the result, with unit-stride axis-0 runs taking the
+    /// memcpy path.
     fn consolidate(self) -> NdArray<T> {
         if self.batches.is_empty() {
-            return NdArray::new(&[0]);
+            let mut result = NdArray::new(&[0]);
+            result.name = Some(self.name);
+            return result;
         }
         if self.batches.len() == 1 {
             let mut result = self.batches.into_iter().next().unwrap();
+            if !result.is_contiguous() {
+                result = result.to_contiguous();
+            }
             result.name = Some(self.name);
             return result;
         }
@@ -679,28 +708,48 @@ impl<T: Float> Consolidate for SuperNdArray<T> {
             let mut pos = 0;
             for chunk in &self.batches {
                 let n = chunk.shape()[0];
-                dst[pos..pos + n].copy_from_slice(&chunk.as_slice()[..n]);
+                let s0 = chunk.strides()[0];
+                let src = chunk.as_slice();
+                if s0 == 1 {
+                    dst[pos..pos + n].copy_from_slice(&src[..n]);
+                } else {
+                    for i in 0..n {
+                        dst[pos + i] = src[i * s0];
+                    }
+                }
                 pos += n;
             }
         } else {
-            // Column-major layout places each higher-dimensional slice at
-            // c * strides[1] for c in 0..product(inner_shape), so the axis-0
-            // rows of every chunk interleave one column at a time. This holds
-            // for any rank of two or more, since the strides above the leading
-            // axis are exact multiples of strides[1].
+            // The result is contiguous column-major, so column c starts at
+            // c * strides[1] for c in 0..product(inner_shape), and the
+            // axis-0 rows of every chunk interleave one column at a time.
+            // Column c's base offset within each source chunk decomposes
+            // across that chunk's own outer dims, which for a contiguous
+            // chunk reduces to c * strides[1].
             let dst_stride = result.strides()[1];
             let n_cols: usize = self.inner_shape.iter().product();
             let dst = result.as_mut_slice();
             let mut row_offset = 0;
             for chunk in &self.batches {
                 let chunk_obs = chunk.shape()[0];
-                let src_stride = chunk.strides()[1];
+                let s0 = chunk.strides()[0];
                 let src = chunk.as_slice();
                 for c in 0..n_cols {
-                    let src_start = c * src_stride;
+                    let mut src_start = 0;
+                    let mut rem = c;
+                    for d in 1..chunk.ndim() {
+                        src_start += (rem % chunk.shape()[d]) * chunk.strides()[d];
+                        rem /= chunk.shape()[d];
+                    }
                     let dst_start = c * dst_stride + row_offset;
-                    dst[dst_start..dst_start + chunk_obs]
-                        .copy_from_slice(&src[src_start..src_start + chunk_obs]);
+                    if s0 == 1 {
+                        dst[dst_start..dst_start + chunk_obs]
+                            .copy_from_slice(&src[src_start..src_start + chunk_obs]);
+                    } else {
+                        for i in 0..chunk_obs {
+                            dst[dst_start + i] = src[src_start + i * s0];
+                        }
+                    }
                 }
                 row_offset += chunk_obs;
             }
@@ -721,7 +770,8 @@ impl<T: Float> Consolidate for SuperNdArray<T> {
 ///
 /// The comparison walks one logical column at a time, chaining each side's
 /// batches independently, so arrays split into different chunks still line
-/// up without materialising either side.
+/// up without materialising either side. Each batch reads at its own
+/// strides, so any layout compares in place.
 impl<T: Float> PartialEq for SuperNdArray<T> {
     fn eq(&self, other: &Self) -> bool {
         if self.ndim != other.ndim
@@ -730,19 +780,33 @@ impl<T: Float> PartialEq for SuperNdArray<T> {
         {
             return false;
         }
-        // Column-major layout places a chunk's column c in a contiguous
-        // axis-0 run at c * strides[1], or the whole leading run in 1D.
         let n_cols: usize = self.inner_shape.iter().product();
         for c in 0..n_cols {
             let lhs = self.batches.iter().flat_map(|b| {
                 let obs = b.shape()[0];
-                let start = if b.ndim() <= 1 { 0 } else { c * b.strides()[1] };
-                b.as_slice()[start..start + obs].iter()
+                let s0 = b.strides()[0];
+                // Column c's base offset decomposes across the outer dims,
+                // which for a contiguous batch reduces to c * strides[1].
+                let mut off = 0;
+                let mut rem = c;
+                for d in 1..b.ndim() {
+                    off += (rem % b.shape()[d]) * b.strides()[d];
+                    rem /= b.shape()[d];
+                }
+                let buf = b.as_slice();
+                (0..obs).map(move |i| buf[off + i * s0])
             });
             let rhs = other.batches.iter().flat_map(|b| {
                 let obs = b.shape()[0];
-                let start = if b.ndim() <= 1 { 0 } else { c * b.strides()[1] };
-                b.as_slice()[start..start + obs].iter()
+                let s0 = b.strides()[0];
+                let mut off = 0;
+                let mut rem = c;
+                for d in 1..b.ndim() {
+                    off += (rem % b.shape()[d]) * b.strides()[d];
+                    rem /= b.shape()[d];
+                }
+                let buf = b.as_slice();
+                (0..obs).map(move |i| buf[off + i * s0])
             });
             if !lhs.eq(rhs) {
                 return false;
@@ -806,6 +870,7 @@ impl<T: Float> fmt::Debug for SuperNdArray<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Buffer;
     #[cfg(all(feature = "views", feature = "select"))]
     use crate::nd;
 
@@ -1322,5 +1387,227 @@ mod tests {
             NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0], &[3, 2]),
         ], "test");
         assert_eq!(snd.shape(), vec![5, 2]);
+    }
+
+    // *** Strided batches *********************************************
+
+    #[test]
+    fn consolidate_non_contiguous_single_batch() {
+        // Row-major strides [2, 1] on shape [2, 2] give logical
+        // col0 = [1, 3] and col1 = [2, 4].
+        let nd = NdArray::from_buffer(
+            Buffer::from_slice(&[1.0, 2.0, 3.0, 4.0]),
+            &[2, 2],
+            &[2, 1],
+        );
+        assert!(!nd.is_contiguous());
+        let snd = SuperNdArray::from_batches(vec![nd], "strided");
+        let result = snd.consolidate();
+        assert!(result.is_contiguous());
+        assert_eq!(result.shape(), &[2, 2]);
+        assert_eq!(result.col(0), &[1.0, 3.0]);
+        assert_eq!(result.col(1), &[2.0, 4.0]);
+    }
+
+    #[test]
+    fn consolidate_mixed_layout_batches() {
+        let compact = NdArray::from_slice(&[10.0, 20.0, 30.0, 40.0], &[2, 2]);
+        // Row-major batch holding logical col0 = [1, 3], col1 = [2, 4].
+        let strided = NdArray::from_buffer(
+            Buffer::from_slice(&[1.0, 2.0, 3.0, 4.0]),
+            &[2, 2],
+            &[2, 1],
+        );
+        let snd = SuperNdArray::from_batches(vec![compact, strided], "mixed");
+        let result = snd.consolidate();
+        assert_eq!(result.shape(), &[4, 2]);
+        assert_eq!(result.col(0), &[10.0, 20.0, 1.0, 3.0]);
+        assert_eq!(result.col(1), &[30.0, 40.0, 2.0, 4.0]);
+    }
+
+    #[test]
+    fn eq_strided_batch_matches_contiguous() {
+        // Row-major batch holding logical col0 = [1, 3], col1 = [2, 4],
+        // compared against the same values chunked row by row.
+        let strided = SuperNdArray::from_batches(
+            vec![NdArray::from_buffer(
+                Buffer::from_slice(&[1.0, 2.0, 3.0, 4.0]),
+                &[2, 2],
+                &[2, 1],
+            )],
+            "strided",
+        );
+        let compact = SuperNdArray::from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0], &[1, 2]),
+                NdArray::from_slice(&[3.0, 4.0], &[1, 2]),
+            ],
+            "compact",
+        );
+        assert_eq!(strided, compact);
+
+        let different = SuperNdArray::from_batches(
+            vec![NdArray::from_slice(&[1.0, 3.0, 2.0, 99.0], &[2, 2])],
+            "different",
+        );
+        assert_ne!(strided, different);
+    }
+
+    // *** Bounds and observation access *******************************
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn obs_resolves_across_chunk_boundary() {
+        let snd = SuperNdArray::from_batches(vec![
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+            NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0], &[3, 2]),
+        ], "data");
+        // Global observation 2 is the second batch's first row.
+        let o = snd.obs(2);
+        assert_eq!(o.shape(), &[2]);
+        assert_eq!(o.get(&[0]), 5.0);
+        assert_eq!(o.get(&[1]), 8.0);
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    #[should_panic(expected = "global index 5 out of bounds (n_obs 5)")]
+    fn obs_out_of_bounds() {
+        let snd = SuperNdArray::from_batches(vec![
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+            NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0], &[3, 2]),
+        ], "data");
+        snd.obs(5);
+    }
+
+    #[test]
+    #[should_panic(expected = "global index 9 out of bounds (n_obs 5)")]
+    fn get_out_of_bounds() {
+        let snd = SuperNdArray::from_batches(vec![
+            NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]),
+            NdArray::from_slice(&[4.0, 5.0], &[2]),
+        ], "test");
+        snd.get(&[9]);
+    }
+
+    #[test]
+    #[should_panic(expected = "global index 4 out of bounds (n_obs 4)")]
+    fn set_out_of_bounds() {
+        let mut snd = SuperNdArray::from_batches(vec![
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+            NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0], &[2, 2]),
+        ], "mut");
+        snd.set(&[4, 0], 1.0);
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    #[should_panic(expected = "window [3, 7) out of bounds (n_obs 5)")]
+    fn slice_beyond_n_obs() {
+        let snd = SuperNdArray::from_batches(vec![
+            NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]),
+            NdArray::from_slice(&[4.0, 5.0], &[2]),
+        ], "test");
+        snd.slice(3, 4);
+    }
+
+    #[test]
+    fn col_concatenates_across_batches() {
+        let snd = SuperNdArray::from_batches(vec![
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+            NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0], &[3, 2]),
+        ], "data");
+        assert_eq!(snd.col(0), vec![1.0, 2.0, 5.0, 6.0, 7.0]);
+        assert_eq!(snd.col(1), vec![3.0, 4.0, 8.0, 9.0, 10.0]);
+    }
+
+    // *** Construction edge cases *************************************
+
+    #[test]
+    fn from_batches_empty_then_push_adopts_shape() {
+        let mut snd = SuperNdArray::<f64>::from_batches(vec![], "fresh");
+        assert_eq!(snd.n_batches(), 0);
+        assert_eq!(snd.ndim(), 0);
+        assert!(snd.is_empty());
+        snd.push(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]));
+        assert_eq!(snd.ndim(), 2);
+        assert_eq!(snd.inner_shape(), &[2]);
+        assert_eq!(snd.n_obs(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "has rank 2 but expected 1")]
+    fn from_batches_rank_mismatch() {
+        SuperNdArray::from_batches(vec![
+            NdArray::from_slice(&[1.0, 2.0], &[2]),
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+        ], "bad");
+    }
+
+    #[test]
+    #[should_panic(expected = "chunk 1 inner shape mismatch")]
+    fn from_batches_inner_shape_mismatch() {
+        SuperNdArray::from_batches(vec![
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]),
+        ], "bad");
+    }
+
+    #[test]
+    fn concat_rank_mismatch_errors() {
+        let a = SuperNdArray::from_batches(
+            vec![NdArray::from_slice(&[1.0, 2.0], &[2])], "a"
+        );
+        let b = SuperNdArray::from_batches(
+            vec![NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2])], "b"
+        );
+        let err = a.concat(b).unwrap_err();
+        assert!(format!("{}", err).contains("rank 1 vs 2"));
+    }
+
+    #[test]
+    fn concat_inner_shape_mismatch_errors() {
+        let a = SuperNdArray::from_batches(
+            vec![NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2])], "a"
+        );
+        let b = SuperNdArray::from_batches(
+            vec![NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3])], "b"
+        );
+        let err = a.concat(b).unwrap_err();
+        assert!(format!("{}", err).contains("inner shape [2] vs [3]"));
+    }
+
+    // *** Rechunk and empty batches ***********************************
+
+    #[test]
+    fn rechunk_3d_count() {
+        let data: Vec<f64> = (1..=16).map(|x| x as f64).collect();
+        let mut snd = SuperNdArray::from_batches(
+            vec![NdArray::from_slice(&data, &[4, 2, 2])], "cube"
+        );
+        snd.rechunk(RechunkStrategy::Count(3)).unwrap();
+        assert_eq!(snd.n_batches(), 2); // 3 + 1
+        assert_eq!(snd.batch(0).unwrap().shape(), &[3, 2, 2]);
+        assert_eq!(snd.batch(1).unwrap().shape(), &[1, 2, 2]);
+        assert_eq!(snd.get(&[0, 0, 0]), 1.0);
+        assert_eq!(snd.get(&[2, 1, 0]), 7.0);
+        assert_eq!(snd.get(&[3, 0, 1]), 12.0);
+        assert_eq!(snd.get(&[3, 1, 1]), 16.0);
+    }
+
+    #[test]
+    fn zero_observation_batch() {
+        let snd = SuperNdArray::from_batches(vec![
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+            NdArray::from_slice(&[], &[0, 2]),
+            NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0], &[2, 2]),
+        ], "gappy");
+        assert_eq!(snd.n_obs(), 4);
+        let vals: Vec<f64> = (&snd).into_iter().collect();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        let result = snd.consolidate();
+        assert_eq!(result.shape(), &[4, 2]);
+        assert_eq!(result.col(0), &[1.0, 2.0, 5.0, 6.0]);
+        assert_eq!(result.col(1), &[3.0, 4.0, 7.0, 8.0]);
     }
 }

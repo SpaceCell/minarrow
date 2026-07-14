@@ -293,6 +293,15 @@ impl Concatenate for Value {
                 Ok(Value::NdArray(Arc::new(a.concat(b)?)))
             }
 
+            // NdArrayView + NdArrayView -> NdArray, materialising both
+            // windows, mirroring the broadcast semantics for view pairs.
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            (NdArrayView(a), NdArrayView(b)) => {
+                let a = a.to_ndarray();
+                let b = b.to_ndarray();
+                Ok(Value::NdArray(Arc::new(a.concat(b)?)))
+            }
+
             // SuperNdArray + SuperNdArray -> SuperNdArray
             #[cfg(all(feature = "ndarray", feature = "chunked"))]
             (SuperNdArray(a), SuperNdArray(b)) => {
@@ -817,5 +826,130 @@ mod concat_tests {
         } else {
             panic!("Expected IncompatibleTypeError");
         }
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[test]
+    fn test_value_len_ndarray_types() {
+        use crate::NdArray;
+
+        // Column-major [3, 2] with 3 axis-0 observations
+        let nd = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        assert_eq!(Value::NdArray(Arc::new(nd.clone())).len(), 3);
+
+        #[cfg(feature = "views")]
+        assert_eq!(Value::NdArrayView(Arc::new(nd.as_view())).len(), 3);
+
+        #[cfg(feature = "chunked")]
+        {
+            use crate::SuperNdArray;
+            let snd = SuperNdArray::from_batches(
+                vec![
+                    NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+                    NdArray::from_slice(&[5.0, 6.0], &[1, 2]),
+                ],
+                "s",
+            );
+            assert_eq!(Value::SuperNdArray(Arc::new(snd.clone())).len(), 3);
+            #[cfg(feature = "views")]
+            assert_eq!(Value::SuperNdArrayView(Arc::new(snd.slice(0, 2))).len(), 2);
+        }
+
+        #[cfg(feature = "xarray")]
+        {
+            use crate::XArray;
+            let xa = XArray::new(nd, &["obs", "feat"]);
+            assert_eq!(Value::XArray(Arc::new(xa)).len(), 3);
+        }
+    }
+
+    #[cfg(all(feature = "ndarray", feature = "views"))]
+    #[test]
+    fn test_value_slice_ndarray() {
+        use crate::NdArray;
+
+        let nd = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let v = Value::NdArray(Arc::new(nd));
+
+        // The full window keeps the shape.
+        let full = v.slice(0, v.len());
+        let Value::NdArrayView(view) = full else {
+            panic!("Expected Value::NdArrayView");
+        };
+        assert_eq!(view.shape(), &[3, 2]);
+        assert_eq!(view.get(&[0, 0]), 1.0);
+        assert_eq!(view.get(&[2, 1]), 6.0);
+
+        // A partial window covers rows 1..3.
+        let window = v.slice(1, 2);
+        let Value::NdArrayView(view) = window else {
+            panic!("Expected Value::NdArrayView");
+        };
+        assert_eq!(view.shape(), &[2, 2]);
+        assert_eq!(view.get(&[0, 0]), 2.0);
+        assert_eq!(view.get(&[1, 0]), 3.0);
+        assert_eq!(view.get(&[0, 1]), 5.0);
+        assert_eq!(view.get(&[1, 1]), 6.0);
+    }
+
+    #[cfg(all(feature = "ndarray", feature = "views"))]
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn test_value_slice_ndarray_out_of_bounds_panics() {
+        use crate::NdArray;
+
+        let nd = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let v = Value::NdArray(Arc::new(nd));
+        let _ = v.slice(2, 2);
+    }
+
+    #[cfg(all(feature = "xarray", feature = "views", feature = "select"))]
+    #[test]
+    fn test_value_slice_xarray_narrows_coords() {
+        use crate::{FloatArray, NdArray, NumericArray, XArray};
+
+        let mut xa = XArray::new(
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]),
+            &["obs", "feat"],
+        );
+        xa.assign_coords(
+            "obs",
+            Array::NumericArray(NumericArray::Float64(Arc::new(
+                FloatArray::from_slice(&[10.0, 20.0, 30.0]),
+            ))),
+        );
+        let v = Value::XArray(Arc::new(xa));
+
+        let sliced = v.slice(1, 2);
+        let Value::XArray(out) = sliced else {
+            panic!("Expected Value::XArray");
+        };
+        assert_eq!(out.shape(), vec![2, 2]);
+        // The axis-0 coords narrow alongside the data window.
+        let coords = out.ax("obs").coords.as_ref().unwrap();
+        let expected = Array::NumericArray(NumericArray::Float64(Arc::new(
+            FloatArray::from_slice(&[20.0, 30.0]),
+        )));
+        assert_eq!(*coords, expected);
+    }
+
+    #[cfg(all(feature = "ndarray", feature = "views"))]
+    #[test]
+    fn test_value_concat_ndarray_views() {
+        use crate::NdArray;
+
+        let a = NdArray::from_slice(&[1.0, 2.0], &[2]);
+        let b = NdArray::from_slice(&[3.0], &[1]);
+        let va = Value::NdArrayView(Arc::new(a.as_view()));
+        let vb = Value::NdArrayView(Arc::new(b.as_view()));
+
+        let out = va.concat(vb).unwrap();
+        let Value::NdArray(nd) = out else {
+            panic!("Expected Value::NdArray");
+        };
+        assert_eq!(nd.shape(), &[3]);
+        assert_eq!(nd.get(&[0]), 1.0);
+        assert_eq!(nd.get(&[1]), 2.0);
+        assert_eq!(nd.get(&[2]), 3.0);
     }
 }

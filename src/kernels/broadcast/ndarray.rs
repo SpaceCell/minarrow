@@ -14,7 +14,7 @@
 
 //! NdArray broadcasting operations.
 //!
-//! Elementary elementwise arithmetic between two arrays of the same
+//! Elementwise arithmetic between two arrays of the same
 //! logical shape, with single-element expansion when one operand holds
 //! one value, plus the array-scalar forms in both operand orders.
 //!

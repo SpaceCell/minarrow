@@ -1599,6 +1599,91 @@ impl TryFrom<Value> for SuperTableV {
     }
 }
 
+#[cfg(feature = "ndarray")]
+impl TryFrom<Value> for NdArray<f64> {
+    type Error = MinarrowError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::NdArray(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "Value",
+                to: "NdArray<f64>",
+                message: Some("Value type mismatch".to_owned()),
+            }),
+        }
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "views"))]
+impl TryFrom<Value> for NdArrayV<f64> {
+    type Error = MinarrowError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::NdArrayView(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "Value",
+                to: "NdArrayV<f64>",
+                message: Some("Value type mismatch".to_owned()),
+            }),
+        }
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+impl TryFrom<Value> for SuperNdArray<f64> {
+    type Error = MinarrowError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::SuperNdArray(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "Value",
+                to: "SuperNdArray<f64>",
+                message: Some("Value type mismatch".to_owned()),
+            }),
+        }
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+impl TryFrom<Value> for SuperNdArrayV<f64> {
+    type Error = MinarrowError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::SuperNdArrayView(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "Value",
+                to: "SuperNdArrayV<f64>",
+                message: Some("Value type mismatch".to_owned()),
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "xarray")]
+impl TryFrom<Value> for XArray<f64> {
+    type Error = MinarrowError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::XArray(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "Value",
+                to: "XArray<f64>",
+                message: Some("Value type mismatch".to_owned()),
+            }),
+        }
+    }
+}
+
 // Recursive Container Conversions
 
 impl From<Vec<Value>> for Value {
@@ -2178,6 +2263,48 @@ mod accessor_tests {
 
         let result = val.try_st();
         assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[test]
+    fn test_ndarray_value_roundtrips() {
+        let nd = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+
+        let back = NdArray::<f64>::try_from(Value::from(nd.clone())).unwrap();
+        assert_eq!(back, nd);
+        assert!(NdArray::<f64>::try_from(Value::Table(Arc::new(Table::new_empty()))).is_err());
+
+        #[cfg(feature = "views")]
+        {
+            let view = nd.as_view();
+            let back = NdArrayV::<f64>::try_from(Value::from(view)).unwrap();
+            assert_eq!(back.to_ndarray(), nd);
+            assert!(NdArrayV::<f64>::try_from(Value::from(nd.clone())).is_err());
+        }
+
+        #[cfg(feature = "chunked")]
+        {
+            let snd = SuperNdArray::from_batches(vec![nd.clone(), nd.clone()], "s");
+            let back = SuperNdArray::<f64>::try_from(Value::from(snd.clone())).unwrap();
+            assert_eq!(back, snd);
+            assert!(SuperNdArray::<f64>::try_from(Value::from(nd.clone())).is_err());
+
+            #[cfg(feature = "views")]
+            {
+                let sv = snd.slice(0, 4);
+                let back = SuperNdArrayV::<f64>::try_from(Value::from(sv.clone())).unwrap();
+                assert_eq!(back, sv);
+                assert!(SuperNdArrayV::<f64>::try_from(Value::from(snd.clone())).is_err());
+            }
+        }
+
+        #[cfg(feature = "xarray")]
+        {
+            let xa = XArray::new(nd.clone(), &["obs", "feat"]);
+            let back = XArray::<f64>::try_from(Value::from(xa.clone())).unwrap();
+            assert_eq!(back, xa);
+            assert!(XArray::<f64>::try_from(Value::from(nd)).is_err());
+        }
     }
 }
 

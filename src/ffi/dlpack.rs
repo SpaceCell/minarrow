@@ -212,6 +212,15 @@ struct DLPackHolder<A> {
 /// Export an NdArray as a legacy DLPack managed tensor for zero-copy
 /// sharing.
 ///
+/// Legacy `DLManagedTensor` carries no read-only flag, so consumers
+/// treat the pointer as writable, and a consumer writing through it is
+/// visible to every other reference to the buffer. That is the standard
+/// DLPack sharing convention across NumPy and PyTorch. Consumers on the
+/// 1.x protocol should prefer `to_dlpack_versioned`, which flags shared
+/// buffers read-only. A buffer without a stable owned or shared
+/// allocation copies into an owned one first, since the consumer holds
+/// the base pointer for the tensor's whole lifetime.
+///
 /// Returns a [`DLPackTensor`] that manages the lifecycle. The NdArray's
 /// buffer stays alive through its internal shared reference count. When
 /// the owned tensor is dropped, the backing data is released.
@@ -219,6 +228,11 @@ struct DLPackHolder<A> {
 /// For FFI handoff (e.g. creating a PyCapsule), call `.into_raw()` to
 /// transfer ownership to the consumer.
 pub fn export_to_dlpack<T: Float>(ndarray: NdArray<T>) -> DLPackTensor {
+    let ndarray = if ndarray.data.is_owned() || ndarray.data.is_shared() {
+        ndarray
+    } else {
+        NdArray::from_buffer(ndarray.data.to_owned_copy(), ndarray.shape(), ndarray.strides())
+    };
     let shape = ndarray.shape().to_vec();
     let strides = ndarray.strides().to_vec();
     let data_ptr = ndarray.as_slice().as_ptr() as *mut c_void;
@@ -230,7 +244,15 @@ pub fn export_to_dlpack<T: Float>(ndarray: NdArray<T>) -> DLPackTensor {
 /// Sets `DLPACK_FLAG_BITMASK_READ_ONLY` when the backing buffer is
 /// shared, since a consumer writing through the pointer would be visible
 /// to every other reference. A uniquely owned buffer exports writable.
+/// A buffer without a stable owned or shared allocation copies into an
+/// owned one first, since the consumer holds the base pointer for the
+/// tensor's whole lifetime.
 pub fn export_to_dlpack_versioned<T: Float>(ndarray: NdArray<T>) -> DLPackTensorVersioned {
+    let ndarray = if ndarray.data.is_owned() || ndarray.data.is_shared() {
+        ndarray
+    } else {
+        NdArray::from_buffer(ndarray.data.to_owned_copy(), ndarray.shape(), ndarray.strides())
+    };
     let read_only = Arc::strong_count(&ndarray.data) > 1 || ndarray.data.is_shared();
     let flags = if read_only { DLPACK_FLAG_BITMASK_READ_ONLY } else { 0 };
     let shape = ndarray.shape().to_vec();
@@ -245,8 +267,18 @@ pub fn export_to_dlpack_versioned<T: Float>(ndarray: NdArray<T>) -> DLPackTensor
 /// copying. The window offset carries through DLPack's `byte_offset`
 /// field, and the view strides carry as element strides, so sliced,
 /// transposed, and permuted views all hand over zero-copy.
+///
+/// Legacy `DLManagedTensor` carries no read-only flag, so a consumer
+/// writing through the pointer is visible to every other reference to
+/// the backing buffer, per the standard DLPack sharing convention.
+/// Consumers on the 1.x protocol should prefer `to_dlpack_versioned`,
+/// which flags shared buffers read-only. A backing without a stable
+/// owned or shared allocation materialises the window first.
 #[cfg(feature = "views")]
 pub fn export_view_to_dlpack<T: Float>(view: NdArrayV<T>) -> DLPackTensor {
+    if !(view.source.data.is_owned() || view.source.data.is_shared()) {
+        return export_to_dlpack(view.to_ndarray());
+    }
     let shape = view.shape().to_vec();
     let strides = view.strides().to_vec();
     let byte_offset = (view.offset * std::mem::size_of::<T>()) as u64;
@@ -255,10 +287,17 @@ pub fn export_view_to_dlpack<T: Float>(view: NdArrayV<T>) -> DLPackTensor {
 }
 
 /// Export an NdArrayV window as a DLPack 1.x versioned managed tensor
-/// without copying. A view shares its source buffer, so the read-only
-/// flag is set whenever another reference to that buffer exists.
+/// without copying. The window offset carries through DLPack's
+/// `byte_offset` field, and the view strides carry as element strides,
+/// so sliced, transposed, and permuted views all hand over zero-copy.
+/// A view shares its source buffer, so the read-only flag is set
+/// whenever another reference to that buffer exists. A backing without
+/// a stable owned or shared allocation materialises the window first.
 #[cfg(feature = "views")]
 pub fn export_view_to_dlpack_versioned<T: Float>(view: NdArrayV<T>) -> DLPackTensorVersioned {
+    if !(view.source.data.is_owned() || view.source.data.is_shared()) {
+        return export_to_dlpack_versioned(view.to_ndarray());
+    }
     let read_only = Arc::strong_count(&view.source.data) > 1 || view.source.data.is_shared();
     let flags = if read_only { DLPACK_FLAG_BITMASK_READ_ONLY } else { 0 };
     let shape = view.shape().to_vec();
@@ -562,6 +601,12 @@ unsafe fn import_dl_tensor<T: Float>(
     }
     let ndim = tensor.ndim as usize;
 
+    if tensor.shape.is_null() {
+        return Err(MinarrowError::BridgeError {
+            source: "dlpack",
+            message: format!("null shape pointer for ndim={}", ndim),
+        });
+    }
     let raw_shape = unsafe { std::slice::from_raw_parts(tensor.shape, ndim) };
     if raw_shape.iter().any(|&s| s < 0) {
         return Err(MinarrowError::BridgeError {
@@ -610,6 +655,26 @@ unsafe fn import_dl_tensor<T: Float>(
         max_offset + 1
     };
 
+    // The byte window the elements span, overflow-checked and capped at
+    // isize::MAX per the slice safety contract.
+    let len_bytes = buf_len
+        .checked_mul(std::mem::size_of::<T>())
+        .filter(|&n| n <= isize::MAX as usize)
+        .ok_or_else(|| MinarrowError::BridgeError {
+            source: "dlpack",
+            message: format!(
+                "shape {:?} with strides {:?} spans more than isize::MAX bytes",
+                shape, strides
+            ),
+        })?;
+
+    if tensor.data.is_null() && buf_len > 0 {
+        return Err(MinarrowError::BridgeError {
+            source: "dlpack",
+            message: format!("null data pointer for a tensor of {} elements", buf_len),
+        });
+    }
+
     // Data pointer with byte offset, checked for element alignment. The
     // 64-byte SIMD alignment is handled downstream - Buffer::from_shared
     // copies a non-aligned foreign buffer into an aligned Vec64.
@@ -623,7 +688,7 @@ unsafe fn import_dl_tensor<T: Float>(
 
     // Record the data window now that shape and strides are validated.
     foreign.ptr = data_ptr;
-    foreign.len_bytes = buf_len * std::mem::size_of::<T>();
+    foreign.len_bytes = len_bytes;
 
     // Wrap into SharedBuffer -> Buffer -> NdArray. The guard moves into the
     // SharedBuffer, so the deleter now runs when the NdArray is dropped.
@@ -643,6 +708,8 @@ unsafe fn import_dl_tensor<T: Float>(
 /// - The DLManagedTensor must be valid and point to accessible CPU memory
 /// - The caller transfers ownership - the tensor must not be used after this call
 /// - The tensor must contain data of element type `T`
+/// - The imported NdArray is Send + Sync, so the tensor's deleter must
+///   tolerate running on any thread
 pub unsafe fn import_from_dlpack<T: Float>(
     managed_ptr: *mut DLManagedTensor,
 ) -> Result<NdArray<T>, MinarrowError> {
@@ -673,6 +740,8 @@ pub unsafe fn import_from_dlpack<T: Float>(
 /// - The DLManagedTensorVersioned must be valid and point to accessible CPU memory
 /// - The caller transfers ownership - the tensor must not be used after this call
 /// - The tensor must contain data of element type `T`
+/// - The imported NdArray is Send + Sync, so the tensor's deleter must
+///   tolerate running on any thread
 pub unsafe fn import_from_dlpack_versioned<T: Float>(
     managed_ptr: *mut DLManagedTensorVersioned,
 ) -> Result<NdArray<T>, MinarrowError> {
@@ -911,7 +980,10 @@ mod tests {
         let owned = export_view_to_dlpack(view);
         let tensor = owned.tensor();
 
+        // Zero-copy: the tensor points at the parent's own buffer with
+        // the window carried as byte_offset.
         assert_eq!(tensor.byte_offset, 2 * std::mem::size_of::<f64>() as u64);
+        assert_eq!(tensor.data as *const u8, arr.as_slice().as_ptr() as *const u8);
         let shape = unsafe { std::slice::from_raw_parts(tensor.shape, 2) };
         assert_eq!(shape, &[3, 2]);
 
@@ -1005,5 +1077,172 @@ mod tests {
         assert_eq!(imported.get(&[0, 0]), 1.0);
         assert_eq!(imported.get(&[0, 1]), 2.0);
         assert_eq!(imported.get(&[1, 0]), 3.0);
+    }
+
+    // *** Foreign producer tensors ************************************
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Shape and strides storage plus the counter the deleter bumps,
+    /// keeping the foreign tensor's pointers alive until release.
+    struct ForeignCtx {
+        shape: Vec<i64>,
+        strides: Vec<i64>,
+        hits: &'static AtomicUsize,
+    }
+
+    unsafe extern "C" fn counting_deleter(managed: *mut DLManagedTensor) {
+        if managed.is_null() {
+            return;
+        }
+        let managed = unsafe { Box::from_raw(managed) };
+        let ctx: Box<ForeignCtx> =
+            unsafe { Box::from_raw(managed.manager_ctx as *mut ForeignCtx) };
+        ctx.hits.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Assemble a foreign-owned legacy managed tensor over caller-supplied
+    /// f64 data, wired to the counting deleter.
+    fn foreign_tensor(
+        data: *mut c_void,
+        shape: Vec<i64>,
+        strides: Vec<i64>,
+        hits: &'static AtomicUsize,
+    ) -> *mut DLManagedTensor {
+        let mut ctx = Box::new(ForeignCtx { shape, strides, hits });
+        let tensor = DLTensor {
+            data,
+            device: DLDevice::cpu(),
+            ndim: ctx.shape.len() as i32,
+            dtype: DLDataType::FLOAT64,
+            shape: ctx.shape.as_mut_ptr(),
+            strides: ctx.strides.as_mut_ptr(),
+            byte_offset: 0,
+        };
+        Box::into_raw(Box::new(DLManagedTensor {
+            dl_tensor: tensor,
+            manager_ctx: Box::into_raw(ctx) as *mut c_void,
+            deleter: Some(counting_deleter),
+        }))
+    }
+
+    /// Allocate a 64-byte aligned f64 buffer the test controls outright,
+    /// so a zero-copy import shares it without a realignment copy.
+    fn aligned_f64_alloc(values: &[f64]) -> (*mut f64, std::alloc::Layout) {
+        let layout = std::alloc::Layout::from_size_align(
+            values.len() * std::mem::size_of::<f64>(),
+            64,
+        )
+        .unwrap();
+        let ptr = unsafe { std::alloc::alloc(layout) as *mut f64 };
+        assert!(!ptr.is_null());
+        unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), ptr, values.len()) };
+        (ptr, layout)
+    }
+
+    #[test]
+    fn import_rejects_null_shape_pointer() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let raw = foreign_tensor(64 as *mut c_void, vec![2], vec![1], &HITS);
+        unsafe { (*raw).dl_tensor.shape = std::ptr::null_mut() };
+        let result = unsafe { import_from_dlpack::<f64>(raw) };
+        let Err(MinarrowError::BridgeError { message, .. }) = result else {
+            panic!("expected BridgeError");
+        };
+        assert!(message.contains("null shape pointer"));
+        assert_eq!(HITS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn import_rejects_null_data_pointer() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let raw = foreign_tensor(std::ptr::null_mut(), vec![2], vec![1], &HITS);
+        let result = unsafe { import_from_dlpack::<f64>(raw) };
+        let Err(MinarrowError::BridgeError { message, .. }) = result else {
+            panic!("expected BridgeError");
+        };
+        assert!(message.contains("null data pointer"));
+        assert_eq!(HITS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn import_rejects_span_beyond_isize_max() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        // Validation rejects the span before any read, so the dangling
+        // but aligned data pointer is never dereferenced.
+        let raw = foreign_tensor(64 as *mut c_void, vec![i64::MAX / 4], vec![1], &HITS);
+        let result = unsafe { import_from_dlpack::<f64>(raw) };
+        let Err(MinarrowError::BridgeError { message, .. }) = result else {
+            panic!("expected BridgeError");
+        };
+        assert!(message.contains("spans more than isize::MAX bytes"));
+        assert_eq!(HITS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn deleter_runs_once_on_drop() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let (data, layout) = aligned_f64_alloc(&[1.0, 2.0, 3.0, 4.0]);
+        let raw = foreign_tensor(data as *mut c_void, vec![4], vec![1], &HITS);
+        let imported = unsafe { import_from_dlpack::<f64>(raw) }.unwrap();
+        assert_eq!(imported.get(&[2]), 3.0);
+        assert_eq!(HITS.load(Ordering::SeqCst), 0);
+        drop(imported);
+        assert_eq!(HITS.load(Ordering::SeqCst), 1);
+        unsafe { std::alloc::dealloc(data as *mut u8, layout) };
+    }
+
+    #[test]
+    fn deleter_runs_once_on_failed_import() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let (data, layout) = aligned_f64_alloc(&[1.0, 2.0]);
+        let raw = foreign_tensor(data as *mut c_void, vec![2], vec![1], &HITS);
+        // Importing as f32 against the f64 payload fails the dtype check.
+        let result = unsafe { import_from_dlpack::<f32>(raw) };
+        assert!(result.is_err());
+        assert_eq!(HITS.load(Ordering::SeqCst), 1);
+        unsafe { std::alloc::dealloc(data as *mut u8, layout) };
+    }
+
+    #[test]
+    fn import_mutation_copies_rather_than_writing_through() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let (data, layout) = aligned_f64_alloc(&[1.0, 2.0, 3.0, 4.0]);
+        let raw = foreign_tensor(data as *mut c_void, vec![4], vec![1], &HITS);
+        let mut imported = unsafe { import_from_dlpack::<f64>(raw) }.unwrap();
+        imported.set(&[1], 99.0);
+        assert_eq!(imported.get(&[1]), 99.0);
+        // The producer's memory holds its original values.
+        let original = unsafe { std::slice::from_raw_parts(data, 4) };
+        assert_eq!(original, &[1.0, 2.0, 3.0, 4.0]);
+        drop(imported);
+        unsafe { std::alloc::dealloc(data as *mut u8, layout) };
+    }
+
+    #[test]
+    fn export_aliased_buffer_is_zero_copy() {
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]);
+        let alias = arr.clone();
+        let exported = export_to_dlpack(arr);
+        assert_eq!(
+            exported.tensor().data as *const f64,
+            alias.as_slice().as_ptr()
+        );
+    }
+
+    #[test]
+    fn imported_ndarray_send_drops_on_other_thread() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let (data, layout) = aligned_f64_alloc(&[1.0, 2.0, 3.0, 4.0]);
+        let raw = foreign_tensor(data as *mut c_void, vec![4], vec![1], &HITS);
+        let imported = unsafe { import_from_dlpack::<f64>(raw) }.unwrap();
+        std::thread::spawn(move || {
+            assert_eq!(imported.get(&[3]), 4.0);
+            drop(imported);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(HITS.load(Ordering::SeqCst), 1);
+        unsafe { std::alloc::dealloc(data as *mut u8, layout) };
     }
 }

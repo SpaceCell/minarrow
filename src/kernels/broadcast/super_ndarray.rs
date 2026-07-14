@@ -14,7 +14,7 @@
 
 //! SuperNdArray broadcasting operations.
 //!
-//! Elementary elementwise arithmetic between two chunked arrays whose
+//! Elementwise arithmetic between two chunked arrays whose
 //! batches align, plus the array-scalar forms in both operand orders.
 //! Every operation preserves the chunk boundaries of the left operand.
 //!
@@ -59,11 +59,12 @@ pub(crate) fn resolve_super_ndarray_arithmetic<T: Float>(
             .zip(rhs.iter_batches())
             .all(|(a, b)| a.shape()[0] == b.shape()[0]);
     if !boundaries_match {
+        let lhs_obs: Vec<usize> = lhs.iter_batches().map(|b| b.shape()[0]).collect();
+        let rhs_obs: Vec<usize> = rhs.iter_batches().map(|b| b.shape()[0]).collect();
         return Err(MinarrowError::ShapeError {
             message: format!(
-                "broadcast: chunk boundaries differ ({} vs {} batches), rechunk or consolidate first",
-                lhs.n_batches(),
-                rhs.n_batches()
+                "broadcast: chunk boundaries differ (batch lengths {:?} vs {:?}), rechunk or consolidate first",
+                lhs_obs, rhs_obs
             ),
         });
     }
@@ -337,5 +338,52 @@ mod tests {
         };
         assert_eq!(snd.n_batches(), 2);
         assert_eq!((&*snd).into_iter().collect::<Vec<f64>>(), vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn sub_and_rem_values() {
+        let a = chunked(&[&[5.0, 7.0], &[9.0, 4.0]], &[], "a");
+        let b = chunked(&[&[1.0, 4.0], &[3.0, 2.5]], &[], "b");
+        let diff = broadcast_super_ndarray_sub(&a, &b).unwrap();
+        assert_eq!((&diff).into_iter().collect::<Vec<f64>>(), vec![4.0, 3.0, 6.0, 1.5]);
+        let rem = broadcast_super_ndarray_rem(&a, &b).unwrap();
+        assert_eq!((&rem).into_iter().collect::<Vec<f64>>(), vec![0.0, 3.0, 0.0, 1.5]);
+    }
+
+    #[test]
+    fn div_by_zero_follows_ieee() {
+        let a = chunked(&[&[1.0, 0.0, -2.0]], &[], "a");
+        let b = chunked(&[&[0.0, 0.0, 0.0]], &[], "b");
+        let q = broadcast_super_ndarray_div(&a, &b).unwrap();
+        assert!(q.get(&[0]).is_infinite() && q.get(&[0]) > 0.0);
+        assert!(q.get(&[1]).is_nan());
+        assert!(q.get(&[2]).is_infinite() && q.get(&[2]) < 0.0);
+    }
+
+    #[test]
+    fn boundary_error_reports_batch_lengths() {
+        // Equal batch counts with differing per-batch lengths.
+        let a = chunked(&[&[1.0, 2.0], &[3.0, 4.0, 5.0]], &[], "a");
+        let b = chunked(&[&[1.0, 2.0, 3.0], &[4.0, 5.0]], &[], "b");
+        let err = broadcast_super_ndarray_add(&a, &b).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("batch lengths [2, 3] vs [3, 2]"));
+    }
+
+    #[test]
+    fn scalar_ops_keep_batch_lengths() {
+        let a = chunked(&[&[1.0, 2.0], &[3.0, 4.0, 5.0], &[6.0]], &[], "stream");
+        let sum = broadcast_super_ndarray_scalar_add(&a, 1.0).unwrap();
+        assert_eq!(sum.n_batches(), 3);
+        let lengths: Vec<usize> = sum.iter_batches().map(|b| b.shape()[0]).collect();
+        assert_eq!(lengths, vec![2, 3, 1]);
+        let flipped = broadcast_scalar_super_ndarray_sub(10.0, &a).unwrap();
+        assert_eq!(flipped.n_batches(), 3);
+        let lengths: Vec<usize> = flipped.iter_batches().map(|b| b.shape()[0]).collect();
+        assert_eq!(lengths, vec![2, 3, 1]);
+        assert_eq!(
+            (&flipped).into_iter().collect::<Vec<f64>>(),
+            vec![9.0, 8.0, 7.0, 6.0, 5.0, 4.0]
+        );
     }
 }

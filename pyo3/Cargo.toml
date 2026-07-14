@@ -35,6 +35,8 @@ datetime = ["minarrow/datetime"]
 extended_numeric_types = ["minarrow/extended_numeric_types"]
 extended_categorical = ["minarrow/extended_categorical"]
 table_metadata = ["minarrow/table_metadata"]
+# N-dimensional tensor bridging with DLPack capsule interchange.
+ndarray = ["minarrow/ndarray", "minarrow/dlpack"]
 
 [build-dependencies]
 pyo3-build-config = "0.23"

@@ -11,7 +11,8 @@
 //! ## Storage
 //! Internally holds one of three modes - owned [`NdArray`], zero-copy
 //! [`NdArrayV`] view, or chunked [`SuperNdArray`] - behind a single type.
-//! There is no XArrayV or SuperXArray; the storage variant is transparent.
+//! The storage variant is transparent, so one XArray type covers owned,
+//! view, and chunked data without separate wrapper types.
 //!
 //! ## Quick reference
 //! ```ignore
@@ -219,6 +220,15 @@ impl<T: Float> XArray<T> {
             view.ndim(), axes.len(),
             "XArray: {} axes for {}D view", axes.len(), view.ndim()
         );
+        for (i, ax) in axes.iter().enumerate() {
+            if let Some(ref coords) = ax.coords {
+                assert_eq!(
+                    coords.len(), view.shape()[i],
+                    "XArray: axis '{}' has {} coords but dimension size is {}",
+                    ax.name, coords.len(), view.shape()[i]
+                );
+            }
+        }
         XArray { data: NdArrayE::View(view), axes }
     }
 
@@ -300,7 +310,7 @@ impl<T: Float> XArray<T> {
     }
 
     /// Borrow the inner storage for crate-internal dispatch.
-    #[cfg(feature = "broadcast")]
+    #[cfg(any(feature = "broadcast", feature = "size"))]
     #[inline]
     pub(crate) fn storage(&self) -> &NdArrayE<T> {
         &self.data
@@ -377,7 +387,10 @@ impl<T: Float> XArray<T> {
     /// Parallel iterator over axis-0 observations. Each item is the
     /// observation index and a zero-copy `NdArrayV` view.
     #[cfg(all(feature = "parallel_proc", feature = "views"))]
-    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_ {
+    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_
+    where
+        T: Send + Sync,
+    {
         use rayon::prelude::*;
         let n_obs = self.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
@@ -509,7 +522,9 @@ impl<T: Float> XArray<T> {
 
     /// Select a single position on a named axis by coordinate value.
     /// Accepts numeric, string, and datetime values. Collapses that
-    /// dimension. Returns an error if the value is not found.
+    /// dimension. Returns an error if the value is not found. Float
+    /// coordinates match by IEEE equality, so NaN never matches and
+    /// derived values may miss - `nearest` tolerates rounding.
     #[cfg(all(feature = "views", feature = "select"))]
     pub fn try_at(&self, dim_name: &str, value: impl Into<Scalar>) -> Result<XArray<T>, MinarrowError> {
         let dim_idx = self.dim(dim_name);
@@ -540,7 +555,10 @@ impl<T: Float> XArray<T> {
 
     /// Select a range by coordinate value bounds (inclusive).
     /// Accepts numeric, string, and datetime bounds. Returns an error
-    /// if no values fall in the range.
+    /// if no values fall in the range, or if the matching coordinates
+    /// do not form a contiguous run i.e. the axis is not monotonic over
+    /// the requested bounds - sort the axis or gather by position for
+    /// unsorted coordinates.
     #[cfg(all(feature = "views", feature = "select"))]
     pub fn try_between(
         &self,
@@ -577,7 +595,8 @@ impl<T: Float> XArray<T> {
         Ok(XArray { data: NdArrayE::View(view), axes: new_axes })
     }
 
-    /// Select a range by coordinate value bounds. Panics if no values match.
+    /// Select a range by coordinate value bounds. Panics if no values
+    /// match, or if the axis is not monotonic over the requested bounds.
     #[cfg(all(feature = "views", feature = "select"))]
     pub fn between(
         &self,
@@ -626,7 +645,9 @@ impl<T: Float> XArray<T> {
     // Axis operations
     // ****************************************************************
 
-    /// Transpose (2D only). Reorders axes by name.
+    /// Transpose (2D only). Reorders axes by name, so the result's
+    /// dimensions arrive in `dim_order`. Passing the current order
+    /// returns the array unchanged.
     pub fn transpose(&self, dim_order: &[&str]) -> Result<XArray<T>, MinarrowError> {
         if self.ndim() != 2 {
             return Err(MinarrowError::ShapeError {
@@ -637,6 +658,29 @@ impl<T: Float> XArray<T> {
             return Err(MinarrowError::ShapeError {
                 message: "transpose: expected 2 dim names".to_string(),
             });
+        }
+        if dim_order[0] == dim_order[1] {
+            return Err(MinarrowError::ShapeError {
+                message: format!(
+                    "transpose: dim names must be distinct, got '{}' twice", dim_order[0]
+                ),
+            });
+        }
+        for name in dim_order {
+            if self.try_dim(name).is_none() {
+                return Err(MinarrowError::ShapeError {
+                    message: format!(
+                        "transpose: no axis named '{}', axes are {:?}",
+                        name,
+                        self.dim_names()
+                    ),
+                });
+            }
+        }
+        // The current order is a no-op, so the data only transposes when
+        // the axes actually swap.
+        if dim_order[0] == self.axes[0].name {
+            return Ok(self.clone());
         }
         let inner = match &self.data {
             NdArrayE::Owned(nd) => nd.transpose(),
@@ -716,30 +760,35 @@ pub struct Axis {
     pub coords: Option<Array>,
 }
 
-/// Scans a typed coordinate slice and widens `start`/`end` over positions
-/// within the inclusive `[lo, hi]` window.
+/// Scans a typed coordinate slice, widening `start`/`end` over positions
+/// within the inclusive `[lo, hi]` window and counting the matches, so the
+/// caller can detect a span polluted by out-of-range coordinates.
 #[cfg(all(feature = "views", feature = "select"))]
 macro_rules! coord_window {
-    ($data:expr, $lo:expr, $hi:expr, $domain:ty, $start:ident, $end:ident) => {
+    ($data:expr, $lo:expr, $hi:expr, $domain:ty, $start:ident, $end:ident, $count:ident) => {
         for (i, &v) in $data.iter().enumerate() {
             if (v as $domain) >= $lo && (v as $domain) <= $hi {
                 if i < $start { $start = i; }
                 if i + 1 > $end { $end = i + 1; }
+                $count += 1;
             }
         }
     };
 }
 
-/// Scans string-valued coordinates and widens `start`/`end` over positions
-/// within the inclusive lexicographic `[lo, hi]` window.
+/// Scans string-valued coordinates, widening `start`/`end` over positions
+/// within the inclusive lexicographic `[lo, hi]` window and counting the
+/// matches, so the caller can detect a span polluted by out-of-range
+/// coordinates.
 #[cfg(all(feature = "views", feature = "select"))]
 macro_rules! coord_window_str {
-    ($arr:expr, $n:expr, $lo:expr, $hi:expr, $start:ident, $end:ident) => {
+    ($arr:expr, $n:expr, $lo:expr, $hi:expr, $start:ident, $end:ident, $count:ident) => {
         for i in 0..$n {
             if let Some(s) = $arr.get_str(i) {
                 if s >= $lo && s <= $hi {
                     if i < $start { $start = i; }
                     if i + 1 > $end { $end = i + 1; }
+                    $count += 1;
                 }
             }
         }
@@ -875,6 +924,7 @@ impl Axis {
         let n = coords.len();
         let mut start = n;
         let mut end = 0;
+        let mut count = 0usize;
         match coords {
             Array::TextArray(text) => {
                 let lo = low.try_str().ok_or_else(|| MinarrowError::TypeError {
@@ -887,57 +937,57 @@ impl Axis {
                 })?;
                 let (lo, hi) = (lo.as_str(), hi.as_str());
                 match text {
-                    TextArray::String32(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    TextArray::String32(a) => { coord_window_str!(a, n, lo, hi, start, end, count); }
                     #[cfg(feature = "large_string")]
-                    TextArray::String64(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    TextArray::String64(a) => { coord_window_str!(a, n, lo, hi, start, end, count); }
                     #[cfg(feature = "default_categorical_8")]
-                    TextArray::Categorical8(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    TextArray::Categorical8(a) => { coord_window_str!(a, n, lo, hi, start, end, count); }
                     #[cfg(feature = "extended_categorical")]
-                    TextArray::Categorical16(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    TextArray::Categorical16(a) => { coord_window_str!(a, n, lo, hi, start, end, count); }
                     #[cfg(any(
                         not(feature = "default_categorical_8"),
                         feature = "extended_categorical"
                     ))]
-                    TextArray::Categorical32(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    TextArray::Categorical32(a) => { coord_window_str!(a, n, lo, hi, start, end, count); }
                     #[cfg(feature = "extended_categorical")]
-                    TextArray::Categorical64(a) => { coord_window_str!(a, n, lo, hi, start, end); }
+                    TextArray::Categorical64(a) => { coord_window_str!(a, n, lo, hi, start, end, count); }
                     TextArray::Null => {}
                 }
             }
             Array::NumericArray(num) => match num {
                 #[cfg(feature = "extended_numeric_types")]
                 NumericArray::Int8(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
-                    coord_window!(a.data, lo, hi, i64, start, end);
+                    coord_window!(a.data, lo, hi, i64, start, end, count);
                 },
                 #[cfg(feature = "extended_numeric_types")]
                 NumericArray::Int16(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
-                    coord_window!(a.data, lo, hi, i64, start, end);
+                    coord_window!(a.data, lo, hi, i64, start, end, count);
                 },
                 NumericArray::Int32(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
-                    coord_window!(a.data, lo, hi, i64, start, end);
+                    coord_window!(a.data, lo, hi, i64, start, end, count);
                 },
                 NumericArray::Int64(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
-                    coord_window!(a.data, lo, hi, i64, start, end);
+                    coord_window!(a.data, lo, hi, i64, start, end, count);
                 },
                 #[cfg(feature = "extended_numeric_types")]
                 NumericArray::UInt8(a) => if let (Some(lo), Some(hi)) = (low.try_u64(), high.try_u64()) {
-                    coord_window!(a.data, lo, hi, u64, start, end);
+                    coord_window!(a.data, lo, hi, u64, start, end, count);
                 },
                 #[cfg(feature = "extended_numeric_types")]
                 NumericArray::UInt16(a) => if let (Some(lo), Some(hi)) = (low.try_u64(), high.try_u64()) {
-                    coord_window!(a.data, lo, hi, u64, start, end);
+                    coord_window!(a.data, lo, hi, u64, start, end, count);
                 },
                 NumericArray::UInt32(a) => if let (Some(lo), Some(hi)) = (low.try_u64(), high.try_u64()) {
-                    coord_window!(a.data, lo, hi, u64, start, end);
+                    coord_window!(a.data, lo, hi, u64, start, end, count);
                 },
                 NumericArray::UInt64(a) => if let (Some(lo), Some(hi)) = (low.try_u64(), high.try_u64()) {
-                    coord_window!(a.data, lo, hi, u64, start, end);
+                    coord_window!(a.data, lo, hi, u64, start, end, count);
                 },
                 NumericArray::Float32(a) => if let (Some(lo), Some(hi)) = (low.try_f64(), high.try_f64()) {
-                    coord_window!(a.data, lo, hi, f64, start, end);
+                    coord_window!(a.data, lo, hi, f64, start, end, count);
                 },
                 NumericArray::Float64(a) => if let (Some(lo), Some(hi)) = (low.try_f64(), high.try_f64()) {
-                    coord_window!(a.data, lo, hi, f64, start, end);
+                    coord_window!(a.data, lo, hi, f64, start, end, count);
                 },
                 NumericArray::Null => {}
             },
@@ -952,8 +1002,8 @@ impl Axis {
                     message: Some(format!("axis '{}' holds datetime coordinates", self.name)),
                 })?;
                 match temporal {
-                    TemporalArray::Datetime32(a) => { coord_window!(a.data, lo, hi, i64, start, end); }
-                    TemporalArray::Datetime64(a) => { coord_window!(a.data, lo, hi, i64, start, end); }
+                    TemporalArray::Datetime32(a) => { coord_window!(a.data, lo, hi, i64, start, end, count); }
+                    TemporalArray::Datetime64(a) => { coord_window!(a.data, lo, hi, i64, start, end, count); }
                     TemporalArray::Null => {}
                 }
             }
@@ -967,6 +1017,14 @@ impl Axis {
         if start >= end {
             return Err(MinarrowError::IndexError(format!(
                 "no values in [{:?}, {:?}] on axis '{}'", low, high, self.name
+            )));
+        }
+        // A span wider than its match count contains coordinates outside
+        // the bounds, so a window would return wrong rows.
+        if end - start != count {
+            return Err(MinarrowError::IndexError(format!(
+                "coordinates on axis '{}' are not monotonic over [{:?}, {:?}], sort the axis or gather by position instead",
+                self.name, low, high
             )));
         }
         Ok((start, end))
@@ -1112,17 +1170,47 @@ impl<T: Float> Concatenate for XArray<T> {
         let other_nd = to_ndarray(other_data);
         let new_data = self_nd.concat(other_nd)?;
 
-        // Merge axis 0 coords if both present, keep other axes unchanged
+        // Axis 0 coords concatenate when both sides carry them. Non-0
+        // axes describe the same positions on both sides, so their
+        // coords must agree, and a side missing them adopts the other's.
         let mut new_axes = Vec::with_capacity(self_axes.len());
         for (i, (a, b)) in self_axes.into_iter().zip(other_axes.into_iter()).enumerate() {
             if i == 0 {
                 let merged_coords = match (a.coords, b.coords) {
                     (Some(ca), Some(cb)) => Some(ca.concat(cb)?),
-                    _ => None,
+                    (None, None) => None,
+                    _ => {
+                        return Err(MinarrowError::IncompatibleTypeError {
+                            from: "XArray",
+                            to: "XArray",
+                            message: Some(format!(
+                                "axis '{}' is labelled on one side only, assign_coords or drop_coords first",
+                                a.name
+                            )),
+                        });
+                    }
                 };
                 new_axes.push(Axis { name: a.name, coords: merged_coords });
             } else {
-                new_axes.push(a);
+                let coords = match (a.coords, b.coords) {
+                    (Some(ca), Some(cb)) => {
+                        if ca != cb {
+                            return Err(MinarrowError::IncompatibleTypeError {
+                                from: "XArray",
+                                to: "XArray",
+                                message: Some(format!(
+                                    "axis '{}' coordinates differ between the two sides",
+                                    a.name
+                                )),
+                            });
+                        }
+                        Some(ca)
+                    }
+                    (Some(ca), None) => Some(ca),
+                    (None, Some(cb)) => Some(cb),
+                    (None, None) => None,
+                };
+                new_axes.push(Axis { name: a.name, coords });
             }
         }
 
@@ -1163,7 +1251,13 @@ impl<T: Float> fmt::Debug for XArray<T> {
                 format!("{}={}{}", ax.name, size, label)
             })
             .collect();
-        let storage = if self.is_owned() { "owned" } else { "view" };
+        let storage = match &self.data {
+            NdArrayE::Owned(_) => "owned",
+            #[cfg(feature = "views")]
+            NdArrayE::View(_) => "view",
+            #[cfg(feature = "chunked")]
+            NdArrayE::Chunked(_) => "chunked",
+        };
         write!(f, "XArray [{}] ({})", dims.join(", "), storage)
     }
 }
@@ -1704,5 +1798,130 @@ mod tests {
         let xa = XArray::new(data, &["obs", "feat", "time"]);
         assert_eq!(xa.ndim(), 3);
         assert_eq!(xa.dim("time"), 2);
+    }
+
+    #[test]
+    fn transpose_current_order_is_identity() {
+        let xa = XArray::new(make_2d(), &["obs", "feat"]);
+        let same = xa.transpose(&["obs", "feat"]).unwrap();
+        assert_eq!(same.dim_names(), vec!["obs", "feat"]);
+        assert_eq!(same.shape(), vec![3, 2]);
+        assert_eq!(same.get(&[2, 1]), xa.get(&[2, 1]));
+    }
+
+    #[test]
+    fn transpose_reversed_moves_data() {
+        let xa = XArray::new(make_2d(), &["obs", "feat"]);
+        let t = xa.transpose(&["feat", "obs"]).unwrap();
+        assert_eq!(t.dim_names(), vec!["feat", "obs"]);
+        assert_eq!(t.get(&[0, 2]), xa.get(&[2, 0]));
+        assert_eq!(t.get(&[1, 0]), xa.get(&[0, 1]));
+    }
+
+    #[test]
+    fn transpose_duplicate_dim_errors() {
+        let xa = XArray::new(make_2d(), &["obs", "feat"]);
+        let err = xa.transpose(&["obs", "obs"]).unwrap_err();
+        assert!(err.to_string().contains("must be distinct"));
+    }
+
+    #[test]
+    fn transpose_unknown_dim_errors() {
+        let xa = XArray::new(make_2d(), &["obs", "feat"]);
+        let err = xa.transpose(&["obs", "missing"]).unwrap_err();
+        assert!(err.to_string().contains("no axis named 'missing'"));
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn try_between_unsorted_coords_errors() {
+        // The covering span 0..3 includes the out-of-bounds 100.0, so a
+        // window would return wrong rows.
+        let mut xa = XArray::new(make_2d(), &["obs", "feat"]);
+        xa.assign_coords("obs", float_coords(&[20.0, 100.0, 21.0]));
+        let err = xa.try_between("obs", 15.0, 25.0).unwrap_err();
+        assert!(err.to_string().contains("not monotonic"));
+
+        // Sorted coordinates over the same bounds window cleanly.
+        let mut sorted = XArray::new(make_2d(), &["obs", "feat"]);
+        sorted.assign_coords("obs", float_coords(&[20.0, 21.0, 100.0]));
+        let result = sorted.try_between("obs", 15.0, 25.0).unwrap();
+        assert_eq!(result.shape(), vec![2, 2]);
+    }
+
+    #[test]
+    fn concat_axis0_coords_on_one_side_fails() {
+        let mut a = XArray::new(
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+            &["obs", "feat"],
+        );
+        a.assign_coords("obs", float_coords(&[0.0, 1.0]));
+        let b = XArray::new(
+            NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0], &[2, 2]),
+            &["obs", "feat"],
+        );
+        let err = a.concat(b).unwrap_err();
+        assert!(err.to_string().contains("labelled on one side"));
+    }
+
+    #[test]
+    fn concat_non_zero_axis_coord_mismatch_fails() {
+        let mut a = XArray::new(
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+            &["obs", "feat"],
+        );
+        a.assign_coords("feat", float_coords(&[10.0, 20.0]));
+        let mut b = XArray::new(
+            NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0], &[2, 2]),
+            &["obs", "feat"],
+        );
+        b.assign_coords("feat", float_coords(&[10.0, 30.0]));
+        let err = a.concat(b).unwrap_err();
+        assert!(err.to_string().contains("coordinates differ"));
+    }
+
+    #[test]
+    fn concat_non_zero_axis_adopts_coords() {
+        let mut a = XArray::new(
+            NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+            &["obs", "feat"],
+        );
+        a.assign_coords("feat", float_coords(&[10.0, 20.0]));
+        let b = XArray::new(
+            NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0], &[2, 2]),
+            &["obs", "feat"],
+        );
+        let c = a.concat(b).unwrap();
+        let coords = c.ax("feat").coords.as_ref().unwrap();
+        assert_eq!(*coords, float_coords(&[10.0, 20.0]));
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    #[should_panic(expected = "coords but dimension size is")]
+    fn from_view_coord_length_mismatch_panics() {
+        let nd = make_2d();
+        let axes = vec![
+            Axis::named("obs"),
+            Axis::with_coords("feat", float_coords(&[10.0])),
+        ];
+        let _ = XArray::from_view(nd.as_view(), axes);
+    }
+
+    #[cfg(feature = "chunked")]
+    #[test]
+    fn debug_format_chunked() {
+        use crate::structs::chunked::super_ndarray::SuperNdArray;
+        let xa = XArray::from_batches(
+            SuperNdArray::from_batches(
+                vec![
+                    NdArray::from_slice(&[1.0, 2.0], &[2]),
+                    NdArray::from_slice(&[3.0], &[1]),
+                ],
+                "batched",
+            ),
+            &["time"],
+        );
+        assert!(format!("{:?}", xa).contains("(chunked)"));
     }
 }

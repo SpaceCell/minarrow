@@ -29,8 +29,9 @@ default = ["datetime", "large_string", "scalar_type", "value_type", "cube", "arr
 extension-module = ["pyo3/extension-module"]
 arrow_interop = ["dep:minarrow-pyo3", "minarrow-pyo3/datetime"]
 simd = ["minarrow/simd"]
-# N-dimensional tensor with DLPack capsule interchange.
-ndarray = ["minarrow/ndarray", "minarrow/dlpack"]
+# N-dimensional tensor with DLPack capsule interchange. The capsule glue
+# lives in minarrow-pyo3's ffi::dlpack, alongside the Arrow capsule glue.
+ndarray = ["minarrow/ndarray", "minarrow/dlpack", "dep:minarrow-pyo3", "minarrow-pyo3/ndarray"]
 
 # Embeds a CPython interpreter so Rust can drive Python through `PyLiquid`.
 # Links libpython - use the default non `extension-module` link mode and 

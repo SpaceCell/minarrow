@@ -86,27 +86,55 @@ impl<T: Float> NdArrayV<T> {
         self.source.data.as_slice()[off]
     }
 
+    /// Like `get`, but skips bounds checks.
+    ///
+    /// # Safety
+    /// The caller guarantees each index is within its dimension.
+    #[inline(always)]
+    pub unsafe fn get_unchecked(&self, indices: &[usize]) -> T {
+        let strides = self.dims.strides();
+        let mut off = self.offset;
+        for d in 0..indices.len() {
+            off += indices[d] * strides[d];
+        }
+        // SAFETY: in-bounds indices produce an in-bounds flat offset.
+        unsafe { *self.source.data.as_slice().get_unchecked(off) }
+    }
+
     /// Compute flat offset.
     #[inline]
     fn offset_of(&self, indices: &[usize]) -> usize {
         self.offset + offset_of_impl(indices, self.dims.shape(), self.dims.strides())
     }
 
-    /// Immutable column slice for 2D views. Panics if ndim != 2.
+    /// Immutable column slice for 2D views.
+    /// Panics if ndim != 2, the column index is out of bounds, or axis 0
+    /// is not unit-stride i.e. column elements are not contiguous, as after
+    /// `transpose`, `permute_axes`, or `swap_axes`. Materialise with
+    /// `to_ndarray()` first for those.
     #[inline]
     pub fn col(&self, col: usize) -> &[T] {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "col() requires a 2D view");
-        debug_assert!(col < shape[1]);
+        assert!(col < shape[1], "Column index out of bounds");
+        assert_eq!(
+            self.dims.strides()[0], 1,
+            "col() requires unit stride on axis 0; materialise with to_ndarray() first"
+        );
         let stride = self.dims.strides()[1];
         let start = self.offset + col * stride;
         &self.source.data.as_slice()[start..start + shape[0]]
     }
 
     /// All columns as slices. 2D only.
+    /// Panics if ndim != 2 or axis 0 is not unit-stride.
     pub fn columns(&self) -> Vec<&[T]> {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "columns() requires a 2D view");
+        assert_eq!(
+            self.dims.strides()[0], 1,
+            "columns() requires unit stride on axis 0; materialise with to_ndarray() first"
+        );
         let stride = self.dims.strides()[1];
         let n_rows = shape[0];
         let buf = self.source.data.as_slice();
@@ -132,9 +160,16 @@ impl<T: Float> NdArrayV<T> {
     }
 
     /// BLAS leading dimension. 2D only.
+    /// Panics unless axis 0 is unit-stride - BLAS requires column
+    /// elements to be contiguous, which a transposed or permuted view
+    /// does not satisfy. Materialise with `to_ndarray()` first.
     #[inline]
     pub fn lda(&self) -> i32 {
         assert_eq!(self.ndim(), 2, "lda() requires a 2D view");
+        assert_eq!(
+            self.dims.strides()[0], 1,
+            "lda() requires unit stride on axis 0; materialise with to_ndarray() first"
+        );
         self.dims.strides()[1] as i32
     }
 
@@ -143,8 +178,8 @@ impl<T: Float> NdArrayV<T> {
     /// Zero-copy view of a single observation (axis-0 element).
     ///
     /// Returns an (N-1)-dimensional view. For a 2D view with shape
-    /// [n, m], returns a 1D view of shape [m]. For 3D [n, m, k],
-    /// returns 2D [m, k]. Requires rank 2 or higher - a 1D view has no
+    /// `[n, m]`, returns a 1D view of shape `[m]`. For 3D `[n, m, k]`,
+    /// returns 2D `[m, k]`. Requires rank 2 or higher - a 1D view has no
     /// sub-array observations, so scalar access goes through `get(&[i])`.
     pub fn obs(&self, idx: usize) -> NdArrayV<T> {
         let shape = self.dims.shape();
@@ -153,7 +188,7 @@ impl<T: Float> NdArrayV<T> {
             shape.len() >= 2,
             "obs() requires a 2D or higher view, use get(&[i]) for scalar access on 1D"
         );
-        debug_assert!(idx < shape[0], "obs: index {} out of bounds for axis 0 (size {})", idx, shape[0]);
+        assert!(idx < shape[0], "obs: index {} out of bounds for axis 0 (size {})", idx, shape[0]);
 
         let new_offset = self.offset + idx * strides[0];
         NdArrayV::new(self.source.clone(), new_offset, &shape[1..], &strides[1..])
@@ -178,7 +213,7 @@ impl<T: Float> NdArrayV<T> {
 
         for (d, sel) in selection.iter().enumerate() {
             let (start, end, collapse) = sel.resolve_axis(shape[d]);
-            debug_assert!(
+            assert!(
                 end <= shape[d],
                 "slice(): end {} out of bounds for axis {} (size {})", end, d, shape[d]
             );
@@ -278,7 +313,10 @@ impl<T: Float> NdArrayV<T> {
     /// Parallel iterator over axis-0 observations. Each item is the
     /// observation index and a zero-copy `NdArrayV` view.
     #[cfg(feature = "parallel_proc")]
-    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_ {
+    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_
+    where
+        T: Send + Sync,
+    {
         use rayon::prelude::*;
         let n_obs = self.dims.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
@@ -695,5 +733,66 @@ mod tests {
         let a = NdArray::<f64>::new(&[3, 4]);
         let v = NdArrayV::from_ndarray(a);
         assert_eq!(Shape::shape(&v), ShapeDim::Rank2 { rows: 3, cols: 4 });
+    }
+
+    #[test]
+    #[should_panic(expected = "unit stride")]
+    fn col_on_transposed_view_panics() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let t = a.as_view().transpose();
+        let _ = t.col(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "unit stride")]
+    fn columns_on_transposed_view_panics() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let t = a.as_view().transpose();
+        let _ = t.columns();
+    }
+
+    #[test]
+    #[should_panic(expected = "unit stride")]
+    fn lda_on_transposed_view_panics() {
+        let a = NdArray::<f64>::new(&[3, 2]);
+        let t = a.as_view().transpose();
+        let _ = t.lda();
+    }
+
+    #[test]
+    #[should_panic(expected = "index 3 out of bounds for axis 0")]
+    fn obs_out_of_bounds_panics() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let _ = a.as_view().obs(3);
+    }
+
+    #[test]
+    #[should_panic(expected = "swap_axes: axes (0, 3) out of bounds")]
+    fn swap_axes_out_of_bounds_panics() {
+        let a = NdArray::<f64>::new(&[2, 3, 4]);
+        let _ = a.as_view().swap_axes(0, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "permute_axes: axis 3 out of bounds")]
+    fn permute_axes_out_of_bounds_axis_panics() {
+        let a = NdArray::<f64>::new(&[2, 3, 4]);
+        let _ = a.as_view().permute_axes(&[0, 1, 3]);
+    }
+
+    #[test]
+    fn get_unchecked_matches_get() {
+        let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
+        let a = NdArray::from_slice(&data, &[2, 3, 4]);
+        let t = a.as_view().transpose();
+        for i in 0..4 {
+            for j in 0..3 {
+                for k in 0..2 {
+                    let idx = [i, j, k];
+                    // SAFETY: indices are within shape
+                    assert_eq!(unsafe { t.get_unchecked(&idx) }, t.get(&idx));
+                }
+            }
+        }
     }
 }

@@ -2,8 +2,10 @@
 //!
 //! Comparable to NumPy's `ndarray` or Rust's `ndarray` crate, but backed
 //! by Minarrow's [`Buffer<T>`], so external memory such as an imported
-//! DLPack tensor wraps without copying. Conversions into the padded and
-//! columnar types re-lay data for their layouts.
+//! DLPack tensor wraps without copying when its pointer is 64-byte
+//! aligned. A misaligned foreign pointer, such as a sliced tensor,
+//! copies into an aligned `Vec64` on import. Conversions into the
+//! padded and columnar types re-lay data for their layouts.
 //!
 //! ## Intent
 //! NdArray is the landing container for n-dimensional numeric data - off a
@@ -27,6 +29,11 @@
 //! whole-buffer SIMD over the flattened data. Padded per-column alignment
 //! for BLAS/LAPACK column access is [`Matrix`]'s job, and `to_matrix`
 //! re-lays data into that form.
+//!
+//! NumPy and PyTorch default to row-major, so a rank-2 or higher export
+//! arrives there as a valid strided tensor that is not C-contiguous.
+//! Consumers that require C-contiguity re-lay it on their side, e.g.
+//! `.contiguous()` in PyTorch or `np.ascontiguousarray`.
 //! 
 //! # SIMD only in 1D
 //! Notably, this is different to the other structures in Minarrow, which optimise
@@ -241,6 +248,11 @@ impl<T: Float> NdArray<T> {
     #[inline]
     pub fn len(&self) -> usize { self.dims.len() }
 
+    /// Leading-axis (axis 0) observation count i.e. `shape()[0]`,
+    /// matching `SuperNdArray::n_obs` and NumPy's `len(arr)`.
+    #[inline]
+    pub fn n_obs(&self) -> usize { self.dims.shape()[0] }
+
     /// True if any dimension is zero.
     #[inline]
     pub fn is_empty(&self) -> bool { self.len() == 0 }
@@ -278,8 +290,33 @@ impl<T: Float> NdArray<T> {
         self.data.as_slice()[self.offset_of(indices)]
     }
 
+    /// Like `get`, but skips bounds checks.
+    ///
+    /// # Safety
+    /// The caller guarantees each index is within its dimension.
+    #[inline(always)]
+    pub unsafe fn get_unchecked(&self, indices: &[usize]) -> T {
+        let strides = self.dims.strides();
+        let mut off = 0;
+        for d in 0..indices.len() {
+            off += indices[d] * strides[d];
+        }
+        // SAFETY: in-bounds indices produce an in-bounds flat offset.
+        unsafe { *self.data.as_slice().get_unchecked(off) }
+    }
+
     /// Set element by N-dimensional index. Panics if out of bounds.
     /// Triggers copy-on-write when views share the buffer.
+    ///
+    /// For repeated writes, detach once and write through the slice:
+    /// ```ignore
+    /// let s1 = a.strides()[1];
+    /// let s = a.as_mut_slice();      // one copy-on-write detach
+    /// for (i, j, v) in writes {
+    ///     // SAFETY: i and j are within shape
+    ///     unsafe { *s.get_unchecked_mut(i + j * s1) = v; }
+    /// }
+    /// ```
     #[inline]
     pub fn set(&mut self, indices: &[usize], value: T) {
         let off = self.offset_of(indices);
@@ -344,24 +381,36 @@ impl<T: Float> NdArray<T> {
 
     // *** 2D axis access (column-major) ***************************
 
-    /// Immutable column slice for a 2D array. Panics if ndim != 2.
+    /// Immutable column slice for a 2D array.
+    /// Panics if ndim != 2, the column index is out of bounds, or axis 0
+    /// is not unit-stride i.e. column elements are not contiguous.
     #[inline]
     pub fn col(&self, col: usize) -> &[T] {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "col() requires a 2D array");
-        debug_assert!(col < shape[1], "Column index out of bounds");
+        assert!(col < shape[1], "Column index out of bounds");
+        assert_eq!(
+            self.dims.strides()[0], 1,
+            "col() requires unit stride on axis 0; call to_contiguous() first"
+        );
         let stride = self.dims.strides()[1];
         let start = col * stride;
         &self.data.as_slice()[start..start + shape[0]]
     }
 
-    /// Mutable column slice for a 2D array. Panics if ndim != 2.
+    /// Mutable column slice for a 2D array.
+    /// Panics if ndim != 2, the column index is out of bounds, or axis 0
+    /// is not unit-stride i.e. column elements are not contiguous.
     /// Triggers copy-on-write if the buffer is shared.
     #[inline]
     pub fn col_mut(&mut self, col: usize) -> &mut [T] {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "col_mut() requires a 2D array");
-        debug_assert!(col < shape[1], "Column index out of bounds");
+        assert!(col < shape[1], "Column index out of bounds");
+        assert_eq!(
+            self.dims.strides()[0], 1,
+            "col_mut() requires unit stride on axis 0; call to_contiguous() first"
+        );
         let stride = self.dims.strides()[1];
         let n_rows = shape[0];
         let start = col * stride;
@@ -369,9 +418,14 @@ impl<T: Float> NdArray<T> {
     }
 
     /// All columns as immutable slices. 2D only.
+    /// Panics if ndim != 2 or axis 0 is not unit-stride.
     pub fn columns(&self) -> Vec<&[T]> {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "columns() requires a 2D array");
+        assert_eq!(
+            self.dims.strides()[0], 1,
+            "columns() requires unit stride on axis 0; call to_contiguous() first"
+        );
         let stride = self.dims.strides()[1];
         let n_rows = shape[0];
         let buf = self.data.as_slice();
@@ -381,9 +435,14 @@ impl<T: Float> NdArray<T> {
     }
 
     /// All columns as mutable slices. 2D only.
+    /// Panics if ndim != 2 or axis 0 is not unit-stride.
     pub fn columns_mut(&mut self) -> Vec<&mut [T]> {
         let shape = self.dims.shape();
         assert_eq!(shape.len(), 2, "columns_mut() requires a 2D array");
+        assert_eq!(
+            self.dims.strides()[0], 1,
+            "columns_mut() requires unit stride on axis 0; call to_contiguous() first"
+        );
         let n_rows = shape[0];
         let n_cols = shape[1];
         let stride = self.dims.strides()[1];
@@ -414,8 +473,8 @@ impl<T: Float> NdArray<T> {
     /// Zero-copy view of a single observation (axis-0 element).
     ///
     /// Returns an (N-1)-dimensional `NdArrayV` view. For a 2D array
-    /// with shape [n, m], returns a 1D view of shape [m]. For 3D
-    /// [n, m, k], returns 2D [m, k]. Requires rank 2 or higher - for
+    /// with shape `[n, m]`, returns a 1D view of shape `[m]`. For 3D
+    /// `[n, m, k]`, returns 2D `[m, k]`. Requires rank 2 or higher - for
     /// scalar access on a 1D array use `get(&[i])`.
     ///
     /// For repeated access in a loop, prefer `nd.as_view()` then call
@@ -594,7 +653,7 @@ impl<T: Float> NdArray<T> {
 
         for (d, sel) in selection.iter().enumerate() {
             let (start, end, collapse) = sel.resolve_axis(shape[d]);
-            debug_assert!(
+            assert!(
                 end <= shape[d],
                 "slice(): end {} out of bounds for axis {} (size {})", end, d, shape[d]
             );
@@ -740,15 +799,21 @@ impl<T: Float> NdArray<T> {
     /// Parallel iterator over the underlying buffer. Rayon splits
     /// the contiguous data into chunks across threads automatically.
     #[cfg(feature = "parallel_proc")]
-    pub fn par_iter(&self) -> rayon::slice::Iter<'_, T> {
+    pub fn par_iter(&self) -> rayon::slice::Iter<'_, T>
+    where
+        T: Send + Sync,
+    {
         use rayon::prelude::*;
         self.data.as_slice().par_iter()
     }
 
     /// Parallel chunks of the underlying buffer. Each chunk is a
-    /// contiguous `&[f64]` slice that rayon distributes across threads.
+    /// contiguous `&[T]` slice that rayon distributes across threads.
     #[cfg(feature = "parallel_proc")]
-    pub fn par_chunks(&self, chunk_size: usize) -> rayon::slice::Chunks<'_, T> {
+    pub fn par_chunks(&self, chunk_size: usize) -> rayon::slice::Chunks<'_, T>
+    where
+        T: Send + Sync,
+    {
         use rayon::prelude::*;
         self.data.as_slice().par_chunks(chunk_size)
     }
@@ -764,7 +829,10 @@ impl<T: Float> NdArray<T> {
     /// Parallel iterator over axis-0 observations. Each item is the
     /// observation index and a zero-copy `NdArrayV` view.
     #[cfg(all(feature = "parallel_proc", feature = "views"))]
-    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_ {
+    pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_
+    where
+        T: Send + Sync,
+    {
         use rayon::prelude::*;
         let n_obs = self.dims.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
@@ -906,7 +974,13 @@ impl NdDims {
 
     /// Build dims from explicit shape and strides.
     pub(crate) fn from_shape_and_strides(shape: &[usize], strides: &[usize]) -> Self {
-        debug_assert_eq!(shape.len(), strides.len());
+        assert_eq!(
+            shape.len(),
+            strides.len(),
+            "NdArray: shape rank {} does not match strides rank {}",
+            shape.len(),
+            strides.len()
+        );
         match shape.len() {
             1 => NdDims::D1 {
                 shape: [shape[0]],
@@ -987,8 +1061,8 @@ impl NdDims {
 
 /// Build an axis-selection slice from mixed indices and ranges.
 ///
-/// Each entry is any [`DataSelector`](crate::DataSelector) - a single
-/// index collapses the dimension, and a contiguous range keeps it.
+/// Each entry is any [`DataSelector`](crate::traits::selection::DataSelector) -
+/// a single index collapses the dimension, and a contiguous range keeps it.
 ///
 /// # Example
 /// ```ignore
@@ -1039,7 +1113,7 @@ pub(crate) fn buffer_len(shape: &[usize], strides: &[usize]) -> usize {
 // IntoIterator
 // ****************************************************************
 
-/// Iterating an NdArray yields f64 values in column-major order,
+/// Iterating an NdArray yields `T` values in column-major order,
 /// walking contiguous runs along axis 0 (the innermost dimension)
 /// and advancing through higher dimensions. Each column/slice is
 /// a sequential cache-friendly read with no per-element arithmetic.
@@ -1161,12 +1235,21 @@ impl<'a, T: Float> ExactSizeIterator for NdArrayIter<'a, T> {}
 // ****************************************************************
 
 /// Compute flat buffer offset for an N-dimensional index.
+/// Panics on rank mismatch or an out-of-bounds index, in release
+/// builds included, since a wrong offset can silently read or write
+/// another element's slot.
 #[inline]
 pub(crate) fn offset_of_impl(indices: &[usize], shape: &[usize], strides: &[usize]) -> usize {
-    debug_assert_eq!(indices.len(), shape.len());
+    assert_eq!(
+        indices.len(),
+        shape.len(),
+        "NdArray: {} indices for a {}D array",
+        indices.len(),
+        shape.len()
+    );
     let mut offset = 0;
     for d in 0..shape.len() {
-        debug_assert!(
+        assert!(
             indices[d] < shape[d],
             "NdArray: index {} out of bounds for dim {} (size {})",
             indices[d], d, shape[d]
@@ -1230,8 +1313,18 @@ impl<T: Float> Concatenate for NdArray<T> {
             (None, None) => None,
         };
 
-        // Fast path for 2D: interleave columns
-        if s1.len() == 2 {
+        // 1D: plain append
+        if s1.len() == 1 {
+            let mut flat = Vec64::with_capacity(self.len() + other.len());
+            flat.extend(&self);
+            flat.extend(&other);
+            let mut result = NdArray::from_slice(&flat, &new_shape);
+            result.name = name;
+            return Ok(result);
+        }
+
+        // Fast path for contiguous 2D: interleave columns with memcpy
+        if s1.len() == 2 && self.dims.strides()[0] == 1 && other.dims.strides()[0] == 1 {
             let new_dims = NdDims::from_shape(&new_shape);
             let new_stride = new_dims.strides()[1];
             let total = buffer_len(&new_shape, new_dims.strides());
@@ -1250,13 +1343,33 @@ impl<T: Float> Concatenate for NdArray<T> {
             });
         }
 
-        // General case: collect logical elements and re-lay out
-        let mut flat = Vec64::with_capacity(self.len() + other.len());
-        flat.extend(&self);
-        flat.extend(&other);
-        let mut result = NdArray::from_slice(&flat, &new_shape);
-        result.name = name;
-        Ok(result)
+        // General case: interleave the axis-0 run of each operand per
+        // outer index, walking both sources in column-major logical order.
+        let n1 = s1[0];
+        let n2 = s2[0];
+        let run_len = n1 + n2;
+        let n_runs: usize = s1[1..].iter().product();
+        let new_dims = NdDims::from_shape(&new_shape);
+        let total = buffer_len(&new_shape, new_dims.strides());
+        let mut buf = Vec64::with_capacity(total);
+        buf.0.resize(total, T::default());
+        let dst = buf.as_mut_slice();
+        let mut it_a = (&self).into_iter();
+        let mut it_b = (&other).into_iter();
+        for r in 0..n_runs {
+            let base = r * run_len;
+            for i in 0..n1 {
+                dst[base + i] = it_a.next().unwrap();
+            }
+            for i in 0..n2 {
+                dst[base + n1 + i] = it_b.next().unwrap();
+            }
+        }
+        Ok(NdArray {
+            data: Arc::new(Buffer::from_vec64(buf)),
+            dims: new_dims,
+            name,
+        })
     }
 }
 
@@ -1369,11 +1482,11 @@ impl<T: Float> Index<usize> for NdArray<T> {
         let strides = self.dims.strides();
         match shape.len() {
             1 => {
-                debug_assert!(idx < shape[0], "NdArray: index {} out of bounds (size {})", idx, shape[0]);
+                assert!(idx < shape[0], "NdArray: index {} out of bounds (size {})", idx, shape[0]);
                 &self.data.as_slice()[idx..idx + 1]
             }
             2 => {
-                debug_assert!(idx < shape[1], "NdArray: column {} out of bounds (n_cols {})", idx, shape[1]);
+                assert!(idx < shape[1], "NdArray: column {} out of bounds (n_cols {})", idx, shape[1]);
                 let start = idx * strides[1];
                 &self.data.as_slice()[start..start + shape[0]]
             }
@@ -1384,7 +1497,7 @@ impl<T: Float> Index<usize> for NdArray<T> {
                     "outermost-axis indexing on 3D+ requires a contiguous layout, use slice() for strided access"
                 );
                 let last = n - 1;
-                debug_assert!(idx < shape[last], "index out of bounds for axis {}", last);
+                assert!(idx < shape[last], "index out of bounds for axis {}", last);
                 let start = idx * strides[last];
                 &self.data.as_slice()[start..start + strides[last]]
             }
@@ -1399,11 +1512,11 @@ impl<T: Float> IndexMut<usize> for NdArray<T> {
         let strides = self.dims.strides().to_vec();
         match shape.len() {
             1 => {
-                debug_assert!(idx < shape[0], "NdArray: index {} out of bounds (size {})", idx, shape[0]);
+                assert!(idx < shape[0], "NdArray: index {} out of bounds (size {})", idx, shape[0]);
                 &mut Arc::make_mut(&mut self.data).as_mut_slice()[idx..idx + 1]
             }
             2 => {
-                debug_assert!(idx < shape[1], "NdArray: column {} out of bounds (n_cols {})", idx, shape[1]);
+                assert!(idx < shape[1], "NdArray: column {} out of bounds (n_cols {})", idx, shape[1]);
                 let start = idx * strides[1];
                 let n_rows = shape[0];
                 &mut Arc::make_mut(&mut self.data).as_mut_slice()[start..start + n_rows]
@@ -1414,7 +1527,7 @@ impl<T: Float> IndexMut<usize> for NdArray<T> {
                     "outermost-axis indexing on 3D+ requires a contiguous layout, use slice() for strided access"
                 );
                 let last = n - 1;
-                debug_assert!(idx < shape[last], "index out of bounds for axis {}", last);
+                assert!(idx < shape[last], "index out of bounds for axis {}", last);
                 let start = idx * strides[last];
                 &mut Arc::make_mut(&mut self.data).as_mut_slice()[start..start + strides[last]]
             }
@@ -1446,7 +1559,7 @@ impl<T: Float> Index<Range<usize>> for NdArray<T> {
                     "range indexing requires a contiguous layout, use slice() for strided access"
                 );
                 let last = shape.len() - 1;
-                debug_assert!(range.end <= shape[last], "NdArray: range end {} out of bounds (size {})", range.end, shape[last]);
+                assert!(range.end <= shape[last], "NdArray: range end {} out of bounds (size {})", range.end, shape[last]);
                 let start = range.start * strides[last];
                 let end = range.end * strides[last];
                 &self.data.as_slice()[start..end]
@@ -1468,7 +1581,7 @@ impl<T: Float> IndexMut<Range<usize>> for NdArray<T> {
                     "range indexing requires a contiguous layout, use slice() for strided access"
                 );
                 let last = shape.len() - 1;
-                debug_assert!(range.end <= shape[last], "NdArray: range end {} out of bounds (size {})", range.end, shape[last]);
+                assert!(range.end <= shape[last], "NdArray: range end {} out of bounds (size {})", range.end, shape[last]);
                 let start = range.start * strides[last];
                 let end = range.end * strides[last];
                 &mut Arc::make_mut(&mut self.data).as_mut_slice()[start..end]
@@ -3010,5 +3123,215 @@ mod tests {
         assert_eq!(v[(0,)], 13.0);
         assert_eq!(v[(1,)], 14.0);
         assert_eq!(v[(2,)], 15.0);
+    }
+
+    // ****************************************************************
+    // Bounds and panic contracts
+    // ****************************************************************
+
+    #[test]
+    #[should_panic(expected = "Column index out of bounds")]
+    fn col_out_of_bounds_panics() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let _ = a.col(2);
+    }
+
+    #[test]
+    #[should_panic(expected = "indices for a 2D array")]
+    fn get_rank_mismatch_panics() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let _ = a.get(&[0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds for dim")]
+    fn get_index_out_of_bounds_panics() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let _ = a.get(&[2, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds for dim")]
+    fn set_out_of_bounds_panics() {
+        let mut a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        a.set(&[0, 5], 9.0);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    #[should_panic(expected = "expected 2 axes, got 1")]
+    fn slice_wrong_axis_count_panics() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let _ = a.slice(nd![0..2]);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    #[should_panic(expected = "range 0..100 out of bounds")]
+    fn slice_range_out_of_bounds_panics() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let _ = a.slice(nd![0..100, 0..2]);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    #[should_panic(expected = "index 5 out of bounds")]
+    fn slice_single_index_out_of_bounds_panics() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let _ = a.slice(nd![5, 0..2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least 2 points")]
+    fn linspace_requires_two_points() {
+        let _ = NdArray::<f64>::linspace(0.0, 1.0, 1);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn slice_one_element_index_array_collapses() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let idx: &[usize] = &[1];
+        let v = a.slice(nd![idx, 0..2]);
+        assert_eq!(v.shape(), &[2]);
+        assert_eq!(v[(0,)], 2.0);
+        assert_eq!(v[(1,)], 5.0);
+    }
+
+    #[test]
+    fn get_unchecked_matches_get() {
+        let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
+        let a = NdArray::from_slice(&data, &[2, 3, 4]);
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    let idx = [i, j, k];
+                    // SAFETY: indices are within shape
+                    assert_eq!(unsafe { a.get_unchecked(&idx) }, a.get(&idx));
+                }
+            }
+        }
+    }
+
+    // ****************************************************************
+    // Concatenate correctness
+    // ****************************************************************
+
+    #[test]
+    fn concat_3d_interleaves_axis0() {
+        let da: Vec<f64> = (1..=8).map(|x| x as f64).collect();
+        let db: Vec<f64> = (9..=16).map(|x| x as f64).collect();
+        let a = NdArray::from_slice(&da, &[2, 2, 2]);
+        let b = NdArray::from_slice(&db, &[2, 2, 2]);
+        let c = a.clone().concat(b.clone()).unwrap();
+        assert_eq!(c.shape(), &[4, 2, 2]);
+        for i in 0..4 {
+            for j in 0..2 {
+                for k in 0..2 {
+                    let expected = if i < 2 {
+                        a.get(&[i, j, k])
+                    } else {
+                        b.get(&[i - 2, j, k])
+                    };
+                    assert_eq!(c.get(&[i, j, k]), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn concat_non_contiguous_operand() {
+        // Row-major strides on the first operand exercise the general
+        // interleave path.
+        let a = NdArray::from_buffer(
+            Buffer::from_slice(&[1.0, 2.0, 3.0, 4.0]),
+            &[2, 2],
+            &[2, 1],
+        );
+        assert!(!a.is_contiguous());
+        let b = NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0], &[2, 2]);
+        let c = a.concat(b).unwrap();
+        assert_eq!(c.shape(), &[4, 2]);
+        assert_eq!(c.col(0), &[1.0, 3.0, 5.0, 6.0]);
+        assert_eq!(c.col(1), &[2.0, 4.0, 7.0, 8.0]);
+    }
+
+    // ****************************************************************
+    // Copy-on-write and strided mutation
+    // ****************************************************************
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn set_after_view_copy_on_write() {
+        let mut a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let v = a.as_view();
+        a.set(&[0, 0], 99.0);
+        // The write detached the array's buffer, so the view keeps the
+        // original value.
+        assert_eq!(a.get(&[0, 0]), 99.0);
+        assert_eq!(v.get(&[0, 0]), 1.0);
+    }
+
+    #[test]
+    fn fill_with_non_contiguous_logical_only() {
+        // Padded column stride leaves gaps between columns in the buffer.
+        let mut buf = Vec64::with_capacity(11);
+        buf.0.resize(11, 0.0);
+        let mut a = NdArray::from_buffer(Buffer::from_vec64(buf), &[3, 2], &[1, 8]);
+        assert!(!a.is_contiguous());
+        a.fill_with(7.0);
+        for v in &a { assert_eq!(v, 7.0); }
+        // Padding between the columns stays untouched.
+        assert_eq!(a.as_slice()[3], 0.0);
+        assert_eq!(a.as_slice()[7], 0.0);
+    }
+
+    // ****************************************************************
+    // Range shorthand on 2D
+    // ****************************************************************
+
+    #[test]
+    fn range_from_index_2d() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        assert_eq!(&a[1..], &[4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn range_to_index_2d() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        assert_eq!(&a[..1], &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn range_full_index_2d() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        assert_eq!(&a[..], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    // ****************************************************************
+    // Row window and size estimate
+    // ****************************************************************
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn row_selection_single_index_window() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        assert_eq!(a.n_obs(), 3);
+        let v = a.r(1usize);
+        assert_eq!(v.shape(), &[1, 2]);
+        assert_eq!(v.get(&[0, 0]), 2.0);
+        assert_eq!(v.get(&[0, 1]), 5.0);
+        // A window keeps the full source buffer rather than gathering a copy.
+        assert_eq!(v.source.len(), a.len());
+        // SAFETY: indices are within the window shape
+        assert_eq!(unsafe { v.get_unchecked(&[0, 1]) }, 5.0);
+    }
+
+    #[cfg(feature = "size")]
+    #[test]
+    fn est_bytes_covers_buffer() {
+        use crate::traits::byte_size::ByteSize;
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        assert!(a.est_bytes() >= 6 * size_of::<f64>());
     }
 }

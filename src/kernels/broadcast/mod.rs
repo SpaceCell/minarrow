@@ -445,25 +445,45 @@ pub fn broadcast_value(
 
         #[cfg(all(feature = "ndarray", feature = "scalar_type"))]
         (Value::NdArray(l), Value::Scalar(r)) => {
-            ndarray::resolve_ndarray_scalar_arithmetic(op, l.as_ref(), r.f64())
+            let s = r.try_f64().ok_or_else(|| MinarrowError::TypeError {
+                from: "Scalar",
+                to: "f64",
+                message: Some("broadcast: scalar operand must be numeric".to_owned()),
+            })?;
+            ndarray::resolve_ndarray_scalar_arithmetic(op, l.as_ref(), s)
                 .map(|nd| Value::NdArray(Arc::new(nd)))
         }
 
         #[cfg(all(feature = "ndarray", feature = "scalar_type"))]
         (Value::Scalar(l), Value::NdArray(r)) => {
-            ndarray::resolve_scalar_ndarray_arithmetic(op, l.f64(), r.as_ref())
+            let s = l.try_f64().ok_or_else(|| MinarrowError::TypeError {
+                from: "Scalar",
+                to: "f64",
+                message: Some("broadcast: scalar operand must be numeric".to_owned()),
+            })?;
+            ndarray::resolve_scalar_ndarray_arithmetic(op, s, r.as_ref())
                 .map(|nd| Value::NdArray(Arc::new(nd)))
         }
 
         #[cfg(all(feature = "ndarray", feature = "views", feature = "scalar_type"))]
         (Value::NdArrayView(l), Value::Scalar(r)) => {
-            ndarray::resolve_ndarray_scalar_arithmetic(op, &l.to_ndarray(), r.f64())
+            let s = r.try_f64().ok_or_else(|| MinarrowError::TypeError {
+                from: "Scalar",
+                to: "f64",
+                message: Some("broadcast: scalar operand must be numeric".to_owned()),
+            })?;
+            ndarray::resolve_ndarray_scalar_arithmetic(op, &l.to_ndarray(), s)
                 .map(|nd| Value::NdArray(Arc::new(nd)))
         }
 
         #[cfg(all(feature = "ndarray", feature = "views", feature = "scalar_type"))]
         (Value::Scalar(l), Value::NdArrayView(r)) => {
-            ndarray::resolve_scalar_ndarray_arithmetic(op, l.f64(), &r.to_ndarray())
+            let s = l.try_f64().ok_or_else(|| MinarrowError::TypeError {
+                from: "Scalar",
+                to: "f64",
+                message: Some("broadcast: scalar operand must be numeric".to_owned()),
+            })?;
+            ndarray::resolve_scalar_ndarray_arithmetic(op, s, &r.to_ndarray())
                 .map(|nd| Value::NdArray(Arc::new(nd)))
         }
 
@@ -476,13 +496,23 @@ pub fn broadcast_value(
 
         #[cfg(all(feature = "ndarray", feature = "chunked", feature = "scalar_type"))]
         (Value::SuperNdArray(l), Value::Scalar(r)) => {
-            super_ndarray::resolve_super_ndarray_scalar_arithmetic(op, l.as_ref(), r.f64())
+            let s = r.try_f64().ok_or_else(|| MinarrowError::TypeError {
+                from: "Scalar",
+                to: "f64",
+                message: Some("broadcast: scalar operand must be numeric".to_owned()),
+            })?;
+            super_ndarray::resolve_super_ndarray_scalar_arithmetic(op, l.as_ref(), s)
                 .map(|snd| Value::SuperNdArray(Arc::new(snd)))
         }
 
         #[cfg(all(feature = "ndarray", feature = "chunked", feature = "scalar_type"))]
         (Value::Scalar(l), Value::SuperNdArray(r)) => {
-            super_ndarray::resolve_scalar_super_ndarray_arithmetic(op, l.f64(), r.as_ref())
+            let s = l.try_f64().ok_or_else(|| MinarrowError::TypeError {
+                from: "Scalar",
+                to: "f64",
+                message: Some("broadcast: scalar operand must be numeric".to_owned()),
+            })?;
+            super_ndarray::resolve_scalar_super_ndarray_arithmetic(op, s, r.as_ref())
                 .map(|snd| Value::SuperNdArray(Arc::new(snd)))
         }
 
@@ -506,7 +536,11 @@ pub fn broadcast_value(
             ndarray::resolve_ndarray_scalar_arithmetic(
                 op,
                 &l.as_ref().clone().consolidate(),
-                r.f64(),
+                r.try_f64().ok_or_else(|| MinarrowError::TypeError {
+                    from: "Scalar",
+                    to: "f64",
+                    message: Some("broadcast: scalar operand must be numeric".to_owned()),
+                })?,
             )
             .map(|nd| Value::NdArray(Arc::new(nd)))
         }
@@ -520,7 +554,11 @@ pub fn broadcast_value(
         (Value::Scalar(l), Value::SuperNdArrayView(r)) => {
             ndarray::resolve_scalar_ndarray_arithmetic(
                 op,
-                l.f64(),
+                l.try_f64().ok_or_else(|| MinarrowError::TypeError {
+                    from: "Scalar",
+                    to: "f64",
+                    message: Some("broadcast: scalar operand must be numeric".to_owned()),
+                })?,
                 &r.as_ref().clone().consolidate(),
             )
             .map(|nd| Value::NdArray(Arc::new(nd)))
@@ -535,13 +573,23 @@ pub fn broadcast_value(
 
         #[cfg(all(feature = "xarray", feature = "scalar_type"))]
         (Value::XArray(l), Value::Scalar(r)) => {
-            xarray::resolve_xarray_scalar_arithmetic(op, l.as_ref(), r.f64())
+            let s = r.try_f64().ok_or_else(|| MinarrowError::TypeError {
+                from: "Scalar",
+                to: "f64",
+                message: Some("broadcast: scalar operand must be numeric".to_owned()),
+            })?;
+            xarray::resolve_xarray_scalar_arithmetic(op, l.as_ref(), s)
                 .map(|xa| Value::XArray(Arc::new(xa)))
         }
 
         #[cfg(all(feature = "xarray", feature = "scalar_type"))]
         (Value::Scalar(l), Value::XArray(r)) => {
-            xarray::resolve_scalar_xarray_arithmetic(op, l.f64(), r.as_ref())
+            let s = l.try_f64().ok_or_else(|| MinarrowError::TypeError {
+                from: "Scalar",
+                to: "f64",
+                message: Some("broadcast: scalar operand must be numeric".to_owned()),
+            })?;
+            xarray::resolve_scalar_xarray_arithmetic(op, s, r.as_ref())
                 .map(|xa| Value::XArray(Arc::new(xa)))
         }
 

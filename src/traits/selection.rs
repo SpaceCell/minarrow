@@ -58,23 +58,24 @@ pub trait DataSelector {
     }
 
     /// Resolve this selector against one axis of `dim_size`, producing a
-    /// `(start, end, collapse)` span. Contiguous selectors window the axis
-    /// and a single index collapses it. Index arrays have no strided-view
-    /// representation, so they are rejected - gather through
-    /// [`RowSelection::r`] instead.
+    /// `(start, end, collapse)` span. Ranges window the axis and a single
+    /// index collapses it. Panics when the selection falls outside the
+    /// axis. Index arrays have no strided-view representation, so they
+    /// are rejected - gather through [`RowSelection::r`] instead.
     #[cfg(feature = "ndarray")]
     fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
-        let indices = self.resolve_indices(dim_size);
-        if self.is_contiguous() {
-            let start = indices.first().copied().unwrap_or(0);
-            (start, start + indices.len(), false)
-        } else {
-            assert_eq!(
-                indices.len(), 1,
-                "axis selection: each axis takes a single index or a contiguous range"
-            );
-            (indices[0], indices[0] + 1, true)
-        }
+        // usize::MAX so out-of-range indices survive to the bounds check
+        // below rather than being silently filtered.
+        let indices = self.resolve_indices(usize::MAX);
+        assert_eq!(
+            indices.len(), 1,
+            "axis selection: index arrays take a single index or a contiguous range; gather with r() instead"
+        );
+        assert!(
+            indices[0] < dim_size,
+            "axis selection: index {} out of bounds (size {})", indices[0], dim_size
+        );
+        (indices[0], indices[0] + 1, true)
     }
 }
 
@@ -99,8 +100,9 @@ pub trait ColumnSelection {
     /// Select fields/columns by name, index, or range
     ///
     /// Shorthand alias for `col`
-    /// 
+    ///
     /// # Examples
+    /// ```ignore
     /// table.c("age")           // single column by name
     /// table.c(&["a", "b"])     // multiple columns by name
     /// table.c(0)               // single column by index
@@ -108,10 +110,14 @@ pub trait ColumnSelection {
     /// ```
     fn c<S: FieldSelector>(&self, selection: S) -> Self::View;
 
-    /// Select fields/columns by name, index, or range
+    /// Select a single column by name
+    ///
+    /// Named form of `c` - use `c` for selection by index, range,
+    /// or multiple names.
     ///
     /// # Examples
-    /// table.c("age")           // single column by name
+    /// ```ignore
+    /// table.col("age")         // single column by name
     /// table.c(&["a", "b"])     // multiple columns by name
     /// table.c(0)               // single column by index
     /// table.c(0..3)            // columns by range
@@ -141,18 +147,23 @@ pub trait RowSelection {
     /// Select rows by index or range
     ///
     /// Shorthand alias for `row`
-    /// 
+    ///
     /// # Examples
+    /// ```ignore
     /// table.r(5)               // single row
     /// table.r(&[1, 3, 5])      // specific rows
     /// table.r(0..10)           // row range
     /// ```
     fn r<S: DataSelector>(&self, selection: S) -> Self::View;
 
-    /// Select rows by index or range
+    /// Select a single row by index
+    ///
+    /// Named form of `r` - use `r` for selection by range or
+    /// index array.
     ///
     /// # Examples
-    /// table.r(5)               // single row
+    /// ```ignore
+    /// table.row(5)             // single row
     /// table.r(&[1, 3, 5])      // specific rows
     /// table.r(0..10)           // row range
     /// ```
@@ -423,6 +434,20 @@ impl DataSelector for usize {
             Vec::new()
         }
     }
+
+    /// A single index is a contiguous window of length one.
+    fn is_contiguous(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        assert!(
+            *self < dim_size,
+            "axis selection: index {} out of bounds (size {})", self, dim_size
+        );
+        (*self, *self + 1, true)
+    }
 }
 
 /// Single data index from a plain integer literal. Negative values
@@ -434,6 +459,20 @@ impl DataSelector for i32 {
         } else {
             Vec::new()
         }
+    }
+
+    /// A single index is a contiguous window of length one.
+    fn is_contiguous(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        assert!(
+            *self >= 0 && (*self as usize) < dim_size,
+            "axis selection: index {} out of bounds (size {})", self, dim_size
+        );
+        (*self as usize, *self as usize + 1, true)
     }
 }
 
@@ -468,6 +507,16 @@ impl DataSelector for Range<usize> {
     fn is_contiguous(&self) -> bool {
         true
     }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        assert!(
+            self.start <= self.end && self.end <= dim_size,
+            "axis selection: range {}..{} out of bounds (size {})",
+            self.start, self.end, dim_size
+        );
+        (self.start, self.end, false)
+    }
 }
 
 /// Data range selection from plain integer literals. Negative bounds
@@ -482,6 +531,16 @@ impl DataSelector for Range<i32> {
     fn is_contiguous(&self) -> bool {
         true
     }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        assert!(
+            self.start >= 0 && self.end >= self.start && (self.end as usize) <= dim_size,
+            "axis selection: range {}..{} out of bounds (size {})",
+            self.start, self.end, dim_size
+        );
+        (self.start as usize, self.end as usize, false)
+    }
 }
 
 /// Data range from selection
@@ -492,6 +551,36 @@ impl DataSelector for RangeFrom<usize> {
 
     fn is_contiguous(&self) -> bool {
         true
+    }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        assert!(
+            self.start <= dim_size,
+            "axis selection: range {}.. out of bounds (size {})", self.start, dim_size
+        );
+        (self.start, dim_size, false)
+    }
+}
+
+/// Data range from selection from a plain integer literal.
+impl DataSelector for RangeFrom<i32> {
+    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+        let start = self.start.max(0) as usize;
+        (start..count).collect()
+    }
+
+    fn is_contiguous(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        assert!(
+            self.start >= 0 && (self.start as usize) <= dim_size,
+            "axis selection: range {}.. out of bounds (size {})", self.start, dim_size
+        );
+        (self.start as usize, dim_size, false)
     }
 }
 
@@ -504,6 +593,15 @@ impl DataSelector for RangeTo<usize> {
 
     fn is_contiguous(&self) -> bool {
         true
+    }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        assert!(
+            self.end <= dim_size,
+            "axis selection: range ..{} out of bounds (size {})", self.end, dim_size
+        );
+        (0, self.end, false)
     }
 }
 
@@ -518,6 +616,15 @@ impl DataSelector for RangeTo<i32> {
     fn is_contiguous(&self) -> bool {
         true
     }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        assert!(
+            self.end >= 0 && (self.end as usize) <= dim_size,
+            "axis selection: range ..{} out of bounds (size {})", self.end, dim_size
+        );
+        (0, self.end as usize, false)
+    }
 }
 
 /// Data full range selection
@@ -528,6 +635,11 @@ impl DataSelector for RangeFull {
 
     fn is_contiguous(&self) -> bool {
         true
+    }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        (0, dim_size, false)
     }
 }
 
@@ -541,5 +653,42 @@ impl DataSelector for RangeInclusive<usize> {
 
     fn is_contiguous(&self) -> bool {
         true
+    }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        assert!(
+            self.start() <= self.end() && *self.end() < dim_size,
+            "axis selection: range {}..={} out of bounds (size {})",
+            self.start(), self.end(), dim_size
+        );
+        (*self.start(), *self.end() + 1, false)
+    }
+}
+
+/// Data inclusive range selection from plain integer literals. Negative
+/// bounds clamp to zero.
+impl DataSelector for RangeInclusive<i32> {
+    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+        if *self.end() < 0 {
+            return Vec::new();
+        }
+        let start = (*self.start()).max(0) as usize;
+        let end = (*self.end() as usize + 1).min(count);
+        (start..end).collect()
+    }
+
+    fn is_contiguous(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        assert!(
+            *self.start() >= 0 && self.start() <= self.end() && (*self.end() as usize) < dim_size,
+            "axis selection: range {}..={} out of bounds (size {})",
+            self.start(), self.end(), dim_size
+        );
+        (*self.start() as usize, *self.end() as usize + 1, false)
     }
 }

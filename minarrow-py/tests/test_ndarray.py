@@ -75,8 +75,15 @@ def test_dlpack_capsule_names():
     a = mp.NdArray([1.0, 2.0, 3.0])
     legacy = a.__dlpack__()
     versioned = a.__dlpack__(max_version=(1, 1))
-    assert "dltensor" in repr(legacy)
-    assert "dltensor_versioned" in repr(versioned)
+    # repr quotes the exact capsule name, so match it in full to keep
+    # "dltensor" from passing on a "dltensor_versioned" capsule.
+    assert '"dltensor"' in repr(legacy)
+    assert '"dltensor_versioned"' in repr(versioned)
+
+
+def test_dlpack_shape_empty_rejected():
+    with pytest.raises(ValueError):
+        mp.NdArray([5.0], shape=[])
 
 
 def test_dlpack_rejects_foreign_device():
@@ -137,10 +144,54 @@ def test_numpy_f32_roundtrip():
 def test_dlpack_copy_is_writable():
     np = pytest.importorskip("numpy")
     a = mp.NdArray([1.0, 2.0, 3.0])
-    v = np.from_dlpack(a.__dlpack__(max_version=(1, 1), copy=True))
+    v = np.from_dlpack(a, copy=True)
+    assert v.flags.writeable is True
     v[0] = 99.0
     # The copy is independent of the source tensor.
     assert a[0] == 1.0
+
+
+def test_dlpack_shared_view_is_read_only():
+    np = pytest.importorskip("numpy")
+    a = mp.NdArray([1.0, 2.0, 3.0])
+    v = np.from_dlpack(a)
+    # The versioned capsule shares the buffer, so it arrives read-only.
+    assert v.flags.writeable is False
+
+
+def test_dlpack_export_shares_one_address():
+    np = pytest.importorskip("numpy")
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0], shape=[2, 2])
+    p1 = np.from_dlpack(a).__array_interface__["data"][0]
+    p2 = np.from_dlpack(a).__array_interface__["data"][0]
+    assert p1 == p2
+    # An explicit copy detaches to a fresh allocation.
+    p3 = np.from_dlpack(a, copy=True).__array_interface__["data"][0]
+    assert p3 != p1
+
+
+def test_dlpack_aligned_import_wraps_source_memory():
+    np = pytest.importorskip("numpy")
+    # Carve a 64-byte aligned window out of an over-allocated buffer so
+    # the import takes the zero-copy branch deterministically.
+    raw = np.zeros(16 + 8, dtype=np.float64)
+    base = raw.__array_interface__["data"][0]
+    off = (-base) % 64 // 8
+    src = raw[off:off + 16].reshape(4, 4)
+    src[:] = np.arange(16, dtype=np.float64).reshape(4, 4)
+    p_src = src.__array_interface__["data"][0]
+    assert p_src % 64 == 0
+
+    b = mp.NdArray.from_dlpack(src)
+    p_rt = np.from_dlpack(b).__array_interface__["data"][0]
+    assert p_rt == p_src
+
+    # A misaligned window copies into a fresh 64-byte aligned buffer.
+    mis = raw[off + 1:off + 9]
+    c = mp.NdArray.from_dlpack(mis)
+    p_c = np.from_dlpack(c).__array_interface__["data"][0]
+    assert p_c != mis.__array_interface__["data"][0]
+    assert p_c % 64 == 0
 
 
 # --- Framework bridges (skip when the library is absent) --------------------

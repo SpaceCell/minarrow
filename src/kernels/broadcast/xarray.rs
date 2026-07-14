@@ -14,7 +14,7 @@
 
 //! XArray broadcasting operations.
 //!
-//! Elementary elementwise arithmetic between two labelled arrays whose
+//! Elementwise arithmetic between two labelled arrays whose
 //! axes match by name and coordinates. The left operand's axes carry
 //! through to the result.
 //!
@@ -26,7 +26,10 @@ use crate::enums::error::MinarrowError;
 use crate::enums::operators::ArithmeticOperator;
 use crate::kernels::broadcast::ndarray::resolve_ndarray_arithmetic;
 #[cfg(feature = "chunked")]
-use crate::kernels::broadcast::super_ndarray::resolve_super_ndarray_arithmetic;
+use crate::kernels::broadcast::super_ndarray::{
+    resolve_scalar_super_ndarray_arithmetic, resolve_super_ndarray_arithmetic,
+    resolve_super_ndarray_scalar_arithmetic,
+};
 use crate::structs::ndarray::NdArray;
 use crate::structs::xarray::{NdArrayE, XArray};
 use crate::traits::type_unions::Float;
@@ -41,14 +44,22 @@ pub(crate) fn resolve_xarray_arithmetic<T: Float>(
     rhs: &XArray<T>,
 ) -> Result<XArray<T>, MinarrowError> {
     if lhs.axes() != rhs.axes() {
-        return Err(MinarrowError::IncompatibleTypeError {
-            from: "XArray",
-            to: "XArray",
-            message: Some(format!(
+        let message = if lhs.dim_names() == rhs.dim_names() {
+            format!(
+                "broadcast: axes {:?} match by name but their coordinates differ",
+                lhs.dim_names()
+            )
+        } else {
+            format!(
                 "broadcast: axes {:?} and {:?} do not match",
                 lhs.dim_names(),
                 rhs.dim_names()
-            )),
+            )
+        };
+        return Err(MinarrowError::IncompatibleTypeError {
+            from: "XArray",
+            to: "XArray",
+            message: Some(message),
         });
     }
 
@@ -119,12 +130,21 @@ pub fn broadcast_xarray_rem<T: Float>(
 }
 
 /// Resolve an elementwise operation between a labelled array and a scalar.
-/// The array's axes carry through unchanged.
+/// The array's axes carry through unchanged, and chunked storage keeps
+/// its batch boundaries.
 pub(crate) fn resolve_xarray_scalar_arithmetic<T: Float>(
     op: ArithmeticOperator,
     lhs: &XArray<T>,
     scalar: T,
 ) -> Result<XArray<T>, MinarrowError> {
+    #[cfg(feature = "chunked")]
+    if let NdArrayE::Chunked(snd) = lhs.storage() {
+        let out = resolve_super_ndarray_scalar_arithmetic(op, snd, scalar)?;
+        return Ok(XArray::from_storage(
+            NdArrayE::Chunked(out),
+            lhs.axes().to_vec(),
+        ));
+    }
     let l = lhs.to_owned();
     let NdArrayE::Owned(a) = l.storage() else {
         unreachable!("to_owned yields owned storage");
@@ -138,12 +158,21 @@ pub(crate) fn resolve_xarray_scalar_arithmetic<T: Float>(
 }
 
 /// Resolve an elementwise operation with the scalar on the left.
-/// The array's axes carry through unchanged.
+/// The array's axes carry through unchanged, and chunked storage keeps
+/// its batch boundaries.
 pub(crate) fn resolve_scalar_xarray_arithmetic<T: Float>(
     op: ArithmeticOperator,
     scalar: T,
     rhs: &XArray<T>,
 ) -> Result<XArray<T>, MinarrowError> {
+    #[cfg(feature = "chunked")]
+    if let NdArrayE::Chunked(snd) = rhs.storage() {
+        let out = resolve_scalar_super_ndarray_arithmetic(op, scalar, snd)?;
+        return Ok(XArray::from_storage(
+            NdArrayE::Chunked(out),
+            rhs.axes().to_vec(),
+        ));
+    }
     let r = rhs.to_owned();
     let NdArrayE::Owned(b) = r.storage() else {
         unreachable!("to_owned yields owned storage");
@@ -244,5 +273,47 @@ mod tests {
         assert_eq!(xa.get(&[0]), 10.0);
         assert_eq!(xa.get(&[1]), 20.0);
         assert_eq!(xa.dim_names(), vec!["time"]);
+    }
+
+    #[cfg(all(feature = "value_type", feature = "chunked"))]
+    #[test]
+    fn value_scalar_on_chunked_keeps_storage() {
+        use std::sync::Arc;
+
+        use crate::structs::chunked::super_ndarray::SuperNdArray;
+        use crate::{Scalar, Value};
+
+        let a = Value::XArray(Arc::new(XArray::from_batches(
+            SuperNdArray::from_batches(
+                vec![
+                    NdArray::from_slice(&[1.0, 2.0], &[2]),
+                    NdArray::from_slice(&[3.0], &[1]),
+                ],
+                "a",
+            ),
+            &["time"],
+        )));
+        let scaled = (a * Value::Scalar(Scalar::Float64(10.0))).unwrap();
+        let Value::XArray(xa) = scaled else {
+            panic!("expected Value::XArray");
+        };
+        assert!(!xa.is_owned());
+        assert_eq!(xa.dim_names(), vec!["time"]);
+        let vals: Vec<f64> = xa.as_ref().into_iter().collect();
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    #[cfg(feature = "value_type")]
+    #[test]
+    fn value_null_scalar_errors() {
+        use std::sync::Arc;
+
+        use crate::kernels::broadcast::broadcast_value;
+        use crate::{Scalar, Value};
+
+        let a = Value::NdArray(Arc::new(NdArray::from_slice(&[1.0, 2.0], &[2])));
+        let err = broadcast_value(ArithmeticOperator::Multiply, a, Value::Scalar(Scalar::Null))
+            .unwrap_err();
+        assert!(err.to_string().contains("must be numeric"));
     }
 }

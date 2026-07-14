@@ -19,47 +19,18 @@
 //! NumPy, PyTorch, JAX, TensorFlow, and CuPy without copying where the
 //! target supports host memory, and `from_dlpack` accepts any DLPack
 //! producer in return. Named bridge methods wrap the same capsule path
-//! with the target library imported at call time.
+//! with the target library imported at call time. The capsule glue
+//! itself lives in minarrow-pyo3's `ffi::dlpack`, alongside the Arrow
+//! capsule glue this package already shares.
 
-use std::ffi::{c_void, CStr};
-use std::sync::Arc;
+use minarrow::{NdArray, Table};
+use minarrow_pyo3::ffi::dlpack::{export_dlpack, import_dlpack};
+pub use minarrow_pyo3::ffi::dlpack::PyNdArrayInner;
 
-use minarrow::ffi::dlpack::{
-    export_to_dlpack, export_to_dlpack_versioned, import_from_dlpack,
-    import_from_dlpack_versioned, DLManagedTensor, DLManagedTensorVersioned,
-    DLPACK_MAJOR_VERSION, DLPACK_MINOR_VERSION,
-};
-use minarrow::{Float, NdArray, Table};
+use crate::table::{PyTable, PyTableInner};
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
-
-// Capsule names from the DLPack Python protocol. A consumed capsule
-// renames with the `used_` prefix so its destructor does not free a
-// tensor the consumer now owns.
-static DLTENSOR: &CStr = c"dltensor";
-static DLTENSOR_USED: &CStr = c"used_dltensor";
-static DLTENSOR_VERSIONED: &CStr = c"dltensor_versioned";
-static DLTENSOR_VERSIONED_USED: &CStr = c"used_dltensor_versioned";
-
-/// The natural minarrow form behind a Python `NdArray`, one variant per
-/// element type.
-pub enum PyNdArrayInner {
-    F32(Arc<NdArray<f32>>),
-    F64(Arc<NdArray<f64>>),
-}
-
-impl From<NdArray<f32>> for PyNdArrayInner {
-    fn from(ndarray: NdArray<f32>) -> Self {
-        PyNdArrayInner::F32(Arc::new(ndarray))
-    }
-}
-
-impl From<NdArray<f64>> for PyNdArrayInner {
-    fn from(ndarray: NdArray<f64>) -> Self {
-        PyNdArrayInner::F64(Arc::new(ndarray))
-    }
-}
+use pyo3::types::PyTuple;
 
 /// Dispatch to the inner f32 or f64 NdArray.
 macro_rules! dispatch {
@@ -69,37 +40,6 @@ macro_rules! dispatch {
             PyNdArrayInner::F64($a) => $body,
         }
     };
-}
-
-/// Destructor for an unconsumed legacy capsule. A consumed capsule is
-/// renamed `used_dltensor` and the consumer owns the tensor.
-unsafe extern "C" fn dltensor_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
-    if unsafe { pyo3::ffi::PyCapsule_IsValid(capsule, DLTENSOR.as_ptr()) } == 1 {
-        let raw = unsafe { pyo3::ffi::PyCapsule_GetPointer(capsule, DLTENSOR.as_ptr()) }
-            as *mut DLManagedTensor;
-        if !raw.is_null() {
-            unsafe {
-                if let Some(deleter) = (*raw).deleter {
-                    deleter(raw);
-                }
-            }
-        }
-    }
-}
-
-/// Destructor for an unconsumed versioned capsule.
-unsafe extern "C" fn dltensor_versioned_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
-    if unsafe { pyo3::ffi::PyCapsule_IsValid(capsule, DLTENSOR_VERSIONED.as_ptr()) } == 1 {
-        let raw = unsafe { pyo3::ffi::PyCapsule_GetPointer(capsule, DLTENSOR_VERSIONED.as_ptr()) }
-            as *mut DLManagedTensorVersioned;
-        if !raw.is_null() {
-            unsafe {
-                if let Some(deleter) = (*raw).deleter {
-                    deleter(raw);
-                }
-            }
-        }
-    }
 }
 
 /// N-dimensional f32/f64 tensor with zero-copy DLPack interchange.
@@ -126,6 +66,11 @@ impl PyNdArray {
     #[pyo3(signature = (data, shape=None, dtype="float64"))]
     fn new(data: Vec<f64>, shape: Option<Vec<usize>>, dtype: &str) -> PyResult<Self> {
         let shape = shape.unwrap_or_else(|| vec![data.len()]);
+        if shape.is_empty() {
+            return Err(PyValueError::new_err(
+                "shape must have at least one dimension",
+            ));
+        }
         let expected: usize = shape.iter().product();
         if expected != data.len() {
             return Err(PyValueError::new_err(format!(
@@ -222,9 +167,13 @@ impl PyNdArray {
     /// DLPack producer entry point. Returns a capsule the consumer owns.
     ///
     /// A `max_version` of major 1 or above yields the versioned capsule
-    /// with the read-only flag carried. Without it, the unversioned
-    /// capsule ships for consumers on the pre-1.0 protocol. `copy=True`
-    /// exports a fresh compact copy, which is always writable.
+    /// with the read-only flag carried, and consumers that support it
+    /// should use it. Without it, the unversioned capsule ships for
+    /// consumers on the pre-1.0 protocol - that capsule has no read-only
+    /// flag, so writes through it are visible to this object and any
+    /// clones, per the standard DLPack sharing convention. `copy=True`
+    /// exports a fresh compact copy, which is always writable and is
+    /// flagged `IS_COPIED` on the versioned capsule.
     #[pyo3(signature = (*, stream=None, max_version=None, dl_device=None, copy=None))]
     fn __dlpack__(
         &self,
@@ -234,34 +183,7 @@ impl PyNdArray {
         dl_device: Option<(i32, i32)>,
         copy: Option<bool>,
     ) -> PyResult<PyObject> {
-        if let Some(stream) = stream {
-            if !stream.is_none() {
-                return Err(PyValueError::new_err(
-                    "stream must be None for CPU tensors",
-                ));
-            }
-        }
-        if let Some(device) = dl_device {
-            if device != (1, 0) {
-                return Err(PyValueError::new_err(format!(
-                    "cannot export to device {:?}, data lives on CPU (1, 0)",
-                    device
-                )));
-            }
-        }
-        let versioned = matches!(max_version, Some((major, _)) if major >= 1);
-        let copy = copy.unwrap_or(false);
-
-        match &self.0 {
-            PyNdArrayInner::F32(a) => {
-                let source = if copy { a.apply(|v| v) } else { (**a).clone() };
-                dlpack_capsule(py, source, versioned)
-            }
-            PyNdArrayInner::F64(a) => {
-                let source = if copy { a.apply(|v| v) } else { (**a).clone() };
-                dlpack_capsule(py, source, versioned)
-            }
-        }
+        export_dlpack(py, &self.0, stream, max_version, dl_device, copy)
     }
 
     /// DLPack device query. Minarrow data lives on the CPU.
@@ -274,73 +196,7 @@ impl PyNdArray {
     /// 64-byte aligned, otherwise the data copies into an aligned buffer.
     #[staticmethod]
     fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let capsule = if unsafe { pyo3::ffi::PyCapsule_CheckExact(obj.as_ptr()) } == 1 {
-            obj.clone()
-        } else {
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("max_version", (DLPACK_MAJOR_VERSION, DLPACK_MINOR_VERSION))?;
-            match obj.call_method("__dlpack__", (), Some(&kwargs)) {
-                Ok(capsule) => capsule,
-                // A pre-1.0 producer rejects the max_version keyword.
-                Err(e) if e.is_instance_of::<PyTypeError>(py) => {
-                    obj.call_method0("__dlpack__")?
-                }
-                Err(e) => return Err(e),
-            }
-        };
-
-        let cap_ptr = capsule.as_ptr();
-        unsafe {
-            if pyo3::ffi::PyCapsule_IsValid(cap_ptr, DLTENSOR_VERSIONED.as_ptr()) == 1 {
-                let raw = pyo3::ffi::PyCapsule_GetPointer(cap_ptr, DLTENSOR_VERSIONED.as_ptr())
-                    as *mut DLManagedTensorVersioned;
-                // Ownership transfers to the import, so the capsule
-                // renames first and its destructor stands down.
-                pyo3::ffi::PyCapsule_SetName(cap_ptr, DLTENSOR_VERSIONED_USED.as_ptr());
-                match (*raw).dl_tensor.dtype.bits {
-                    32 => import_from_dlpack_versioned::<f32>(raw)
-                        .map(PyNdArray::from)
-                        .map_err(|e| PyValueError::new_err(e.to_string())),
-                    64 => import_from_dlpack_versioned::<f64>(raw)
-                        .map(PyNdArray::from)
-                        .map_err(|e| PyValueError::new_err(e.to_string())),
-                    bits => {
-                        if let Some(deleter) = (*raw).deleter {
-                            deleter(raw);
-                        }
-                        Err(PyValueError::new_err(format!(
-                            "unsupported DLPack element width {} bits, expected 32 or 64",
-                            bits
-                        )))
-                    }
-                }
-            } else if pyo3::ffi::PyCapsule_IsValid(cap_ptr, DLTENSOR.as_ptr()) == 1 {
-                let raw = pyo3::ffi::PyCapsule_GetPointer(cap_ptr, DLTENSOR.as_ptr())
-                    as *mut DLManagedTensor;
-                pyo3::ffi::PyCapsule_SetName(cap_ptr, DLTENSOR_USED.as_ptr());
-                match (*raw).dl_tensor.dtype.bits {
-                    32 => import_from_dlpack::<f32>(raw)
-                        .map(PyNdArray::from)
-                        .map_err(|e| PyValueError::new_err(e.to_string())),
-                    64 => import_from_dlpack::<f64>(raw)
-                        .map(PyNdArray::from)
-                        .map_err(|e| PyValueError::new_err(e.to_string())),
-                    bits => {
-                        if let Some(deleter) = (*raw).deleter {
-                            deleter(raw);
-                        }
-                        Err(PyValueError::new_err(format!(
-                            "unsupported DLPack element width {} bits, expected 32 or 64",
-                            bits
-                        )))
-                    }
-                }
-            } else {
-                Err(PyValueError::new_err(
-                    "expected a DLPack capsule or an object with __dlpack__",
-                ))
-            }
-        }
+        import_dlpack(py, obj).map(PyNdArray)
     }
 
     /// Hand to NumPy as an `ndarray` via the capsule protocol.
@@ -377,62 +233,17 @@ impl PyNdArray {
     }
 
     /// Convert a 2D f64 tensor to a `Table` with generated column names.
-    fn to_table(&self) -> PyResult<crate::table::PyTable> {
+    fn to_table(&self) -> PyResult<PyTable> {
         match &self.0 {
             PyNdArrayInner::F64(a) => (**a)
                 .clone()
                 .to_table_gen()
-                .map(|t| crate::table::PyTable(crate::table::PyTableInner::from(t)))
+                .map(|t| PyTable(PyTableInner::from(t)))
                 .map_err(|e| PyValueError::new_err(e.to_string())),
             PyNdArrayInner::F32(_) => Err(PyValueError::new_err(
-                "to_table supports float64 tensors, convert with from_dlpack of a float64 source",
+                "to_table supports float64 tensors, rebuild the tensor as float64 first",
             )),
         }
-    }
-}
-
-/// Wrap an owned NdArray in a DLPack capsule of the requested ABI.
-fn dlpack_capsule<T: Float>(
-    py: Python<'_>,
-    source: NdArray<T>,
-    versioned: bool,
-) -> PyResult<PyObject> {
-    if versioned {
-        let raw = export_to_dlpack_versioned(source).into_raw();
-        let capsule = unsafe {
-            pyo3::ffi::PyCapsule_New(
-                raw as *mut c_void,
-                DLTENSOR_VERSIONED.as_ptr(),
-                Some(dltensor_versioned_capsule_destructor),
-            )
-        };
-        if capsule.is_null() {
-            unsafe {
-                if let Some(deleter) = (*raw).deleter {
-                    deleter(raw);
-                }
-            }
-            return Err(PyErr::fetch(py));
-        }
-        Ok(unsafe { PyObject::from_owned_ptr(py, capsule) })
-    } else {
-        let raw = export_to_dlpack(source).into_raw();
-        let capsule = unsafe {
-            pyo3::ffi::PyCapsule_New(
-                raw as *mut c_void,
-                DLTENSOR.as_ptr(),
-                Some(dltensor_capsule_destructor),
-            )
-        };
-        if capsule.is_null() {
-            unsafe {
-                if let Some(deleter) = (*raw).deleter {
-                    deleter(raw);
-                }
-            }
-            return Err(PyErr::fetch(py));
-        }
-        Ok(unsafe { PyObject::from_owned_ptr(py, capsule) })
     }
 }
 
