@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- Standardised equality checking for `Scalar` -0.0 == 0.0 and NaN == NaN.
-This addresses cases where users compare Scalars as key values, whilst avoiding
-making direct changes to "non-`Scalar`" `f32`, `f64` IEEE semantics.
+- Normalised `hash_element_at` so NaN maps to a dummy/sentinel value
+- At `value_at` to `Array` and `ArrayV` for (opt-in) normalised equality checking.
+- Normalised equality checking for `Scalar` -0.0 == 0.0 and NaN == NaN.
 - Fixed null handling bug on String and Categorical set_str method.
+- Added `get`, `get_unchecked`, `get_str` and `get_str_unchecked` methods to `Array`
 - Added bitmask gather to Array, Table and their view variants.
 
 ## [0.15.0] - 2026-06-30
