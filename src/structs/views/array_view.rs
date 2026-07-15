@@ -159,6 +159,32 @@ impl ArrayV {
         self.array.inner::<T>().get(self.offset + i)
     }
 
+    /// Performs a normalised equality check between two element positions,
+    /// intended for cases where industry consistency trumps for e.g., standards
+    /// such as IEEE. Examples include NaN equals NaN, -0.0 equals 0.0, and
+    /// potentially other minor cases depending on the type variants. See
+    /// documentation for each type variant for its stated semantics below.
+    ///
+    /// - Indices are logical positions within each view's window.
+    /// - Null equals null.
+    /// - Comparisons across different array variants return false.
+    #[inline]
+    pub fn value_eq(&self, i: usize, other: &ArrayV, j: usize) -> bool {
+        self.array.value_eq(self.offset + i, &other.array, other.offset + j)
+    }
+
+    /// Hash the element at logical index `i` within the window into the
+    /// provided hasher.
+    ///
+    /// Null elements hash a fixed dummy value. Floats hash every NaN bit
+    /// pattern as one value and -0.0 as 0.0 so values that compare equal
+    /// under `value_eq` also hash equal.
+    #[cfg(feature = "hash")]
+    #[inline]
+    pub fn hash_element_at<H: std::hash::Hasher>(&self, i: usize, state: &mut H) {
+        self.array.hash_element_at(self.offset + i, state)
+    }
+
     /// Returns the value at logical index `i` within the window (unchecked).
     ///
     /// # Safety

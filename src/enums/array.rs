@@ -15,7 +15,7 @@
 //! # **Array Module** - *Main High-Level Array Type*
 //!
 //! `Array` is the primary unified container for all array types in Minarrow.
-//!   
+//!
 //! ## Features:
 //! - direct variant access to numeric, temporal, text, and other array categories
 //! - zero-cost casts when the contained type is known
@@ -1589,7 +1589,7 @@ impl Array {
     /// Returns a new `Array` of the same variant sliced to the given offset and length
     /// .
     /// Copies the data of the scoped range that's selected.
-    ///  
+    ///
     /// If out-of-bounds, returns Self::Null.
     /// All null mask, offsets, etc. are trimmed.
     #[inline]
@@ -1988,6 +1988,116 @@ impl Array {
     #[inline]
     pub fn value_to_string(&self, idx: usize) -> String {
         crate::traits::print::value_to_string(self, idx)
+    }
+
+    /// Returns the value at index `idx`, or `None` if out of bounds or null.
+    #[inline]
+    pub fn get<T: MaskedArray + 'static>(&self, idx: usize) -> Option<T::CopyType<'_>> {
+        if idx >= self.len() {
+            return None;
+        }
+        self.inner::<T>().get(idx)
+    }
+
+    /// Returns the value at index `idx` (unchecked).
+    ///
+    /// # Safety
+    /// The caller is responsible for ensuring `idx` is within valid length
+    /// bounds. No bounds check is performed.
+    #[inline]
+    pub unsafe fn get_unchecked<T: MaskedArray + 'static>(
+        &self,
+        idx: usize,
+    ) -> Option<T::CopyType<'_>> {
+        unsafe { self.inner::<T>().get_unchecked(idx) }
+    }
+
+    /// Returns the string value at index `idx`, or `None` if out of bounds or null.
+    #[inline]
+    pub fn get_str(&self, idx: usize) -> Option<&str> {
+        if idx >= self.len() {
+            return None;
+        }
+
+        match self {
+            Array::TextArray(TextArray::String32(arr)) => arr.get_str(idx),
+            #[cfg(feature = "large_string")]
+            Array::TextArray(TextArray::String64(arr)) => arr.get_str(idx),
+            #[cfg(feature = "default_categorical_8")]
+            Array::TextArray(TextArray::Categorical8(arr)) => arr.get_str(idx),
+            #[cfg(feature = "extended_categorical")]
+            Array::TextArray(TextArray::Categorical16(arr)) => arr.get_str(idx),
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            Array::TextArray(TextArray::Categorical32(arr)) => arr.get_str(idx),
+            #[cfg(feature = "extended_categorical")]
+            Array::TextArray(TextArray::Categorical64(arr)) => arr.get_str(idx),
+            _ => None,
+        }
+    }
+
+    /// Returns the string value at index `idx`.
+    ///
+    /// # Safety
+    /// The caller is responsible for ensuring `idx` is within valid length
+    /// bounds. No bounds check is performed. Still returns `None` if null.
+    #[inline]
+    pub unsafe fn get_str_unchecked(&self, idx: usize) -> Option<&str> {
+        match self {
+            Array::TextArray(TextArray::String32(arr)) => {
+                if arr.is_null(idx) {
+                    None
+                } else {
+                    Some(unsafe { arr.get_str_unchecked(idx) })
+                }
+            }
+            #[cfg(feature = "large_string")]
+            Array::TextArray(TextArray::String64(arr)) => {
+                if arr.is_null(idx) {
+                    None
+                } else {
+                    Some(unsafe { arr.get_str_unchecked(idx) })
+                }
+            }
+            #[cfg(feature = "default_categorical_8")]
+            Array::TextArray(TextArray::Categorical8(arr)) => {
+                if arr.is_null(idx) {
+                    None
+                } else {
+                    Some(unsafe { arr.get_str_unchecked(idx) })
+                }
+            }
+            #[cfg(feature = "extended_categorical")]
+            Array::TextArray(TextArray::Categorical16(arr)) => {
+                if arr.is_null(idx) {
+                    None
+                } else {
+                    Some(unsafe { arr.get_str_unchecked(idx) })
+                }
+            }
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            Array::TextArray(TextArray::Categorical32(arr)) => {
+                if arr.is_null(idx) {
+                    None
+                } else {
+                    Some(unsafe { arr.get_str_unchecked(idx) })
+                }
+            }
+            #[cfg(feature = "extended_categorical")]
+            Array::TextArray(TextArray::Categorical64(arr)) => {
+                if arr.is_null(idx) {
+                    None
+                } else {
+                    Some(unsafe { arr.get_str_unchecked(idx) })
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Extract the element at `idx` as a `Scalar`, or `None` if out of bounds.
@@ -2646,10 +2756,124 @@ impl Array {
         }
     }
 
+    /// Performs a normalised equality check between two element positions,
+    /// intended for cases where industry consistency trumps for e.g., standards
+    /// such as IEEE. Examples include NaN equals NaN, -0.0 equals 0.0, and
+    /// potentially other minor cases depending on the type variants. See
+    /// documentation below for the accommodations specific to each type:
+    ///
+    /// - Null equals null.
+    /// - Comparisons across different array variants return false.
+    /// - Floats normalise NaN equality, so any NaN equals any NaN, and -0.0
+    ///   equals 0.0 per IEEE `==`.
+    /// - Integers and booleans compare with plain `==`.
+    /// - Text values compare as their resolved strings, so two categorical
+    ///   arrays with different dictionaries still compare correctly.
+    /// - Temporal values compare on the raw stored value. Reconciling time
+    ///   units is the caller's concern, to avoid expensive repetitive checks
+    ///   on a known type.
+    pub fn value_eq(&self, idx: usize, other: &Array, other_idx: usize) -> bool {
+        let self_null = self.null_mask().is_some_and(|m| !m.get(idx));
+        let other_null = other.null_mask().is_some_and(|m| !m.get(other_idx));
+        if self_null || other_null {
+            return self_null && other_null;
+        }
+
+        match (self, other) {
+            (Array::NumericArray(a), Array::NumericArray(b)) => match (a, b) {
+                #[cfg(feature = "extended_numeric_types")]
+                (NumericArray::Int8(x), NumericArray::Int8(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                (NumericArray::Int16(x), NumericArray::Int16(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                (NumericArray::Int32(x), NumericArray::Int32(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                (NumericArray::Int64(x), NumericArray::Int64(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                (NumericArray::UInt8(x), NumericArray::UInt8(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                (NumericArray::UInt16(x), NumericArray::UInt16(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                (NumericArray::UInt32(x), NumericArray::UInt32(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                (NumericArray::UInt64(x), NumericArray::UInt64(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                (NumericArray::Float32(x), NumericArray::Float32(y)) => {
+                    let (a, b) = (x.data[idx], y.data[other_idx]);
+                    if a.is_nan() { b.is_nan() } else { a == b }
+                }
+                (NumericArray::Float64(x), NumericArray::Float64(y)) => {
+                    let (a, b) = (x.data[idx], y.data[other_idx]);
+                    if a.is_nan() { b.is_nan() } else { a == b }
+                }
+                (NumericArray::Null, NumericArray::Null) => true,
+                _ => false,
+            },
+            (Array::BooleanArray(a), Array::BooleanArray(b)) => {
+                a.data.get(idx) == b.data.get(other_idx)
+            }
+            (Array::TextArray(a), Array::TextArray(b)) => match (a, b) {
+                (TextArray::String32(x), TextArray::String32(y)) => {
+                    x.get_str(idx) == y.get_str(other_idx)
+                }
+                #[cfg(feature = "large_string")]
+                (TextArray::String64(x), TextArray::String64(y)) => {
+                    x.get_str(idx) == y.get_str(other_idx)
+                }
+                #[cfg(feature = "default_categorical_8")]
+                (TextArray::Categorical8(x), TextArray::Categorical8(y)) => {
+                    x.get_str(idx) == y.get_str(other_idx)
+                }
+                #[cfg(feature = "extended_categorical")]
+                (TextArray::Categorical16(x), TextArray::Categorical16(y)) => {
+                    x.get_str(idx) == y.get_str(other_idx)
+                }
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
+                (TextArray::Categorical32(x), TextArray::Categorical32(y)) => {
+                    x.get_str(idx) == y.get_str(other_idx)
+                }
+                #[cfg(feature = "extended_categorical")]
+                (TextArray::Categorical64(x), TextArray::Categorical64(y)) => {
+                    x.get_str(idx) == y.get_str(other_idx)
+                }
+                (TextArray::Null, TextArray::Null) => true,
+                _ => false,
+            },
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(a), Array::TemporalArray(b)) => match (a, b) {
+                (TemporalArray::Datetime32(x), TemporalArray::Datetime32(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                (TemporalArray::Datetime64(x), TemporalArray::Datetime64(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                (TemporalArray::Null, TemporalArray::Null) => true,
+                _ => false,
+            },
+            (Array::Null, Array::Null) => true,
+            _ => false,
+        }
+    }
+
     /// Hash the element at `idx` into the provided hasher.
     ///
-    /// Null elements hash a fixed sentinel. Floats use `to_bits()` so
-    /// the hash is consistent with the `to_bits()` equality convention.
+    /// Null elements hash a fixed dummy value. Floats hash every NaN bit
+    /// pattern as one value and -0.0 as 0.0 so values that compare equal
+    /// under `value_eq` also hash equal.
     #[cfg(feature = "hash")]
     pub fn hash_element_at<H: std::hash::Hasher>(&self, idx: usize, state: &mut H) {
         use std::hash::Hash;
@@ -2657,7 +2881,7 @@ impl Array {
         // Hash null status
         if let Some(mask) = self.null_mask() {
             if !mask.get(idx) {
-                // Sentinel for null
+                // Dummy value for null
                 0xDEAD_BEEF_u64.hash(state);
                 return;
             }
@@ -2677,8 +2901,19 @@ impl Array {
                 NumericArray::UInt8(a) => a.data[idx].hash(state),
                 #[cfg(feature = "extended_numeric_types")]
                 NumericArray::UInt16(a) => a.data[idx].hash(state),
-                NumericArray::Float32(a) => a.data[idx].to_bits().hash(state),
-                NumericArray::Float64(a) => a.data[idx].to_bits().hash(state),
+                // Fold every NaN bit pattern to one value and -0.0 to 0.0 so
+                // floats that compare equal also hash equal, matching Scalar's Hash.
+                NumericArray::Float32(a) => {
+                    let v = a.data[idx];
+                    let bits = if v.is_nan() { 0x7fc0_0000u32 } else { (v + 0.0).to_bits() };
+                    bits.hash(state);
+                }
+                NumericArray::Float64(a) => {
+                    let v = a.data[idx];
+                    let bits =
+                        if v.is_nan() { 0x7ff8_0000_0000_0000u64 } else { (v + 0.0).to_bits() };
+                    bits.hash(state);
+                }
                 NumericArray::Null => 0xDEAD_BEEF_u64.hash(state),
             },
             Array::BooleanArray(b) => b.data.get(idx).hash(state),
@@ -6027,7 +6262,8 @@ mod concat_tests {
 
 #[cfg(test)]
 mod arr_macro_extensions_tests {
-    use crate::{Array, Bitmask, NumericArray, TextArray, Vec64, vec64};
+    use crate::traits::masked_array::MaskedArray;
+    use crate::{Array, Bitmask, FloatArray, NumericArray, StringArray, TextArray, Vec64, vec64};
 
     fn expect_int32_mask(arr: Array) -> (Vec<i32>, Option<Bitmask>) {
         match arr {
@@ -6176,5 +6412,73 @@ mod arr_macro_extensions_tests {
             }
             _ => panic!("expected Categorical32 Array"),
         }
+    }
+
+    #[test]
+    fn value_eq_float_normalisation() {
+        let a = arr_f64!(vec![1.5, f64::NAN, 0.0, 3.0]);
+        let b = arr_f64!(vec![1.5, f64::from_bits(0x7ff8_0000_0000_0001), -0.0, 4.0]);
+        assert!(a.value_eq(0, &b, 0));
+        // Any NaN equals any NaN, across differing bit patterns.
+        assert!(a.value_eq(1, &b, 1));
+        // -0.0 equals 0.0.
+        assert!(a.value_eq(2, &b, 2));
+        assert!(!a.value_eq(3, &b, 3));
+    }
+
+    #[test]
+    fn value_eq_null_semantics() {
+        let mut fa = FloatArray::<f64>::from_slice(&[1.0, 2.0]);
+        fa.set_null(1);
+        let a = Array::from_float64(fa);
+        let mut fb = FloatArray::<f64>::from_slice(&[9.0, 3.0]);
+        fb.set_null(1);
+        let b = Array::from_float64(fb);
+        // Null equals null.
+        assert!(a.value_eq(1, &b, 1));
+        // A value never equals a null.
+        assert!(!a.value_eq(0, &b, 1));
+        assert!(!a.value_eq(0, &b, 0));
+    }
+
+    #[test]
+    fn value_eq_cross_variant_false() {
+        let a = arr_i32!(vec![3]);
+        let b = arr_i64!(vec![3]);
+        assert!(!a.value_eq(0, &b, 0));
+    }
+
+    #[test]
+    fn value_eq_strings() {
+        let a = Array::from_string32(StringArray::<u32>::from_slice(&["alpha", "beta"]));
+        let b = Array::from_string32(StringArray::<u32>::from_slice(&["alpha", "gamma"]));
+        assert!(a.value_eq(0, &b, 0));
+        assert!(!a.value_eq(1, &b, 1));
+    }
+
+    #[cfg(feature = "hash")]
+    #[test]
+    fn value_eq_agrees_with_hash_element_at() {
+        use std::hash::Hasher;
+        let a = arr_f64!(vec![0.0, f64::NAN]);
+        let b = arr_f64!(vec![-0.0, f64::from_bits(0x7ff8_0000_0000_0001)]);
+        for i in 0..2 {
+            assert!(a.value_eq(i, &b, i));
+            let mut h1 = std::collections::hash_map::DefaultHasher::new();
+            let mut h2 = std::collections::hash_map::DefaultHasher::new();
+            a.hash_element_at(i, &mut h1);
+            b.hash_element_at(i, &mut h2);
+            assert_eq!(h1.finish(), h2.finish());
+        }
+    }
+
+    #[test]
+    fn array_get_typed() {
+        let mut fa = FloatArray::<f64>::from_slice(&[1.0, 2.0, 3.0]);
+        fa.set_null(1);
+        let arr = Array::from_float64(fa);
+        assert_eq!(arr.get::<FloatArray<f64>>(0), Some(1.0));
+        assert_eq!(arr.get::<FloatArray<f64>>(1), None);
+        assert_eq!(arr.get::<FloatArray<f64>>(3), None);
     }
 }
