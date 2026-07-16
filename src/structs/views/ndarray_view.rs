@@ -9,7 +9,6 @@
 use std::fmt;
 use std::ops::Index;
 
-#[cfg(feature = "matrix")]
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::ndarray::{NdArray, NdArrayIter, NdDims, offset_of_impl};
@@ -45,12 +44,70 @@ pub struct NdArrayV<T> {
 
 impl<T: Float> NdArrayV<T> {
     /// Create a view over an NdArray with the given offset and dimensions.
+    /// Panics when the rank metadata or reachable buffer span is invalid.
     pub fn new(source: NdArray<T>, offset: usize, shape: &[usize], strides: &[usize]) -> Self {
-        NdArrayV {
+        Self::try_new(source, offset, shape, strides)
+            .unwrap_or_else(|e| panic!("NdArrayV::new: {}", e))
+    }
+
+    /// Checked view construction over an NdArray.
+    ///
+    /// Validates rank metadata, arithmetic overflow, and that every logical
+    /// element reachable through `shape` and `strides` lies in the source
+    /// buffer. Empty dimensions may use an offset one past the buffer end.
+    pub fn try_new(
+        source: NdArray<T>,
+        offset: usize,
+        shape: &[usize],
+        strides: &[usize],
+    ) -> Result<Self, MinarrowError> {
+        if shape.is_empty() {
+            return Err(MinarrowError::ShapeError {
+                message: "NdArrayV requires at least one dimension".to_string(),
+            });
+        }
+        if shape.len() != strides.len() {
+            return Err(MinarrowError::ShapeError {
+                message: format!(
+                    "view shape rank {} does not match strides rank {}",
+                    shape.len(), strides.len()
+                ),
+            });
+        }
+
+        let span = if shape.contains(&0) {
+            0
+        } else {
+            let max_offset = shape.iter().zip(strides.iter()).try_fold(
+                0usize,
+                |acc, (&dim, &stride)| {
+                    (dim - 1)
+                        .checked_mul(stride)
+                        .and_then(|extent| acc.checked_add(extent))
+                },
+            ).ok_or_else(|| MinarrowError::ShapeError {
+                message: format!("view shape {:?} with strides {:?} overflows", shape, strides),
+            })?;
+            max_offset.checked_add(1).ok_or_else(|| MinarrowError::ShapeError {
+                message: format!("view shape {:?} with strides {:?} overflows", shape, strides),
+            })?
+        };
+        let end = offset.checked_add(span).ok_or_else(|| MinarrowError::ShapeError {
+            message: format!("view offset {} plus span {} overflows", offset, span),
+        })?;
+        let buffer_len = source.data.as_slice().len();
+        if end > buffer_len || (span == 0 && offset > buffer_len) {
+            return Err(MinarrowError::IndexError(format!(
+                "view span [{}, {}) exceeds source buffer length {}",
+                offset, end, buffer_len
+            )));
+        }
+
+        Ok(NdArrayV {
             source,
             offset,
             dims: NdDims::from_shape_and_strides(shape, strides),
-        }
+        })
     }
 
     /// Create a full view over an NdArray with the same shape and strides.
@@ -555,6 +612,37 @@ mod tests {
         assert_eq!(v.len(), 6);
         assert_eq!(v[(0, 0)], 1.0);
         assert_eq!(v[(2, 1)], 6.0);
+    }
+
+    #[test]
+    fn try_new_validates_and_constructs_view() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[4]);
+        let v = NdArrayV::try_new(a, 1, &[2], &[1]).unwrap();
+        assert_eq!(v.shape(), &[2]);
+        assert_eq!(v.get(&[0]), 2.0);
+        assert_eq!(v.get(&[1]), 3.0);
+    }
+
+    #[test]
+    fn try_new_rejects_invalid_rank_and_span() {
+        let a = NdArray::<f64>::new(&[4]);
+        assert!(NdArrayV::try_new(a.clone(), 0, &[2, 2], &[1]).is_err());
+        assert!(NdArrayV::try_new(a.clone(), 3, &[2], &[1]).is_err());
+        assert!(NdArrayV::try_new(a, usize::MAX, &[2], &[1]).is_err());
+    }
+
+    #[test]
+    fn try_new_accepts_empty_view_at_buffer_end() {
+        let a = NdArray::<f64>::new(&[4]);
+        let v = NdArrayV::try_new(a, 4, &[0], &[1]).unwrap();
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "NdArrayV::new")]
+    fn new_panics_on_invalid_span() {
+        let a = NdArray::<f64>::new(&[4]);
+        let _ = NdArrayV::new(a, 3, &[2], &[1]);
     }
 
     #[test]
