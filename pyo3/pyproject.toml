@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "minarrow-pyo3"
-version = "0.1.0"
+version = "0.16.0"
 description = "PyO3 bindings for MinArrow - zero-copy Arrow interop with Python"
 readme = "README.md"
 requires-python = ">=3.9"

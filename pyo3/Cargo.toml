@@ -1,6 +1,6 @@
 [package]
 name = "minarrow-pyo3"
-version = "0.3.5"
+version = "0.16.0"
 edition = "2024"
 authors = ['Peter G. Bower']
 license = "Apache-2.0"
