@@ -28,7 +28,7 @@ checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "minarrow"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "libc",
  "log",
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "minarrow-pyo3"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "minarrow",
  "pyo3",

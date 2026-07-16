@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
-## Unreleased
+## 0.16.0 - 2026-07-16
 
+This version completes Python ecosystem compatibility with DLPack support for landing data (or `ChunkedNdArray`) data in Rust
+and bridging to Python for AI/ML and back.
+
+Moving forward we will aim to minimise breaking changes and stabilise to a 1.0 version in the coming month(s). Additionally, include a `Stable` Rust build.
+
+The new `NdArray`, `XArray` and `SuperNdArray` may however see breaking changes before then until they have had time for production use.
+
+Please report any known bugs and/or feature requests through GitHub Issues, or if necessary discreetly through the contact for on `SpaceCell.com`,
+where any bugs or reasonable feature requests may be requested anonymously / treated confidentially.
+`
 ### Added
 
 **NdArray, XArray and DLPack Feature**:
@@ -55,8 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Modified
 - Bumped pyo3 to 0.29.
+
 - Normalised `hash_element_at` so NaN maps to a dummy/sentinel value
+- Added `value_eq` method to `Array` and `ArrayV` where NaN == NaN, -0.0 == 0.0, Null == Null etc.
 - Normalised equality checking for `Scalar` -0.0 == 0.0 and NaN == NaN.
+Note: the above three only affect users opting into the methods and/or `Scalar` abstraction.
+For users wanting IEEE compatibility for floats using `myarr.clone().num().f64()` gets to a `FloatArray` zero-copy.
+
 ## [0.15.0] - 2026-06-30
 
 ### Added
