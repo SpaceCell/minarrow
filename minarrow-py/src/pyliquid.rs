@@ -254,9 +254,19 @@ fn classify(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if obj.cast::<PyNdArray>().is_ok() || obj.hasattr("__dlpack__")? {
         return match import_dlpack(py, obj)? {
             PyNdArrayInner::F64(a) => Ok(Value::NdArray(a)),
+            PyNdArrayInner::F64View(v) => {
+                Ok(Value::NdArray(Arc::new(v.to_ndarray())))
+            }
             PyNdArrayInner::F32(a) => {
                 let flat: Vec64<f64> = (&*a).into_iter().map(|v| v as f64).collect();
                 Ok(Value::NdArray(Arc::new(NdArray::from_slice(&flat, a.shape()))))
+            }
+            PyNdArrayInner::F32View(v) => {
+                let flat: Vec64<f64> = (&*v).into_iter().map(|value| value as f64).collect();
+                Ok(Value::NdArray(Arc::new(NdArray::from_slice(
+                    &flat,
+                    v.shape(),
+                ))))
             }
         };
     }

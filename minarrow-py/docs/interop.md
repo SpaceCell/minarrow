@@ -40,6 +40,19 @@ Whether an integration remains zero-copy depends on the receiving library, data 
 
 The PyCapsule interface is part of the Apache Arrow interoperability specifications. Minarrow implements those interfaces independently and does not require PyArrow to own or manage its buffers.
 
+## DLPack tensor interchange
+
+`NdArray` and `XArray` implement `__dlpack__` and `__dlpack_device__` for CPU
+tensor interchange. Their owned arrays and zero-copy selections retain shape
+and element strides, including Minarrow's column-major layout. Versioned
+DLPack exports mark shared storage read-only; legacy exports copy shared data
+because that protocol cannot express read-only memory.
+
+`ChunkedNdArray` also implements DLPack, but DLPack describes one data pointer
+rather than multiple allocations. It therefore materialises one logical
+column-major `NdArray` for export. Passing `copy=False` rejects that operation
+with `BufferError` instead of silently consolidating.
+
 ## Supported integrations
 
 Minarrow provides named conversion methods for commonly used libraries.

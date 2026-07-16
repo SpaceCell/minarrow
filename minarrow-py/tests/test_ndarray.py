@@ -59,8 +59,31 @@ def test_getitem_out_of_bounds():
     a = mp.NdArray([1.0, 2.0, 3.0, 4.0], shape=[2, 2])
     with pytest.raises(IndexError):
         a[2, 0]
-    with pytest.raises(IndexError):
-        a[0]
+    row = a[0]
+    assert isinstance(row, mp.NdArray)
+    assert row.shape == (2,)
+    assert row[1] == 3.0
+
+
+def test_getitem_returns_zero_copy_views():
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2])
+    v = a[1:, :]
+    assert isinstance(v, mp.NdArray)
+    assert v.is_view is True
+    assert v.shape == (2, 2)
+    assert v.strides == (1, 3)
+    assert v[0, 0] == 2.0
+    assert v[-1, -1] == 6.0
+
+
+def test_transpose_is_same_python_type():
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2])
+    t = a.T
+    assert isinstance(t, mp.NdArray)
+    assert t.is_view is True
+    assert t.shape == (2, 3)
+    assert t.strides == (3, 1)
+    assert t[1, 2] == 6.0
 
 
 # --- DLPack protocol --------------------------------------------------------
@@ -159,6 +182,15 @@ def test_dlpack_shared_view_is_read_only():
     assert v.flags.writeable is False
 
 
+def test_dlpack_ndarray_slice_preserves_shape_and_values():
+    np = pytest.importorskip("numpy")
+    a = mp.NdArray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2])
+    v = np.from_dlpack(a[1:, :])
+    assert v.shape == (2, 2)
+    assert v[0, 0] == 2.0
+    assert v[1, 1] == 6.0
+
+
 def test_dlpack_export_shares_one_address():
     np = pytest.importorskip("numpy")
     a = mp.NdArray([1.0, 2.0, 3.0, 4.0], shape=[2, 2])
@@ -244,3 +276,110 @@ def test_ndarray_to_table():
     t = a.to_table()
     assert t.n_rows == 3
     assert t.n_cols == 2
+
+
+# --- ChunkedNdArray ---------------------------------------------------------
+
+
+def make_chunked_ndarray():
+    a = mp.NdArray([1.0, 2.0, 10.0, 20.0], shape=[2, 2])
+    b = mp.NdArray([3.0, 30.0], shape=[1, 2])
+    return mp.ChunkedNdArray([a, b], name="readings")
+
+
+def test_chunked_ndarray_construction_and_access():
+    a = make_chunked_ndarray()
+    assert a.shape == (3, 2)
+    assert a.ndim == 2
+    assert a.size == 6
+    assert a.dtype == "float64"
+    assert a.name == "readings"
+    assert a.n_chunks == 2
+    assert a.is_view is False
+    assert isinstance(a.chunk(0), mp.NdArray)
+    assert a.chunk(2) is None
+    assert len(a) == 3
+    assert a[2, 1] == 30.0
+    row = a[1]
+    assert isinstance(row, mp.NdArray)
+    assert row.shape == (2,)
+    assert row[1] == 20.0
+
+
+def test_chunked_ndarray_slice_stays_chunked():
+    a = make_chunked_ndarray()
+    v = a[1:]
+    assert isinstance(v, mp.ChunkedNdArray)
+    assert v.shape == (2, 2)
+    assert v.n_chunks == 2
+    assert v.is_view is True
+    assert v[0, 0] == 2.0
+    assert v[1, 1] == 30.0
+    assert all(isinstance(chunk, mp.NdArray) for chunk in v.chunks)
+
+
+def test_chunked_ndarray_materialises_in_logical_column_major_order():
+    a = make_chunked_ndarray().to_ndarray()
+    assert isinstance(a, mp.NdArray)
+    assert a.shape == (3, 2)
+    assert [a[i, 0] for i in range(3)] == [1.0, 2.0, 3.0]
+    assert [a[i, 1] for i in range(3)] == [10.0, 20.0, 30.0]
+
+
+def test_chunked_ndarray_dlpack_is_explicit_copy():
+    a = make_chunked_ndarray()
+    assert '"dltensor_versioned"' in repr(a.__dlpack__(max_version=(1, 1)))
+    with pytest.raises(BufferError):
+        a.__dlpack__(copy=False)
+
+
+# --- XArray ----------------------------------------------------------------
+
+
+def make_xarray():
+    data = mp.NdArray([1.0, 2.0, 3.0, 10.0, 20.0, 30.0], shape=[3, 2])
+    return mp.XArray(
+        data,
+        dims=["time", "feature"],
+        coords={
+            "time": mp.Array([10, 20, 30]),
+            "feature": mp.Array(["x", "y"]),
+        },
+    )
+
+
+def test_xarray_construction_and_positional_selection():
+    a = make_xarray()
+    assert a.shape == (3, 2)
+    assert a.dims == ["time", "feature"]
+    assert set(a.coords) == {"time", "feature"}
+    assert a.data.is_view is False
+    assert a[2, 1] == 30.0
+    row = a[1]
+    assert isinstance(row, mp.XArray)
+    assert row.shape == (2,)
+    assert row.dims == ["feature"]
+    assert row.data.is_view is True
+    assert row.data[1] == 20.0
+
+
+def test_xarray_coordinate_selection():
+    a = make_xarray()
+    exact = a.sel(time=20)
+    assert exact.dims == ["feature"]
+    assert exact.data[0] == 2.0
+    assert exact.data[1] == 20.0
+
+    window = a.between("time", 15, 30)
+    assert window.shape == (2, 2)
+    assert window.data[0, 0] == 2.0
+    assert window.data[1, 1] == 30.0
+
+    nearest = a.nearest("time", 19)
+    assert nearest.dims == ["feature"]
+    assert nearest.data[1] == 20.0
+
+
+def test_xarray_dlpack_exports_data_only():
+    a = make_xarray()
+    assert '"dltensor_versioned"' in repr(a.__dlpack__(max_version=(1, 1)))

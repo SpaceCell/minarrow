@@ -21,6 +21,8 @@
 mod array;
 mod arrow_type;
 mod chunked_array;
+#[cfg(feature = "ndarray")]
+mod chunked_ndarray;
 mod chunked_table;
 mod convert;
 mod dtype;
@@ -30,6 +32,8 @@ mod ndarray;
 #[cfg(feature = "embed")]
 mod pyliquid;
 mod table;
+#[cfg(feature = "ndarray")]
+mod xarray;
 
 use pyo3::prelude::*;
 
@@ -41,6 +45,8 @@ pub use arrow_type::{PyArrowType, PyCategoricalIndexType};
 #[cfg(feature = "datetime")]
 pub use arrow_type::{PyIntervalUnit, PyTimeUnit};
 pub use chunked_array::PyChunkedArray;
+#[cfg(feature = "ndarray")]
+pub use chunked_ndarray::{PyChunkedNdArray, PyChunkedNdArrayInner};
 pub use chunked_table::PyChunkedTable;
 pub use convert::{build_array, resolve_index, scalar_to_py};
 pub use dtype::{dtype_from_arrow, width_from_arrow, DType, TypeClass};
@@ -50,6 +56,8 @@ pub use ndarray::{PyNdArray, PyNdArrayInner};
 #[cfg(feature = "embed")]
 pub use pyliquid::{PyInput, PyLiquid};
 pub use table::{build_table, PyTableInner};
+#[cfg(feature = "ndarray")]
+pub use xarray::{PyXArray, PyXArrayInner};
 
 /// Registers the `minarrow` module in the embedded interpreter's inittab so
 /// `import minarrow` resolves. Kept here in the crate root, where the
@@ -72,7 +80,11 @@ fn minarrow_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyArray>()?;
     m.add_class::<PyTable>()?;
     #[cfg(feature = "ndarray")]
-    m.add_class::<PyNdArray>()?;
+    {
+        m.add_class::<PyNdArray>()?;
+        m.add_class::<PyChunkedNdArray>()?;
+        m.add_class::<PyXArray>()?;
+    }
     m.add_class::<PyChunkedArray>()?;
     m.add_class::<PyChunkedTable>()?;
     m.add_class::<PyField>()?;

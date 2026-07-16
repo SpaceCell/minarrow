@@ -13,6 +13,14 @@ documentation build environment.
 
 ::: minarrow.ChunkedTable
 
+## N-dimensional data
+
+::: minarrow.NdArray
+
+::: minarrow.ChunkedNdArray
+
+::: minarrow.XArray
+
 ## Data types
 
 ::: minarrow.DType

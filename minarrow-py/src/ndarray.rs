@@ -14,7 +14,8 @@
 
 //! `NdArray` - the native Python tensor object over minarrow.
 //!
-//! One Python type holds an f32 or f64 `NdArray`. The DLPack capsule
+//! One Python type holds an f32 or f64 `NdArray` or `NdArrayV`. Slicing
+//! keeps the same public type and stores a zero-copy view internally. The DLPack capsule
 //! protocol (`__dlpack__` and `__dlpack_device__`) hands the tensor to
 //! NumPy, PyTorch, JAX, TensorFlow, and CuPy without copying where the
 //! target supports host memory, and `from_dlpack` accepts any DLPack
@@ -23,23 +24,82 @@
 //! itself lives in minarrow-pyo3's `ffi::dlpack`, alongside the Arrow
 //! capsule glue this package already shares.
 
-use minarrow::{NdArray, Table};
+use minarrow::traits::selection::DataSelector;
+use minarrow::{NdArray, NdArrayV, Table};
 use minarrow_pyo3::ffi::dlpack::{export_dlpack, import_dlpack};
 pub use minarrow_pyo3::ffi::dlpack::PyNdArrayInner;
 
 use crate::table::{PyTable, PyTableInner};
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
+use pyo3::types::{PySlice, PyTuple};
+use pyo3::IntoPyObjectExt;
 
-/// Dispatch to the inner f32 or f64 NdArray.
+use crate::convert::resolve_index;
+
+/// Dispatch across dtype and owned/view storage.
 macro_rules! dispatch {
     ($inner:expr, |$a:ident| $body:expr) => {
         match $inner {
             PyNdArrayInner::F32($a) => $body,
             PyNdArrayInner::F64($a) => $body,
+            PyNdArrayInner::F32View($a) => $body,
+            PyNdArrayInner::F64View($a) => $body,
         }
     };
+}
+
+pub(crate) enum AxisKey {
+    Index(usize),
+    Range(std::ops::Range<usize>),
+}
+
+pub(crate) fn axis_keys(key: &Bound<'_, PyAny>, shape: &[usize]) -> PyResult<Vec<AxisKey>> {
+    let items: Vec<Bound<'_, PyAny>> = if let Ok(tuple) = key.cast::<PyTuple>() {
+        tuple.iter().collect()
+    } else {
+        vec![key.clone()]
+    };
+    if items.len() > shape.len() {
+        return Err(PyIndexError::new_err(format!(
+            "too many indices for {}-dimensional array",
+            shape.len()
+        )));
+    }
+
+    let mut keys = Vec::with_capacity(shape.len());
+    for (axis, item) in items.iter().enumerate() {
+        if let Ok(slice) = item.cast::<PySlice>() {
+            let indices = slice.indices(shape[axis] as isize)?;
+            if indices.step != 1 {
+                return Err(PyValueError::new_err(
+                    "NdArray slices currently require a step of 1",
+                ));
+            }
+            keys.push(AxisKey::Range(
+                (indices.start as usize)..(indices.stop as usize),
+            ));
+        } else if let Ok(index) = item.extract::<isize>() {
+            keys.push(AxisKey::Index(resolve_index(index, shape[axis])?));
+        } else {
+            return Err(PyTypeError::new_err(
+                "each index must be an int or a slice",
+            ));
+        }
+    }
+    for &size in &shape[keys.len()..] {
+        keys.push(AxisKey::Range(0..size));
+    }
+    Ok(keys)
+}
+
+pub(crate) fn selectors(keys: &[AxisKey]) -> Vec<&dyn DataSelector> {
+    keys.iter()
+        .map(|key| match key {
+            AxisKey::Index(index) => index as &dyn DataSelector,
+            AxisKey::Range(range) => range as &dyn DataSelector,
+        })
+        .collect()
 }
 
 /// N-dimensional f32/f64 tensor with zero-copy DLPack interchange.
@@ -55,6 +115,18 @@ impl From<NdArray<f32>> for PyNdArray {
 impl From<NdArray<f64>> for PyNdArray {
     fn from(ndarray: NdArray<f64>) -> Self {
         PyNdArray(PyNdArrayInner::from(ndarray))
+    }
+}
+
+impl From<NdArrayV<f32>> for PyNdArray {
+    fn from(view: NdArrayV<f32>) -> Self {
+        PyNdArray(PyNdArrayInner::from(view))
+    }
+}
+
+impl From<NdArrayV<f64>> for PyNdArray {
+    fn from(view: NdArrayV<f64>) -> Self {
+        PyNdArray(PyNdArrayInner::from(view))
     }
 }
 
@@ -115,9 +187,18 @@ impl PyNdArray {
     #[getter]
     fn dtype(&self) -> &'static str {
         match &self.0 {
-            PyNdArrayInner::F32(_) => "float32",
-            PyNdArrayInner::F64(_) => "float64",
+            PyNdArrayInner::F32(_) | PyNdArrayInner::F32View(_) => "float32",
+            PyNdArrayInner::F64(_) | PyNdArrayInner::F64View(_) => "float64",
         }
+    }
+
+    /// Whether this object is a zero-copy window over another NdArray.
+    #[getter]
+    fn is_view(&self) -> bool {
+        matches!(
+            &self.0,
+            PyNdArrayInner::F32View(_) | PyNdArrayInner::F64View(_)
+        )
     }
 
     /// Total element count.
@@ -135,33 +216,80 @@ impl PyNdArray {
         format!("NdArray(shape={:?}, dtype={})", shape, self.dtype())
     }
 
-    /// Element access by full index, e.g. `arr[1, 2]`.
-    fn __getitem__(&self, key: &Bound<'_, PyAny>) -> PyResult<f64> {
-        let indices: Vec<usize> = if let Ok(idx) = key.extract::<usize>() {
-            vec![idx]
-        } else {
-            key.extract::<Vec<usize>>().map_err(|_| {
-                PyTypeError::new_err("index must be an int or a tuple of ints")
-            })?
-        };
+    /// NumPy-style positional indexing. A full integer index returns a
+    /// scalar; any slice or omitted trailing axis returns another NdArray
+    /// backed by a zero-copy view.
+    fn __getitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let shape = dispatch!(&self.0, |a| a.shape().to_vec());
-        if indices.len() != shape.len() {
-            return Err(PyIndexError::new_err(format!(
-                "expected {} indices for shape {:?}, got {}",
-                shape.len(),
-                shape,
-                indices.len()
+        let keys = axis_keys(key, &shape)?;
+        if keys.iter().all(|key| matches!(key, AxisKey::Index(_))) {
+            let indices: Vec<usize> = keys
+                .iter()
+                .map(|key| match key {
+                    AxisKey::Index(index) => *index,
+                    AxisKey::Range(_) => unreachable!(),
+                })
+                .collect();
+            let value = dispatch!(&self.0, |a| a.get(&indices) as f64);
+            return value.into_py_any(py);
+        }
+
+        let selection = selectors(&keys);
+        let view = match &self.0 {
+            PyNdArrayInner::F32(a) => PyNdArray::from(a.slice(&selection)),
+            PyNdArrayInner::F64(a) => PyNdArray::from(a.slice(&selection)),
+            PyNdArrayInner::F32View(v) => PyNdArray::from(v.slice(&selection)),
+            PyNdArrayInner::F64View(v) => PyNdArray::from(v.slice(&selection)),
+        };
+        Ok(Py::new(py, view)?.into_any())
+    }
+
+    /// Return a zero-copy view with axes permuted. With no argument the
+    /// axis order is reversed.
+    #[pyo3(signature = (axes=None))]
+    fn transpose(&self, axes: Option<Vec<usize>>) -> PyResult<Self> {
+        let ndim = self.ndim();
+        let axes = axes.unwrap_or_else(|| (0..ndim).rev().collect());
+        if axes.len() != ndim {
+            return Err(PyValueError::new_err(format!(
+                "transpose expected {} axes, got {}",
+                ndim,
+                axes.len()
             )));
         }
-        for (d, (&i, &n)) in indices.iter().zip(shape.iter()).enumerate() {
-            if i >= n {
-                return Err(PyIndexError::new_err(format!(
-                    "index {} out of bounds for axis {} with size {}",
-                    i, d, n
-                )));
-            }
+        let valid = {
+            let mut sorted = axes.clone();
+            sorted.sort_unstable();
+            sorted == (0..ndim).collect::<Vec<_>>()
+        };
+        if !valid {
+            return Err(PyValueError::new_err(format!(
+                "axes must be a permutation of 0..{}",
+                ndim
+            )));
         }
-        Ok(dispatch!(&self.0, |a| a.get(&indices) as f64))
+        Ok(match &self.0 {
+            PyNdArrayInner::F32(a) => PyNdArray::from(a.as_view().permute_axes(&axes)),
+            PyNdArrayInner::F64(a) => PyNdArray::from(a.as_view().permute_axes(&axes)),
+            PyNdArrayInner::F32View(v) => PyNdArray::from(v.permute_axes(&axes)),
+            PyNdArrayInner::F64View(v) => PyNdArray::from(v.permute_axes(&axes)),
+        })
+    }
+
+    /// Axis-reversed zero-copy view.
+    #[getter(T)]
+    fn t(&self) -> PyResult<Self> {
+        self.transpose(None)
+    }
+
+    /// Materialise this array into its own compact column-major allocation.
+    fn copy(&self) -> Self {
+        match &self.0 {
+            PyNdArrayInner::F32(a) => PyNdArray::from(a.apply(|value| value)),
+            PyNdArrayInner::F64(a) => PyNdArray::from(a.apply(|value| value)),
+            PyNdArrayInner::F32View(v) => PyNdArray::from(v.to_ndarray()),
+            PyNdArrayInner::F64View(v) => PyNdArray::from(v.to_ndarray()),
+        }
     }
 
     /// DLPack producer entry point. Returns a capsule the consumer owns.
@@ -239,7 +367,12 @@ impl PyNdArray {
                 .to_table(None)
                 .map(|t| PyTable(PyTableInner::from(t)))
                 .map_err(|e| PyValueError::new_err(e.to_string())),
-            PyNdArrayInner::F32(_) => Err(PyValueError::new_err(
+            PyNdArrayInner::F64View(v) => v
+                .to_ndarray()
+                .to_table(None)
+                .map(|t| PyTable(PyTableInner::from(t)))
+                .map_err(|e| PyValueError::new_err(e.to_string())),
+            PyNdArrayInner::F32(_) | PyNdArrayInner::F32View(_) => Err(PyValueError::new_err(
                 "to_table supports float64 tensors, rebuild the tensor as float64 first",
             )),
         }

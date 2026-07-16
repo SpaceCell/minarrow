@@ -253,6 +253,16 @@ impl<T: Float> XArray<T> {
         }
     }
 
+    /// Borrow the data as a zero-copy NdArrayV, regardless of whether this
+    /// XArray currently owns its NdArray or already holds a view.
+    #[cfg(feature = "views")]
+    pub fn as_view(&self) -> NdArrayV<T> {
+        match &self.data {
+            NdArrayE::Owned(nd) => nd.as_view(),
+            NdArrayE::View(v) => v.clone(),
+        }
+    }
+
     /// True if backed by a single owned NdArray.
     pub fn is_owned(&self) -> bool {
         matches!(&self.data, NdArrayE::Owned(_))

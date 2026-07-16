@@ -29,11 +29,12 @@
 use std::ffi::{CStr, c_void};
 use std::sync::Arc;
 
-use minarrow::NdArray;
+use minarrow::{NdArray, NdArrayV};
 use minarrow::ffi::dlpack::{
     DLManagedTensor, DLManagedTensorVersioned, DLPACK_FLAG_BITMASK_IS_COPIED,
     DLPACK_MAJOR_VERSION, DLPACK_MINOR_VERSION, export_to_dlpack, export_to_dlpack_versioned,
-    import_from_dlpack, import_from_dlpack_versioned,
+    export_view_to_dlpack, export_view_to_dlpack_versioned, import_from_dlpack,
+    import_from_dlpack_versioned,
 };
 use minarrow::traits::type_unions::Float;
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -48,11 +49,13 @@ pub static DLTENSOR_USED: &CStr = c"used_dltensor";
 pub static DLTENSOR_VERSIONED: &CStr = c"dltensor_versioned";
 pub static DLTENSOR_VERSIONED_USED: &CStr = c"used_dltensor_versioned";
 
-/// The natural minarrow form behind a Python `NdArray`, one variant per
-/// element type.
+/// The natural minarrow form behind a Python `NdArray`, covering both
+/// supported element types and owned or windowed storage.
 pub enum PyNdArrayInner {
     F32(Arc<NdArray<f32>>),
     F64(Arc<NdArray<f64>>),
+    F32View(Arc<NdArrayV<f32>>),
+    F64View(Arc<NdArrayV<f64>>),
 }
 
 impl From<NdArray<f32>> for PyNdArrayInner {
@@ -64,6 +67,18 @@ impl From<NdArray<f32>> for PyNdArrayInner {
 impl From<NdArray<f64>> for PyNdArrayInner {
     fn from(ndarray: NdArray<f64>) -> Self {
         PyNdArrayInner::F64(Arc::new(ndarray))
+    }
+}
+
+impl From<NdArrayV<f32>> for PyNdArrayInner {
+    fn from(view: NdArrayV<f32>) -> Self {
+        PyNdArrayInner::F32View(Arc::new(view))
+    }
+}
+
+impl From<NdArrayV<f64>> for PyNdArrayInner {
+    fn from(view: NdArrayV<f64>) -> Self {
+        PyNdArrayInner::F64View(Arc::new(view))
     }
 }
 
@@ -141,6 +156,20 @@ pub fn export_dlpack(
             let source = if copy { a.apply(|v| v) } else { (**a).clone() };
             dlpack_capsule(py, source, versioned, copy)
         }
+        PyNdArrayInner::F32View(v) => {
+            if copy {
+                dlpack_capsule(py, v.to_ndarray(), versioned, true)
+            } else {
+                dlpack_view_capsule(py, (**v).clone(), versioned)
+            }
+        }
+        PyNdArrayInner::F64View(v) => {
+            if copy {
+                dlpack_capsule(py, v.to_ndarray(), versioned, true)
+            } else {
+                dlpack_view_capsule(py, (**v).clone(), versioned)
+            }
+        }
     }
 }
 
@@ -160,41 +189,65 @@ pub fn dlpack_capsule<T: Float>(
                 (*raw).flags |= DLPACK_FLAG_BITMASK_IS_COPIED;
             }
         }
-        let capsule = unsafe {
-            pyo3::ffi::PyCapsule_New(
-                raw as *mut c_void,
-                DLTENSOR_VERSIONED.as_ptr(),
-                Some(dltensor_versioned_capsule_destructor),
-            )
-        };
-        if capsule.is_null() {
-            unsafe {
-                if let Some(deleter) = (*raw).deleter {
-                    deleter(raw);
-                }
-            }
-            return Err(PyErr::fetch(py));
-        }
-        Ok(unsafe { Bound::from_owned_ptr(py, capsule) }.unbind())
+        versioned_capsule(py, raw)
     } else {
         let raw = export_to_dlpack(source).into_raw();
-        let capsule = unsafe {
-            pyo3::ffi::PyCapsule_New(
-                raw as *mut c_void,
-                DLTENSOR.as_ptr(),
-                Some(dltensor_capsule_destructor),
-            )
-        };
-        if capsule.is_null() {
-            unsafe {
-                if let Some(deleter) = (*raw).deleter {
-                    deleter(raw);
-                }
-            }
-            return Err(PyErr::fetch(py));
-        }
-        Ok(unsafe { Bound::from_owned_ptr(py, capsule) }.unbind())
+        legacy_capsule(py, raw)
     }
+}
+
+/// Wrap a windowed NdArray in a DLPack capsule of the requested ABI.
+pub fn dlpack_view_capsule<T: Float>(
+    py: Python<'_>,
+    view: NdArrayV<T>,
+    versioned: bool,
+) -> PyResult<Py<PyAny>> {
+    if versioned {
+        versioned_capsule(py, export_view_to_dlpack_versioned(view).into_raw())
+    } else {
+        legacy_capsule(py, export_view_to_dlpack(view).into_raw())
+    }
+}
+
+fn legacy_capsule(py: Python<'_>, raw: *mut DLManagedTensor) -> PyResult<Py<PyAny>> {
+    let capsule = unsafe {
+        pyo3::ffi::PyCapsule_New(
+            raw as *mut c_void,
+            DLTENSOR.as_ptr(),
+            Some(dltensor_capsule_destructor),
+        )
+    };
+    if capsule.is_null() {
+        unsafe {
+            if let Some(deleter) = (*raw).deleter {
+                deleter(raw);
+            }
+        }
+        return Err(PyErr::fetch(py));
+    }
+    Ok(unsafe { Bound::from_owned_ptr(py, capsule) }.unbind())
+}
+
+fn versioned_capsule(
+    py: Python<'_>,
+    raw: *mut DLManagedTensorVersioned,
+) -> PyResult<Py<PyAny>> {
+    let capsule = unsafe {
+        pyo3::ffi::PyCapsule_New(
+            raw as *mut c_void,
+            DLTENSOR_VERSIONED.as_ptr(),
+            Some(dltensor_versioned_capsule_destructor),
+        )
+    };
+    if capsule.is_null() {
+        unsafe {
+            if let Some(deleter) = (*raw).deleter {
+                deleter(raw);
+            }
+        }
+        return Err(PyErr::fetch(py));
+    }
+    Ok(unsafe { Bound::from_owned_ptr(py, capsule) }.unbind())
 }
 
 /// Import from any DLPack producer, e.g. a NumPy or PyTorch tensor, or a

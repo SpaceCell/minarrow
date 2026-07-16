@@ -32,7 +32,7 @@
 
     ---
 
-    Array, Table, ChunkedArray and ChunkedTable cover flat columnar data.
+    Focused containers cover flat columnar and N-dimensional data.
 
 </div>
 
@@ -71,12 +71,22 @@ The same data model exists on both sides of the boundary.
 
 ## Overview
 
-Minarrow provides four primary *Python* containers:
+Minarrow provides four primary columnar *Python* containers:
 
 * `Array` for typed columnar data
 * `Table` for named collections of equal-length arrays
 * `ChunkedArray` for one logical column split across multiple chunks
 * `ChunkedTable` for a sequence of table batches
+
+For f32/f64 N-dimensional data it also provides:
+
+* `NdArray` for contiguous data and zero-copy selections
+* `ChunkedNdArray` for compatible pieces backed by Rust `SuperNdArray`
+* `XArray` for named axes and coordinate selection
+
+These are data containers and interchange objects, not a replacement for a
+numerical or statistical runtime. Use their DLPack support to pass data to
+NumPy, PyTorch, JAX, or another compute library.
 
 The *Python* package is backed by the [Minarrow Rust core](https://github.com/pbower/minarrow), which provides the underlying array types, schemas and aligned buffers.
 

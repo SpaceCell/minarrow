@@ -341,6 +341,20 @@ impl From<minarrow::NdArray<f64>> for PyNdArray {
 }
 
 #[cfg(feature = "ndarray")]
+impl From<minarrow::NdArrayV<f32>> for PyNdArray {
+    fn from(view: minarrow::NdArrayV<f32>) -> Self {
+        PyNdArray(PyNdArrayInner::from(view))
+    }
+}
+
+#[cfg(feature = "ndarray")]
+impl From<minarrow::NdArrayV<f64>> for PyNdArray {
+    fn from(view: minarrow::NdArrayV<f64>) -> Self {
+        PyNdArray(PyNdArrayInner::from(view))
+    }
+}
+
+#[cfg(feature = "ndarray")]
 #[pymethods]
 impl PyNdArray {
     /// Dimension sizes.
@@ -349,6 +363,8 @@ impl PyNdArray {
         match &self.0 {
             PyNdArrayInner::F32(a) => pyo3::types::PyTuple::new(py, a.shape()),
             PyNdArrayInner::F64(a) => pyo3::types::PyTuple::new(py, a.shape()),
+            PyNdArrayInner::F32View(v) => pyo3::types::PyTuple::new(py, v.shape()),
+            PyNdArrayInner::F64View(v) => pyo3::types::PyTuple::new(py, v.shape()),
         }
     }
 
@@ -358,6 +374,8 @@ impl PyNdArray {
         match &self.0 {
             PyNdArrayInner::F32(a) => pyo3::types::PyTuple::new(py, a.strides()),
             PyNdArrayInner::F64(a) => pyo3::types::PyTuple::new(py, a.strides()),
+            PyNdArrayInner::F32View(v) => pyo3::types::PyTuple::new(py, v.strides()),
+            PyNdArrayInner::F64View(v) => pyo3::types::PyTuple::new(py, v.strides()),
         }
     }
 
@@ -367,6 +385,8 @@ impl PyNdArray {
         match &self.0 {
             PyNdArrayInner::F32(a) => a.ndim(),
             PyNdArrayInner::F64(a) => a.ndim(),
+            PyNdArrayInner::F32View(v) => v.ndim(),
+            PyNdArrayInner::F64View(v) => v.ndim(),
         }
     }
 
@@ -376,6 +396,8 @@ impl PyNdArray {
         match &self.0 {
             PyNdArrayInner::F32(_) => "float32",
             PyNdArrayInner::F64(_) => "float64",
+            PyNdArrayInner::F32View(_) => "float32",
+            PyNdArrayInner::F64View(_) => "float64",
         }
     }
 
@@ -385,6 +407,8 @@ impl PyNdArray {
         match &self.0 {
             PyNdArrayInner::F32(a) => a.len(),
             PyNdArrayInner::F64(a) => a.len(),
+            PyNdArrayInner::F32View(v) => v.len(),
+            PyNdArrayInner::F64View(v) => v.len(),
         }
     }
 
@@ -392,6 +416,8 @@ impl PyNdArray {
         match &self.0 {
             PyNdArrayInner::F32(a) => a.shape()[0],
             PyNdArrayInner::F64(a) => a.shape()[0],
+            PyNdArrayInner::F32View(v) => v.shape()[0],
+            PyNdArrayInner::F64View(v) => v.shape()[0],
         }
     }
 
@@ -399,6 +425,8 @@ impl PyNdArray {
         let shape = match &self.0 {
             PyNdArrayInner::F32(a) => a.shape().to_vec(),
             PyNdArrayInner::F64(a) => a.shape().to_vec(),
+            PyNdArrayInner::F32View(v) => v.shape().to_vec(),
+            PyNdArrayInner::F64View(v) => v.shape().to_vec(),
         };
         format!("NdArray(shape={:?}, dtype={})", shape, self.dtype())
     }
