@@ -43,7 +43,7 @@ use crate::{Array, Bitmask, BooleanArray, FloatArray, IntegerArray, MaskedArray,
 /// - There are also `try_<type>` methods that can be used to attempt it gracefully
 /// without the risk of panicking.
 #[cfg(feature = "scalar_type")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Display, Default)]
 pub enum Scalar {
     #[default]
     Null,
