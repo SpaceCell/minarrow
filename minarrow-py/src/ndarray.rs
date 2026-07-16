@@ -134,6 +134,8 @@ impl From<NdArrayV<f64>> for PyNdArray {
 impl PyNdArray {
     /// Build from a flat sequence of numbers, shaped column-major.
     /// `shape` defaults to one dimension covering the whole sequence.
+    /// `shape=[]` creates a rank-zero array from exactly one value and is
+    /// distinct from `shape=[0]`, which creates an empty rank-one array.
     #[new]
     #[pyo3(signature = (data, shape=None, dtype="float64"))]
     fn new(data: Vec<f64>, shape: Option<Vec<usize>>, dtype: &str) -> PyResult<Self> {

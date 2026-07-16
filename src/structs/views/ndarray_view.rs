@@ -54,8 +54,9 @@ impl<T: Float> NdArrayV<T> {
     ///
     /// Validates rank metadata, arithmetic overflow, and that every logical
     /// element reachable through `shape` and `strides` lies in the source
-    /// buffer. Rank zero denotes one scalar value. Empty dimensions may use
-    /// an offset one past the buffer end.
+    /// buffer. A shape with zero axes (`shape == &[]`) denotes one scalar
+    /// value. A shape containing a zero-length axis, such as `&[0]`, denotes
+    /// no values and may use an offset one past the buffer end.
     pub fn try_new(
         source: NdArray<T>,
         offset: usize,

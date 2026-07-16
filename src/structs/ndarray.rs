@@ -20,8 +20,9 @@
 //! ## Element type
 //! Generic over `T: Float`, which covers `f32` and `f64`. Rank is determined
 //! at runtime rather than through generics, and dimensions 1D-5D are stored
-//! inline to avoid heap allocation in the common case. An empty shape is a
-//! rank-zero scalar containing one logical value.
+//! inline to avoid heap allocation in the common case. A shape with zero axes
+//! (`&[]`) represents a rank-zero array containing one logical value. This is
+//! distinct from `[0]`, which represents a rank-one array with no values.
 //!
 //! ## Layout
 //! Compact column-major with no inter-dimension padding, so the buffer is
@@ -116,7 +117,8 @@ impl<T: Float> PartialEq for NdArray<T> {
 
 impl<T: Float> NdArray<T> {
     /// Create a zeroed NdArray with the given shape, column-major strides.
-    /// An empty shape creates one rank-zero scalar value.
+    /// `shape == &[]` creates a rank-zero array containing one scalar value;
+    /// `shape == &[0]` creates an empty rank-one array.
     pub fn new(shape: &[usize]) -> Self {
         let dims = NdDims::from_shape(shape);
         let total = buffer_len(dims.shape(), dims.strides());
@@ -136,7 +138,9 @@ impl<T: Float> NdArray<T> {
     ///
     /// The slice holds `product(shape)` logical elements in column-major
     /// order, matching the compact layout, so the data copies straight in.
-    /// The product of an empty shape is one, representing a scalar.
+    /// A shape with zero axes (`&[]`) has product one and therefore requires
+    /// one value. A shape containing a zero-length axis, such as `&[0]`, has
+    /// product zero and requires no values.
     pub fn from_slice(data: &[T], shape: &[usize]) -> Self {
         let logical_len: usize = shape.iter().product();
         assert_eq!(
@@ -154,7 +158,8 @@ impl<T: Float> NdArray<T> {
 
     /// Create from an owned 64-byte aligned vector, moving it in without
     /// a copy. The vector holds `product(shape)` logical elements in
-    /// column-major order, matching the compact layout.
+    /// column-major order, matching the compact layout. A shape with zero
+    /// axes (`&[]`) requires one value, while `&[0]` requires none.
     pub fn from_vec64(data: Vec64<T>, shape: &[usize]) -> Self {
         let logical_len: usize = shape.iter().product();
         assert_eq!(
