@@ -22,6 +22,8 @@
 //! to match to one of a range of possible values.
 
 use std::convert::From;
+#[cfg(feature = "scalar_type")]
+use std::fmt::{self, Display, Formatter};
 
 #[cfg(feature = "scalar_type")]
 use num_traits::Pow;
@@ -43,7 +45,7 @@ use crate::{Array, Bitmask, BooleanArray, FloatArray, IntegerArray, MaskedArray,
 /// - There are also `try_<type>` methods that can be used to attempt it gracefully
 /// without the risk of panicking.
 #[cfg(feature = "scalar_type")]
-#[derive(Debug, Clone, Display, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum Scalar {
     #[default]
     Null,
@@ -75,6 +77,39 @@ pub enum Scalar {
     Datetime64(i64),
     #[cfg(feature = "datetime")]
     Interval,
+}
+
+#[cfg(feature = "scalar_type")]
+impl Display for Scalar {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Scalar::Null => f.write_str("Null"),
+            Scalar::Boolean(v) => Display::fmt(v, f),
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::Int8(v) => Display::fmt(v, f),
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::Int16(v) => Display::fmt(v, f),
+            Scalar::Int32(v) => Display::fmt(v, f),
+            Scalar::Int64(v) => Display::fmt(v, f),
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::UInt8(v) => Display::fmt(v, f),
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::UInt16(v) => Display::fmt(v, f),
+            Scalar::UInt32(v) => Display::fmt(v, f),
+            Scalar::UInt64(v) => Display::fmt(v, f),
+            Scalar::Float32(v) => Display::fmt(v, f),
+            Scalar::Float64(v) => Display::fmt(v, f),
+            Scalar::String32(v) => f.write_str(v),
+            #[cfg(feature = "large_string")]
+            Scalar::String64(v) => f.write_str(v),
+            #[cfg(feature = "datetime")]
+            Scalar::Datetime32(v) => Display::fmt(v, f),
+            #[cfg(feature = "datetime")]
+            Scalar::Datetime64(v) => Display::fmt(v, f),
+            #[cfg(feature = "datetime")]
+            Scalar::Interval => f.write_str("Interval"),
+        }
+    }
 }
 
 #[cfg(feature = "scalar_type")]
@@ -2100,6 +2135,25 @@ impl Pow<Scalar> for Scalar {
 mod tests {
     use super::*;
     use crate::Scalar::{Float32, Float64, Int32, String32, String64};
+
+    #[test]
+    fn display() {
+        assert_eq!(Scalar::Null.to_string(), "Null");
+        assert_eq!(Scalar::Boolean(true).to_string(), "true");
+        assert_eq!(Scalar::Int32(-42).to_string(), "-42");
+        assert_eq!(Scalar::Float64(1.5).to_string(), "1.5");
+        assert_eq!(Scalar::String32("value".into()).to_string(), "value");
+
+        #[cfg(feature = "large_string")]
+        assert_eq!(Scalar::String64("large".into()).to_string(), "large");
+
+        #[cfg(feature = "datetime")]
+        {
+            assert_eq!(Scalar::Datetime32(123).to_string(), "123");
+            assert_eq!(Scalar::Datetime64(456).to_string(), "456");
+            assert_eq!(Scalar::Interval.to_string(), "Interval");
+        }
+    }
 
     #[test]
     fn test_bool() {
