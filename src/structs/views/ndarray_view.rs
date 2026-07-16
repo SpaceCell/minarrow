@@ -54,18 +54,14 @@ impl<T: Float> NdArrayV<T> {
     ///
     /// Validates rank metadata, arithmetic overflow, and that every logical
     /// element reachable through `shape` and `strides` lies in the source
-    /// buffer. Empty dimensions may use an offset one past the buffer end.
+    /// buffer. Rank zero denotes one scalar value. Empty dimensions may use
+    /// an offset one past the buffer end.
     pub fn try_new(
         source: NdArray<T>,
         offset: usize,
         shape: &[usize],
         strides: &[usize],
     ) -> Result<Self, MinarrowError> {
-        if shape.is_empty() {
-            return Err(MinarrowError::ShapeError {
-                message: "NdArrayV requires at least one dimension".to_string(),
-            });
-        }
         if shape.len() != strides.len() {
             return Err(MinarrowError::ShapeError {
                 message: format!(
@@ -281,11 +277,6 @@ impl<T: Float> NdArrayV<T> {
             }
         }
 
-        if new_shape.is_empty() {
-            new_shape.push(1);
-            new_strides.push(1);
-        }
-
         NdArrayV::new(self.source.clone(), new_offset, &new_shape, &new_strides)
     }
 
@@ -375,6 +366,7 @@ impl<T: Float> NdArrayV<T> {
         T: Send + Sync,
     {
         use rayon::prelude::*;
+        assert!(self.ndim() >= 2, "par_iter_obs() requires a 2D or higher view");
         let n_obs = self.dims.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
     }
@@ -383,6 +375,7 @@ impl<T: Float> NdArrayV<T> {
     /// index. This composes the logical iterator for SuperNdArrayV without
     /// materialising its slices.
     pub(crate) fn iter_axis0_run(&self, run_idx: usize) -> impl ExactSizeIterator<Item = T> + '_ {
+        assert!(self.ndim() > 0, "axis-0 iteration requires an axis 0");
         let n_runs: usize = self.shape()[1..].iter().product();
         assert!(run_idx < n_runs, "axis-0 run {} out of bounds ({})", run_idx, n_runs);
 
@@ -445,6 +438,7 @@ impl<T: Float> RowSelection for NdArrayV<T> {
     type View = NdArrayV<T>;
 
     fn r<S: DataSelector>(&self, selection: S) -> NdArrayV<T> {
+        assert!(self.ndim() > 0, "row selection requires an axis 0");
         let n_obs = self.dims.shape()[0];
         let indices = selection.resolve_indices(n_obs);
         if selection.is_contiguous() {
@@ -464,6 +458,7 @@ impl<T: Float> RowSelection for NdArrayV<T> {
     }
 
     fn get_row_count(&self) -> usize {
+        assert!(self.ndim() > 0, "row count requires an axis 0");
         self.dims.shape()[0]
     }
 }
@@ -479,6 +474,18 @@ impl<'a, T: Float> IntoIterator for &'a NdArrayV<T> {
     fn into_iter(self) -> NdArrayIter<'a, T> {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
+        if shape.is_empty() {
+            return NdArrayIter {
+                buf: self.source.data.as_slice(),
+                n_inner: 1,
+                inner_stride: 1,
+                run_offsets: vec![self.offset],
+                run_idx: 0,
+                inner_idx: 0,
+                total: 1,
+                yielded: 0,
+            };
+        }
         let n_inner = shape[0];
         let n_runs: usize = shape[1..].iter().product();
 
@@ -527,6 +534,7 @@ impl<'a, T: Float> IntoIterator for &'a NdArrayV<T> {
 impl<T: Float> Shape for NdArrayV<T> {
     fn shape(&self) -> ShapeDim {
         match self.dims.ndim() {
+            0 => ShapeDim::Rank0(1),
             1 => ShapeDim::Rank1(self.dims.shape()[0]),
             2 => ShapeDim::Rank2 {
                 rows: self.dims.shape()[0],
@@ -547,6 +555,14 @@ impl<T: Float> PartialEq for NdArrayV<T> {
 }
 
 // *** Tuple indexing **********************************************
+
+impl<T: Float> Index<()> for NdArrayV<T> {
+    type Output = T;
+    #[inline]
+    fn index(&self, (): ()) -> &T {
+        &self.source.data.as_slice()[self.offset_of(&[])]
+    }
+}
 
 impl<T: Float> Index<(usize,)> for NdArrayV<T> {
     type Output = T;
@@ -621,6 +637,18 @@ mod tests {
         assert_eq!(v.shape(), &[2]);
         assert_eq!(v.get(&[0]), 2.0);
         assert_eq!(v.get(&[1]), 3.0);
+    }
+
+    #[test]
+    fn try_new_accepts_rank_zero_scalar_view() {
+        let a = NdArray::from_slice(&[10.0, 20.0], &[2]);
+        let v = NdArrayV::try_new(a, 1, &[], &[]).unwrap();
+        assert!(v.shape().is_empty());
+        assert!(v.strides().is_empty());
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[()], 20.0);
+        assert_eq!((&v).into_iter().collect::<Vec<_>>(), vec![20.0]);
+        assert_eq!(Shape::shape(&v), ShapeDim::Rank0(1));
     }
 
     #[test]

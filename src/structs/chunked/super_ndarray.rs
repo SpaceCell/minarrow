@@ -85,6 +85,7 @@ impl<T: Float> SuperNdArray<T> {
             return Self::new(name);
         }
         let ndim = batches[0].ndim();
+        assert!(ndim > 0, "SuperNdArray batches require an axis 0");
         let inner_shape: Vec<usize> = batches[0].shape()[1..].to_vec();
         for (i, chunk) in batches.iter().enumerate().skip(1) {
             assert_eq!(
@@ -101,6 +102,7 @@ impl<T: Float> SuperNdArray<T> {
 
     /// Append a chunk. Validates shape compatibility.
     pub fn push(&mut self, chunk: NdArray<T>) {
+        assert!(chunk.ndim() > 0, "SuperNdArray batches require an axis 0");
         if self.batches.is_empty() {
             self.ndim = chunk.ndim();
             self.inner_shape = chunk.shape()[1..].to_vec();

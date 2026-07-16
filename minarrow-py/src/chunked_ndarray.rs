@@ -40,6 +40,11 @@ fn validate_chunks<T: minarrow::Float>(chunks: &[NdArray<T>]) -> PyResult<()> {
     let Some(first) = chunks.first() else {
         return Ok(());
     };
+    if first.ndim() == 0 {
+        return Err(PyValueError::new_err(
+            "ChunkedNdArray pieces require an axis 0",
+        ));
+    }
     for (index, chunk) in chunks.iter().enumerate().skip(1) {
         if chunk.ndim() != first.ndim() || chunk.shape()[1..] != first.shape()[1..] {
             return Err(PyValueError::new_err(format!(

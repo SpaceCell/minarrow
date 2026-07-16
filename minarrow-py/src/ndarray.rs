@@ -138,11 +138,6 @@ impl PyNdArray {
     #[pyo3(signature = (data, shape=None, dtype="float64"))]
     fn new(data: Vec<f64>, shape: Option<Vec<usize>>, dtype: &str) -> PyResult<Self> {
         let shape = shape.unwrap_or_else(|| vec![data.len()]);
-        if shape.is_empty() {
-            return Err(PyValueError::new_err(
-                "shape must have at least one dimension",
-            ));
-        }
         let expected: usize = shape.iter().product();
         if expected != data.len() {
             return Err(PyValueError::new_err(format!(
@@ -207,8 +202,12 @@ impl PyNdArray {
         dispatch!(&self.0, |a| a.len())
     }
 
-    fn __len__(&self) -> usize {
-        dispatch!(&self.0, |a| a.shape()[0])
+    fn __len__(&self) -> PyResult<usize> {
+        let shape = dispatch!(&self.0, |a| a.shape());
+        shape
+            .first()
+            .copied()
+            .ok_or_else(|| PyTypeError::new_err("len() of a rank-zero NdArray"))
     }
 
     fn __repr__(&self) -> String {

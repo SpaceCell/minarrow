@@ -345,6 +345,7 @@ impl<T: Float> XArray<T> {
         T: Send + Sync,
     {
         use rayon::prelude::*;
+        assert!(self.ndim() >= 2, "par_iter_obs() requires a 2D or higher array");
         let n_obs = self.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
     }
@@ -1291,6 +1292,16 @@ mod tests {
     }
 
     // *** Construction ************************************************
+
+    #[test]
+    fn rank_zero_scalar() {
+        let xa = XArray::new(NdArray::from_slice(&[5.0], &[]), &[]);
+        assert_eq!(xa.ndim(), 0);
+        assert_eq!(xa.shape(), Vec::<usize>::new());
+        assert!(xa.dim_names().is_empty());
+        assert_eq!(xa.len(), 1);
+        assert_eq!(xa.get(&[]), 5.0);
+    }
 
     #[test]
     fn new_with_dim_names() {

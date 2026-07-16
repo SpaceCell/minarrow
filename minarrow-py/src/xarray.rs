@@ -20,7 +20,7 @@ use minarrow::structs::xarray::{Axis, XArray};
 use minarrow::{ArrayV, NdArray, NdArrayV};
 use minarrow_pyo3::ffi::dlpack::{PyNdArrayInner, export_dlpack};
 use pyo3::IntoPyObjectExt;
-use pyo3::exceptions::{PyIndexError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
@@ -218,11 +218,15 @@ impl PyXArray {
         }
     }
 
-    fn __len__(&self) -> usize {
-        match &self.0 {
-            PyXArrayInner::F32(a) => a.shape()[0],
-            PyXArrayInner::F64(a) => a.shape()[0],
-        }
+    fn __len__(&self) -> PyResult<usize> {
+        let shape = match &self.0 {
+            PyXArrayInner::F32(a) => a.shape(),
+            PyXArrayInner::F64(a) => a.shape(),
+        };
+        shape
+            .first()
+            .copied()
+            .ok_or_else(|| PyTypeError::new_err("len() of a rank-zero XArray"))
     }
 
     fn __repr__(&self) -> String {

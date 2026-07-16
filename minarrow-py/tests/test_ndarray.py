@@ -104,9 +104,25 @@ def test_dlpack_capsule_names():
     assert '"dltensor_versioned"' in repr(versioned)
 
 
-def test_dlpack_shape_empty_rejected():
-    with pytest.raises(ValueError):
-        mp.NdArray([5.0], shape=[])
+def test_rank_zero_scalar_and_dlpack():
+    a = mp.NdArray([5.0], shape=[])
+    assert a.shape == ()
+    assert a.strides == ()
+    assert a.ndim == 0
+    assert a.size == 1
+    assert a[()] == 5.0
+    assert a.T.shape == ()
+    with pytest.raises(TypeError):
+        len(a)
+
+    b = mp.NdArray.from_dlpack(a)
+    assert b.shape == ()
+    assert b[()] == 5.0
+
+    np = pytest.importorskip("numpy")
+    n = np.from_dlpack(a)
+    assert n.shape == ()
+    assert n.item() == 5.0
 
 
 def test_dlpack_rejects_foreign_device():
@@ -306,6 +322,11 @@ def test_chunked_ndarray_construction_and_access():
     assert row[1] == 20.0
 
 
+def test_chunked_ndarray_rejects_rank_zero_pieces():
+    with pytest.raises(ValueError, match="axis 0"):
+        mp.ChunkedNdArray([mp.NdArray([5.0], shape=[])])
+
+
 def test_chunked_ndarray_slice_stays_chunked():
     a = make_chunked_ndarray()
     v = a[1:]
@@ -361,6 +382,16 @@ def test_xarray_construction_and_positional_selection():
     assert row.dims == ["feature"]
     assert row.data.is_view is True
     assert row.data[1] == 20.0
+
+
+def test_rank_zero_xarray():
+    a = mp.XArray(mp.NdArray([5.0], shape=[]), dims=[])
+    assert a.shape == ()
+    assert a.dims == []
+    assert a.coords == {}
+    assert a[()] == 5.0
+    with pytest.raises(TypeError):
+        len(a)
 
 
 def test_xarray_coordinate_selection():

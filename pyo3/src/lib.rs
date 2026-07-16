@@ -412,13 +412,17 @@ impl PyNdArray {
         }
     }
 
-    fn __len__(&self) -> usize {
-        match &self.0 {
-            PyNdArrayInner::F32(a) => a.shape()[0],
-            PyNdArrayInner::F64(a) => a.shape()[0],
-            PyNdArrayInner::F32View(v) => v.shape()[0],
-            PyNdArrayInner::F64View(v) => v.shape()[0],
-        }
+    fn __len__(&self) -> PyResult<usize> {
+        let shape = match &self.0 {
+            PyNdArrayInner::F32(a) => a.shape(),
+            PyNdArrayInner::F64(a) => a.shape(),
+            PyNdArrayInner::F32View(v) => v.shape(),
+            PyNdArrayInner::F64View(v) => v.shape(),
+        };
+        shape
+            .first()
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyTypeError::new_err("len() of a rank-zero NdArray"))
     }
 
     fn __repr__(&self) -> String {

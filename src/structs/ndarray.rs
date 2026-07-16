@@ -20,7 +20,8 @@
 //! ## Element type
 //! Generic over `T: Float`, which covers `f32` and `f64`. Rank is determined
 //! at runtime rather than through generics, and dimensions 1D-5D are stored
-//! inline to avoid heap allocation in the common case.
+//! inline to avoid heap allocation in the common case. An empty shape is a
+//! rank-zero scalar containing one logical value.
 //!
 //! ## Layout
 //! Compact column-major with no inter-dimension padding, so the buffer is
@@ -115,6 +116,7 @@ impl<T: Float> PartialEq for NdArray<T> {
 
 impl<T: Float> NdArray<T> {
     /// Create a zeroed NdArray with the given shape, column-major strides.
+    /// An empty shape creates one rank-zero scalar value.
     pub fn new(shape: &[usize]) -> Self {
         let dims = NdDims::from_shape(shape);
         let total = buffer_len(dims.shape(), dims.strides());
@@ -134,6 +136,7 @@ impl<T: Float> NdArray<T> {
     ///
     /// The slice holds `product(shape)` logical elements in column-major
     /// order, matching the compact layout, so the data copies straight in.
+    /// The product of an empty shape is one, representing a scalar.
     pub fn from_slice(data: &[T], shape: &[usize]) -> Self {
         let logical_len: usize = shape.iter().product();
         assert_eq!(
@@ -250,8 +253,12 @@ impl<T: Float> NdArray<T> {
 
     /// Leading-axis (axis 0) observation count i.e. `shape()[0]`,
     /// matching `SuperNdArray::n_obs` and NumPy's `len(arr)`.
+    /// Panics for a rank-zero scalar, which has no axis 0.
     #[inline]
-    pub fn n_obs(&self) -> usize { self.dims.shape()[0] }
+    pub fn n_obs(&self) -> usize {
+        assert!(self.ndim() > 0, "n_obs() requires an axis 0");
+        self.dims.shape()[0]
+    }
 
     /// True if any dimension is zero.
     #[inline]
@@ -664,12 +671,6 @@ impl<T: Float> NdArray<T> {
             }
         }
 
-        // If all axes were single indices, return a 1-element 1D view
-        if new_shape.is_empty() {
-            new_shape.push(1);
-            new_strides.push(1);
-        }
-
         NdArrayV::new(self.clone(), new_offset, &new_shape, &new_strides)
     }
 
@@ -822,6 +823,7 @@ impl<T: Float> NdArray<T> {
     /// index and a zero-copy `NdArrayV` view.
     #[cfg(feature = "views")]
     pub fn iter_obs(&self) -> impl Iterator<Item = (usize, NdArrayV<T>)> + '_ {
+        assert!(self.ndim() >= 2, "iter_obs() requires a 2D or higher array");
         let n_obs = self.shape()[0];
         (0..n_obs).map(move |i| (i, self.obs(i)))
     }
@@ -834,6 +836,7 @@ impl<T: Float> NdArray<T> {
         T: Send + Sync,
     {
         use rayon::prelude::*;
+        assert!(self.ndim() >= 2, "par_iter_obs() requires a 2D or higher array");
         let n_obs = self.dims.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
     }
@@ -842,6 +845,7 @@ impl<T: Float> NdArray<T> {
     /// index. This composes the logical iterator for SuperNdArray without
     /// materialising its batches.
     pub(crate) fn iter_axis0_run(&self, run_idx: usize) -> impl ExactSizeIterator<Item = T> + '_ {
+        assert!(self.ndim() > 0, "axis-0 iteration requires an axis 0");
         let n_runs: usize = self.shape()[1..].iter().product();
         assert!(run_idx < n_runs, "axis-0 run {} out of bounds ({})", run_idx, n_runs);
 
@@ -1095,8 +1099,10 @@ macro_rules! nd {
 /// indexing over the outermost axis reads logical data with no gaps. The
 /// backing allocation start remains 64-byte aligned through `Vec64`.
 pub(crate) fn col_major_strides(shape: &[usize]) -> Vec<usize> {
-    assert!(!shape.is_empty(), "NdArray: shape must have at least one dimension");
     let mut strides = Vec::with_capacity(shape.len());
+    if shape.is_empty() {
+        return strides;
+    }
     strides.push(1);
     for d in 1..shape.len() {
         strides.push(strides[d - 1] * shape[d - 1]);
@@ -1106,7 +1112,7 @@ pub(crate) fn col_major_strides(shape: &[usize]) -> Vec<usize> {
 
 /// Total buffer length required for a given shape and strides.
 pub(crate) fn buffer_len(shape: &[usize], strides: &[usize]) -> usize {
-    if shape.is_empty() || shape.iter().any(|&d| d == 0) {
+    if shape.iter().any(|&d| d == 0) {
         return 0;
     }
     // The last element is at sum((shape[d]-1) * strides[d]) for all d.
@@ -1134,6 +1140,18 @@ impl<'a, T: Float> IntoIterator for &'a NdArray<T> {
     fn into_iter(self) -> NdArrayIter<'a, T> {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
+        if shape.is_empty() {
+            return NdArrayIter {
+                buf: self.data.as_slice(),
+                n_inner: 1,
+                inner_stride: 1,
+                run_offsets: vec![0],
+                run_idx: 0,
+                inner_idx: 0,
+                total: 1,
+                yielded: 0,
+            };
+        }
         let n_inner = shape[0];
 
         // Number of contiguous runs = product of all dims except axis 0
@@ -1275,6 +1293,7 @@ pub(crate) fn offset_of_impl(indices: &[usize], shape: &[usize], strides: &[usiz
 impl<T: Float> Shape for NdArray<T> {
     fn shape(&self) -> ShapeDim {
         match self.dims.ndim() {
+            0 => ShapeDim::Rank0(1),
             1 => ShapeDim::Rank1(self.dims.shape()[0]),
             2 => ShapeDim::Rank2 {
                 rows: self.dims.shape()[0],
@@ -1297,6 +1316,11 @@ impl<T: Float> Concatenate for NdArray<T> {
                 message: Some(format!(
                     "Cannot concatenate {}D and {}D arrays", s1.len(), s2.len()
                 )),
+            });
+        }
+        if s1.is_empty() {
+            return Err(MinarrowError::ShapeError {
+                message: "Cannot concatenate rank-zero arrays along axis 0".to_string(),
             });
         }
         for d in 1..s1.len() {
@@ -1410,6 +1434,7 @@ impl<T: Float> RowSelection for NdArray<T> {
     type View = NdArrayV<T>;
 
     fn r<S: DataSelector>(&self, selection: S) -> NdArrayV<T> {
+        assert!(self.ndim() > 0, "row selection requires an axis 0");
         let n_obs = self.shape()[0];
         let indices = selection.resolve_indices(n_obs);
         if selection.is_contiguous() {
@@ -1429,7 +1454,7 @@ impl<T: Float> RowSelection for NdArray<T> {
     }
 
     fn get_row_count(&self) -> usize {
-        self.shape()[0]
+        self.n_obs()
     }
 }
 
@@ -1490,6 +1515,7 @@ impl<T: Float> Index<usize> for NdArray<T> {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
         match shape.len() {
+            0 => panic!("NdArray: a rank-zero array has no axis to index with usize"),
             1 => {
                 assert!(idx < shape[0], "NdArray: index {} out of bounds (size {})", idx, shape[0]);
                 &self.data.as_slice()[idx..idx + 1]
@@ -1520,6 +1546,7 @@ impl<T: Float> IndexMut<usize> for NdArray<T> {
         let shape = self.dims.shape().to_vec();
         let strides = self.dims.strides().to_vec();
         match shape.len() {
+            0 => panic!("NdArray: a rank-zero array has no axis to index with usize"),
             1 => {
                 assert!(idx < shape[0], "NdArray: index {} out of bounds (size {})", idx, shape[0]);
                 &mut Arc::make_mut(&mut self.data).as_mut_slice()[idx..idx + 1]
@@ -1561,6 +1588,7 @@ impl<T: Float> Index<Range<usize>> for NdArray<T> {
         let shape = self.dims.shape();
         let strides = self.dims.strides();
         match shape.len() {
+            0 => panic!("NdArray: a rank-zero array has no axis to range-index"),
             1 => &self.data.as_slice()[range],
             _ => {
                 assert!(
@@ -1583,6 +1611,7 @@ impl<T: Float> IndexMut<Range<usize>> for NdArray<T> {
         let shape = self.dims.shape().to_vec();
         let strides = self.dims.strides().to_vec();
         match shape.len() {
+            0 => panic!("NdArray: a rank-zero array has no axis to range-index"),
             1 => &mut Arc::make_mut(&mut self.data).as_mut_slice()[range],
             _ => {
                 assert!(
@@ -1604,6 +1633,7 @@ impl<T: Float> Index<RangeFrom<usize>> for NdArray<T> {
 
     #[inline]
     fn index(&self, range: RangeFrom<usize>) -> &[T] {
+        assert!(self.ndim() > 0, "NdArray: a rank-zero array has no axis to range-index");
         let last_dim = self.dims.shape().len() - 1;
         let end = self.dims.shape()[last_dim];
         &self[range.start..end]
@@ -1624,13 +1654,22 @@ impl<T: Float> Index<RangeFull> for NdArray<T> {
 
     #[inline]
     fn index(&self, _: RangeFull) -> &[T] {
+        assert!(self.ndim() > 0, "NdArray: a rank-zero array has no axis to range-index");
         let last_dim = self.dims.shape().len() - 1;
-        let end = self.dims.shape()[last_dim.max(0)];
+        let end = self.dims.shape()[last_dim];
         &self[0..end]
     }
 }
 
 // *** Tuple indexing **********************************************
+
+impl<T: Float> Index<()> for NdArray<T> {
+    type Output = T;
+    #[inline]
+    fn index(&self, (): ()) -> &T {
+        &self.data.as_slice()[self.offset_of(&[])]
+    }
+}
 
 impl<T: Float> Index<(usize,)> for NdArray<T> {
     type Output = T;
@@ -1676,6 +1715,14 @@ impl<T: Float> IndexMut<(usize,)> for NdArray<T> {
     #[inline]
     fn index_mut(&mut self, (i,): (usize,)) -> &mut T {
         let off = self.offset_of(&[i]);
+        &mut Arc::make_mut(&mut self.data).as_mut_slice()[off]
+    }
+}
+
+impl<T: Float> IndexMut<()> for NdArray<T> {
+    #[inline]
+    fn index_mut(&mut self, (): ()) -> &mut T {
+        let off = self.offset_of(&[]);
         &mut Arc::make_mut(&mut self.data).as_mut_slice()[off]
     }
 }
@@ -1873,7 +1920,9 @@ impl<T: Float> fmt::Debug for NdArray<T> {
             self.dims.shape(),
             self.ndim(),
         )?;
-        if self.ndim() == 2 {
+        if self.ndim() == 0 {
+            write!(f, "\n{:8.4}", self.get(&[]).to_f64().unwrap_or(f64::NAN))?;
+        } else if self.ndim() == 2 {
             let shape = self.dims.shape();
             let max_rows = shape[0].min(6);
             let max_cols = shape[1].min(8);
@@ -2344,6 +2393,38 @@ mod tests {
     // ****************************************************************
     // Shape introspection
     // ****************************************************************
+
+    #[test]
+    fn rank_zero_scalar_semantics() {
+        let mut a = NdArray::from_slice(&[5.0], &[]);
+        assert_eq!(a.ndim(), 0);
+        assert!(a.shape().is_empty());
+        assert!(a.strides().is_empty());
+        assert_eq!(a.len(), 1);
+        assert!(!a.is_empty());
+        assert!(a.is_contiguous());
+        assert_eq!(a[()], 5.0);
+        assert_eq!((&a).into_iter().collect::<Vec<_>>(), vec![5.0]);
+        assert_eq!(Shape::shape(&a), ShapeDim::Rank0(1));
+
+        a[()] = 7.0;
+        assert_eq!(a[()], 7.0);
+        assert!(a.transpose().shape().is_empty());
+        assert_eq!(a.reshape(&[1]).unwrap().get(&[0]), 7.0);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn selecting_every_axis_can_produce_a_scalar_view() {
+        let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let scalar = a.slice(&[&1usize, &1usize]);
+        assert!(scalar.shape().is_empty());
+        assert!(scalar.strides().is_empty());
+        assert_eq!(scalar.len(), 1);
+        assert_eq!(scalar.get(&[]), 4.0);
+        assert_eq!((&scalar).into_iter().collect::<Vec<_>>(), vec![4.0]);
+        assert_eq!(Shape::shape(&scalar), ShapeDim::Rank0(1));
+    }
 
     #[test]
     fn is_contiguous_default() {
@@ -3025,8 +3106,8 @@ mod tests {
     fn slice_1d_single_index() {
         let a = NdArray::from_slice(&[10.0, 20.0, 30.0], &[3]);
         let v = a.slice(&[&1]);
-        assert_eq!(v.shape(), &[1]);
-        assert_eq!(v[(0,)], 20.0);
+        assert!(v.shape().is_empty());
+        assert_eq!(v[()], 20.0);
     }
 
     #[cfg(feature = "views")]
@@ -3079,10 +3160,10 @@ mod tests {
     #[test]
     fn slice_2d_both_indices_scalar() {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
-        // Single element as 1D view
+        // Single element as a rank-zero scalar view
         let v = a.slice(nd![2, 1]);
-        assert_eq!(v.shape(), &[1]);
-        assert_eq!(v[(0,)], 6.0);
+        assert!(v.shape().is_empty());
+        assert_eq!(v[()], 6.0);
     }
 
     #[cfg(feature = "views")]

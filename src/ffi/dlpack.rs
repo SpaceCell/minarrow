@@ -365,13 +365,23 @@ impl DLPackTensor {
             shape_i64: shape.iter().map(|&s| s as i64).collect(),
             strides_i64: strides.iter().map(|&s| s as i64).collect(),
         });
+        let shape_ptr = if holder.shape_i64.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            holder.shape_i64.as_mut_ptr()
+        };
+        let strides_ptr = if holder.strides_i64.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            holder.strides_i64.as_mut_ptr()
+        };
         let tensor = DLTensor {
             data,
             device: DLDevice::cpu(),
             ndim: shape.len() as i32,
             dtype,
-            shape: holder.shape_i64.as_mut_ptr(),
-            strides: holder.strides_i64.as_mut_ptr(),
+            shape: shape_ptr,
+            strides: strides_ptr,
             byte_offset,
         };
         let managed = Box::new(DLManagedTensor {
@@ -438,13 +448,23 @@ impl DLPackTensorVersioned {
             shape_i64: shape.iter().map(|&s| s as i64).collect(),
             strides_i64: strides.iter().map(|&s| s as i64).collect(),
         });
+        let shape_ptr = if holder.shape_i64.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            holder.shape_i64.as_mut_ptr()
+        };
+        let strides_ptr = if holder.strides_i64.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            holder.strides_i64.as_mut_ptr()
+        };
         let tensor = DLTensor {
             data,
             device: DLDevice::cpu(),
             ndim: shape.len() as i32,
             dtype,
-            shape: holder.shape_i64.as_mut_ptr(),
-            strides: holder.strides_i64.as_mut_ptr(),
+            shape: shape_ptr,
+            strides: strides_ptr,
             byte_offset,
         };
         let managed = Box::new(DLManagedTensorVersioned {
@@ -590,21 +610,25 @@ unsafe fn import_dl_tensor<T: Float>(
         });
     }
 
-    if tensor.ndim <= 0 {
+    if tensor.ndim < 0 {
         return Err(MinarrowError::BridgeError {
             source: "dlpack",
-            message: format!("tensor requires at least one dimension, got ndim={}", tensor.ndim),
+            message: format!("tensor rank cannot be negative, got ndim={}", tensor.ndim),
         });
     }
     let ndim = tensor.ndim as usize;
 
-    if tensor.shape.is_null() {
+    if ndim > 0 && tensor.shape.is_null() {
         return Err(MinarrowError::BridgeError {
             source: "dlpack",
             message: format!("null shape pointer for ndim={}", ndim),
         });
     }
-    let raw_shape = unsafe { std::slice::from_raw_parts(tensor.shape, ndim) };
+    let raw_shape: &[i64] = if ndim == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(tensor.shape, ndim) }
+    };
     if raw_shape.iter().any(|&s| s < 0) {
         return Err(MinarrowError::BridgeError {
             source: "dlpack",
@@ -616,8 +640,10 @@ unsafe fn import_dl_tensor<T: Float>(
     // Null strides mean C-contiguous i.e. row-major.
     let strides: Vec<usize> = if tensor.strides.is_null() {
         let mut s = vec![1usize; ndim];
-        for d in (0..ndim - 1).rev() {
-            s[d] = s[d + 1] * shape[d + 1];
+        if ndim > 0 {
+            for d in (0..ndim - 1).rev() {
+                s[d] = s[d + 1] * shape[d + 1];
+            }
         }
         s
     } else {
@@ -675,7 +701,11 @@ unsafe fn import_dl_tensor<T: Float>(
     // Data pointer with byte offset, checked for element alignment. The
     // 64-byte SIMD alignment is handled downstream - Buffer::from_shared
     // copies a non-aligned foreign buffer into an aligned Vec64.
-    let data_ptr = unsafe { (tensor.data as *const u8).add(tensor.byte_offset as usize) };
+    let data_ptr = if tensor.data.is_null() {
+        std::ptr::null()
+    } else {
+        unsafe { (tensor.data as *const u8).add(tensor.byte_offset as usize) }
+    };
     if buf_len > 0 && (data_ptr as usize) % std::mem::align_of::<T>() != 0 {
         return Err(MinarrowError::BridgeError {
             source: "dlpack",
@@ -776,6 +806,33 @@ mod tests {
     use super::*;
     #[cfg(all(feature = "views", feature = "select"))]
     use crate::traits::selection::RowSelection;
+
+    #[test]
+    fn export_import_rank_zero_scalar() {
+        let arr = NdArray::from_slice(&[42.0], &[]);
+        let owned = export_to_dlpack(arr);
+        let tensor = owned.tensor();
+        assert_eq!(tensor.ndim, 0);
+        assert!(tensor.shape.is_null());
+        assert!(tensor.strides.is_null());
+        assert_eq!(unsafe { *(tensor.data as *const f64) }, 42.0);
+
+        let imported = unsafe { import_from_dlpack::<f64>(owned.into_raw()) }.unwrap();
+        assert!(imported.shape().is_empty());
+        assert!(imported.strides().is_empty());
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported.get(&[]), 42.0);
+
+        let versioned = export_to_dlpack_versioned(NdArray::from_slice(&[7.0f32], &[]));
+        assert_eq!(versioned.tensor().ndim, 0);
+        assert!(versioned.tensor().shape.is_null());
+        assert!(versioned.tensor().strides.is_null());
+        let imported = unsafe {
+            import_from_dlpack_versioned::<f32>(versioned.into_raw())
+        }.unwrap();
+        assert!(imported.shape().is_empty());
+        assert_eq!(imported.get(&[]), 7.0);
+    }
 
     #[test]
     fn export_roundtrip_1d() {
