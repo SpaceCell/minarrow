@@ -38,28 +38,7 @@ use crate::kernels::broadcast::{
 use crate::{Array, FieldArray, Table};
 
 use crate::enums::error::MinarrowError;
-use crate::enums::operators::ArithmeticOperator;
 use crate::enums::value::Value;
-#[cfg(feature = "ndarray")]
-use crate::kernels::broadcast::ndarray::resolve_ndarray_arithmetic;
-#[cfg(all(feature = "ndarray", feature = "chunked"))]
-use crate::kernels::broadcast::super_ndarray::resolve_super_ndarray_arithmetic;
-#[cfg(feature = "xarray")]
-use crate::kernels::broadcast::xarray::resolve_xarray_arithmetic;
-#[cfg(feature = "ndarray")]
-use crate::structs::ndarray::NdArray;
-#[cfg(all(feature = "ndarray", feature = "views"))]
-use crate::structs::views::ndarray_view::NdArrayV;
-#[cfg(all(feature = "ndarray", feature = "chunked"))]
-use crate::structs::chunked::super_ndarray::SuperNdArray;
-#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
-use crate::structs::views::chunked::super_ndarray_view::SuperNdArrayV;
-#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
-use crate::traits::consolidate::Consolidate;
-#[cfg(feature = "xarray")]
-use crate::structs::xarray::XArray;
-#[cfg(feature = "ndarray")]
-use crate::traits::type_unions::Float;
 
 #[cfg(feature = "chunked")]
 use crate::{SuperArray, SuperTable};
@@ -858,60 +837,6 @@ impl Rem for SuperTableV {
 }
 
 
-// NdArray implementations - generic over the float element type, so the
-// operators dispatch straight to the broadcast resolvers rather than
-// through the f64-pinned Value round-trip.
-
-macro_rules! impl_ndarray_ops {
-    ($OpTrait:ident, $method:ident, $op:expr) => {
-        #[cfg(feature = "ndarray")]
-        impl<T: Float> $OpTrait for NdArray<T> {
-            type Output = Result<NdArray<T>, MinarrowError>;
-            fn $method(self, rhs: Self) -> Self::Output {
-                resolve_ndarray_arithmetic($op, &self, &rhs)
-            }
-        }
-
-        #[cfg(all(feature = "ndarray", feature = "views"))]
-        impl<T: Float> $OpTrait for NdArrayV<T> {
-            type Output = Result<NdArray<T>, MinarrowError>;
-            fn $method(self, rhs: Self) -> Self::Output {
-                resolve_ndarray_arithmetic($op, &self.to_ndarray(), &rhs.to_ndarray())
-            }
-        }
-
-        #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
-        impl<T: Float> $OpTrait for SuperNdArrayV<T> {
-            type Output = Result<NdArray<T>, MinarrowError>;
-            fn $method(self, rhs: Self) -> Self::Output {
-                resolve_ndarray_arithmetic($op, &self.consolidate(), &rhs.consolidate())
-            }
-        }
-
-        #[cfg(all(feature = "ndarray", feature = "chunked"))]
-        impl<T: Float> $OpTrait for SuperNdArray<T> {
-            type Output = Result<SuperNdArray<T>, MinarrowError>;
-            fn $method(self, rhs: Self) -> Self::Output {
-                resolve_super_ndarray_arithmetic($op, &self, &rhs)
-            }
-        }
-
-        #[cfg(feature = "xarray")]
-        impl<T: Float> $OpTrait for XArray<T> {
-            type Output = Result<XArray<T>, MinarrowError>;
-            fn $method(self, rhs: Self) -> Self::Output {
-                resolve_xarray_arithmetic($op, &self, &rhs)
-            }
-        }
-    };
-}
-
-impl_ndarray_ops!(Add, add, ArithmeticOperator::Add);
-impl_ndarray_ops!(Sub, sub, ArithmeticOperator::Subtract);
-impl_ndarray_ops!(Mul, mul, ArithmeticOperator::Multiply);
-impl_ndarray_ops!(Div, div, ArithmeticOperator::Divide);
-impl_ndarray_ops!(Rem, rem, ArithmeticOperator::Remainder);
-
 // Cube implementations
 #[cfg(feature = "cube")]
 impl Add for Cube {
@@ -993,6 +918,67 @@ mod tests {
     use super::*;
     use crate::traits::selection::ColumnSelection;
     use crate::{Array, IntegerArray, NumericArray, vec64};
+
+    #[cfg(feature = "ndarray")]
+    #[test]
+    fn ndarray_family_values_are_not_arithmetic_operands() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        use crate::NdArray;
+
+        fn assert_unimplemented(f: impl FnOnce()) {
+            let panic = catch_unwind(AssertUnwindSafe(f));
+            assert!(panic.is_err());
+        }
+
+        let a = NdArray::from_slice(&[1.0, 2.0], &[2]);
+        let lhs = Value::NdArray(Arc::new(a.clone()));
+        let rhs = Value::NdArray(Arc::new(a.clone()));
+        assert_unimplemented(|| {
+            let _ = lhs + rhs;
+        });
+
+        #[cfg(feature = "views")]
+        {
+            let lhs = Value::NdArrayView(Arc::new(a.as_view()));
+            let rhs = lhs.clone();
+            assert_unimplemented(|| {
+                let _ = lhs + rhs;
+            });
+        }
+
+        #[cfg(feature = "chunked")]
+        {
+            use crate::SuperNdArray;
+
+            let a = SuperNdArray::from_batches(vec![a.clone()], "values");
+            let lhs = Value::SuperNdArray(Arc::new(a.clone()));
+            let rhs = lhs.clone();
+            assert_unimplemented(|| {
+                let _ = lhs + rhs;
+            });
+
+            #[cfg(feature = "views")]
+            {
+                let lhs = Value::SuperNdArrayView(Arc::new(a.slice(0, 2)));
+                let rhs = lhs.clone();
+                assert_unimplemented(|| {
+                    let _ = lhs + rhs;
+                });
+            }
+        }
+
+        #[cfg(feature = "xarray")]
+        {
+            use crate::XArray;
+
+            let a = Value::XArray(Arc::new(XArray::new(a, &["value"])));
+            let b = a.clone();
+            assert_unimplemented(|| {
+                let _ = a + b;
+            });
+        }
+    }
 
     #[test]
     fn test_value_addition() {

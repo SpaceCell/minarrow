@@ -602,41 +602,6 @@ mod tests {
         assert_eq!(joined.get(&[4, 1]), 50.0);
     }
 
-    #[cfg(feature = "broadcast")]
-    #[test]
-    fn native_operators() {
-        let snd = two_batch_2d();
-        let a = snd.slice(1, 3);
-        let b = snd.slice(1, 3);
-        let sum = (a + b).unwrap();
-        assert_eq!(sum.shape(), &[3, 2]);
-        assert_eq!(sum.get(&[0, 0]), 4.0);
-        assert_eq!(sum.get(&[2, 1]), 80.0);
-    }
-
-    #[cfg(all(feature = "broadcast", feature = "value_type"))]
-    #[test]
-    fn value_window_and_pair() {
-        use std::sync::Arc;
-        use crate::Value;
-
-        let snd = two_batch_2d();
-        let v = Value::SuperNdArray(Arc::new(snd));
-        // Value::slice windows across batch boundaries into a view variant.
-        let window = v.slice(1, 3);
-        let Value::SuperNdArrayView(w) = &window else {
-            panic!("expected Value::SuperNdArrayView");
-        };
-        assert_eq!(w.n_obs(), 3);
-        assert_eq!(w.get(&[0, 0]), 2.0);
-
-        let sum = (window.clone() + window).unwrap();
-        let Value::NdArray(nd) = sum else {
-            panic!("expected Value::NdArray");
-        };
-        assert_eq!(nd.get(&[2, 1]), 80.0);
-    }
-
     #[test]
     fn window_3d_spans_boundary() {
         // Batch A holds column-major values 1..=8, batch B holds 9..=16.

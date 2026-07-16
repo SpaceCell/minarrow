@@ -269,17 +269,10 @@ impl<T: Float> XArray<T> {
     }
 
     /// Borrow the inner storage for crate-internal dispatch.
-    #[cfg(any(feature = "broadcast", feature = "size"))]
+    #[cfg(feature = "size")]
     #[inline]
     pub(crate) fn storage(&self) -> &NdArrayE<T> {
         &self.data
-    }
-
-    /// Assemble from storage and axes for crate-internal construction.
-    #[cfg(feature = "broadcast")]
-    #[inline]
-    pub(crate) fn from_storage(data: NdArrayE<T>, axes: Vec<Axis>) -> Self {
-        XArray { data, axes }
     }
 
     #[inline]
