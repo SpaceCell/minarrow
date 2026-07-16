@@ -48,9 +48,11 @@ The tensor API adds three focused containers:
 * `ChunkedNdArray` for compatible `NdArray` pieces backed by Rust `SuperNdArray`
 * `XArray` for named dimensions and coordinate-based selection over an `NdArray`
 
-They provide storage, indexing, selection, and DLPack interchange. Numerical
-algorithms, statistics, and general tensor computation remain the job of NumPy,
-PyTorch, JAX, or another execution library.
+They provide storage, indexing, selection, and DLPack interchange. `NdArray`
+and `XArray` expose one tensor directly; each `ChunkedNdArray` chunk is a
+separate `NdArray` DLPack producer with its own data pointer. Numerical
+algorithms, statistics, and general tensor computation remain the job of
+NumPy, PyTorch, JAX, or another execution library.
 
 ## Why not just use PyArrow?
 

@@ -347,11 +347,21 @@ def test_chunked_ndarray_materialises_in_logical_column_major_order():
     assert [a[i, 1] for i in range(3)] == [10.0, 20.0, 30.0]
 
 
-def test_chunked_ndarray_dlpack_is_explicit_copy():
+def test_chunked_ndarray_dlpack_is_per_chunk():
     a = make_chunked_ndarray()
-    assert '"dltensor_versioned"' in repr(a.__dlpack__(max_version=(1, 1)))
-    with pytest.raises(BufferError):
-        a.__dlpack__(copy=False)
+    assert not hasattr(a, "__dlpack__")
+
+    chunks = a.chunks
+    assert len(chunks) == 2
+    assert all(hasattr(chunk, "__dlpack__") for chunk in chunks)
+
+    arrays = a.to_numpy()
+    assert [array.shape for array in arrays] == [(2, 2), (1, 2)]
+    assert arrays[0].tolist() == [[1.0, 10.0], [2.0, 20.0]]
+    assert arrays[1].tolist() == [[3.0, 30.0]]
+
+    pointers = [array.__array_interface__["data"][0] for array in arrays]
+    assert pointers[0] != pointers[1]
 
 
 # --- XArray ----------------------------------------------------------------

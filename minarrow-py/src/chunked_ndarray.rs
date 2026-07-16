@@ -17,9 +17,8 @@
 use std::sync::Arc;
 
 use minarrow::{AxisSelection, Consolidate, NdArray, SuperNdArray, SuperNdArrayV};
-use minarrow_pyo3::ffi::dlpack::dlpack_capsule;
 use pyo3::IntoPyObjectExt;
-use pyo3::exceptions::{PyBufferError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
@@ -288,54 +287,17 @@ impl PyChunkedNdArray {
         }
     }
 
-    /// DLPack requires one contiguous allocation, so export materialises the
-    /// logical array. `copy=False` is rejected because it cannot be honoured.
-    #[pyo3(signature = (*, stream=None, max_version=None, dl_device=None, copy=None))]
-    fn __dlpack__(
-        &self,
-        py: Python<'_>,
-        stream: Option<&Bound<'_, PyAny>>,
-        max_version: Option<(u32, u32)>,
-        dl_device: Option<(i32, i32)>,
-        copy: Option<bool>,
-    ) -> PyResult<Py<PyAny>> {
-        if stream.is_some_and(|stream| !stream.is_none()) {
-            return Err(PyValueError::new_err("stream must be None for CPU tensors"));
-        }
-        if dl_device.is_some_and(|device| device != (1, 0)) {
-            return Err(PyValueError::new_err(
-                "ChunkedNdArray data lives on CPU device (1, 0)",
-            ));
-        }
-        if copy == Some(false) {
-            return Err(PyBufferError::new_err(
-                "ChunkedNdArray requires a copy for DLPack export",
-            ));
-        }
-        let versioned = matches!(max_version, Some((major, _)) if major >= 1);
-        match &self.0 {
-            PyChunkedNdArrayInner::F32(a) => {
-                dlpack_capsule(py, (**a).clone().consolidate(), versioned, true)
-            }
-            PyChunkedNdArrayInner::F64(a) => {
-                dlpack_capsule(py, (**a).clone().consolidate(), versioned, true)
-            }
-            PyChunkedNdArrayInner::F32View(v) => {
-                dlpack_capsule(py, (**v).clone().consolidate(), versioned, true)
-            }
-            PyChunkedNdArrayInner::F64View(v) => {
-                dlpack_capsule(py, (**v).clone().consolidate(), versioned, true)
-            }
-        }
-    }
-
-    fn __dlpack_device__(&self) -> (i32, i32) {
-        (1, 0)
-    }
-
-    fn to_numpy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    /// Hand each chunk to NumPy through its own DLPack producer. The returned
+    /// list preserves one tensor and one data pointer per chunk.
+    fn to_numpy(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         let numpy = py.import("numpy")?;
-        Ok(numpy.call_method1("from_dlpack", (slf,))?.unbind())
+        self.chunks()
+            .into_iter()
+            .map(|chunk| {
+                let chunk = Py::new(py, chunk)?;
+                Ok(numpy.call_method1("from_dlpack", (chunk,))?.unbind())
+            })
+            .collect()
     }
 }
 

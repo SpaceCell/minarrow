@@ -48,10 +48,11 @@ and element strides, including Minarrow's column-major layout. Versioned
 DLPack exports mark shared storage read-only; legacy exports copy shared data
 because that protocol cannot express read-only memory.
 
-`ChunkedNdArray` also implements DLPack, but DLPack describes one data pointer
-rather than multiple allocations. It therefore materialises one logical
-column-major `NdArray` for export. Passing `copy=False` rejects that operation
-with `BufferError` instead of silently consolidating.
+`ChunkedNdArray` does not pretend its multiple allocations are one DLPack
+tensor. Its `chunks` are `NdArray` objects, and each chunk implements DLPack
+with its own shape, strides, and data pointer. `to_numpy()` consequently
+returns one NumPy array per chunk. Call `to_ndarray()` explicitly when one
+consolidated allocation is required.
 
 ## Supported integrations
 

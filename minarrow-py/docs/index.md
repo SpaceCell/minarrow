@@ -86,7 +86,9 @@ For f32/f64 N-dimensional data it also provides:
 
 These are data containers and interchange objects, not a replacement for a
 numerical or statistical runtime. Use their DLPack support to pass data to
-NumPy, PyTorch, JAX, or another compute library.
+NumPy, PyTorch, JAX, or another compute library. `ChunkedNdArray` exposes one
+DLPack-producing `NdArray` per chunk rather than consolidating its allocations
+implicitly.
 
 The *Python* package is backed by the [Minarrow Rust core](https://github.com/pbower/minarrow), which provides the underlying array types, schemas and aligned buffers.
 
