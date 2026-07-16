@@ -50,7 +50,7 @@
 //!   stream whose schema is a struct, such as a RecordBatch or DataFrame.
 //! - `minarrow.ChunkedTable` becomes [`Value::SuperTable`].
 //! - `minarrow.ChunkedArray` becomes [`Value::SuperArray`].
-//! - `minarrow.NdArray` and any DLPack producer without an Arrow interface,
+//! - `minarrow.NdArray` and compatible DLPack producers without an Arrow interface,
 //!   such as a PyTorch tensor or NumPy `ndarray`, become `Value::NdArray`
 //!   under the `ndarray` feature. `Value` pins its tensors to f64, so f32
 //!   tensors upcast on the way in.
@@ -247,9 +247,9 @@ fn classify(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::Array(Arc::new(to_rust::array_to_rust(obj)?.array)));
     }
 
-    // Tensors from any DLPack producer, covering `minarrow.NdArray`,
-    // PyTorch tensors, and NumPy arrays. `Value` pins its tensors to
-    // f64, so f32 data upcasts.
+    // Tensors from compatible DLPack producers, including `minarrow.NdArray`,
+    // PyTorch tensors, and NumPy arrays. `Value` pins its tensors to f64, so
+    // f32 data upcasts.
     #[cfg(feature = "ndarray")]
     if obj.cast::<PyNdArray>().is_ok() || obj.hasattr("__dlpack__")? {
         return match import_dlpack(py, obj)? {

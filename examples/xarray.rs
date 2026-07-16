@@ -15,7 +15,7 @@
 use minarrow::{NdArray, XArray, arr_f64, arr_str32};
 
 fn main() {
-    // Hourly readings for three instruments: 4 observations x 3 features
+    // Four hourly observations of three measurements.
     let data = NdArray::from_slice(
         &[
             20.1, 20.4, 20.9, 21.3, // temp
@@ -24,7 +24,7 @@ fn main() {
         ],
         &[4, 3],
     );
-    let mut xa = XArray::new(data, &["hour", "instrument"]);
+    let mut xa = XArray::new(data, &["hour", "measurement"]);
     xa.assign_coords("hour", arr_f64![0.0, 1.0, 2.0, 3.0]);
 
     println!("=== Dims and coords ===\n");
@@ -32,7 +32,7 @@ fn main() {
     println!("dim_names: {:?}", xa.dim_names());
     println!("shape: {:?}\n", xa.shape());
 
-    // Coordinate-value selection
+    // Coordinate selection uses the values attached to the named axis.
     println!("=== Coordinate selection ===\n");
 
     println!("xa.at(\"hour\", 2.0) - collapse to one observation");
@@ -47,20 +47,20 @@ fn main() {
     let near = xa.nearest("hour", 1.8);
     println!("  shape {:?}, temp = {}\n", near.shape(), near.get(&[0]));
 
-    // Positional selection by axis name
+    // Positional selection can also address an axis by name.
     println!("=== Named positional selection ===\n");
     let first_two = xa.select(&[("hour", &(0..2))]);
     println!("xa.select(&[(\"hour\", &(0..2))]): shape {:?}\n", first_two.shape());
 
-    // Transpose reorders data and labels together
+    // Transpose reorders data, dimension names, and coordinates together.
     println!("=== Transpose ===\n");
-    let t = xa.transpose(&["instrument", "hour"]).unwrap();
+    let t = xa.transpose(&["measurement", "hour"]).unwrap();
     println!("dims after transpose: {:?}, shape {:?}\n", t.dim_names(), t.shape());
 
-    // Convert to a Table, with axis-1 labels becoming column names
+    // Axis-1 coordinate labels become Table column names.
     println!("=== To Table ===\n");
     let mut named = xa.clone();
-    named.assign_coords("instrument", arr_str32!(&["temp", "pressure", "humidity"]));
+    named.assign_coords("measurement", arr_str32!(&["temp", "pressure", "humidity"]));
     let table = named.to_table().unwrap();
     println!("{}", table);
 }

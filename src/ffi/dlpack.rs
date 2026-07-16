@@ -1,8 +1,9 @@
-//! # **DLPack FFI** - *Zero-copy tensor interchange with PyTorch, TensorFlow, JAX, and others*
+//! # **DLPack FFI** - *Tensor interchange with Python and other runtimes*
 //!
 //! Implements the [DLPack](https://github.com/dmlc/dlpack) tensor interchange
-//! standard for NdArray, enabling zero-copy data sharing across language and
-//! framework boundaries.
+//! standard for NdArray. Compatible ownership, alignment, and protocol choices
+//! allow runtimes to share the allocation directly; the documented fallback
+//! cases copy so that Minarrow's ownership and alignment guarantees still hold.
 //!
 //! ## Supported protocols
 //! - **DLManagedTensor** (legacy, pre-1.0) - the capsule payload older
@@ -32,9 +33,9 @@
 //! ## Layout compatibility
 //! NdArray's compact column-major layout is expressed through DLPack's
 //! strides field, and the buffer is fully contiguous, so consumers receive
-//! a dense tensor with no dead bytes. Column-major is fully supported by
-//! PyTorch and NumPy with zero copy. TensorFlow may copy to row-major
-//! internally.
+//! a dense tensor with no dead bytes. Consumers such as PyTorch, NumPy, JAX,
+//! and TensorFlow decide whether to operate on those strides directly or
+//! re-lay the tensor for a particular operation.
 //!
 //! ## Notes
 //! - DLPack uses element strides, matching NdArray's convention

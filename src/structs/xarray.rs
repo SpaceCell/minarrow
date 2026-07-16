@@ -1,16 +1,17 @@
 //! # **XArray** - *Labelled N-dimensional array for indexed data*
 //!
-//! Wraps an `NdArray` with named dimensions and optional coordinate labels per axis,
-//! enabling selection by label rather than raw position.
+//! Wraps an `NdArray` with named dimensions and optional coordinate labels per
+//! axis, adding coordinate-based queries while retaining positional selection.
 //!
-//! Where NumPy and NdArray address "give me element [3, 7]", XArray addresses
-//! "give me latitude 51.5, longitude -0.1" or "all observations between
-//! timestamps 100 and 200". Useful in geospatial, climate, sensor, and any
-//! domain where axes carry physical meaning.
+//! NdArray answers a positional query such as "element `[3, 7]`". XArray can
+//! additionally answer questions such as "latitude 51.5" or "observations
+//! between timestamps 100 and 200". This is useful for spatial, climate,
+//! sensor, and other data whose axes carry domain meaning.
 //!
 //! ## Storage
 //! Internally holds either an owned [`NdArray`] or a zero-copy [`NdArrayV`]
-//! view behind a single type. The storage variant is transparent to callers.
+//! view behind the same public type, so a selection can remain an XArray
+//! without materialising its data.
 //!
 //! ## Quick reference
 //! ```ignore
@@ -80,8 +81,7 @@ macro_rules! delegate {
 ///
 /// XArray wraps an [`NdArray`] or [`NdArrayV`] with per-axis names and optional
 /// coordinate labels, enabling selection by value rather than raw position.
-/// The storage variant is chosen at construction time and is transparent to
-/// the caller.
+/// Owned data and selection views expose the same container interface.
 ///
 /// # Construction
 /// ```

@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! # **SuperNdArrayView Module** - *Chunked, Windowed View over N-dimensional Batches*
+//! # **SuperNdArrayV** - *Window over N-dimensional batches*
 //!
-//! `SuperNdArrayV` is a borrowed, chunked view over a single logical
-//! N-dimensional array, exposing an arbitrary `[offset .. offset + len)`
-//! axis-0 window that may span multiple underlying batches. It presents
-//! those batches as one continuous logical range without copying the
-//! underlying memory.
+//! `SuperNdArrayV` is a borrowed view over an arbitrary
+//! `[offset .. offset + len)` axis-0 window of a [`SuperNdArray`]. The window
+//! may span multiple underlying batches while presenting one continuous
+//! logical range without copying their data.
 //!
 //! ## Role
-//! - Represents a batch window over a [`SuperNdArray`], for streaming,
-//!   batching, or region-wise processing of tensor data such as sensor
-//!   frames landing in chunks.
+//! - Keeps a zero-copy window over independently landed batches, such as a
+//!   time range spanning several sensor or telemetry arrivals.
 //! - The N-dimensional counterpart of [`SuperArrayV`](crate::SuperArrayV).
 //!
 //! ## Interop
@@ -223,7 +221,7 @@ impl<T: Float> SuperNdArrayV<T> {
 
 // *** Axis selection: view.s(nd![1..4, 2]) ************************
 
-/// Selection across every axis at once over a chunked window. The
+/// Selection across every axis at once over a SuperNdArrayV window. The
 /// axis-0 selection narrows the window, and trailing-axis selections
 /// narrow each slice. Zero-copy. An axis-0 single index keeps the
 /// dimension as a one-observation window - use `obs` to collapse.
@@ -274,7 +272,7 @@ impl<T: Float> AxisSelection for SuperNdArrayV<T> {
 
 // *** Row selection: view.r(0..10) ********************************
 
-/// Axis-0 observation selection over a chunked window. Contiguous ranges
+/// Axis-0 observation selection over a SuperNdArrayV window. Contiguous ranges
 /// narrow the window zero-copy. Index arrays gather into one owned batch
 /// wrapped in a single-slice view.
 #[cfg(feature = "select")]
@@ -387,7 +385,7 @@ impl<T: Float> Consolidate for SuperNdArrayV<T> {
 }
 
 impl<T: Float> Concatenate for SuperNdArrayV<T> {
-    /// Concatenates two chunked views along axis 0 by appending the other
+    /// Concatenates two SuperNdArrayV windows along axis 0 by appending the other
     /// view's slices. Zero-copy - both views' slices carry across.
     fn concat(mut self, other: Self) -> Result<Self, MinarrowError> {
         if self.slices.is_empty() {

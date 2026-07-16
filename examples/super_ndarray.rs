@@ -16,8 +16,8 @@ use minarrow::structs::chunked::super_array::RechunkStrategy;
 use minarrow::{Consolidate, NdArray, SuperNdArray};
 
 fn main() {
-    // Stream three sensor batches into one chunked array. Batches vary
-    // only in their leading axis, here the observation count.
+    // Simulate three sensor batches arriving with different observation
+    // counts. Every batch has two measurements per observation.
     let mut snd = SuperNdArray::new("sensor_frames");
     snd.push(NdArray::from_slice(&[1.0, 2.0, 10.0, 20.0], &[2, 2]));
     snd.push(NdArray::from_slice(&[3.0, 4.0, 5.0, 30.0, 40.0, 50.0], &[3, 2]));
@@ -28,31 +28,31 @@ fn main() {
     println!("n_obs: {}", snd.n_obs());
     println!("shape: {:?}\n", snd.shape());
 
-    // Access is transparent across chunk boundaries
+    // Global indices address the combined observation range across batches.
     println!("=== Global access ===\n");
     println!("snd.get(&[0, 0]) = {} (batch 0)", snd.get(&[0, 0]));
     println!("snd.get(&[3, 1]) = {} (batch 1)", snd.get(&[3, 1]));
     println!("snd.get(&[5, 1]) = {} (batch 2)\n", snd.get(&[5, 1]));
 
-    // A window spanning the first chunk boundary
-    println!("=== Chunk-spanning window ===\n");
+    // The requested observation window starts in one batch and ends in the next.
+    println!("=== Batch-spanning window ===\n");
     let window = snd.slice(1, 3);
     println!("snd.slice(1, 3): n_obs {}, spans {} slices", window.n_obs(), window.n_slices());
     println!("window.get(&[1, 0]) = {}\n", window.get(&[1, 0]));
 
-    // Materialise into one contiguous NdArray
+    // Consolidate only when a consumer requires one contiguous allocation.
     println!("=== Consolidate ===\n");
     let flat = snd.clone().consolidate();
     println!("consolidated shape: {:?}", flat.shape());
     println!("flat.get(&[5, 1]) = {}\n", flat.get(&[5, 1]));
 
-    // Re-split into even batches
+    // Change the batch boundaries without changing the logical values.
     println!("=== Rechunk ===\n");
     let mut even = snd.clone();
     even.rechunk(RechunkStrategy::Count(2)).unwrap();
     println!("rechunk(Count(2)): n_batches {}, first batch obs {}", even.n_batches(), even.batch(0).unwrap().shape()[0]);
 
-    // Chunk boundaries do not affect equality
+    // Batch boundaries do not affect logical equality.
     println!("\n=== Logical equality ===\n");
     let single = SuperNdArray::from_batches(vec![flat], "sensor_frames");
     println!("snd == consolidated single batch: {}", snd == single);

@@ -1,21 +1,15 @@
-//! # **NdArray** - *N-dimensional dense array for scientific and statistical computing*
-//!
-//! Comparable to NumPy's `ndarray` or Rust's `ndarray` crate, but backed
-//! by Minarrow's [`Buffer<T>`], so external memory such as an imported
-//! DLPack tensor wraps without copying when its pointer is 64-byte
-//! aligned. A misaligned foreign pointer, such as a sliced tensor,
-//! copies into an aligned `Vec64` on import. Conversions into the
-//! padded and columnar types re-lay data for their layouts.
+//! # **NdArray** - *N-dimensional float container*
 //!
 //! ## Intent
-//! NdArray is the landing container for n-dimensional numeric data - off a
-//! network, sensor feed, or file - and the bridge to Python and GPU
-//! frameworks over DLPack, or a basis for building on in Rust. 
-//! It is not a 'Python NdArray-equivalent' compute library. Kernels, BLAS, and
-//! deep learning frameworks operate on the data it carries.
-//! It's therefore here to make it easier and more consistent to have all the required
-//! data structures in one place for bridging rather than needing to collate separate 
-//! sources for different data structures.
+//! `NdArray` is Minarrow's landing container for n-dimensional numeric data
+//! arriving from a network, sensor, file, or another runtime. It provides the
+//! expected container operations - construction, indexing, views, selection,
+//! iteration, and conversion - and bridges the same data into Python and
+//! DLPack consumers.
+//!
+//! It is deliberately not a general numerical-computing runtime. Applications
+//! can hand its data to their chosen kernels, BLAS implementation, or machine
+//! learning framework rather than Minarrow duplicating those systems.
 //! 
 //! ## Element type
 //! Generic over `T: Float`, which covers `f32` and `f64`. Rank is determined
@@ -32,23 +26,23 @@
 //! for BLAS/LAPACK column access is [`Matrix`]'s job, and `to_matrix`
 //! re-lays data into that form.
 //!
-//! NumPy and PyTorch default to row-major, so a rank-2 or higher export
-//! arrives there as a valid strided tensor that is not C-contiguous.
-//! Consumers that require C-contiguity re-lay it on their side, e.g.
-//! `.contiguous()` in PyTorch or `np.ascontiguousarray`.
+//! NumPy and PyTorch normally use row-major contiguous layouts. They can
+//! consume NdArray's column-major strides directly; code that specifically
+//! requires C-contiguity can re-lay the tensor on the consumer side, for
+//! example with `.contiguous()` or `np.ascontiguousarray`.
 //! 
-//! # SIMD only in 1D
-//! Notably, this is different to the other structures in Minarrow, which optimise
-//! for columnar SIMD. NdArray does not - except when the array is laid out flat in 1D.
-//! The reasoning is that SIMD is for fast decisions via CPU. With Nd dimensions,
-//! typically one will use a GPU which has different optimisation mechanisms that don't
-//! benefit from 64-byte padding, which then otherwise causes issues with Python libraries
-//! like PyTorch that may re-allocate in order to achieve a contiguous layout.
+//! ## Why the layout is compact
+//! Minarrow's columnar arrays and [`Matrix`] can pad individual columns for
+//! CPU-oriented access. NdArray instead keeps the tensor compact so its shape
+//! and strides describe all stored values without hidden gaps. This makes the
+//! layout predictable for DLPack and Python consumers while retaining a
+//! 64-byte-aligned allocation start for operations over the flat buffer.
 //!
 //! ## Null handling
-//! Missing values are represented as NaN. BLAS/LAPACK and IEEE 754 arithmetic
-//! propagate NaN through results, so nulls flow through compute without
-//! special-case logic.
+//! NdArray has no null mask. Conversions from nullable tabular data use
+//! NaN for null float values, which means the resulting array cannot
+//! distinguish a source null from an ordinary NaN. Downstream treatment of
+//! those values is defined by the consuming kernel or framework.
 //!
 //! ## Interop
 //! - [`Matrix`] to 2D NdArray - zero-copy, the padded stride carries through (f64).
@@ -58,8 +52,9 @@
 //!   `FloatArray` (f64).
 //! - 1D NdArray to [`Array`] - moves the buffer into a `FloatArray<f64>`.
 //! - [`Table`] to NdArray via [`TryFrom`] - copies, converting nulls to NaN (f64).
-//! - DLPack export and import for zero-copy sharing with PyTorch, JAX,
-//!   TensorFlow (f32 and f64).
+//! - DLPack export and import for sharing with compatible f32/f64 consumers.
+//!   Ownership, alignment, layout, and protocol requirements determine whether
+//!   a particular transfer is zero-copy.
 
 use std::fmt;
 use std::ops::{Index, IndexMut, Range, RangeFrom, RangeFull, RangeTo};
@@ -101,7 +96,7 @@ pub struct NdArray<T> {
 }
 
 /// Logical equality over shape and values in logical order. Strides and
-/// the name do not affect equality, matching the view and chunked types.
+/// the name do not affect equality, matching the view and SuperNdArray types.
 impl<T: Float> PartialEq for NdArray<T> {
     fn eq(&self, other: &Self) -> bool {
         if self.dims.shape() != other.dims.shape() {
@@ -682,9 +677,8 @@ impl<T: Float> NdArray<T> {
     // *** Apply ***************************************************
 
     /// Apply a function to every logical element, returning a new compact
-    /// array with this array's shape and name. The closure brings the
-    /// computation, so any kernel under `kernels` runs through this
-    /// entry point.
+    /// array with this array's shape and name. The caller supplies the
+    /// operation; NdArray supplies logical-order traversal and materialisation.
     pub fn apply(&self, f: impl Fn(T) -> T) -> NdArray<T> {
         let flat: Vec64<T> = self.into_iter().map(f).collect();
         let mut result = NdArray::from_slice(&flat, self.shape());
@@ -781,8 +775,9 @@ impl<T: Float> NdArray<T> {
 
     // *** Conversions *********************************************
 
-    /// Export as a DLPack tensor for zero-copy sharing with PyTorch,
-    /// NumPy, JAX, and other DLPack-compatible frameworks.
+    /// Export as a legacy DLPack tensor for PyTorch, NumPy, JAX, and other
+    /// compatible consumers. Shared or aliased storage copies because the
+    /// legacy protocol cannot mark the exported tensor read-only.
     ///
     /// Returns a `DLPackTensor` that manages the lifecycle. Drop it to
     /// release, or call `.into_raw()` to transfer ownership to an FFI

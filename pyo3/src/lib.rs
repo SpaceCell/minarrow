@@ -454,9 +454,9 @@ impl PyNdArray {
         (1, 0)
     }
 
-    /// Import from any DLPack producer, e.g. a NumPy or PyTorch tensor,
-    /// or a raw DLPack capsule. Zero-copy when the producer's buffer is
-    /// 64-byte aligned, otherwise the data copies into an aligned buffer.
+    /// Import from a compatible CPU f32/f64 DLPack producer, such as a NumPy
+    /// or PyTorch tensor, or from a raw DLPack capsule. A suitably aligned
+    /// buffer can be shared; otherwise the data copies into an aligned buffer.
     #[staticmethod]
     fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         ffi::dlpack::import_dlpack(py, obj).map(PyNdArray)

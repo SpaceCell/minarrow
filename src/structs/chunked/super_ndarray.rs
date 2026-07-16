@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! # **SuperNdArray** - *Chunked N-dimensional array*
+//! # **SuperNdArray** - *N-dimensional data in batches*
 //!
-//! The N-dimensional equivalent of [`SuperTable`](crate::SuperTable): groups multiple `NdArray`
-//! batches under a shared rank and trailing shape. Batches vary only in the
-//! size of their leading axis (axis 0), so element access, iteration, and
-//! slicing work transparently across chunk boundaries.
+//! The N-dimensional equivalent of [`SuperTable`](crate::SuperTable): it keeps
+//! multiple `NdArray` batches under a shared rank and trailing shape. Batch
+//! lengths may differ along axis 0, while indexing, iteration, and selection
+//! use one combined axis-0 coordinate space.
 //!
 //! ## Typical uses
-//! - Streaming sensor or telemetry data where each chunk is a temporal batch.
+//! - Sensor or telemetry data arriving as independent temporal batches.
 //! - Partitioned reads from storage where batches arrive independently.
 //! - Memory-bounded ingestion where you want to keep batches separate
 //!   until consolidation is needed.
@@ -54,12 +54,12 @@ use crate::structs::views::ndarray_view::NdArrayV;
 #[cfg(feature = "parallel_proc")]
 use rayon::prelude::*;
 
-/// Chunked N-dimensional array.
+/// N-dimensional array represented by a sequence of batches.
 ///
 /// All batches share the same rank and non-leading dimensions.
 /// Only the leading axis (axis 0) may differ between batches.
-/// Access by global index is transparent - the chunk boundary
-/// is resolved internally.
+/// Global indices address the combined axis-0 range and are resolved to the
+/// corresponding batch internally.
 #[derive(Clone)]
 pub struct SuperNdArray<T> {
     pub batches: Vec<NdArray<T>>,
@@ -100,7 +100,7 @@ impl<T: Float> SuperNdArray<T> {
         SuperNdArray { batches, ndim, inner_shape, name: name.into() }
     }
 
-    /// Append a chunk. Validates shape compatibility.
+    /// Append a batch. Validates shape compatibility.
     pub fn push(&mut self, chunk: NdArray<T>) {
         assert!(chunk.ndim() > 0, "SuperNdArray batches require an axis 0");
         if self.batches.is_empty() {
@@ -181,7 +181,7 @@ impl<T: Float> SuperNdArray<T> {
         self.batches[0].strides()
     }
 
-    /// Column slice from a 2D chunked array. Consolidates the column
+    /// Column slice from a 2D SuperNdArray. Consolidates the column
     /// across all batches into a contiguous allocation.
     pub fn col(&self, c: usize) -> Vec<T> {
         assert_eq!(self.ndim, 2, "col() requires a 2D array");
@@ -234,8 +234,8 @@ impl<T: Float> SuperNdArray<T> {
     /// Zero-copy view of a single observation (axis-0 element)
     /// across batch boundaries.
     ///
-    /// Returns an (N-1)-dimensional `NdArrayV` view. For a 2D chunked
-    /// array with shape `[n, m]`, returns a 1D view of shape `[m]`. For 3D
+    /// Returns an (N-1)-dimensional `NdArrayV` view. For a 2D SuperNdArray
+    /// with shape `[n, m]`, returns a 1D view of shape `[m]`. For 3D
     /// `[n, m, k]`, returns 2D `[m, k]`. Requires rank 2 or higher - for
     /// scalar access on a 1D array use `get(&[i])`.
     #[cfg(feature = "views")]
@@ -260,7 +260,7 @@ impl<T: Float> SuperNdArray<T> {
 
     /// BLAS leading dimension of the first batch (2D). The leading dimension
     /// equals each batch's own row count, so this value applies to the first
-    /// batch only, not to the whole chunked array.
+    /// batch only, not to the SuperNdArray as a whole.
     #[inline]
     pub fn lda(&self) -> i32 {
         assert_eq!(self.ndim, 2, "lda() requires a 2D array");
@@ -272,8 +272,8 @@ impl<T: Float> SuperNdArray<T> {
     // Global element access
     // ****************************************************************
 
-    /// Get element by global N-dimensional index, transparently resolving
-    /// which chunk contains it. The first index is the global axis-0 position.
+    /// Get an element by global N-dimensional index. The first index is a
+    /// position in the combined axis-0 range and resolves to one batch.
     pub fn get(&self, indices: &[usize]) -> T {
         let (chunk_idx, local_row) = self.resolve(indices[0]);
         let mut local = indices.to_vec();
@@ -281,8 +281,8 @@ impl<T: Float> SuperNdArray<T> {
         self.batches[chunk_idx].get(&local)
     }
 
-    /// Set element by global index. Triggers copy-on-write if the
-    /// target chunk's buffer is shared.
+    /// Set an element by global index. Copy-on-write applies if the target
+    /// batch's buffer is shared.
     pub fn set(&mut self, indices: &[usize], value: T) {
         let (chunk_idx, local_row) = self.resolve(indices[0]);
         let mut local = indices.to_vec();
@@ -350,7 +350,7 @@ impl<T: Float> SuperNdArray<T> {
 
     /// Parallel iterator over axis-0 observations across all batches.
     /// Each item is the global observation index and a zero-copy
-    /// `NdArrayV` view. Batch boundaries are resolved transparently.
+    /// `NdArrayV` view. Global indices are resolved across batch boundaries.
     #[cfg(all(feature = "parallel_proc", feature = "views"))]
     pub fn par_iter_obs(&self) -> impl rayon::iter::ParallelIterator<Item = (usize, NdArrayV<T>)> + '_
     where
@@ -365,10 +365,9 @@ impl<T: Float> SuperNdArray<T> {
     // Apply
     // ****************************************************************
 
-    /// Apply a function to every logical element, returning a new chunked
-    /// array with the same batch boundaries and name. The closure brings
-    /// the computation, so any kernel under `kernels` runs through this
-    /// entry point.
+    /// Apply a function to every logical element, returning a new
+    /// SuperNdArray with the same batch boundaries and name. The caller
+    /// supplies the operation; SuperNdArray supplies traversal per batch.
     pub fn apply(&self, f: impl Fn(T) -> T) -> SuperNdArray<T> {
         let batches: Vec<NdArray<T>> = self.batches.iter().map(|b| b.apply(&f)).collect();
         SuperNdArray::from_batches(batches, self.name.clone())
@@ -388,7 +387,7 @@ impl<T: Float> SuperNdArray<T> {
     /// returns one value for it, mirroring [`NdArray::apply_axis`].
     ///
     /// Lanes along axis 1 and above live inside single batches, so the
-    /// result keeps this array's chunk boundaries. Lanes along axis 0
+    /// result keeps this array's batch boundaries. Lanes along axis 0
     /// cross batch boundaries, so each gathers into a contiguous buffer
     /// and the result holds one batch with the trailing shape.
     #[cfg(feature = "views")]
@@ -446,7 +445,7 @@ impl<T: Float> SuperNdArray<T> {
         )
     }
 
-    /// Apply a transformation to each batch, producing a new chunked array.
+    /// Apply a transformation to each batch, producing a new SuperNdArray.
     ///
     /// The closure receives each batch and returns a transformed batch,
     /// mirroring `Table::apply_cols` with the batch as the unit of work.
@@ -476,14 +475,14 @@ impl<T: Float> SuperNdArray<T> {
     }
 
     // ****************************************************************
-    // Rechunking
+    // Changing batch boundaries
     // ****************************************************************
 
     /// Redistribute data across batches.
     ///
     /// - `Count(n)` - uniform batches of n leading-axis elements
-    /// - `Auto` - default chunk size of 8192 leading-axis elements
-    /// - `Memory(bytes)` - target byte size per chunk (requires `size` feature)
+    /// - `Auto` - default batch length of 8192 leading-axis elements
+    /// - `Memory(bytes)` - target byte size per batch (requires `size` feature)
     pub fn rechunk(&mut self, strategy: RechunkStrategy) -> Result<(), MinarrowError> {
         if self.batches.is_empty() || self.n_obs() == 0 {
             return Ok(());
@@ -507,7 +506,7 @@ impl<T: Float> SuperNdArray<T> {
                         "rechunk: target bytes must be > 0".to_string(),
                     ));
                 }
-                // Estimate rows per chunk from the first chunk's byte density
+                // Estimate observations per batch from the first batch's byte density.
                 let first = &self.batches[0];
                 let bytes_per_row = first.est_bytes().max(1) / first.shape()[0].max(1);
                 (target_bytes / bytes_per_row.max(1)).max(1)
@@ -565,7 +564,7 @@ impl<T: Float> SuperNdArray<T> {
 /// slice. Zero-copy. Delegates to the full-window [`SuperNdArrayV`].
 ///
 /// An axis-0 single index keeps the dimension as a one-observation
-/// window, since a chunked view cannot collapse its chunking axis - use
+/// window, since a SuperNdArrayV cannot collapse its shared axis - use
 /// `obs` to collapse a single observation. Trailing single indices
 /// collapse their dimensions as usual.
 #[cfg(all(feature = "views", feature = "select"))]
@@ -644,7 +643,7 @@ impl<'a, T: Float> IntoIterator for &'a SuperNdArray<T> {
     }
 }
 
-/// Iterator that chains across chunk boundaries transparently.
+/// Iterator over the stored batches in sequence.
 pub struct SuperNdArrayIter<'a, T> {
     batches: &'a [NdArray<T>],
     chunk_idx: usize,
@@ -661,7 +660,7 @@ impl<'a, T: Float> Iterator for SuperNdArrayIter<'a, T> {
                     return Some(v);
                 }
             }
-            // Advance to next chunk
+            // Continue with the next batch.
             if self.chunk_idx >= self.batches.len() {
                 return None;
             }
@@ -734,10 +733,10 @@ impl<T: Float> Consolidate for SuperNdArray<T> {
         } else {
             // The result is contiguous column-major, so column c starts at
             // c * strides[1] for c in 0..product(inner_shape), and the
-            // axis-0 rows of every chunk interleave one column at a time.
-            // Column c's base offset within each source chunk decomposes
-            // across that chunk's own outer dims, which for a contiguous
-            // chunk reduces to c * strides[1].
+            // axis-0 rows from every batch interleave one column at a time.
+            // Column c's base offset within each source batch decomposes
+            // across that batch's own outer dimensions; for a contiguous
+            // batch this reduces to c * strides[1].
             let dst_stride = result.strides()[1];
             let n_cols: usize = self.inner_shape.iter().product();
             let dst = result.as_mut_slice();
@@ -776,12 +775,12 @@ impl<T: Float> Consolidate for SuperNdArray<T> {
 // Trait implementations
 // ****************************************************************
 
-/// Logical equality. Two chunked arrays are equal when they share the same
+/// Logical equality. Two SuperNdArrays are equal when they share the same
 /// rank, trailing shape, and observation count, and hold the same values in
-/// logical order. Chunk boundaries and the name do not affect equality.
+/// logical order. Batch boundaries and the name do not affect equality.
 ///
 /// The comparison walks one logical column at a time, chaining each side's
-/// batches independently, so arrays split into different chunks still line
+/// batches independently, so different batch divisions still line
 /// up without materialising either side. Each batch reads at its own
 /// strides, so any layout compares in place.
 impl<T: Float> PartialEq for SuperNdArray<T> {
@@ -1133,19 +1132,19 @@ mod tests {
 
     #[test]
     fn global_get_2d() {
-        // chunk0: 2x2, col0=[1,2], col1=[3,4]
-        // chunk1: 3x2, col0=[5,6,7], col1=[8,9,10]
+        // Batch 0: 2x2, col0=[1,2], col1=[3,4].
+        // Batch 1: 3x2, col0=[5,6,7], col1=[8,9,10].
         let snd = SuperNdArray::from_batches(vec![
             NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
             NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0], &[3, 2]),
         ], "data");
-        // Global row 0, col 0 -> chunk0 row 0 col 0
+        // Global row 0, col 0 -> batch 0 row 0, col 0.
         assert_eq!(snd.get(&[0, 0]), 1.0);
-        // Global row 1, col 1 -> chunk0 row 1 col 1
+        // Global row 1, col 1 -> batch 0 row 1, col 1.
         assert_eq!(snd.get(&[1, 1]), 4.0);
-        // Global row 2, col 0 -> chunk1 row 0 col 0
+        // Global row 2, col 0 -> batch 1 row 0, col 0.
         assert_eq!(snd.get(&[2, 0]), 5.0);
-        // Global row 4, col 1 -> chunk1 row 2 col 1
+        // Global row 4, col 1 -> batch 1 row 2, col 1.
         assert_eq!(snd.get(&[4, 1]), 10.0);
     }
 
@@ -1178,7 +1177,7 @@ mod tests {
             NdArray::from_slice(&[5.0, 6.0, 7.0, 8.0], &[2, 2]),
         ], "data");
         let vals: Vec<f64> = (&snd).into_iter().collect();
-        // chunk0 col-major: [1,2,3,4], chunk1 col-major: [5,6,7,8]
+        // Batch 0 is [1,2,3,4] and batch 1 is [5,6,7,8] in column-major order.
         assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
 
         let logical: Vec<f64> = snd.iter_logical().collect();
@@ -1230,7 +1229,7 @@ mod tests {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]);
         let snd = SuperNdArray::from_batches(vec![a.clone()], "one");
         let result = snd.consolidate();
-        // The single-batch shortcut carries the chunked array's name.
+        // The single-batch shortcut carries the SuperNdArray's name.
         assert_eq!(result.name.as_deref(), Some("one"));
         let mut expected = a;
         expected.name = Some("one".to_string());
@@ -1270,8 +1269,8 @@ mod tests {
 
     #[test]
     fn consolidate_3d() {
-        // chunk A [2,2,2] with logical column-major values 1..=8,
-        // chunk B [1,2,2] with logical column-major values 9..=12.
+        // Batch A is [2,2,2] with logical column-major values 1..=8;
+        // batch B is [1,2,2] with logical column-major values 9..=12.
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]);
         let b = NdArray::from_slice(&[9.0, 10.0, 11.0, 12.0], &[1, 2, 2]);
         let snd = SuperNdArray::from_batches(vec![a, b], "cube");
@@ -1290,7 +1289,7 @@ mod tests {
 
     #[test]
     fn eq_ignores_chunking_and_name() {
-        // Same logical [3,2] values, chunked and named differently.
+        // Same logical [3,2] values with different batch divisions and names.
         let single = SuperNdArray::from_batches(
             vec![NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2])],
             "single",
@@ -1314,8 +1313,8 @@ mod tests {
 
     #[test]
     fn eq_chunk_invariant_3d() {
-        // Same logical [3,2,2] values, one whole chunk versus a [1,2,2] and
-        // a [2,2,2] split, exercising the rank-3 column walk in equality.
+        // Same logical [3,2,2] values: one batch versus a [1,2,2] and
+        // [2,2,2] division, exercising the rank-3 column walk in equality.
         let whole = SuperNdArray::from_batches(
             vec![NdArray::from_slice(
                 &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
@@ -1369,7 +1368,7 @@ mod tests {
             NdArray::from_slice(&data, &[100]),
         ], "big");
         snd.rechunk(RechunkStrategy::Auto).unwrap();
-        // Auto = 8192 rows, 100 < 8192, so still 1 chunk
+        // Auto uses 8192 observations, so 100 observations remain one batch.
         assert_eq!(snd.n_batches(), 1);
     }
 
@@ -1447,7 +1446,7 @@ mod tests {
     #[test]
     fn eq_strided_batch_matches_contiguous() {
         // Row-major batch holding logical col0 = [1, 3], col1 = [2, 4],
-        // compared against the same values chunked row by row.
+        // compared against the same values divided into one-row batches.
         let strided = SuperNdArray::from_batches(
             vec![NdArray::from_buffer(
                 Buffer::from_slice(&[1.0, 2.0, 3.0, 4.0]),

@@ -138,14 +138,16 @@ views = []
 # with large data sizes.
 matrix = []
 
-# N-dimensional dense array for scientific and statistical computing.
-# Compact column-major layout, generic over f32/f64, with Table/Matrix
-# interop and NaN-based null semantics. Slicing and axis selection are
-# available through the `select` feature.
+# N-dimensional f32/f64 landing container with compact column-major layout.
+# Provides expected container semantics and Table/Matrix interop without
+# turning Minarrow into a numerical-computing runtime. NdArray has no null
+# mask; nullable tabular conversions represent source nulls as NaN. Slicing
+# and axis selection are available through the `select` feature.
 ndarray = []
 
-# DLPack tensor interchange for zero-copy sharing with PyTorch, TensorFlow, JAX.
-# Requires `ndarray` feature.
+# DLPack tensor interchange with Python and other runtimes. Compatible
+# ownership, alignment, layout, and protocol choices allow direct sharing.
+# Requires the `ndarray` feature.
 dlpack = ["ndarray"]
 
 # Labelled N-dimensional array wrapping NdArray with named dimensions

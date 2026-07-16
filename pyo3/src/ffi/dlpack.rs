@@ -23,7 +23,7 @@
 //! [`export_dlpack`] wraps an f32/f64 [`PyNdArrayInner`] in a legacy or
 //! versioned DLPack capsule, and [`import_dlpack`] consumes any DLPack
 //! producer object or raw capsule back into one. Consumed capsules rename
-//! with the `used_` prefix so their destructors stand down, and
+//! with the `used_` prefix so their destructors do not release the tensor, and
 //! unconsumed capsules release the tensor through the capsule destructor.
 
 use std::ffi::{CStr, c_void};
@@ -49,8 +49,8 @@ pub static DLTENSOR_USED: &CStr = c"used_dltensor";
 pub static DLTENSOR_VERSIONED: &CStr = c"dltensor_versioned";
 pub static DLTENSOR_VERSIONED_USED: &CStr = c"used_dltensor_versioned";
 
-/// The natural minarrow form behind a Python `NdArray`, covering both
-/// supported element types and owned or windowed storage.
+/// Internal storage for a Python `NdArray`, covering both supported element
+/// types and owned or windowed data.
 pub enum PyNdArrayInner {
     F32(Arc<NdArray<f32>>),
     F64(Arc<NdArray<f64>>),
@@ -250,9 +250,9 @@ fn versioned_capsule(
     Ok(unsafe { Bound::from_owned_ptr(py, capsule) }.unbind())
 }
 
-/// Import from any DLPack producer, e.g. a NumPy or PyTorch tensor, or a
-/// raw DLPack capsule. Zero-copy when the producer's buffer is 64-byte
-/// aligned, otherwise the data copies into an aligned buffer.
+/// Import from a compatible CPU f32/f64 DLPack producer, such as a NumPy or
+/// PyTorch tensor, or from a raw DLPack capsule. A suitably aligned buffer can
+/// be shared; otherwise the data copies into an aligned buffer.
 pub fn import_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<PyNdArrayInner> {
     let capsule = if unsafe { pyo3::ffi::PyCapsule_CheckExact(obj.as_ptr()) } == 1 {
         obj.clone()

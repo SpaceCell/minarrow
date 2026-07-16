@@ -15,14 +15,14 @@
 //! `NdArray` - the native Python tensor object over minarrow.
 //!
 //! One Python type holds an f32 or f64 `NdArray` or `NdArrayV`. Slicing
-//! keeps the same public type and stores a zero-copy view internally. The DLPack capsule
-//! protocol (`__dlpack__` and `__dlpack_device__`) hands the tensor to
-//! NumPy, PyTorch, JAX, TensorFlow, and CuPy without copying where the
-//! target supports host memory, and `from_dlpack` accepts any DLPack
-//! producer in return. Named bridge methods wrap the same capsule path
-//! with the target library imported at call time. The capsule glue
-//! itself lives in minarrow-pyo3's `ffi::dlpack`, alongside the Arrow
-//! capsule glue this package already shares.
+//! keeps the same public type and stores a zero-copy view internally. The
+//! DLPack capsule protocol (`__dlpack__` and `__dlpack_device__`) hands the
+//! tensor to NumPy, PyTorch, JAX, TensorFlow, and CuPy. Transfers share data
+//! when the consumer, ownership, layout, and protocol permit it; otherwise
+//! they copy or report an unsupported request. `from_dlpack` accepts supported
+//! CPU f32/f64 producers. Named bridge methods use the same capsule path and
+//! import the target library at call time. The capsule glue lives in
+//! minarrow-pyo3's `ffi::dlpack`, alongside the shared Arrow capsule glue.
 
 use minarrow::traits::selection::DataSelector;
 use minarrow::{NdArray, NdArrayV, Table};
@@ -102,7 +102,8 @@ pub(crate) fn selectors(keys: &[AxisKey]) -> Vec<&dyn DataSelector> {
         .collect()
 }
 
-/// N-dimensional f32/f64 tensor with zero-copy DLPack interchange.
+/// N-dimensional f32/f64 tensor with DLPack interchange and zero-copy sharing
+/// where ownership, layout, and protocol permit it.
 #[pyclass(name = "NdArray", module = "minarrow")]
 pub struct PyNdArray(pub PyNdArrayInner);
 
@@ -319,9 +320,9 @@ impl PyNdArray {
         (1, 0)
     }
 
-    /// Import from any DLPack producer, e.g. a NumPy or PyTorch tensor,
-    /// or a raw DLPack capsule. Zero-copy when the producer's buffer is
-    /// 64-byte aligned, otherwise the data copies into an aligned buffer.
+    /// Import from a compatible CPU f32/f64 DLPack producer, such as a NumPy
+    /// or PyTorch tensor, or from a raw DLPack capsule. A suitably aligned
+    /// buffer can be shared; otherwise the data copies into an aligned buffer.
     #[staticmethod]
     fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         import_dlpack(py, obj).map(PyNdArray)
@@ -353,8 +354,8 @@ impl PyNdArray {
         Ok(dlpack.call_method1("from_dlpack", (capsule,))?.unbind())
     }
 
-    /// Hand to CuPy via the capsule protocol. CuPy holds device memory,
-    /// so this copies host data to the GPU on import.
+    /// Hand to CuPy via the capsule protocol. CuPy determines whether the
+    /// host tensor is supported and whether a device transfer is required.
     fn to_cupy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cupy = py.import("cupy")?;
         Ok(cupy.call_method1("from_dlpack", (slf,))?.unbind())
