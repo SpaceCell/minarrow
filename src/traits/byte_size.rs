@@ -391,8 +391,6 @@ impl<T: crate::Float> ByteSize for XArray<T> {
             NdArrayE::Owned(nd) => nd.est_bytes(),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => v.est_bytes(),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => snd.est_bytes(),
         };
         let coord_bytes: usize = self
             .axes()

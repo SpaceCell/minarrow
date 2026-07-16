@@ -9,10 +9,8 @@
 //! domain where axes carry physical meaning.
 //!
 //! ## Storage
-//! Internally holds one of three modes - owned [`NdArray`], zero-copy
-//! [`NdArrayV`] view, or chunked [`SuperNdArray`] - behind a single type.
-//! The storage variant is transparent, so one XArray type covers owned,
-//! view, and chunked data without separate wrapper types.
+//! Internally holds either an owned [`NdArray`] or a zero-copy [`NdArrayV`]
+//! view behind a single type. The storage variant is transparent to callers.
 //!
 //! ## Quick reference
 //! ```ignore
@@ -50,28 +48,12 @@ use crate::{Array, Field, StringArray, Table};
 #[cfg(feature = "views")]
 use crate::structs::views::ndarray_view::NdArrayV;
 
-#[cfg(feature = "chunked")]
-use crate::structs::chunked::super_ndarray::SuperNdArray;
-#[cfg(feature = "chunked")]
-use crate::traits::consolidate::Consolidate;
-
 // ****************************************************************
 // Dispatch macros
 // ****************************************************************
 
-/// Dispatch to the inner NdArray/NdArrayV/SuperNdArray.
-#[cfg(all(feature = "views", feature = "chunked"))]
-macro_rules! delegate {
-    ($self:expr, $method:ident ( $($arg:expr),* )) => {
-        match &$self.data {
-            NdArrayE::Owned(nd) => nd.$method($($arg),*),
-            NdArrayE::View(v) => v.$method($($arg),*),
-            NdArrayE::Chunked(snd) => snd.$method($($arg),*),
-        }
-    };
-}
-
-#[cfg(all(feature = "views", not(feature = "chunked")))]
+/// Dispatch to the inner NdArray/NdArrayV.
+#[cfg(feature = "views")]
 macro_rules! delegate {
     ($self:expr, $method:ident ( $($arg:expr),* )) => {
         match &$self.data {
@@ -81,17 +63,7 @@ macro_rules! delegate {
     };
 }
 
-#[cfg(all(not(feature = "views"), feature = "chunked"))]
-macro_rules! delegate {
-    ($self:expr, $method:ident ( $($arg:expr),* )) => {
-        match &$self.data {
-            NdArrayE::Owned(nd) => nd.$method($($arg),*),
-            NdArrayE::Chunked(snd) => snd.$method($($arg),*),
-        }
-    };
-}
-
-#[cfg(not(any(feature = "views", feature = "chunked")))]
+#[cfg(not(feature = "views"))]
 macro_rules! delegate {
     ($self:expr, $method:ident ( $($arg:expr),* )) => {
         match &$self.data {
@@ -106,10 +78,10 @@ macro_rules! delegate {
 
 /// Labelled N-dimensional array with named dimensions and coordinate-based indexing.
 ///
-/// XArray wraps an [`NdArray`], [`NdArrayV`], or [`SuperNdArray`] with per-axis
-/// names and optional coordinate labels, enabling selection by value rather
-/// than raw position. The storage variant is chosen at construction time and
-/// is transparent to the caller.
+/// XArray wraps an [`NdArray`] or [`NdArrayV`] with per-axis names and optional
+/// coordinate labels, enabling selection by value rather than raw position.
+/// The storage variant is chosen at construction time and is transparent to
+/// the caller.
 ///
 /// # Construction
 /// ```
@@ -202,17 +174,6 @@ impl<T: Float> XArray<T> {
         XArray { data: NdArrayE::Owned(data), axes }
     }
 
-    /// Wrap a SuperNdArray with axes.
-    #[cfg(feature = "chunked")]
-    pub fn from_batches(data: SuperNdArray<T>, dim_names: &[&str]) -> Self {
-        assert_eq!(
-            data.ndim(), dim_names.len(),
-            "XArray: {} dim names for {}D batched array", dim_names.len(), data.ndim()
-        );
-        let axes = dim_names.iter().map(|n| Axis::named(*n)).collect();
-        XArray { data: NdArrayE::Chunked(data), axes }
-    }
-
     /// Wrap an NdArrayV view with axes (zero-copy).
     #[cfg(feature = "views")]
     pub fn from_view(view: NdArrayV<T>, axes: Vec<Axis>) -> Self {
@@ -271,21 +232,16 @@ impl<T: Float> XArray<T> {
     // Delegated data access
     // ****************************************************************
 
-    /// Consume and return the inner NdArray, consolidating if batched,
-    /// materialising if a view.
+    /// Consume and return the inner NdArray, materialising if it is a view.
     pub fn into_ndarray(self) -> NdArray<T> {
         match self.data {
             NdArrayE::Owned(nd) => nd,
             #[cfg(feature = "views")]
             NdArrayE::View(v) => v.to_ndarray(),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => {
-                snd.consolidate()
-            }
         }
     }
 
-    /// Materialise to owned NdArray if currently a view or batched.
+    /// Materialise to an owned NdArray if currently a view.
     pub fn to_owned(&self) -> XArray<T> {
         match &self.data {
             NdArrayE::Owned(_) => self.clone(),
@@ -294,13 +250,6 @@ impl<T: Float> XArray<T> {
                 data: NdArrayE::Owned(v.to_ndarray()),
                 axes: self.axes.clone(),
             },
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => {
-                XArray {
-                    data: NdArrayE::Owned(snd.clone().consolidate()),
-                    axes: self.axes.clone(),
-                }
-            }
         }
     }
 
@@ -331,8 +280,6 @@ impl<T: Float> XArray<T> {
             NdArrayE::Owned(nd) => nd.shape().to_vec(),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => v.shape().to_vec(),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => snd.shape(),
         }
     }
 
@@ -355,8 +302,6 @@ impl<T: Float> XArray<T> {
             NdArrayE::Owned(nd) => nd.as_view().obs(idx),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => v.obs(idx),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => snd.obs(idx),
         }
     }
 
@@ -372,15 +317,13 @@ impl<T: Float> XArray<T> {
     /// Single element access.
     pub fn get(&self, indices: &[usize]) -> T { delegate!(self, get(indices)) }
 
-    /// Mutable element access. Only works on owned or batched data.
-    /// Triggers copy-on-write if the owned array is shared with views.
+    /// Mutable element access. Triggers copy-on-write if the owned array is
+    /// shared with views; an XArray backed by a view cannot be mutated.
     pub fn set(&mut self, indices: &[usize], value: T) {
         match &mut self.data {
             NdArrayE::Owned(nd) => nd.set(indices, value),
             #[cfg(feature = "views")]
             NdArrayE::View(_) => panic!("XArray: cannot mutate a view"),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => snd.set(indices, value),
         }
     }
 
@@ -401,28 +344,23 @@ impl<T: Float> XArray<T> {
     // ****************************************************************
 
     /// Apply a function to every logical element, returning a new labelled
-    /// array with the same axes. Chunked storage keeps its batch
-    /// boundaries. View storage materialises to owned.
+    /// array with the same axes. View storage materialises to owned.
     pub fn apply(&self, f: impl Fn(T) -> T) -> XArray<T> {
         let data = match &self.data {
             NdArrayE::Owned(nd) => NdArrayE::Owned(nd.apply(f)),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => NdArrayE::Owned(v.apply(f)),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => NdArrayE::Chunked(snd.apply(f)),
         };
         XArray { data, axes: self.axes.clone() }
     }
 
-    /// Apply a function to every logical element in place, with no
-    /// allocation. Only works on owned or batched data, matching `set`.
+    /// Apply a function to every logical element in place. An XArray backed
+    /// by a view cannot be mutated, matching `set`.
     pub fn apply_mut(&mut self, f: impl Fn(T) -> T) {
         match &mut self.data {
             NdArrayE::Owned(nd) => nd.apply_mut(f),
             #[cfg(feature = "views")]
             NdArrayE::View(_) => panic!("XArray: cannot mutate a view"),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => snd.apply_mut(f),
         }
     }
 
@@ -500,19 +438,13 @@ impl<T: Float> XArray<T> {
         XArray { data: NdArrayE::View(view), axes: result_axes }
     }
 
-    /// Slice the underlying NdArray/NdArrayV positionally. Zero-copy for
-    /// owned and view storage. Chunked storage consolidates first, since a
-    /// single strided view cannot span separate batch allocations.
+    /// Slice the underlying NdArray/NdArrayV positionally and zero-copy.
     /// For named axis selection, use `.select()` instead.
     #[cfg(all(feature = "views", feature = "select"))]
     pub fn slice(&self, selection: &[&dyn DataSelector]) -> NdArrayV<T> {
         match &self.data {
             NdArrayE::Owned(nd) => nd.slice(selection),
             NdArrayE::View(v) => v.slice(selection),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => {
-                snd.clone().consolidate().slice(selection)
-            }
         }
     }
 
@@ -686,10 +618,6 @@ impl<T: Float> XArray<T> {
             NdArrayE::Owned(nd) => nd.transpose(),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => v.transpose().to_ndarray(),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => {
-                snd.clone().consolidate().transpose()
-            }
         };
         let new_axes = dim_order.iter()
             .map(|name| self.ax(name).clone())
@@ -740,8 +668,6 @@ pub(crate) enum NdArrayE<T> {
     Owned(NdArray<T>),
     #[cfg(feature = "views")]
     View(NdArrayV<T>),
-    #[cfg(feature = "chunked")]
-    Chunked(SuperNdArray<T>),
 }
 
 // ****************************************************************
@@ -1128,8 +1054,6 @@ impl<T: Float> Shape for XArray<T> {
             NdArrayE::Owned(nd) => Shape::shape(nd),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => Shape::shape(v),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => Shape::shape(snd),
         }
     }
 }
@@ -1160,10 +1084,6 @@ impl<T: Float> Concatenate for XArray<T> {
                 NdArrayE::Owned(nd) => nd,
                 #[cfg(feature = "views")]
                 NdArrayE::View(v) => v.to_ndarray(),
-                #[cfg(feature = "chunked")]
-                NdArrayE::Chunked(snd) => {
-                    snd.consolidate()
-                }
             }
         };
         let self_nd = to_ndarray(self_data);
@@ -1227,8 +1147,6 @@ impl<'a, T: Float> IntoIterator for &'a XArray<T> {
             NdArrayE::Owned(nd) => Box::new(nd.into_iter()),
             #[cfg(feature = "views")]
             NdArrayE::View(v) => Box::new(v.into_iter()),
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(snd) => Box::new(snd.into_iter()),
         }
     }
 }
@@ -1255,8 +1173,6 @@ impl<T: Float> fmt::Debug for XArray<T> {
             NdArrayE::Owned(_) => "owned",
             #[cfg(feature = "views")]
             NdArrayE::View(_) => "view",
-            #[cfg(feature = "chunked")]
-            NdArrayE::Chunked(_) => "chunked",
         };
         write!(f, "XArray [{}] ({})", dims.join(", "), storage)
     }
@@ -1908,20 +1824,4 @@ mod tests {
         let _ = XArray::from_view(nd.as_view(), axes);
     }
 
-    #[cfg(feature = "chunked")]
-    #[test]
-    fn debug_format_chunked() {
-        use crate::structs::chunked::super_ndarray::SuperNdArray;
-        let xa = XArray::from_batches(
-            SuperNdArray::from_batches(
-                vec![
-                    NdArray::from_slice(&[1.0, 2.0], &[2]),
-                    NdArray::from_slice(&[3.0], &[1]),
-                ],
-                "batched",
-            ),
-            &["time"],
-        );
-        assert!(format!("{:?}", xa).contains("(chunked)"));
-    }
 }

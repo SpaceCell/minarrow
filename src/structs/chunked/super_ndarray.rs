@@ -26,9 +26,8 @@
 //!   until consolidation is needed.
 //!
 //! ## Relationship to XArray
-//! `XArray` wraps NdArray, NdArrayV, and SuperNdArray behind a single type,
-//! adding named dimensions and coordinate labels. Use SuperNdArray directly
-//! when you need raw chunked storage without label overhead.
+//! `XArray` wraps NdArray or NdArrayV and adds named dimensions and coordinate
+//! labels. SuperNdArray remains a separate container.
 
 use std::fmt;
 

@@ -18,18 +18,12 @@
 //! axes match by name and coordinates. The left operand's axes carry
 //! through to the result.
 //!
-//! Two chunked operands combine batch by batch, preserving their chunk
-//! boundaries. Every other storage pairing materialises to owned arrays
-//! first, since view and chunked layouts cannot combine in place.
+//! Views materialise before arithmetic; owned data remains shared until
+//! the result is constructed.
 
 use crate::enums::error::MinarrowError;
 use crate::enums::operators::ArithmeticOperator;
 use crate::kernels::broadcast::ndarray::resolve_ndarray_arithmetic;
-#[cfg(feature = "chunked")]
-use crate::kernels::broadcast::super_ndarray::{
-    resolve_scalar_super_ndarray_arithmetic, resolve_super_ndarray_arithmetic,
-    resolve_super_ndarray_scalar_arithmetic,
-};
 use crate::structs::ndarray::NdArray;
 use crate::structs::xarray::{NdArrayE, XArray};
 use crate::traits::type_unions::Float;
@@ -63,18 +57,8 @@ pub(crate) fn resolve_xarray_arithmetic<T: Float>(
         });
     }
 
-    // Chunked pairs combine batch by batch, preserving boundaries.
-    #[cfg(feature = "chunked")]
-    if let (NdArrayE::Chunked(a), NdArrayE::Chunked(b)) = (lhs.storage(), rhs.storage()) {
-        let out = resolve_super_ndarray_arithmetic(op, a, b)?;
-        return Ok(XArray::from_storage(
-            NdArrayE::Chunked(out),
-            lhs.axes().to_vec(),
-        ));
-    }
-
-    // Remaining pairings materialise to owned arrays. `to_owned` is a
-    // refcount bump when the storage is already owned.
+    // Views materialise to owned arrays. `to_owned` is a refcount bump
+    // when the storage is already owned.
     let l = lhs.to_owned();
     let r = rhs.to_owned();
     let (NdArrayE::Owned(a), NdArrayE::Owned(b)) = (l.storage(), r.storage()) else {
@@ -130,21 +114,12 @@ pub fn broadcast_xarray_rem<T: Float>(
 }
 
 /// Resolve an elementwise operation between a labelled array and a scalar.
-/// The array's axes carry through unchanged, and chunked storage keeps
-/// its batch boundaries.
+/// The array's axes carry through unchanged.
 pub(crate) fn resolve_xarray_scalar_arithmetic<T: Float>(
     op: ArithmeticOperator,
     lhs: &XArray<T>,
     scalar: T,
 ) -> Result<XArray<T>, MinarrowError> {
-    #[cfg(feature = "chunked")]
-    if let NdArrayE::Chunked(snd) = lhs.storage() {
-        let out = resolve_super_ndarray_scalar_arithmetic(op, snd, scalar)?;
-        return Ok(XArray::from_storage(
-            NdArrayE::Chunked(out),
-            lhs.axes().to_vec(),
-        ));
-    }
     let l = lhs.to_owned();
     let NdArrayE::Owned(a) = l.storage() else {
         unreachable!("to_owned yields owned storage");
@@ -158,21 +133,12 @@ pub(crate) fn resolve_xarray_scalar_arithmetic<T: Float>(
 }
 
 /// Resolve an elementwise operation with the scalar on the left.
-/// The array's axes carry through unchanged, and chunked storage keeps
-/// its batch boundaries.
+/// The array's axes carry through unchanged.
 pub(crate) fn resolve_scalar_xarray_arithmetic<T: Float>(
     op: ArithmeticOperator,
     scalar: T,
     rhs: &XArray<T>,
 ) -> Result<XArray<T>, MinarrowError> {
-    #[cfg(feature = "chunked")]
-    if let NdArrayE::Chunked(snd) = rhs.storage() {
-        let out = resolve_scalar_super_ndarray_arithmetic(op, scalar, snd)?;
-        return Ok(XArray::from_storage(
-            NdArrayE::Chunked(out),
-            rhs.axes().to_vec(),
-        ));
-    }
     let r = rhs.to_owned();
     let NdArrayE::Owned(b) = r.storage() else {
         unreachable!("to_owned yields owned storage");
@@ -212,37 +178,6 @@ mod tests {
         assert!(broadcast_xarray_mul(&a, &b).is_err());
     }
 
-    #[cfg(feature = "chunked")]
-    #[test]
-    fn chunked_pair_preserves_batches() {
-        use crate::structs::chunked::super_ndarray::SuperNdArray;
-
-        let a = XArray::from_batches(
-            SuperNdArray::from_batches(
-                vec![
-                    NdArray::from_slice(&[1.0, 2.0], &[2]),
-                    NdArray::from_slice(&[3.0], &[1]),
-                ],
-                "a",
-            ),
-            &["time"],
-        );
-        let b = XArray::from_batches(
-            SuperNdArray::from_batches(
-                vec![
-                    NdArray::from_slice(&[10.0, 10.0], &[2]),
-                    NdArray::from_slice(&[10.0], &[1]),
-                ],
-                "b",
-            ),
-            &["time"],
-        );
-        let c = broadcast_xarray_add(&a, &b).unwrap();
-        assert!(!c.is_owned());
-        let vals: Vec<f64> = (&c).into_iter().collect();
-        assert_eq!(vals, vec![11.0, 12.0, 13.0]);
-    }
-
     #[test]
     fn native_operators() {
         let a = XArray::new(NdArray::from_slice(&[2.0, 4.0], &[2]), &["time"]);
@@ -273,34 +208,6 @@ mod tests {
         assert_eq!(xa.get(&[0]), 10.0);
         assert_eq!(xa.get(&[1]), 20.0);
         assert_eq!(xa.dim_names(), vec!["time"]);
-    }
-
-    #[cfg(all(feature = "value_type", feature = "chunked"))]
-    #[test]
-    fn value_scalar_on_chunked_keeps_storage() {
-        use std::sync::Arc;
-
-        use crate::structs::chunked::super_ndarray::SuperNdArray;
-        use crate::{Scalar, Value};
-
-        let a = Value::XArray(Arc::new(XArray::from_batches(
-            SuperNdArray::from_batches(
-                vec![
-                    NdArray::from_slice(&[1.0, 2.0], &[2]),
-                    NdArray::from_slice(&[3.0], &[1]),
-                ],
-                "a",
-            ),
-            &["time"],
-        )));
-        let scaled = (a * Value::Scalar(Scalar::Float64(10.0))).unwrap();
-        let Value::XArray(xa) = scaled else {
-            panic!("expected Value::XArray");
-        };
-        assert!(!xa.is_owned());
-        assert_eq!(xa.dim_names(), vec!["time"]);
-        let vals: Vec<f64> = xa.as_ref().into_iter().collect();
-        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
     }
 
     #[cfg(feature = "value_type")]
