@@ -288,7 +288,10 @@ impl NumericArrayV {
     }
 
     /// Guarantees the backing array is Float64, then returns the f64 slice,
-    /// null mask, and null count for this view's window.
+    /// window-aligned null mask, and null count for this view's window.
+    ///
+    /// The returned mask is sliced to the window via `slice_clone`, so bit `i`
+    /// always describes `slice[i]` regardless of the view's offset.
     ///
     /// **If already Float64, this is a pass-through.** Otherwise the full backing
     /// NumericArray is cast to Float64 via [`NumericArray::cow_into_f64`],
@@ -301,7 +304,7 @@ impl NumericArrayV {
     /// that still reference the original will cast independently when they
     /// reach this call, so it generally is best avoided in such contexts as it would
     /// clone for every independent window view.
-    pub fn guarantee_f64(&mut self) -> (&[f64], Option<&Bitmask>, Option<usize>) {
+    pub fn guarantee_f64(&mut self) -> (&[f64], Option<Bitmask>, Option<usize>) {
         if !matches!(&self.array, NumericArray::Float64(_)) {
             // Take the old array out, leaving Null as placeholder
             let old = std::mem::take(&mut self.array);
@@ -312,7 +315,11 @@ impl NumericArrayV {
             unreachable!()
         };
         let slice = &arr.data.as_slice()[self.offset..self.offset + self.len];
-        let mask = arr.null_mask.as_ref();
+        // The mask is sliced to the view window so mask bit `i` describes `slice[i]`.
+        let mask = arr
+            .null_mask
+            .as_ref()
+            .map(|m| m.slice_clone(self.offset, self.len));
         let nc = if mask.is_some() {
             Some(self.null_count())
         } else {
@@ -470,7 +477,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::{Array, Bitmask, IntegerArray, NumericArray, vec64};
+    use crate::{Array, Bitmask, FloatArray, IntegerArray, NumericArray, vec64};
 
     #[test]
     fn test_numeric_array_view_basic_indexing_and_slice() {
@@ -648,5 +655,26 @@ mod tests {
             ),
             _ => panic!("expected Int32 variant"),
         }
+    }
+
+    #[test]
+    fn guarantee_f64_mask_aligns_with_windowed_slice() {
+        // Rows: [1.0, null(2.0), 3.0, null(4.0), 5.0]. A view over rows 2..5
+        // must return a mask whose bit i describes slice[i], so the window
+        // sees [3.0 valid, 4.0 null, 5.0 valid].
+        let mut fa = FloatArray::<f64>::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut mask = Bitmask::new_set_all(5, true);
+        mask.set(1, false);
+        mask.set(3, false);
+        fa.null_mask = Some(mask);
+        let mut view = NumericArrayV::new(NumericArray::Float64(Arc::new(fa)), 2, 3);
+        let (slice, win_mask, nc) = view.guarantee_f64();
+        assert_eq!(slice, &[3.0, 4.0, 5.0]);
+        let m = win_mask.expect("windowed mask present");
+        assert_eq!(m.len(), 3);
+        assert!(m.get(0));
+        assert!(!m.get(1));
+        assert!(m.get(2));
+        assert_eq!(nc, Some(1));
     }
 }
