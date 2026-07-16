@@ -105,10 +105,9 @@ unsafe extern "C" fn dltensor_versioned_capsule_destructor(capsule: *mut pyo3::f
 /// A `max_version` of major 1 or above yields the versioned capsule with
 /// the read-only flag carried. Without it, the unversioned capsule ships
 /// for consumers on the pre-1.0 protocol - that capsule has no read-only
-/// flag, so writes through it are visible to every reference to the
-/// buffer, per the standard DLPack sharing convention. `copy=True`
-/// exports a fresh compact copy, which is always writable and is flagged
-/// `IS_COPIED` on the versioned capsule.
+/// flag, so shared storage is copied before export. `copy=True` exports a
+/// fresh compact copy in either protocol; it is always writable and is
+/// flagged `IS_COPIED` on the versioned capsule.
 pub fn export_dlpack(
     py: Python<'_>,
     inner: &PyNdArrayInner,

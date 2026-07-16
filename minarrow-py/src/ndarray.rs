@@ -170,10 +170,9 @@ impl PyNdArray {
     /// with the read-only flag carried, and consumers that support it
     /// should use it. Without it, the unversioned capsule ships for
     /// consumers on the pre-1.0 protocol - that capsule has no read-only
-    /// flag, so writes through it are visible to this object and any
-    /// clones, per the standard DLPack sharing convention. `copy=True`
-    /// exports a fresh compact copy, which is always writable and is
-    /// flagged `IS_COPIED` on the versioned capsule.
+    /// flag, so shared storage is copied before export. `copy=True`
+    /// exports a fresh compact copy in either protocol; it is always
+    /// writable and is flagged `IS_COPIED` on the versioned capsule.
     #[pyo3(signature = (*, stream=None, max_version=None, dl_device=None, copy=None))]
     fn __dlpack__(
         &self,

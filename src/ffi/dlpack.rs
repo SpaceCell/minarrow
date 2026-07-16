@@ -209,17 +209,16 @@ struct DLPackHolder<A> {
     strides_i64: Vec<i64>,
 }
 
-/// Export an NdArray as a legacy DLPack managed tensor for zero-copy
-/// sharing.
+/// Export an NdArray as a legacy DLPack managed tensor.
 ///
 /// Legacy `DLManagedTensor` carries no read-only flag, so consumers
-/// treat the pointer as writable, and a consumer writing through it is
-/// visible to every other reference to the buffer. That is the standard
-/// DLPack sharing convention across NumPy and PyTorch. Consumers on the
-/// 1.x protocol should prefer `to_dlpack_versioned`, which flags shared
-/// buffers read-only. A buffer without a stable owned or shared
-/// allocation copies into an owned one first, since the consumer holds
-/// the base pointer for the tensor's whole lifetime.
+/// treat the pointer as writable. A uniquely owned Minarrow allocation
+/// transfers zero-copy. Shared or aliased storage copies first so a
+/// consumer cannot mutate another reference through the legacy protocol.
+/// Consumers on the 1.x protocol should prefer `to_dlpack_versioned`,
+/// which can share the buffer and carry its read-only state. A buffer
+/// without a stable owned allocation also copies first, since the consumer
+/// holds the base pointer for the tensor's whole lifetime.
 ///
 /// Returns a [`DLPackTensor`] that manages the lifecycle. The NdArray's
 /// buffer stays alive through its internal shared reference count. When
@@ -228,7 +227,7 @@ struct DLPackHolder<A> {
 /// For FFI handoff (e.g. creating a PyCapsule), call `.into_raw()` to
 /// transfer ownership to the consumer.
 pub fn export_to_dlpack<T: Float>(ndarray: NdArray<T>) -> DLPackTensor {
-    let ndarray = if ndarray.data.is_owned() || ndarray.data.is_shared() {
+    let ndarray = if ndarray.data.is_owned() && Arc::strong_count(&ndarray.data) == 1 {
         ndarray
     } else {
         NdArray::from_buffer(ndarray.data.to_owned_copy(), ndarray.shape(), ndarray.strides())
@@ -263,20 +262,18 @@ pub fn export_to_dlpack_versioned<T: Float>(ndarray: NdArray<T>) -> DLPackTensor
     )
 }
 
-/// Export an NdArrayV window as a legacy DLPack managed tensor without
-/// copying. The window offset carries through DLPack's `byte_offset`
-/// field, and the view strides carry as element strides, so sliced,
-/// transposed, and permuted views all hand over zero-copy.
+/// Export an NdArrayV window as a legacy DLPack managed tensor.
 ///
 /// Legacy `DLManagedTensor` carries no read-only flag, so a consumer
-/// writing through the pointer is visible to every other reference to
-/// the backing buffer, per the standard DLPack sharing convention.
-/// Consumers on the 1.x protocol should prefer `to_dlpack_versioned`,
-/// which flags shared buffers read-only. A backing without a stable
-/// owned or shared allocation materialises the window first.
+/// treats the pointer as writable. A view over a uniquely owned Minarrow
+/// allocation exports zero-copy, carrying its offset and strides. A view
+/// over shared or aliased storage materialises first so a legacy consumer
+/// cannot mutate another reference. Consumers on the 1.x protocol should
+/// prefer `to_dlpack_versioned`, which can share the backing and flag it
+/// read-only.
 #[cfg(feature = "views")]
 pub fn export_view_to_dlpack<T: Float>(view: NdArrayV<T>) -> DLPackTensor {
-    if !(view.source.data.is_owned() || view.source.data.is_shared()) {
+    if !view.source.data.is_owned() || Arc::strong_count(&view.source.data) != 1 {
         return export_to_dlpack(view.to_ndarray());
     }
     let shape = view.shape().to_vec();
@@ -973,19 +970,38 @@ mod tests {
 
     #[cfg(all(feature = "views", feature = "select"))]
     #[test]
-    fn view_export_carries_byte_offset() {
-        let data: Vec<f64> = (1..=10).map(|x| x as f64).collect();
-        let arr = NdArray::from_slice(&data, &[5, 2]);
-        let view = arr.r(2..5);
+    fn uniquely_owned_view_export_carries_byte_offset() {
+        let (view, data_ptr) = {
+            let data: Vec<f64> = (1..=10).map(|x| x as f64).collect();
+            let arr = NdArray::from_slice(&data, &[5, 2]);
+            let data_ptr = arr.as_slice().as_ptr();
+            (arr.r(2..5), data_ptr)
+        };
         let owned = export_view_to_dlpack(view);
         let tensor = owned.tensor();
 
-        // Zero-copy: the tensor points at the parent's own buffer with
-        // the window carried as byte_offset.
         assert_eq!(tensor.byte_offset, 2 * std::mem::size_of::<f64>() as u64);
-        assert_eq!(tensor.data as *const u8, arr.as_slice().as_ptr() as *const u8);
+        assert_eq!(tensor.data as *const f64, data_ptr);
         let shape = unsafe { std::slice::from_raw_parts(tensor.shape, 2) };
         assert_eq!(shape, &[3, 2]);
+
+        let raw = owned.into_raw();
+        let imported = unsafe { import_from_dlpack::<f64>(raw) }.unwrap();
+        assert_eq!(imported.shape(), &[3, 2]);
+        assert_eq!(imported.get(&[0, 0]), 3.0);
+        assert_eq!(imported.get(&[2, 1]), 10.0);
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn aliased_view_export_materialises() {
+        let data: Vec<f64> = (1..=10).map(|x| x as f64).collect();
+        let arr = NdArray::from_slice(&data, &[5, 2]);
+        let owned = export_view_to_dlpack(arr.r(2..5));
+        let tensor = owned.tensor();
+
+        assert_eq!(tensor.byte_offset, 0);
+        assert_ne!(tensor.data as *const f64, arr.as_slice().as_ptr());
 
         let raw = owned.into_raw();
         let imported = unsafe { import_from_dlpack::<f64>(raw) }.unwrap();
@@ -1220,14 +1236,22 @@ mod tests {
     }
 
     #[test]
-    fn export_aliased_buffer_is_zero_copy() {
+    fn export_aliased_buffer_copies() {
         let arr = NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]);
         let alias = arr.clone();
         let exported = export_to_dlpack(arr);
-        assert_eq!(
+        assert_ne!(
             exported.tensor().data as *const f64,
             alias.as_slice().as_ptr()
         );
+    }
+
+    #[test]
+    fn export_uniquely_owned_buffer_is_zero_copy() {
+        let arr = NdArray::from_slice(&[1.0, 2.0, 3.0], &[3]);
+        let data_ptr = arr.as_slice().as_ptr();
+        let exported = export_to_dlpack(arr);
+        assert_eq!(exported.tensor().data as *const f64, data_ptr);
     }
 
     #[test]
