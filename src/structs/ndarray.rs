@@ -868,7 +868,9 @@ impl NdArray<f64> {
     /// Each column is copied into its own 64-byte aligned `FloatArray<f64>`,
     /// since the compact tensor layout does not place column starts on
     /// alignment boundaries. `fields` must have exactly `n_cols` entries
-    /// when supplied, and `None` generates `col_0`, `col_1`, and so on.
+    /// when supplied. Each supplied field must describe a non-nullable
+    /// [`ArrowType::Float64`] column. `None` generates `col_0`, `col_1`,
+    /// and so on.
     pub fn to_table(self, fields: Option<Vec<Field>>) -> Result<Table, MinarrowError> {
         let shape = self.dims.shape();
         if shape.len() != 2 {
@@ -886,6 +888,26 @@ impl NdArray<f64> {
                             n_cols, n_cols, fields.len()
                         ),
                     });
+                }
+                for (index, field) in fields.iter().enumerate() {
+                    if field.dtype != ArrowType::Float64 {
+                        return Err(MinarrowError::TypeError {
+                            from: "Field",
+                            to: "Float64 NdArray column",
+                            message: Some(format!(
+                                "to_table: field {} ('{}') has dtype {:?}, expected Float64",
+                                index, field.name, field.dtype
+                            )),
+                        });
+                    }
+                    if field.nullable {
+                        return Err(MinarrowError::NullError {
+                            message: Some(format!(
+                                "to_table: field {} ('{}') is nullable, but NdArray columns are non-nullable",
+                                index, field.name
+                            )),
+                        });
+                    }
                 }
                 fields
             }
@@ -914,13 +936,19 @@ impl NdArray<f64> {
     }
 
     /// Convert a 1D NdArray to an Array (FloatArray<f64>).
+    /// Compact, exact-length storage moves across directly. A strided array
+    /// or one with unused backing elements is materialised in logical order.
     pub fn to_array(self) -> Result<Array, MinarrowError> {
         if self.ndim() != 1 {
             return Err(MinarrowError::ShapeError {
                 message: format!("to_array requires a 1D array, got {}D", self.ndim()),
             });
         }
-        let buffer = Arc::try_unwrap(self.data).unwrap_or_else(|arc| (*arc).clone());
+        let buffer = if self.dims.strides()[0] == 1 && self.data.len() == self.len() {
+            Arc::try_unwrap(self.data).unwrap_or_else(|arc| (*arc).clone())
+        } else {
+            Buffer::from_vec64((&self).into_iter().collect())
+        };
         let float_arr = FloatArray::new(buffer, None);
         Ok(Array::NumericArray(NumericArray::Float64(Arc::new(float_arr))))
     }
@@ -2833,6 +2861,19 @@ mod tests {
     }
 
     #[test]
+    fn to_table_rejects_incompatible_field_metadata() {
+        let wrong_dtype = NdArray::from_slice(&[1.0, 2.0], &[2, 1]).to_table(Some(vec![
+            Field::new("value", ArrowType::Float32, false, None),
+        ]));
+        assert!(matches!(wrong_dtype, Err(MinarrowError::TypeError { .. })));
+
+        let nullable = NdArray::from_slice(&[1.0, 2.0], &[2, 1]).to_table(Some(vec![
+            Field::new("value", ArrowType::Float64, true, None),
+        ]));
+        assert!(matches!(nullable, Err(MinarrowError::NullError { .. })));
+    }
+
+    #[test]
     fn to_table_non_2d_fails() {
         let a = NdArray::new(&[5]);
         assert!(a.to_table(None).is_err());
@@ -2844,6 +2885,28 @@ mod tests {
         let arr = a.to_array().unwrap();
         let f = arr.num().f64();
         assert_eq!(f.data.as_slice(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn to_array_materialises_strided_logical_values() {
+        let a = NdArray::from_buffer(
+            Buffer::from_slice(&[1.0, 99.0, 2.0, 99.0, 3.0]),
+            &[3],
+            &[2],
+        );
+        let arr = a.to_array().unwrap();
+        assert_eq!(arr.num().f64().data.as_slice(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn to_array_ignores_unused_backing_elements() {
+        let a = NdArray::from_buffer(
+            Buffer::from_slice(&[1.0, 2.0, 3.0, 99.0]),
+            &[3],
+            &[1],
+        );
+        let arr = a.to_array().unwrap();
+        assert_eq!(arr.num().f64().data.as_slice(), &[1.0, 2.0, 3.0]);
     }
 
     #[test]
