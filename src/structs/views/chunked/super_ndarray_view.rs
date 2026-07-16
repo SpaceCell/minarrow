@@ -134,6 +134,16 @@ impl<T: Float> SuperNdArrayV<T> {
         self.slices.iter()
     }
 
+    /// Iterate values in the column-major order of the logical consolidated
+    /// view without materialising it. Unlike `IntoIterator`, this interleaves
+    /// corresponding axis-0 runs across slices.
+    pub fn iter_logical(&self) -> impl Iterator<Item = T> + '_ {
+        let n_runs: usize = self.inner_shape.iter().product();
+        (0..n_runs).flat_map(move |run| {
+            self.slices.iter().flat_map(move |slice| slice.iter_axis0_run(run))
+        })
+    }
+
     /// Returns a sub-window of this view over `[offset .. offset + len)`
     /// axis-0 observations. Zero-copy - the new view narrows each
     /// constituent slice as needed.
@@ -306,8 +316,9 @@ impl<T: Float> RowSelection for SuperNdArrayV<T> {
 
 // *** IntoIterator ************************************************
 
-/// Iterating a chunked view yields values in column-major order within
-/// each slice, crossing slice boundaries in order.
+/// Iterating a SuperNdArrayV walks each slice in sequence, with column-major
+/// order inside each slice. Use [`SuperNdArrayV::iter_logical`] for the
+/// column-major order of the consolidated logical view.
 impl<'a, T: Float> IntoIterator for &'a SuperNdArrayV<T> {
     type Item = T;
     type IntoIter = Box<dyn Iterator<Item = T> + 'a>;
@@ -525,6 +536,21 @@ mod tests {
         let v = snd.slice(0, 3);
         let vals: Vec<f64> = (&v).into_iter().collect();
         assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn logical_iteration_interleaves_slices_by_axis_zero_run() {
+        let snd = two_batch_2d();
+        let view = snd.slice(1, 3);
+        let batch_first: Vec<f64> = (&view).into_iter().collect();
+        assert_eq!(batch_first, vec![2.0, 20.0, 3.0, 4.0, 30.0, 40.0]);
+
+        let logical: Vec<f64> = view.iter_logical().collect();
+        assert_eq!(logical, vec![2.0, 3.0, 4.0, 20.0, 30.0, 40.0]);
+        assert_eq!(
+            logical,
+            view.clone().consolidate().into_iter().collect::<Vec<_>>()
+        );
     }
 
     #[test]

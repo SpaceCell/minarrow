@@ -837,6 +837,23 @@ impl<T: Float> NdArray<T> {
         let n_obs = self.dims.shape()[0];
         (0..n_obs).into_par_iter().map(move |i| (i, self.obs(i)))
     }
+
+    /// Iterate one logical axis-0 run identified by its flattened outer
+    /// index. This composes the logical iterator for SuperNdArray without
+    /// materialising its batches.
+    pub(crate) fn iter_axis0_run(&self, run_idx: usize) -> impl ExactSizeIterator<Item = T> + '_ {
+        let n_runs: usize = self.shape()[1..].iter().product();
+        assert!(run_idx < n_runs, "axis-0 run {} out of bounds ({})", run_idx, n_runs);
+
+        let mut rem = run_idx;
+        let mut offset = 0;
+        for d in 1..self.ndim() {
+            offset += (rem % self.shape()[d]) * self.strides()[d];
+            rem /= self.shape()[d];
+        }
+        let stride = self.strides()[0];
+        (0..self.shape()[0]).map(move |i| self.data.as_slice()[offset + i * stride])
+    }
 }
 
 // *** f64 conversions to the Array/Table/Matrix enum boundary *****

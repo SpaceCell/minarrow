@@ -327,6 +327,16 @@ impl<T: Float> SuperNdArray<T> {
         self.batches.iter_mut()
     }
 
+    /// Iterate values in the column-major order of the logical consolidated
+    /// array without materialising it. Unlike `IntoIterator`, this interleaves
+    /// corresponding axis-0 runs across batches.
+    pub fn iter_logical(&self) -> impl Iterator<Item = T> + '_ {
+        let n_runs: usize = self.inner_shape.iter().product();
+        (0..n_runs).flat_map(move |run| {
+            self.batches.iter().flat_map(move |batch| batch.iter_axis0_run(run))
+        })
+    }
+
     /// Parallel iteration over batches.
     #[cfg(feature = "parallel_proc")]
     #[inline]
@@ -617,8 +627,9 @@ impl<T: Float> RowSelection for SuperNdArray<T> {
 // IntoIterator - element-wise iteration across batches
 // ****************************************************************
 
-/// Iterating a SuperNdArray yields `T` values in column-major order,
-/// seamlessly crossing chunk boundaries.
+/// Iterating a SuperNdArray walks each batch in sequence, with column-major
+/// order inside each batch. Use [`SuperNdArray::iter_logical`] when values
+/// must follow the column-major order of the consolidated logical array.
 impl<'a, T: Float> IntoIterator for &'a SuperNdArray<T> {
     type Item = T;
     type IntoIter = SuperNdArrayIter<'a, T>;
@@ -1168,6 +1179,13 @@ mod tests {
         let vals: Vec<f64> = (&snd).into_iter().collect();
         // chunk0 col-major: [1,2,3,4], chunk1 col-major: [5,6,7,8]
         assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+
+        let logical: Vec<f64> = snd.iter_logical().collect();
+        assert_eq!(logical, vec![1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0]);
+        assert_eq!(
+            logical,
+            snd.clone().consolidate().into_iter().collect::<Vec<_>>()
+        );
     }
 
     #[test]
