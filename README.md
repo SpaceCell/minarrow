@@ -19,9 +19,10 @@
 - Fully-typed throughout
 - Embed Python ML in Rust
 - Plug in Polars, Arrow, and Python with Zero-copy FFI, PyCapsule and PYO3
+- NdArray and XArray implementations with native DLPack integration for bridging to Python AI/ML workloads.
 
 **Limitations**:
-- Tabular data only. No Arrow lists or structs.
+- No Arrow lists or structs.
 
 ## Why Minarrow?
 
