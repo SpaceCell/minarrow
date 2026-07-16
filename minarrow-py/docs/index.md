@@ -32,7 +32,7 @@
 
     ---
 
-    Array, Table, ChunkedArray and ChunkedTable cover flat columnar data.
+    Focused containers cover flat columnar and N-dimensional data.
 
 </div>
 
@@ -71,21 +71,35 @@ The same data model exists on both sides of the boundary.
 
 ## Overview
 
-Minarrow provides four primary *Python* containers:
+Minarrow provides four primary columnar *Python* containers:
 
 * `Array` for typed columnar data
 * `Table` for named collections of equal-length arrays
 * `ChunkedArray` for one logical column split across multiple chunks
 * `ChunkedTable` for a sequence of table batches
 
-The *Python* package is backed by the [Minarrow Rust core](https://github.com/pbower/minarrow), which provides the underlying array types, schemas and aligned buffers.
+For f32/f64 N-dimensional data it also includes:
+
+* `NdArray` for contiguous data and zero-copy selections
+* `ChunkedNdArray` for batched array pieces - e.g., off disk or a network feed
+* `XArray` for named axes and coordinate selection
+
+These are intended as foundational data containers and interchange objects,
+rather than a direct replacement for a numerical or statistical runtime at this layer.
+Use their DLPack support to pass data to NumPy, PyTorch, JAX, or another
+compute library. `ChunkedNdArray` exposes one DLPack-producing `NdArray` per
+chunk rather than consolidating its allocations implicitly.
+
+The *Python* package is backed by [Minarrow Rust](https://github.com/pbower/minarrow), which handles the underlying array
+operations, schemas and 64-byte aligned buffers (for SIMD), at high levels of performance.
 
 Minarrow is intended for:
 
-* Passing columnar data between *Rust* and *Python*
+* Tabular and NdArray application landing zone for high-performance use cases.
+* Data interchange between *Rust* and *Python*
 * Building *Python* extensions that operate on *Arrow*-compatible data
 * Feeding *Polars*, *DuckDB*, *PyArrow* and other *Arrow*-aware libraries
-* Running SIMD-oriented native kernels over guaranteed aligned buffers
+* Running SIMD-oriented native statistical kernels.
 * Keeping binary size and dependency footprint small
 
 ## Installation
@@ -179,7 +193,7 @@ Use it to construct or receive data, operate on it through native extensions, an
 | *pandas* workflows          | *pandas* with an *Arrow*-compatible path  |
 | Custom native computation | *Rust*, C or *C++* through *Arrow* capsules |
 
-The [Rust crate](https://docs.rs/minarrow/latest/minarrow/) does provide a minimal set of tabular data-processing capabilities but without full parallelism, which serves as a useful basis for foundational operations in that environment. It compiles in less than 2 seconds with the standard feature set to help you stay productive, and your project lightweight. 
+The [Rust crate](https://docs.rs/minarrow/latest/minarrow/) does provide a minimal set of tabular data-processing capabilities but without full parallelism, which serves as a useful basis for foundational operations in that environment. It compiles in less than 2 seconds with the standard feature set to help you stay productive, and your project lightweight.
 
 See [Ecosystem interoperability](interop.md) for supported conversion paths and ownership behaviour.
 

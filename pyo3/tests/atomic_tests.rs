@@ -65,9 +65,9 @@ use pyo3::types::IntoPyDict;
 use std::sync::Arc;
 
 fn main() -> PyResult<()> {
-    pyo3::prepare_freethreaded_python();
+    Python::initialize();
 
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         println!("=== MinArrow <-> PyArrow Comprehensive Tests ===\n");
 
         let mut passed = 0;

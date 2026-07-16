@@ -138,6 +138,24 @@ views = []
 # with large data sizes.
 matrix = []
 
+# N-dimensional f32/f64 container with compact column-major layout.
+# Slicing and axis selection are available through the `select` feature.
+# Useful for bridging into Python ML/AI runtimes via DLPack.
+#
+# Note that this does not include statistical routines.
+ndarray = []
+
+# DLPack tensor interchange with Python and other runtimes. Compatible
+# ownership, alignment, layout, and protocol choices allow direct sharing.
+# Requires the `ndarray` feature.
+dlpack = ["ndarray"]
+
+# Labelled N-dimensional array wrapping NdArray with named dimensions
+# and optional coordinate labels per axis. Requires `ndarray` feature.
+# Coordinate value lookup is available when `scalar_type`, `views`, and
+# `select` are also enabled.
+xarray = ["ndarray"]
+
 # Adds `to_apache_arrow()` for casting into that library.
 cast_arrow = ["arrow", "arrow-schema"]
 
@@ -238,7 +256,7 @@ fast_dict = [
     "dep:parking_lot",
 ]
 
-# Adds typed arithmetic broadcasting for add, sub, mult, div, rem
+# Adds typed arithmetic broadcasting for add, sub, mult, div, rem.
 broadcast = []
 
 # Adds Hash and Eq implementations for Scalar, and hash_element_at for Array.
@@ -312,33 +330,49 @@ rustdoc-args = ["--cfg", "docsrs"]
 [[example]]
 name = "arithmetic"
 path = "examples/arithmetic.rs"
-required-features = ["broadcast"]
+required-features = ["broadcast", "value_type"]
 
 # Broadcasting examples
 [[example]]
 name = "test_broadcasting"
 path = "examples/broadcasting/test_broadcasting.rs"
-required-features = ["broadcast"]
+required-features = ["broadcast", "value_type"]
 
 [[example]]
 name = "test_scalar_arithmetic"
 path = "examples/broadcasting/test_scalar_arithmetic.rs"
-required-features = ["broadcast", "scalar_type"]
+required-features = ["broadcast", "value_type", "scalar_type"]
 
 [[example]]
 name = "test_string_broadcasting"
 path = "examples/broadcasting/test_string_broadcasting.rs"
-required-features = ["broadcast"]
+required-features = ["broadcast", "value_type"]
 
 [[example]]
 name = "test_value_ops"
 path = "examples/broadcasting/test_value_ops.rs"
-required-features = ["broadcast"]
+required-features = ["broadcast", "value_type"]
 
 [[example]]
 name = "test_value_macros"
 path = "examples/broadcasting/test_value_macros.rs"
-required-features = ["broadcast"]
+required-features = ["broadcast", "value_type"]
+
+# N-dimensional examples
+[[example]]
+name = "ndarray"
+path = "examples/ndarray.rs"
+required-features = ["ndarray"]
+
+[[example]]
+name = "super_ndarray"
+path = "examples/super_ndarray.rs"
+required-features = ["ndarray"]
+
+[[example]]
+name = "xarray"
+path = "examples/xarray.rs"
+required-features = ["xarray", "scalar_type", "views", "select"]
 
 [[bench]]
 name = "hotloop_benchmark_simd"

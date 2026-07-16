@@ -26,7 +26,9 @@ use crate::kernels::routing::arithmetic::resolve_binary_arithmetic;
 use crate::structs::field_array::create_field_for_array;
 use crate::{Array, ArrayV, Bitmask, FieldArray, Table, Value};
 #[cfg(feature = "scalar_type")]
-use crate::{BooleanArray, DatetimeArray, FloatArray, IntegerArray, Scalar, StringArray};
+use crate::{BooleanArray, FloatArray, IntegerArray, Scalar, StringArray};
+#[cfg(all(feature = "datetime", feature = "scalar_type"))]
+use crate::DatetimeArray;
 use std::sync::Arc;
 
 /// Broadcast addition: `lhs + rhs` with automatic scalar expansion.

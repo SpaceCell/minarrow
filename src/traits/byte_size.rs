@@ -328,6 +328,82 @@ impl ByteSize for Matrix {
     }
 }
 
+/// ByteSize for NdArray (when ndarray feature is enabled)
+#[cfg(feature = "ndarray")]
+use crate::structs::ndarray::NdArray;
+
+#[cfg(feature = "ndarray")]
+impl<T> ByteSize for NdArray<T> {
+    fn est_bytes(&self) -> usize {
+        // Physical backing buffer, including any stride padding.
+        self.data.est_bytes()
+    }
+}
+
+/// ByteSize for NdArrayV - proportional estimate from the backing array
+#[cfg(all(feature = "ndarray", feature = "views"))]
+use crate::NdArrayV;
+
+#[cfg(all(feature = "ndarray", feature = "views"))]
+impl<T: crate::Float> ByteSize for NdArrayV<T> {
+    fn est_bytes(&self) -> usize {
+        let full_len = self.source.len();
+        let full_bytes = self.source.est_bytes();
+        if full_len > 0 {
+            (full_bytes * self.len()) / full_len
+        } else {
+            0
+        }
+    }
+}
+
+/// ByteSize for SuperNdArray - sum of batch estimates
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+use crate::SuperNdArray;
+
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+impl<T> ByteSize for SuperNdArray<T> {
+    fn est_bytes(&self) -> usize {
+        self.batches.iter().map(|batch| batch.est_bytes()).sum()
+    }
+}
+
+/// ByteSize for SuperNdArrayV - sum of slice estimates
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+use crate::SuperNdArrayV;
+
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+impl<T: crate::Float> ByteSize for SuperNdArrayV<T> {
+    fn est_bytes(&self) -> usize {
+        self.slices.iter().map(|slice| slice.est_bytes()).sum()
+    }
+}
+
+/// ByteSize for XArray - storage plus coordinate arrays
+#[cfg(feature = "xarray")]
+use crate::XArray;
+
+#[cfg(feature = "xarray")]
+impl<T: crate::Float> ByteSize for XArray<T> {
+    fn est_bytes(&self) -> usize {
+        use crate::structs::xarray::NdArrayE;
+        let data_bytes = match self.storage() {
+            NdArrayE::Owned(nd) => nd.est_bytes(),
+            #[cfg(feature = "views")]
+            NdArrayE::View(v) => v.est_bytes(),
+        };
+        let coord_bytes: usize = self
+            .axes()
+            .iter()
+            .map(|axis| {
+                axis.name.capacity()
+                    + axis.coords.as_ref().map(|c| c.est_bytes()).unwrap_or(0)
+            })
+            .sum();
+        data_bytes + coord_bytes
+    }
+}
+
 /// ByteSize for Cube (when cube feature is enabled)
 #[cfg(feature = "cube")]
 use crate::Cube;
@@ -414,6 +490,16 @@ impl ByteSize for Value {
             Value::FieldArray(fa) => fa.est_bytes(),
             #[cfg(feature = "matrix")]
             Value::Matrix(m) => m.est_bytes(),
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(nd) => nd.est_bytes(),
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(v) => v.est_bytes(),
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(snd) => snd.est_bytes(),
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(sv) => sv.est_bytes(),
+            #[cfg(feature = "xarray")]
+            Value::XArray(xa) => xa.est_bytes(),
             #[cfg(feature = "cube")]
             Value::Cube(c) => c.est_bytes(),
             Value::VecValue(vec) => {

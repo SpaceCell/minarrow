@@ -21,14 +21,27 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 minarrow = { version = "0.15", path = ".." }
 minarrow-pyo3 = { version = "0.3", path = "../pyo3", optional = true, default-features = false }
-pyo3 = { version = "0.23", features = ["abi3-py39"] }
+pyo3 = { version = "0.29", features = ["abi3-py39"] }
 thiserror = "2"
 
 [features]
-default = ["datetime", "large_string", "scalar_type", "value_type", "cube", "arrow_interop"]
+default = ["datetime", "large_string", "scalar_type", "value_type", "cube", "arrow_interop", "ndarray"]
 extension-module = ["pyo3/extension-module"]
 arrow_interop = ["dep:minarrow-pyo3", "minarrow-pyo3/datetime"]
 simd = ["minarrow/simd"]
+# N-dimensional tensor with DLPack capsule interchange. The capsule glue
+# lives in minarrow-pyo3's ffi::dlpack, alongside the Arrow capsule glue.
+ndarray = [
+    "scalar_type",
+    "minarrow/ndarray",
+    "minarrow/dlpack",
+    "minarrow/views",
+    "minarrow/select",
+    "minarrow/chunked",
+    "minarrow/xarray",
+    "dep:minarrow-pyo3",
+    "minarrow-pyo3/ndarray",
+]
 
 # Embeds a CPython interpreter so Rust can drive Python through `PyLiquid`.
 # Links libpython - use the default non `extension-module` link mode and 
@@ -66,8 +79,13 @@ name = "roundtrip_ml"
 path = "examples/roundtrip_ml.rs"
 required-features = ["embed"]
 
+[[example]]
+name = "roundtrip_tensor"
+path = "examples/roundtrip_tensor.rs"
+required-features = ["embed", "ndarray"]
+
 [build-dependencies]
-pyo3-build-config = "0.23"
+pyo3-build-config = { version = "0.29", features = ["resolve-config"] }
 
 # Release profile is optimised, stripped, and carries no debug info.
 #

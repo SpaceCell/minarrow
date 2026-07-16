@@ -35,10 +35,9 @@ use minarrow_pyo3::{PyArray, PyRecordBatch};
 use pyo3::prelude::*;
 
 fn main() -> PyResult<()> {
-    // Initialise Python
-    pyo3::prepare_freethreaded_python();
+    Python::initialize();
 
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         println!("=== MinArrow <-> PyArrow Roundtrip Example ===\n");
 
         // Test 1: Integer Array roundtrip

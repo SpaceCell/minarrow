@@ -29,7 +29,7 @@ use crate::convert::resolve_index;
 use crate::dtype::{dtype_from_arrow, DType};
 
 /// A named column descriptor holding name, Arrow type, nullability, and metadata.
-#[pyclass(name = "Field", module = "minarrow")]
+#[pyclass(from_py_object, name = "Field", module = "minarrow")]
 #[derive(Clone)]
 pub struct PyField(pub Field);
 
@@ -93,7 +93,7 @@ impl PyField {
 }
 
 /// An ordered list of fields plus table-level metadata.
-#[pyclass(name = "Schema", module = "minarrow")]
+#[pyclass(from_py_object, name = "Schema", module = "minarrow")]
 #[derive(Clone)]
 pub struct PySchema(pub Schema);
 

@@ -22,6 +22,8 @@
 //!
 //! This enables ergonomic arithmetic operations like:
 //! ```rust
+//! # #[cfg(all(feature = "value_type", feature = "views"))]
+//! # {
 //! use minarrow::{Value, arr_i32, vec64};
 //! use std::sync::Arc;
 //! let arr1 = arr_i32![1, 2, 3, 4];
@@ -29,115 +31,230 @@
 //! let a = Value::Array(Arc::new(arr1));
 //! let b = Value::Array(Arc::new(arr2));
 //! let result = a + b;  // Automatically broadcasts and performs element-wise addition
+//! # }
 //! ```
 //!
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub mod array;
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub mod array_view;
-#[cfg(feature = "cube")]
+#[cfg(all(feature = "cube", feature = "value_type", feature = "views"))]
 pub mod cube;
+#[cfg(all(feature = "chunked", feature = "value_type", feature = "views"))]
 pub mod field_array;
 #[cfg(feature = "matrix")]
 pub mod matrix;
+#[cfg(all(
+    feature = "scalar_type",
+    feature = "value_type",
+    feature = "views"
+))]
 pub mod scalar;
+#[cfg(all(feature = "chunked", feature = "value_type", feature = "views"))]
 pub mod super_array;
+#[cfg(all(feature = "chunked", feature = "value_type", feature = "views"))]
 pub mod super_array_view;
+#[cfg(all(feature = "chunked", feature = "value_type", feature = "views"))]
 pub mod super_table;
+#[cfg(all(feature = "chunked", feature = "value_type", feature = "views"))]
 pub mod super_table_view;
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub mod table;
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub mod table_view;
 
-#[cfg(feature = "chunked")]
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use crate::utils::create_aligned_chunks_from_array;
-pub use table::{broadcast_super_table_add, broadcast_table_add};
+#[cfg(all(feature = "value_type", feature = "views"))]
+pub use table::broadcast_table_add;
+#[cfg(all(feature = "chunked", feature = "value_type", feature = "views"))]
+pub use table::broadcast_super_table_add;
 
 // Import helper functions from submodules
-#[cfg(feature = "scalar_type")]
+#[cfg(all(
+    feature = "scalar_type",
+    feature = "value_type",
+    feature = "views"
+))]
 use crate::kernels::routing::arithmetic::scalar_arithmetic;
-#[cfg(all(feature = "chunked", feature = "views"))]
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use array::broadcast_array_to_supertableview;
+#[cfg(all(feature = "value_type", feature = "views"))]
 use array::broadcast_array_to_table;
-#[cfg(feature = "views")]
-use array_view::{
-    broadcast_arrayview_to_supertableview, broadcast_arrayview_to_table,
-    broadcast_arrayview_to_tableview,
-};
-#[cfg(all(feature = "scalar_type", feature = "chunked", feature = "views"))]
+#[cfg(all(feature = "value_type", feature = "views"))]
+use array_view::{broadcast_arrayview_to_table, broadcast_arrayview_to_tableview};
+#[cfg(all(feature = "chunked", feature = "value_type", feature = "views"))]
+use array_view::broadcast_arrayview_to_supertableview;
+#[cfg(all(
+    feature = "chunked",
+    feature = "scalar_type",
+    feature = "value_type",
+    feature = "views"
+))]
 use scalar::broadcast_scalar_to_supertableview;
-#[cfg(feature = "scalar_type")]
+#[cfg(all(
+    feature = "scalar_type",
+    feature = "value_type",
+    feature = "views"
+))]
 use scalar::broadcast_scalar_to_table;
-#[cfg(all(feature = "scalar_type", feature = "views"))]
+#[cfg(all(
+    feature = "scalar_type",
+    feature = "value_type",
+    feature = "views"
+))]
 use scalar::broadcast_scalar_to_tableview;
-#[cfg(feature = "chunked")]
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use super_array::broadcast_superarray_to_table;
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use super_array::route_super_array_broadcast;
-#[cfg(all(feature = "chunked", feature = "views"))]
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use super_array_view::broadcast_superarrayview_to_tableview;
-#[cfg(feature = "chunked")]
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use super_table::broadcast_super_table_with_operator;
-#[cfg(all(feature = "scalar_type", feature = "chunked", feature = "views"))]
+#[cfg(all(
+    feature = "chunked",
+    feature = "scalar_type",
+    feature = "value_type",
+    feature = "views"
+))]
 use super_table_view::broadcast_supertableview_to_scalar;
-#[cfg(all(feature = "chunked", feature = "views"))]
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use super_table_view::{
     broadcast_superarrayview_to_table, broadcast_supertableview_to_array,
     broadcast_supertableview_to_arrayview,
 };
-#[cfg(feature = "views")]
+#[cfg(all(feature = "value_type", feature = "views"))]
 use table::broadcast_table_to_arrayview;
-use table::{broadcast_table_to_array, broadcast_table_to_scalar, broadcast_table_with_operator};
-#[cfg(feature = "chunked")]
+#[cfg(all(feature = "value_type", feature = "views"))]
+use table::{broadcast_table_to_array, broadcast_table_with_operator};
+#[cfg(all(
+    feature = "scalar_type",
+    feature = "value_type",
+    feature = "views"
+))]
+use table::broadcast_table_to_scalar;
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use table::{broadcast_table_to_superarray, broadcast_table_to_superarrayview};
-#[cfg(all(feature = "scalar_type", feature = "views"))]
+#[cfg(all(
+    feature = "scalar_type",
+    feature = "value_type",
+    feature = "views"
+))]
 use table_view::broadcast_tableview_to_scalar;
-#[cfg(all(feature = "chunked", feature = "views"))]
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use table_view::broadcast_tableview_to_superarrayview;
-#[cfg(feature = "views")]
+#[cfg(all(feature = "value_type", feature = "views"))]
 use table_view::{broadcast_tableview_to_arrayview, broadcast_tableview_to_tableview};
 
-#[cfg(feature = "cube")]
+#[cfg(all(
+    feature = "cube",
+    feature = "value_type",
+    feature = "views"
+))]
 use crate::Cube;
 
-#[cfg(feature = "views")]
+#[cfg(all(feature = "value_type", feature = "views"))]
 use crate::ArrayV;
+#[cfg(all(feature = "value_type", feature = "views"))]
 use crate::{Array, FloatArray, IntegerArray, StringArray};
 
-#[cfg(feature = "scalar_type")]
+#[cfg(all(
+    feature = "scalar_type",
+    feature = "value_type",
+    feature = "views"
+))]
 use crate::Scalar;
-#[cfg(all(feature = "views", feature = "chunked"))]
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use crate::SuperTableV;
+#[cfg(all(feature = "value_type", feature = "views"))]
 use crate::enums::error::MinarrowError;
+#[cfg(all(feature = "value_type", feature = "views"))]
 use crate::enums::operators::ArithmeticOperator;
+#[cfg(all(feature = "value_type", feature = "views"))]
 use crate::enums::value::Value;
-#[cfg(feature = "chunked")]
+#[cfg(all(
+    feature = "chunked",
+    feature = "value_type",
+    feature = "views"
+))]
 use crate::{SuperArray, SuperTable};
 
+#[cfg(all(feature = "value_type", feature = "views"))]
 use crate::kernels::routing::arithmetic::resolve_binary_arithmetic;
 
 /// Add two Values with automatic broadcasting
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub fn value_add(lhs: Value, rhs: Value) -> Result<Value, MinarrowError> {
     broadcast_value(ArithmeticOperator::Add, lhs, rhs)
 }
 
 /// Subtract two Values with automatic broadcasting
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub fn value_subtract(lhs: Value, rhs: Value) -> Result<Value, MinarrowError> {
     broadcast_value(ArithmeticOperator::Subtract, lhs, rhs)
 }
 
 /// Multiply two Values with automatic broadcasting
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub fn value_multiply(lhs: Value, rhs: Value) -> Result<Value, MinarrowError> {
     broadcast_value(ArithmeticOperator::Multiply, lhs, rhs)
 }
 
 /// Divide two Values with automatic broadcasting
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub fn value_divide(lhs: Value, rhs: Value) -> Result<Value, MinarrowError> {
     broadcast_value(ArithmeticOperator::Divide, lhs, rhs)
 }
 
 /// Remainder (modulo) two Values with automatic broadcasting
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub fn value_remainder(lhs: Value, rhs: Value) -> Result<Value, MinarrowError> {
     broadcast_value(ArithmeticOperator::Remainder, lhs, rhs)
 }
 
 /// Power/exponentiation of two Values with automatic broadcasting
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub fn value_power(lhs: Value, rhs: Value) -> Result<Value, MinarrowError> {
     broadcast_value(ArithmeticOperator::Power, lhs, rhs)
 }
@@ -148,7 +265,7 @@ pub fn value_power(lhs: Value, rhs: Value) -> Result<Value, MinarrowError> {
 /// 1.⚠️ Best to keep this out of the binary by disabling value_type unless you
 /// require universal broadcasting compatibility.
 /// 2.These do not yet implement parallel processing to speed up broadcasting.
-#[cfg(all(feature = "scalar_type", feature = "value_type"))]
+#[cfg(all(feature = "value_type", feature = "views"))]
 pub fn broadcast_value(
     op: ArithmeticOperator,
     lhs: Value,
@@ -410,6 +527,34 @@ pub fn broadcast_value(
             ),
         }),
 
+        // NdArray is not implemented at the present time.
+        #[cfg(feature = "ndarray")]
+        (Value::NdArray(_), _) | (_, Value::NdArray(_)) => {
+            unimplemented!("NdArray broadcasting")
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "views"))]
+        (Value::NdArrayView(_), _) | (_, Value::NdArrayView(_)) => {
+            unimplemented!("NdArrayView broadcasting")
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "chunked"))]
+        (Value::SuperNdArray(_), _) | (_, Value::SuperNdArray(_)) => {
+            unimplemented!("SuperNdArray broadcasting")
+        }
+
+        #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+        (Value::SuperNdArrayView(_), _) | (_, Value::SuperNdArrayView(_)) => {
+            unimplemented!("SuperNdArrayView broadcasting")
+        }
+
+
+        // XArray is not implemented at the present time.
+        #[cfg(feature = "xarray")]
+        (Value::XArray(_), _) | (_, Value::XArray(_)) => {
+            unimplemented!("XArray broadcasting")
+        }
+
         // Cube cases - use broadcast_cube_add
         #[cfg(feature = "cube")]
         (Value::Cube(l), Value::Cube(r)) => {
@@ -497,11 +642,11 @@ pub fn broadcast_value(
         },
 
         // Scalar-SuperTable broadcasting - apply to each table in SuperTable
-        #[cfg(feature = "scalar_type")]
+        #[cfg(all(feature = "chunked", feature = "scalar_type"))]
         (Value::Scalar(scalar), Value::SuperTable(super_table)) => {
             scalar::broadcast_scalar_to_supertable(op, &scalar, &super_table).map(|st| Value::SuperTable(Arc::new(st)))
         },
-        #[cfg(feature = "scalar_type")]
+        #[cfg(all(feature = "chunked", feature = "scalar_type"))]
         (Value::SuperTable(super_table), Value::Scalar(scalar)) => {
             super_table::broadcast_supertable_to_scalar(op, &super_table, &scalar).map(|st| Value::SuperTable(Arc::new(st)))
         },
@@ -554,9 +699,11 @@ pub fn broadcast_value(
         },
 
         // Array-SuperTable broadcasting - apply to each table in SuperTable
+        #[cfg(feature = "chunked")]
         (Value::Array(array), Value::SuperTable(super_table)) => {
             array::broadcast_array_to_supertable(op, &array, &super_table).map(|st| Value::SuperTable(Arc::new(st)))
         },
+        #[cfg(feature = "chunked")]
         (Value::SuperTable(super_table), Value::Array(array)) => {
             super_table::broadcast_supertable_to_array(op, &super_table, &array).map(|st| Value::SuperTable(Arc::new(st)))
         },
@@ -570,9 +717,11 @@ pub fn broadcast_value(
         },
 
         // FieldArray-SuperTable broadcasting - apply to each table in SuperTable
+        #[cfg(feature = "chunked")]
         (Value::FieldArray(field_array), Value::SuperTable(super_table)) => {
             super_table::broadcast_fieldarray_to_supertable(op, &field_array, &super_table).map(|st| Value::SuperTable(Arc::new(st)))
         },
+        #[cfg(feature = "chunked")]
         (Value::SuperTable(super_table), Value::FieldArray(field_array)) => {
             super_table::broadcast_supertable_to_fieldarray(op, &super_table, &field_array).map(|st| Value::SuperTable(Arc::new(st)))
         },
@@ -588,11 +737,11 @@ pub fn broadcast_value(
         },
 
         // ArrayView-SuperTable broadcasting - convert views to arrays and broadcast
-        #[cfg(feature = "views")]
+        #[cfg(all(feature = "chunked", feature = "views"))]
         (Value::ArrayView(array_view), Value::SuperTable(super_table)) => {
             super_table::broadcast_arrayview_to_supertable(op, &array_view, &super_table).map(|st| Value::SuperTable(Arc::new(st)))
         },
-        #[cfg(feature = "views")]
+        #[cfg(all(feature = "chunked", feature = "views"))]
         (Value::SuperTable(super_table), Value::ArrayView(array_view)) => {
             super_table::broadcast_supertable_to_arrayview(op, &super_table, &array_view).map(|st| Value::SuperTable(Arc::new(st)))
         },
@@ -608,11 +757,11 @@ pub fn broadcast_value(
         },
 
         // ArrayView-SuperTableView broadcasting - work per chunk, not materialised
-        #[cfg(feature = "views")]
+        #[cfg(all(feature = "chunked", feature = "views"))]
         (Value::ArrayView(array_view), Value::SuperTableView(super_table_view)) => {
             broadcast_arrayview_to_supertableview(op, &array_view, &super_table_view).map(|stv| Value::SuperTableView(Arc::new(stv)))
         },
-        #[cfg(feature = "views")]
+        #[cfg(all(feature = "chunked", feature = "views"))]
         (Value::SuperTableView(super_table_view), Value::ArrayView(array_view)) => {
             broadcast_supertableview_to_arrayview(op, &super_table_view, &array_view).map(|stv| Value::SuperTableView(Arc::new(stv)))
         },

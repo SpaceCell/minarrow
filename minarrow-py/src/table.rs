@@ -35,6 +35,8 @@ use pyo3::types::{PyDict, PySlice, PyTuple};
 use crate::array::PyArray;
 use crate::convert::{build_array, build_array_typed, resolve_index};
 use crate::dtype::{dtype_from_arrow, DType};
+#[cfg(feature = "ndarray")]
+use crate::ndarray::{ndarray_from_table, PyNdArray};
 use crate::field::PySchema;
 
 /// The natural minarrow form behind a Python `Table`. Carries the whole data
@@ -71,7 +73,7 @@ impl PyTableInner {
         let view = self.as_view();
         let n = view.n_rows();
 
-        if let Ok(slice) = key.downcast::<PySlice>() {
+        if let Ok(slice) = key.cast::<PySlice>() {
             let ind = slice.indices(n as isize)?;
             if ind.step == 1 {
                 return Ok(view.r((ind.start as usize)..(ind.stop as usize)));
@@ -221,10 +223,10 @@ impl PyTableInner {
     pub fn get_item(
         &self,
         key: &Bound<'_, PyAny>,
-        wrap_array: &dyn Fn(FieldArray) -> PyResult<PyObject>,
-        wrap_table: &dyn Fn(TableV) -> PyResult<PyObject>,
-    ) -> PyResult<PyObject> {
-        if let Ok(tuple) = key.downcast::<PyTuple>() {
+        wrap_array: &dyn Fn(FieldArray) -> PyResult<Py<PyAny>>,
+        wrap_table: &dyn Fn(TableV) -> PyResult<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        if let Ok(tuple) = key.cast::<PyTuple>() {
             if tuple.len() == 2 {
                 let rows = self.row_view(&tuple.get_item(0)?)?;
                 return select_columns(&rows, &tuple.get_item(1)?, wrap_array, wrap_table);
@@ -297,8 +299,8 @@ pub fn build_table_typed(data: &Bound<'_, PyDict>, schema: &Schema) -> PyResult<
 fn column_by_name(
     view: &TableV,
     name: &str,
-    wrap_array: &dyn Fn(FieldArray) -> PyResult<PyObject>,
-) -> PyResult<PyObject> {
+    wrap_array: &dyn Fn(FieldArray) -> PyResult<Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
     match view.get(name) {
         Some(field) => wrap_array(field),
         None => Err(PyKeyError::new_err(format!("column '{}' not found", name))),
@@ -310,16 +312,16 @@ fn column_by_name(
 fn select_columns(
     view: &TableV,
     column_selection: &Bound<'_, PyAny>,
-    wrap_array: &dyn Fn(FieldArray) -> PyResult<PyObject>,
-    wrap_table: &dyn Fn(TableV) -> PyResult<PyObject>,
-) -> PyResult<PyObject> {
+    wrap_array: &dyn Fn(FieldArray) -> PyResult<Py<PyAny>>,
+    wrap_table: &dyn Fn(TableV) -> PyResult<Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
     if let Ok(name) = column_selection.extract::<String>() {
         return column_by_name(view, &name, wrap_array);
     }
     if let Ok(names) = column_selection.extract::<Vec<String>>() {
         return wrap_table(view.c(names));
     }
-    if let Ok(slice) = column_selection.downcast::<PySlice>() {
+    if let Ok(slice) = column_selection.cast::<PySlice>() {
         let ind = slice.indices(view.n_cols() as isize)?;
         let mut idxs = Vec::with_capacity(ind.slicelength);
         for k in 0..ind.slicelength {
@@ -504,6 +506,17 @@ impl PyTable {
         Self::from_arrow(obj)
     }
 
+    /// Convert numeric columns to a 2D float64 `NdArray`, one column per
+    /// axis-1 entry. From there `to_numpy`, `to_pytorch`, and the other
+    /// DLPack bridges hand the data to each framework.
+    #[cfg(feature = "ndarray")]
+    fn to_ndarray(&self) -> PyResult<PyNdArray> {
+        match &self.0 {
+            PyTableInner::Owned(table) => ndarray_from_table(table),
+            PyTableInner::View(view) => ndarray_from_table(&view.to_table()),
+        }
+    }
+
     /// Convert to a cuDF `DataFrame` through the Arrow PyCapsule interface. Runs
     /// on GPU and requires the `cudf` package.
     #[cfg(feature = "arrow_interop")]
@@ -639,7 +652,7 @@ impl PyTable {
         self.0.repr()
     }
 
-    fn __getitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn __getitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.0.get_item(
             key,
             &|field| Ok(Py::new(py, PyArray::from(field))?.into_any()),
@@ -664,8 +677,8 @@ impl PyTable {
     fn __arrow_c_stream__(
         &self,
         py: Python<'_>,
-        requested_schema: Option<PyObject>,
-    ) -> PyResult<PyObject> {
+        requested_schema: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
         let _ = requested_schema;
         match &self.0 {
             PyTableInner::Owned(table) => to_py::table_to_stream_capsule(table, py),

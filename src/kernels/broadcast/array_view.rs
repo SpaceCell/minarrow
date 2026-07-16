@@ -124,7 +124,7 @@ pub fn broadcast_arrayview_to_tableview(
 }
 
 /// Helper function for ArrayView-SuperTableView broadcasting - work per chunk by slicing the existing ArrayView
-#[cfg(feature = "views")]
+#[cfg(all(feature = "chunked", feature = "views"))]
 pub fn broadcast_arrayview_to_supertableview(
     op: ArithmeticOperator,
     array_view: &ArrayV,

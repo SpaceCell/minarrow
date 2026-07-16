@@ -90,7 +90,7 @@ const ALIGN_ELEMS: usize = 64 / std::mem::size_of::<f64>(); // 8
 
 /// Round up to next multiple of ALIGN_ELEMS for 64-byte column alignment.
 #[inline]
-const fn aligned_stride(n_rows: usize) -> usize {
+pub(crate) const fn aligned_stride(n_rows: usize) -> usize {
     (n_rows + ALIGN_ELEMS - 1) & !(ALIGN_ELEMS - 1)
 }
 

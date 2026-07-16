@@ -113,6 +113,9 @@ pub mod error;
 pub mod ffi;
 pub mod types;
 
+#[cfg(feature = "ndarray")]
+use crate::ffi::dlpack::PyNdArrayInner;
+
 // Re-export the main types for ease of use
 pub use error::{PyMinarrowError, PyMinarrowResult};
 pub use types::{
@@ -259,7 +262,7 @@ fn export_chunked_stream_capsule(py: Python, arr: PyChunkedArray) -> PyResult<Ar
 /// e.g. `pa.RecordBatchReader.from_stream(obj)` or `nanoarrow.ArrayStream(obj)`.
 #[pyclass(name = "ArrowStream")]
 struct ArrowStream {
-    capsule: Option<PyObject>,
+    capsule: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -269,7 +272,7 @@ impl ArrowStream {
     /// Returns the underlying ArrowArrayStream capsule. The capsule can
     /// only be consumed once - subsequent calls raise ValueError.
     #[pyo3(signature = (requested_schema=None))]
-    fn __arrow_c_stream__(&mut self, requested_schema: Option<PyObject>) -> PyResult<PyObject> {
+    fn __arrow_c_stream__(&mut self, requested_schema: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
         let _ = requested_schema;
         self.capsule.take().ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
@@ -285,8 +288,8 @@ impl ArrowStream {
 /// e.g. `pa.array(obj)`.
 #[pyclass(name = "ArrowArray")]
 struct ArrowArrayWrapper {
-    schema_capsule: Option<PyObject>,
-    array_capsule: Option<PyObject>,
+    schema_capsule: Option<Py<PyAny>>,
+    array_capsule: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -298,8 +301,8 @@ impl ArrowArrayWrapper {
     #[pyo3(signature = (requested_schema=None))]
     fn __arrow_c_array__(
         &mut self,
-        requested_schema: Option<PyObject>,
-    ) -> PyResult<(PyObject, PyObject)> {
+        requested_schema: Option<Py<PyAny>>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         let _ = requested_schema;
         let schema = self.schema_capsule.take();
         let array = self.array_capsule.take();
@@ -309,6 +312,187 @@ impl ArrowArrayWrapper {
                 "ArrowArray capsules have already been consumed",
             )),
         }
+    }
+}
+
+/// N-dimensional f32/f64 tensor with zero-copy DLPack interchange.
+///
+/// The Rust-produces / Python-consumes counterpart of minarrow-py's
+/// `NdArray` - construct it from a minarrow [`NdArray`](minarrow::NdArray)
+/// via `From`, hand it to NumPy or PyTorch through `__dlpack__`, and take
+/// tensors back with `from_dlpack`. Building tensors from Python
+/// sequences is minarrow-py's job.
+#[cfg(feature = "ndarray")]
+#[pyclass(name = "NdArray")]
+pub struct PyNdArray(pub PyNdArrayInner);
+
+#[cfg(feature = "ndarray")]
+impl From<minarrow::NdArray<f32>> for PyNdArray {
+    fn from(ndarray: minarrow::NdArray<f32>) -> Self {
+        PyNdArray(PyNdArrayInner::from(ndarray))
+    }
+}
+
+#[cfg(feature = "ndarray")]
+impl From<minarrow::NdArray<f64>> for PyNdArray {
+    fn from(ndarray: minarrow::NdArray<f64>) -> Self {
+        PyNdArray(PyNdArrayInner::from(ndarray))
+    }
+}
+
+#[cfg(feature = "ndarray")]
+impl From<minarrow::NdArrayV<f32>> for PyNdArray {
+    fn from(view: minarrow::NdArrayV<f32>) -> Self {
+        PyNdArray(PyNdArrayInner::from(view))
+    }
+}
+
+#[cfg(feature = "ndarray")]
+impl From<minarrow::NdArrayV<f64>> for PyNdArray {
+    fn from(view: minarrow::NdArrayV<f64>) -> Self {
+        PyNdArray(PyNdArrayInner::from(view))
+    }
+}
+
+#[cfg(feature = "ndarray")]
+#[pymethods]
+impl PyNdArray {
+    /// Dimension sizes.
+    #[getter]
+    fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyTuple>> {
+        match &self.0 {
+            PyNdArrayInner::F32(a) => pyo3::types::PyTuple::new(py, a.shape()),
+            PyNdArrayInner::F64(a) => pyo3::types::PyTuple::new(py, a.shape()),
+            PyNdArrayInner::F32View(v) => pyo3::types::PyTuple::new(py, v.shape()),
+            PyNdArrayInner::F64View(v) => pyo3::types::PyTuple::new(py, v.shape()),
+        }
+    }
+
+    /// Element strides per dimension.
+    #[getter]
+    fn strides<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyTuple>> {
+        match &self.0 {
+            PyNdArrayInner::F32(a) => pyo3::types::PyTuple::new(py, a.strides()),
+            PyNdArrayInner::F64(a) => pyo3::types::PyTuple::new(py, a.strides()),
+            PyNdArrayInner::F32View(v) => pyo3::types::PyTuple::new(py, v.strides()),
+            PyNdArrayInner::F64View(v) => pyo3::types::PyTuple::new(py, v.strides()),
+        }
+    }
+
+    /// Number of dimensions.
+    #[getter]
+    fn ndim(&self) -> usize {
+        match &self.0 {
+            PyNdArrayInner::F32(a) => a.ndim(),
+            PyNdArrayInner::F64(a) => a.ndim(),
+            PyNdArrayInner::F32View(v) => v.ndim(),
+            PyNdArrayInner::F64View(v) => v.ndim(),
+        }
+    }
+
+    /// Element type name, `float32` or `float64`.
+    #[getter]
+    fn dtype(&self) -> &'static str {
+        match &self.0 {
+            PyNdArrayInner::F32(_) => "float32",
+            PyNdArrayInner::F64(_) => "float64",
+            PyNdArrayInner::F32View(_) => "float32",
+            PyNdArrayInner::F64View(_) => "float64",
+        }
+    }
+
+    /// Total element count.
+    #[getter]
+    fn size(&self) -> usize {
+        match &self.0 {
+            PyNdArrayInner::F32(a) => a.len(),
+            PyNdArrayInner::F64(a) => a.len(),
+            PyNdArrayInner::F32View(v) => v.len(),
+            PyNdArrayInner::F64View(v) => v.len(),
+        }
+    }
+
+    fn __len__(&self) -> PyResult<usize> {
+        let shape = match &self.0 {
+            PyNdArrayInner::F32(a) => a.shape(),
+            PyNdArrayInner::F64(a) => a.shape(),
+            PyNdArrayInner::F32View(v) => v.shape(),
+            PyNdArrayInner::F64View(v) => v.shape(),
+        };
+        shape
+            .first()
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyTypeError::new_err("len() of a rank-zero NdArray"))
+    }
+
+    fn __repr__(&self) -> String {
+        let shape = match &self.0 {
+            PyNdArrayInner::F32(a) => a.shape().to_vec(),
+            PyNdArrayInner::F64(a) => a.shape().to_vec(),
+            PyNdArrayInner::F32View(v) => v.shape().to_vec(),
+            PyNdArrayInner::F64View(v) => v.shape().to_vec(),
+        };
+        format!("NdArray(shape={:?}, dtype={})", shape, self.dtype())
+    }
+
+    /// DLPack producer entry point. Returns a capsule the consumer owns.
+    /// See [`ffi::dlpack::export_dlpack`] for the ABI and copy semantics.
+    #[pyo3(signature = (*, stream=None, max_version=None, dl_device=None, copy=None))]
+    fn __dlpack__(
+        &self,
+        py: Python<'_>,
+        stream: Option<&Bound<'_, PyAny>>,
+        max_version: Option<(u32, u32)>,
+        dl_device: Option<(i32, i32)>,
+        copy: Option<bool>,
+    ) -> PyResult<Py<PyAny>> {
+        ffi::dlpack::export_dlpack(py, &self.0, stream, max_version, dl_device, copy)
+    }
+
+    /// DLPack device query. Minarrow data lives on the CPU.
+    fn __dlpack_device__(&self) -> (i32, i32) {
+        (1, 0)
+    }
+
+    /// Import from a compatible CPU f32/f64 DLPack producer, such as a NumPy
+    /// or PyTorch tensor, or from a raw DLPack capsule. A suitably aligned
+    /// buffer can be shared; otherwise the data copies into an aligned buffer.
+    #[staticmethod]
+    fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        ffi::dlpack::import_dlpack(py, obj).map(PyNdArray)
+    }
+
+    /// Hand to NumPy as an `ndarray` via the capsule protocol.
+    fn to_numpy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let numpy = py.import("numpy")?;
+        Ok(numpy.call_method1("from_dlpack", (slf,))?.unbind())
+    }
+
+    /// Hand to PyTorch as a `torch.Tensor` via the capsule protocol.
+    fn to_pytorch(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let torch = py.import("torch")?;
+        Ok(torch.call_method1("from_dlpack", (slf,))?.unbind())
+    }
+
+    /// Hand to JAX as a `jax.Array` via the capsule protocol.
+    fn to_jax(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let jax_numpy = py.import("jax.numpy")?;
+        Ok(jax_numpy.call_method1("from_dlpack", (slf,))?.unbind())
+    }
+
+    /// Hand to TensorFlow as a `tf.Tensor`. TensorFlow's DLPack entry
+    /// takes the capsule itself rather than the producer object.
+    fn to_tensorflow(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let capsule = slf.borrow().__dlpack__(py, None, None, None, None)?;
+        let dlpack = py.import("tensorflow.experimental.dlpack")?;
+        Ok(dlpack.call_method1("from_dlpack", (capsule,))?.unbind())
+    }
+
+    /// Hand to CuPy via the capsule protocol. CuPy holds device memory,
+    /// so this copies host data to the GPU on import.
+    fn to_cupy(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let cupy = py.import("cupy")?;
+        Ok(cupy.call_method1("from_dlpack", (slf,))?.unbind())
     }
 }
 
@@ -416,6 +600,8 @@ fn minarrow_pyo3(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // PyCapsule protocol wrapper types
     m.add_class::<ArrowStream>()?;
     m.add_class::<ArrowArrayWrapper>()?;
+    #[cfg(feature = "ndarray")]
+    m.add_class::<PyNdArray>()?;
 
     // Data generators (return protocol-conforming objects)
     m.add_function(wrap_pyfunction!(generate_sample_batch, m)?)?;

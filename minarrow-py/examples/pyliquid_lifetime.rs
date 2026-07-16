@@ -40,7 +40,7 @@ fn main() -> PyResult<()> {
     // Build the input table in Rust.
     let ids: Vec64<i64> = (0..ROWS).collect();
     let input = Table::new("input".to_string(), Some(vec![fa_i64!("x", @vec64 ids)]));
-    let input_address = input.cols[0].array.try_i64_ref().unwrap().data.as_ptr() as usize;
+    let input_address = input.cols[0].array.num().i64().data.as_ptr() as usize;
 
     // Pass the table into Python, multiply the column in Polars, and return the
     // resulting frame. That dataframe is the object imported back into Minarrow.
@@ -49,11 +49,11 @@ fn main() -> PyResult<()> {
         scope.set_item("table", obj)?;
         py.run(
                         cr#"
-            import polars as pl
+import polars as pl
 
-            df = table.to_polars()
-            result = df.with_columns((pl.col("x") * 7).alias("x"))
-            "#,
+df = table.to_polars()
+result = df.with_columns((pl.col("x") * 7).alias("x"))
+"#,
             Some(&scope),
             Some(&scope),
         )?;
@@ -66,7 +66,7 @@ fn main() -> PyResult<()> {
         Value::Table(table) => (*table).clone(),
         other => panic!("expected a table, got {other:?}"),
     };
-    let result_address = result.cols[0].array.try_i64_ref().unwrap().data.as_ptr() as usize;
+    let result_address = result.cols[0].array.num().i64().data.as_ptr() as usize;
     println!("Received the Polars result into Rust.");
     println!("  Rust input buffer    : {input_address:#x}");
     println!("  Polars result buffer : {result_address:#x}");
@@ -85,7 +85,7 @@ fn main() -> PyResult<()> {
     sleep(Duration::from_secs(1));
 
     // Use the Polars result after Python is gone.
-    let sum: i64 = result.cols[0].array.clone().num().i64().unwrap().data.iter().sum();
+    let sum: i64 = result.cols[0].array.clone().num().i64().data.iter().sum();
     let expected: i64 = (0..ROWS).map(|value| value * 7).sum();
     println!(
         "After shutdown: rows = {}, sum = {sum} (expected {expected})",

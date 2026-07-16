@@ -25,7 +25,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 minarrow = { version = "0.15.0", path = "..", features = ["large_string"] }
-pyo3 = { version = "0.23" }
+pyo3 = { version = "0.29" }
 thiserror = "2"
 
 [features]
@@ -35,9 +35,11 @@ datetime = ["minarrow/datetime"]
 extended_numeric_types = ["minarrow/extended_numeric_types"]
 extended_categorical = ["minarrow/extended_categorical"]
 table_metadata = ["minarrow/table_metadata"]
+# N-dimensional tensor bridging with DLPack capsule interchange.
+ndarray = ["minarrow/ndarray", "minarrow/dlpack", "minarrow/views", "minarrow/select"]
 
 [build-dependencies]
-pyo3-build-config = "0.23"
+pyo3-build-config = "0.29"
 
 [[example]]
 name = "pycapsule_exchange"

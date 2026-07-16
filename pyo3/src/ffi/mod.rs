@@ -191,6 +191,9 @@
 //!
 //! - [`to_py`] - MinArrow to Python conversion (export)
 //! - [`to_rust`] - Python to MinArrow conversion (import)
+//! - `dlpack` - DLPack capsule interchange for `NdArray` (`ndarray` feature)
 
+#[cfg(feature = "ndarray")]
+pub mod dlpack;
 pub mod to_py;
 pub mod to_rust;

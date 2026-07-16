@@ -22,8 +22,18 @@ use super::impls::value_variant_name;
 use crate::Cube;
 #[cfg(feature = "matrix")]
 use crate::Matrix;
+#[cfg(feature = "ndarray")]
+use crate::NdArray;
+#[cfg(all(feature = "ndarray", feature = "views"))]
+use crate::NdArrayV;
 #[cfg(feature = "scalar_type")]
 use crate::Scalar;
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+use crate::SuperNdArray;
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+use crate::SuperNdArrayV;
+#[cfg(feature = "xarray")]
+use crate::XArray;
 use crate::traits::concatenate::Concatenate;
 use crate::traits::masked_array::MaskedArray;
 use crate::{Array, FieldArray, Table, enums::error::MinarrowError};
@@ -895,6 +905,46 @@ impl From<Matrix> for Value {
     }
 }
 
+#[cfg(feature = "ndarray")]
+impl From<NdArray<f64>> for Value {
+    #[inline]
+    fn from(v: NdArray<f64>) -> Self {
+        Value::NdArray(Arc::new(v))
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "views"))]
+impl From<NdArrayV<f64>> for Value {
+    #[inline]
+    fn from(v: NdArrayV<f64>) -> Self {
+        Value::NdArrayView(Arc::new(v))
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+impl From<SuperNdArray<f64>> for Value {
+    #[inline]
+    fn from(v: SuperNdArray<f64>) -> Self {
+        Value::SuperNdArray(Arc::new(v))
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+impl From<SuperNdArrayV<f64>> for Value {
+    #[inline]
+    fn from(v: SuperNdArrayV<f64>) -> Self {
+        Value::SuperNdArrayView(Arc::new(v))
+    }
+}
+
+#[cfg(feature = "xarray")]
+impl From<XArray<f64>> for Value {
+    #[inline]
+    fn from(v: XArray<f64>) -> Self {
+        Value::XArray(Arc::new(v))
+    }
+}
+
 /// Wrap a `NumericArrayV` as `Value::ArrayView`. The view's offset and length
 /// are preserved; the inner `NumericArray` flows through `Array::NumericArray`.
 #[cfg(feature = "views")]
@@ -996,6 +1046,19 @@ impl TryFrom<Value> for Array {
             Value::SuperTableView(_) => Err(err()),
             #[cfg(feature = "matrix")]
             Value::Matrix(_) => Err(err()),
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(inner) => {
+                let nd = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                nd.to_array()
+            }
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(_) => Err(err()),
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(_) => Err(err()),
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(_) => Err(err()),
+            #[cfg(feature = "xarray")]
+            Value::XArray(_) => Err(err()),
             #[cfg(feature = "cube")]
             Value::Cube(_) => Err(err()),
             Value::VecValue(inner) => {
@@ -1302,6 +1365,22 @@ impl TryFrom<Value> for Table {
             Value::SuperTableView(_) => Err(err()),
             #[cfg(feature = "matrix")]
             Value::Matrix(_) => Err(err()),
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(inner) => {
+                let nd = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                nd.to_table(None)
+            }
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(_) => Err(err()),
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(_) => Err(err()),
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(_) => Err(err()),
+            #[cfg(feature = "xarray")]
+            Value::XArray(inner) => {
+                let xa = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                xa.to_table()
+            }
             #[cfg(feature = "cube")]
             Value::Cube(_) => Err(err()),
             // VecValue terminal coercion: engine wire produced by `Long` fan-out gather.
@@ -1514,6 +1593,91 @@ impl TryFrom<Value> for SuperTableV {
             _ => Err(MinarrowError::TypeError {
                 from: "Value",
                 to: "SuperTableV",
+                message: Some("Value type mismatch".to_owned()),
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "ndarray")]
+impl TryFrom<Value> for NdArray<f64> {
+    type Error = MinarrowError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::NdArray(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "Value",
+                to: "NdArray<f64>",
+                message: Some("Value type mismatch".to_owned()),
+            }),
+        }
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "views"))]
+impl TryFrom<Value> for NdArrayV<f64> {
+    type Error = MinarrowError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::NdArrayView(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "Value",
+                to: "NdArrayV<f64>",
+                message: Some("Value type mismatch".to_owned()),
+            }),
+        }
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+impl TryFrom<Value> for SuperNdArray<f64> {
+    type Error = MinarrowError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::SuperNdArray(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "Value",
+                to: "SuperNdArray<f64>",
+                message: Some("Value type mismatch".to_owned()),
+            }),
+        }
+    }
+}
+
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+impl TryFrom<Value> for SuperNdArrayV<f64> {
+    type Error = MinarrowError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::SuperNdArrayView(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "Value",
+                to: "SuperNdArrayV<f64>",
+                message: Some("Value type mismatch".to_owned()),
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "xarray")]
+impl TryFrom<Value> for XArray<f64> {
+    type Error = MinarrowError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::XArray(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "Value",
+                to: "XArray<f64>",
                 message: Some("Value type mismatch".to_owned()),
             }),
         }
@@ -2099,6 +2263,48 @@ mod accessor_tests {
 
         let result = val.try_st();
         assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[test]
+    fn test_ndarray_value_roundtrips() {
+        let nd = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+
+        let back = NdArray::<f64>::try_from(Value::from(nd.clone())).unwrap();
+        assert_eq!(back, nd);
+        assert!(NdArray::<f64>::try_from(Value::Table(Arc::new(Table::new_empty()))).is_err());
+
+        #[cfg(feature = "views")]
+        {
+            let view = nd.as_view();
+            let back = NdArrayV::<f64>::try_from(Value::from(view)).unwrap();
+            assert_eq!(back.to_ndarray(), nd);
+            assert!(NdArrayV::<f64>::try_from(Value::from(nd.clone())).is_err());
+        }
+
+        #[cfg(feature = "chunked")]
+        {
+            let snd = SuperNdArray::from_batches(vec![nd.clone(), nd.clone()], "s");
+            let back = SuperNdArray::<f64>::try_from(Value::from(snd.clone())).unwrap();
+            assert_eq!(back, snd);
+            assert!(SuperNdArray::<f64>::try_from(Value::from(nd.clone())).is_err());
+
+            #[cfg(feature = "views")]
+            {
+                let sv = snd.slice(0, 4);
+                let back = SuperNdArrayV::<f64>::try_from(Value::from(sv.clone())).unwrap();
+                assert_eq!(back, sv);
+                assert!(SuperNdArrayV::<f64>::try_from(Value::from(snd.clone())).is_err());
+            }
+        }
+
+        #[cfg(feature = "xarray")]
+        {
+            let xa = XArray::new(nd.clone(), &["obs", "feat"]);
+            let back = XArray::<f64>::try_from(Value::from(xa.clone())).unwrap();
+            assert_eq!(back, xa);
+            assert!(XArray::<f64>::try_from(Value::from(nd)).is_err());
+        }
     }
 }
 

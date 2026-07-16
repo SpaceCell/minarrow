@@ -22,6 +22,7 @@ use minarrow::{
     TableV,
 };
 use pyo3::prelude::*;
+use pyo3::Borrowed;
 use std::sync::Arc;
 
 use crate::ffi::{to_py, to_rust};
@@ -114,9 +115,11 @@ impl AsRef<Array> for PyArray {
     }
 }
 
-impl<'py> FromPyObject<'py> for PyArray {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let field_array = to_rust::array_to_rust(ob)?;
+impl<'py> FromPyObject<'_, 'py> for PyArray {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
+        let field_array = to_rust::array_to_rust(&ob)?;
         Ok(PyArray(field_array))
     }
 }
@@ -190,9 +193,11 @@ impl AsRef<Table> for PyRecordBatch {
     }
 }
 
-impl<'py> FromPyObject<'py> for PyRecordBatch {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let table = to_rust::record_batch_to_rust(ob)?;
+impl<'py> FromPyObject<'_, 'py> for PyRecordBatch {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
+        let table = to_rust::record_batch_to_rust(&ob)?;
         Ok(PyRecordBatch(table))
     }
 }
@@ -309,9 +314,11 @@ impl AsRef<SuperTable> for PyTable {
     }
 }
 
-impl<'py> FromPyObject<'py> for PyTable {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let table = to_rust::table_to_rust(ob)?;
+impl<'py> FromPyObject<'_, 'py> for PyTable {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
+        let table = to_rust::table_to_rust(&ob)?;
         Ok(PyTable(table))
     }
 }
@@ -384,9 +391,11 @@ impl AsRef<SuperArray> for PyChunkedArray {
     }
 }
 
-impl<'py> FromPyObject<'py> for PyChunkedArray {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let array = to_rust::chunked_array_to_rust(ob)?;
+impl<'py> FromPyObject<'_, 'py> for PyChunkedArray {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
+        let array = to_rust::chunked_array_to_rust(&ob)?;
         Ok(PyChunkedArray(array))
     }
 }

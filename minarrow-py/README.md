@@ -33,7 +33,7 @@ Minarrow is useful when:
 * A small set of typed containers is preferable to a large object hierarchy
 * Higher-level computation is delegated to Polars, DuckDB, PyArrow or another execution engine
 
-The Python API centres on four containers:
+The columnar API centres on four containers:
 
 * `Array` for a single typed column
 * `Table` for a fixed set of equal-length columns
@@ -41,6 +41,18 @@ The Python API centres on four containers:
 * `ChunkedTable` for a sequence of table batches
 
 Together, they cover the common Arrow tabular data model. Nested `Struct` and `List` types are not currently supported.
+
+The tensor API adds three focused containers:
+
+* `NdArray` for contiguous or zero-copy windowed f32/f64 data
+* `ChunkedNdArray` for compatible `NdArray` pieces backed by Rust `SuperNdArray`
+* `XArray` for named dimensions and coordinate-based selection over an `NdArray`
+
+They provide storage, indexing, selection, and DLPack interchange. `NdArray`
+and `XArray` expose one tensor directly; each `ChunkedNdArray` chunk is a
+separate `NdArray` DLPack producer with its own data pointer. Numerical
+algorithms, statistics, and general tensor computation remain the job of
+NumPy, PyTorch, JAX, or another execution library.
 
 ## Why not just use PyArrow?
 
@@ -58,7 +70,7 @@ For example, a Rust service can use Lightstream to receive a network feed direct
 | Rust–Python data model | Native Minarrow types across both runtimes          | Rust integration through Arrow interchange interfaces |
 | Host runtime           | Rust, embedded in the application service           | Arrow C++ runtime loaded into Python                  |
 | Buffer alignment       | 64-byte aligned for Minarrow-backed buffers      | 8-byte Arrow alignment guarantee                      |
-| Python API             | Four core containers for flat columnar data         | Full Arrow type and container hierarchy               |
+| Python API             | Focused columnar and tensor containers               | Full Arrow type and container hierarchy               |
 | Native SIMD use        | Buffers are ready for aligned SIMD kernels          | Consumers must inspect alignment or realign the data  |
 | Runtime role           | Application data model, interchange and composition | Arrow compute, storage and dataset platform           |
 | Ecosystem integration  | Arrow PyCapsule and direct runtime bridges          | PyArrow APIs and Arrow interoperability               |

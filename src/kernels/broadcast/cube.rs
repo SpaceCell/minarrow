@@ -33,8 +33,10 @@ use crate::enums::{error::MinarrowError, operators::ArithmeticOperator};
 #[cfg(feature = "cube")]
 use crate::kernels::broadcast::{
     array::broadcast_array_to_table,
-    table::{broadcast_table_to_array, broadcast_table_to_scalar, broadcast_table_with_operator},
+    table::{broadcast_table_to_array, broadcast_table_with_operator},
 };
+#[cfg(all(feature = "cube", feature = "scalar_type"))]
+use crate::kernels::broadcast::table::broadcast_table_to_scalar;
 
 /// Broadcasts addition over Cube tables (3D structure)
 ///

@@ -836,6 +836,7 @@ impl Rem for SuperTableV {
     }
 }
 
+
 // Cube implementations
 #[cfg(feature = "cube")]
 impl Add for Cube {
@@ -917,6 +918,67 @@ mod tests {
     use super::*;
     use crate::traits::selection::ColumnSelection;
     use crate::{Array, IntegerArray, NumericArray, vec64};
+
+    #[cfg(feature = "ndarray")]
+    #[test]
+    fn ndarray_family_values_are_not_arithmetic_operands() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        use crate::NdArray;
+
+        fn assert_unimplemented(f: impl FnOnce()) {
+            let panic = catch_unwind(AssertUnwindSafe(f));
+            assert!(panic.is_err());
+        }
+
+        let a = NdArray::from_slice(&[1.0, 2.0], &[2]);
+        let lhs = Value::NdArray(Arc::new(a.clone()));
+        let rhs = Value::NdArray(Arc::new(a.clone()));
+        assert_unimplemented(|| {
+            let _ = lhs + rhs;
+        });
+
+        #[cfg(feature = "views")]
+        {
+            let lhs = Value::NdArrayView(Arc::new(a.as_view()));
+            let rhs = lhs.clone();
+            assert_unimplemented(|| {
+                let _ = lhs + rhs;
+            });
+        }
+
+        #[cfg(feature = "chunked")]
+        {
+            use crate::SuperNdArray;
+
+            let a = SuperNdArray::from_batches(vec![a.clone()], "values");
+            let lhs = Value::SuperNdArray(Arc::new(a.clone()));
+            let rhs = lhs.clone();
+            assert_unimplemented(|| {
+                let _ = lhs + rhs;
+            });
+
+            #[cfg(feature = "views")]
+            {
+                let lhs = Value::SuperNdArrayView(Arc::new(a.slice(0, 2)));
+                let rhs = lhs.clone();
+                assert_unimplemented(|| {
+                    let _ = lhs + rhs;
+                });
+            }
+        }
+
+        #[cfg(feature = "xarray")]
+        {
+            use crate::XArray;
+
+            let a = Value::XArray(Arc::new(XArray::new(a, &["value"])));
+            let b = a.clone();
+            assert_unimplemented(|| {
+                let _ = a + b;
+            });
+        }
+    }
 
     #[test]
     fn test_value_addition() {

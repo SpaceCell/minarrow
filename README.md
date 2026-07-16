@@ -93,6 +93,8 @@ Semantic groupings (`NumericArray`, `TextArray`, `TemporalArray`) support flexib
 
 Bonus LAPACK-compatible `Matrix` and `Cube` types support analytical workload variations.
 
+`NdArray` n-dimensional numeric data, with chunked (`SuperNdArray`) and labelled (`XArray`) forms, and hands tensors to PyTorch, JAX, and NumPy zero-copy over DLPack.
+
 ### Zero-Copy Views
 
 Ergonomic zero-copy row and column selection.
@@ -225,7 +227,7 @@ Minarrow's direct access is within the noise threshold of raw Vec performance wh
 - **Rust to Python¹** 1m rows, 2 columns : **165ns**
 - **Python to Rust¹** 1m rows, 2 columns:  **2.5μs**
 
-See `minarrow-pyo3/examples` 
+See `minarrow-pyo3/examples`
 
 ### Test machine
 ▎ ¹ = Intel Core Ultra 7 155H · 32 GB · Ubuntu 24.04 · 1.97-nightly release build.
@@ -262,6 +264,9 @@ Additional types:
 | `value_type` | Catch-all `Value` enum for unified typing |
 | `matrix` | 2D matrix with BLAS/LAPACK-compatible layout |
 | `cube` | Stacks tables along an extra axis |
+| `ndarray` | N-dimensional array for bridging into ML & AI, with a chunked version and native DLPack interchange |
+| `xarray` | N-dimensional array with named dims and coordinates for spatial queries |
+| `dlpack` | DLPack tensor interchange with PyTorch, JAX, TensorFlow |
 | `shared_dict` | Shared source of truth for categorical dictionaries. |
 
 Performance:

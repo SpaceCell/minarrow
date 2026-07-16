@@ -23,7 +23,7 @@ use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 use pyo3::prelude::*;
 
 /// minarrow's `Array` enum grouping.
-#[pyclass(eq, eq_int, name = "TypeClass", module = "minarrow")]
+#[pyclass(from_py_object, eq, eq_int, name = "TypeClass", module = "minarrow")]
 #[derive(Clone, Copy, PartialEq)]
 pub enum TypeClass {
     Numeric,
@@ -58,7 +58,7 @@ impl TypeClass {
 }
 
 /// The concrete minarrow array type.
-#[pyclass(eq, eq_int, name = "DType", module = "minarrow")]
+#[pyclass(from_py_object, eq, eq_int, name = "DType", module = "minarrow")]
 #[derive(Clone, Copy, PartialEq)]
 pub enum DType {
     Integer,

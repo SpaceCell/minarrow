@@ -12,16 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "scalar_type")]
 use std::sync::Arc;
 
 use crate::enums::error::MinarrowError;
 use crate::enums::operators::ArithmeticOperator;
 use crate::kernels::broadcast::array_view::broadcast_arrayview_to_tableview;
+#[cfg(feature = "scalar_type")]
 use crate::kernels::broadcast::broadcast_value;
 use crate::kernels::broadcast::table_view::{
     broadcast_tableview_to_arrayview, broadcast_tableview_to_tableview,
 };
-use crate::{Array, ArrayV, Scalar, SuperArrayV, SuperTableV, Table, TableV, Value};
+use crate::{Array, ArrayV, SuperArrayV, SuperTableV, Table, TableV};
+#[cfg(feature = "scalar_type")]
+use crate::{Scalar, Value};
 
 /// Helper function for supertableview-scalar broadcasting - convert to table, broadcast, return as table
 #[cfg(all(feature = "scalar_type", feature = "chunked", feature = "views"))]

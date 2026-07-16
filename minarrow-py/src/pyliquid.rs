@@ -50,14 +50,16 @@
 //!   stream whose schema is a struct, such as a RecordBatch or DataFrame.
 //! - `minarrow.ChunkedTable` becomes [`Value::SuperTable`].
 //! - `minarrow.ChunkedArray` becomes [`Value::SuperArray`].
+//! - `minarrow.NdArray` and compatible DLPack producers without an Arrow interface,
+//!   such as a PyTorch tensor or NumPy `ndarray`, become `Value::NdArray`
+//!   under the `ndarray` feature. `Value` pins its tensors to f64, so f32
+//!   tensors upcast on the way in.
 //! - Lists become [`Value::VecValue`] and are classified recursively.
 //! - Tuples of two to six elements become the corresponding fixed-arity tuple
 //!   variant and are classified recursively.
 //!
 //! An empty tuple becomes `Scalar::Null`, and a one-element tuple is unwrapped.
 //! Tuples longer than six elements become [`Value::VecValue`].
-//!
-//! NumPy `ndarray` values are not currently supported directly.
 //!
 //! ## Linking
 //!
@@ -71,7 +73,11 @@ use std::sync::Arc;
 use std::sync::Once;
 
 use minarrow::ffi::arrow_c_ffi::{ArrowArrayStream, ArrowSchema};
+#[cfg(feature = "ndarray")]
+use minarrow::{NdArray, Vec64};
 use minarrow::{Array, Scalar, Table, Value};
+#[cfg(feature = "ndarray")]
+use minarrow_pyo3::ffi::dlpack::import_dlpack;
 use minarrow_pyo3::ffi::to_rust;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -80,6 +86,8 @@ use pyo3::types::{PyBool, PyList, PyTuple};
 use crate::array::{PyArray, PyArrayInner};
 use crate::chunked_array::PyChunkedArray;
 use crate::chunked_table::PyChunkedTable;
+#[cfg(feature = "ndarray")]
+use crate::ndarray::{PyNdArray, PyNdArrayInner};
 use crate::table::{PyTable, PyTableInner};
 
 /// Resident embedded-Python runtime.
@@ -102,7 +110,7 @@ impl PyLiquid {
 
         INIT.call_once(|| {
             crate::append_minarrow_to_inittab();
-            pyo3::prepare_freethreaded_python();
+            pyo3::Python::initialize();
         });
 
         PyLiquid {
@@ -119,7 +127,7 @@ impl PyLiquid {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        Python::with_gil(|py| -> PyResult<()> {
+        Python::attach(|py| -> PyResult<()> {
             for name in names {
                 let module = py.import(name.as_ref())?;
                 self.modules.push(module.unbind());
@@ -141,7 +149,7 @@ impl PyLiquid {
         D: PyInput,
         F: for<'py> FnOnce(Python<'py>, Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>>,
     {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let obj = data.to_python(py)?;
             let out = f(py, obj)?;
             classify(py, &out)
@@ -165,6 +173,14 @@ impl PyInput for Table {
 impl PyInput for Array {
     fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let obj = PyArray(PyArrayInner::from(self.clone()));
+        Ok(Bound::new(py, obj)?.into_any())
+    }
+}
+
+#[cfg(feature = "ndarray")]
+impl PyInput for NdArray<f64> {
+    fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let obj = PyNdArray(PyNdArrayInner::from(self.clone()));
         Ok(Bound::new(py, obj)?.into_any())
     }
 }
@@ -197,21 +213,21 @@ fn classify(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
 
     // Check Minarrow classes before testing the generic Arrow interfaces so the
     // exact container variant is retained.
-    if obj.downcast::<PyArray>().is_ok() {
+    if obj.cast::<PyArray>().is_ok() {
         return Ok(Value::Array(Arc::new(to_rust::array_to_rust(obj)?.array)));
     }
 
-    if obj.downcast::<PyChunkedTable>().is_ok() {
+    if obj.cast::<PyChunkedTable>().is_ok() {
         return Ok(Value::SuperTable(Arc::new(to_rust::table_to_rust(obj)?)));
     }
 
-    if obj.downcast::<PyChunkedArray>().is_ok() {
+    if obj.cast::<PyChunkedArray>().is_ok() {
         return Ok(Value::SuperArray(Arc::new(to_rust::chunked_array_to_rust(
             obj,
         )?)));
     }
 
-    if obj.downcast::<PyTable>().is_ok() {
+    if obj.cast::<PyTable>().is_ok() {
         return Ok(Value::Table(Arc::new(to_rust::record_batch_to_rust(obj)?)));
     }
 
@@ -231,7 +247,31 @@ fn classify(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::Array(Arc::new(to_rust::array_to_rust(obj)?.array)));
     }
 
-    if let Ok(list) = obj.downcast::<PyList>() {
+    // Tensors from compatible DLPack producers, including `minarrow.NdArray`,
+    // PyTorch tensors, and NumPy arrays. `Value` pins its tensors to f64, so
+    // f32 data upcasts.
+    #[cfg(feature = "ndarray")]
+    if obj.cast::<PyNdArray>().is_ok() || obj.hasattr("__dlpack__")? {
+        return match import_dlpack(py, obj)? {
+            PyNdArrayInner::F64(a) => Ok(Value::NdArray(a)),
+            PyNdArrayInner::F64View(v) => {
+                Ok(Value::NdArray(Arc::new(v.to_ndarray())))
+            }
+            PyNdArrayInner::F32(a) => {
+                let flat: Vec64<f64> = (&*a).into_iter().map(|v| v as f64).collect();
+                Ok(Value::NdArray(Arc::new(NdArray::from_slice(&flat, a.shape()))))
+            }
+            PyNdArrayInner::F32View(v) => {
+                let flat: Vec64<f64> = (&*v).into_iter().map(|value| value as f64).collect();
+                Ok(Value::NdArray(Arc::new(NdArray::from_slice(
+                    &flat,
+                    v.shape(),
+                ))))
+            }
+        };
+    }
+
+    if let Ok(list) = obj.cast::<PyList>() {
         let mut items = Vec::with_capacity(list.len());
 
         for item in list.iter() {
@@ -241,7 +281,7 @@ fn classify(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::VecValue(Arc::new(items)));
     }
 
-    if let Ok(tuple) = obj.downcast::<PyTuple>() {
+    if let Ok(tuple) = obj.cast::<PyTuple>() {
         return classify_tuple(py, tuple);
     }
 

@@ -36,8 +36,18 @@ mod conversions;
 use crate::Cube;
 #[cfg(feature = "matrix")]
 use crate::Matrix;
+#[cfg(feature = "ndarray")]
+use crate::NdArray;
+#[cfg(all(feature = "ndarray", feature = "views"))]
+use crate::NdArrayV;
 #[cfg(feature = "scalar_type")]
 use crate::Scalar;
+#[cfg(all(feature = "ndarray", feature = "chunked"))]
+use crate::SuperNdArray;
+#[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+use crate::SuperNdArrayV;
+#[cfg(feature = "xarray")]
+use crate::XArray;
 use crate::{Array, FieldArray, Table, traits::custom_value::CustomValue};
 use std::sync::Arc;
 
@@ -91,6 +101,16 @@ pub enum Value {
     SuperTableView(Arc<SuperTableV>),
     #[cfg(feature = "matrix")]
     Matrix(Arc<Matrix>),
+    #[cfg(feature = "ndarray")]
+    NdArray(Arc<NdArray<f64>>),
+    #[cfg(all(feature = "ndarray", feature = "views"))]
+    NdArrayView(Arc<NdArrayV<f64>>),
+    #[cfg(all(feature = "ndarray", feature = "chunked"))]
+    SuperNdArray(Arc<SuperNdArray<f64>>),
+    #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+    SuperNdArrayView(Arc<SuperNdArrayV<f64>>),
+    #[cfg(feature = "xarray")]
+    XArray(Arc<XArray<f64>>),
     #[cfg(feature = "cube")]
     Cube(Arc<Cube>),
     VecValue(Arc<Vec<Value>>),
@@ -123,7 +143,9 @@ impl Value {
     /// Computes the logical row/element count for the batch's input `Value`.
     ///
     /// This normalises the various `Value` representations so callers can consistently pass a
-    /// `[start, len)` range to `execute_fn`.
+    /// `[start, len)` range to `execute_fn`. For the n-dimensional types
+    /// this is the leading-axis observation count, matching the units
+    /// `slice` windows over.
     #[inline]
     pub fn len(&self) -> usize {
         match self {
@@ -156,6 +178,21 @@ impl Value {
 
             #[cfg(feature = "matrix")]
             Value::Matrix(m) => m.len(),
+
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(nd) => nd.shape()[0],
+
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(v) => v.shape()[0],
+
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(snd) => snd.n_obs(),
+
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(v) => v.n_obs(),
+
+            #[cfg(feature = "xarray")]
+            Value::XArray(xa) => xa.shape()[0],
 
             #[cfg(feature = "cube")]
             Value::Cube(c) => c.len(),
@@ -226,6 +263,56 @@ impl Value {
 
             #[cfg(feature = "matrix")]
             Value::Matrix(_) => unimplemented!("Matrix slicing"),
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(nd) => {
+                assert!(
+                    offset + length <= nd.shape()[0],
+                    "Value::slice: window {}..{} out of bounds for axis 0 (size {})",
+                    offset, offset + length, nd.shape()[0]
+                );
+                let mut window_shape = vec![length];
+                window_shape.extend_from_slice(&nd.shape()[1..]);
+                Value::NdArrayView(Arc::new(NdArrayV::new(
+                    nd.as_ref().clone(),
+                    offset * nd.strides()[0],
+                    &window_shape,
+                    nd.strides(),
+                )))
+            }
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(v) => {
+                assert!(
+                    offset + length <= v.shape()[0],
+                    "Value::slice: window {}..{} out of bounds for axis 0 (size {})",
+                    offset, offset + length, v.shape()[0]
+                );
+                let mut window_shape = vec![length];
+                window_shape.extend_from_slice(&v.shape()[1..]);
+                Value::NdArrayView(Arc::new(NdArrayV::new(
+                    v.source.clone(),
+                    v.offset + offset * v.strides()[0],
+                    &window_shape,
+                    v.strides(),
+                )))
+            }
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(snd) => {
+                Value::SuperNdArrayView(Arc::new(snd.slice(offset, length)))
+            }
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(v) => {
+                Value::SuperNdArrayView(Arc::new(v.slice(offset, length)))
+            }
+            #[cfg(all(feature = "xarray", feature = "select"))]
+            Value::XArray(xa) => {
+                // An axis-0 window through select, which narrows the
+                // leading axis coords alongside the data.
+                let range = offset..offset + length;
+                let dim0 = xa.dim_names()[0].to_string();
+                Value::XArray(Arc::new(xa.select(&[(dim0.as_str(), &range)])))
+            }
+            #[cfg(all(feature = "xarray", not(feature = "select")))]
+            Value::XArray(_) => unimplemented!("XArray slicing requires the select feature"),
             #[cfg(feature = "cube")]
             Value::Cube(_) => unimplemented!("Cube slicing"),
 
