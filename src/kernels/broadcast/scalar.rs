@@ -22,11 +22,15 @@ use crate::kernels::broadcast::broadcast_value;
 use crate::kernels::routing::arithmetic::resolve_binary_arithmetic;
 use crate::structs::field_array::create_field_for_array;
 use crate::{
-    Array, BooleanArray, CategoricalArray, DatetimeArray, FieldArray, FloatArray, IntegerArray,
-    Scalar, StringArray, Table, TableV, TextArray, Value,
+    Array, BooleanArray, CategoricalArray, FieldArray, FloatArray, IntegerArray, Scalar,
+    StringArray, Table, TableV, TextArray, Value,
 };
+#[cfg(feature = "datetime")]
+use crate::DatetimeArray;
 #[cfg(feature = "views")]
-use crate::{NumericArrayV, TemporalArrayV, TextArrayV};
+use crate::{NumericArrayV, TextArrayV};
+#[cfg(all(feature = "datetime", feature = "views"))]
+use crate::TemporalArrayV;
 #[cfg(feature = "chunked")]
 use crate::{SuperArray, SuperTable, SuperTableV};
 use std::sync::Arc;

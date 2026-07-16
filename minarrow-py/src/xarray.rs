@@ -282,8 +282,11 @@ impl PyXArray {
         Ok(Py::new(py, result)?.into_any())
     }
 
-    /// Exact coordinate selection. Each keyword is a dimension name; selected
-    /// dimensions collapse in the result.
+    /// Exact coordinate selection.
+    ///
+    /// Behaviour:
+    /// - Each keyword is a dimension name
+    /// - Selected dimensions collapse in the result.
     #[pyo3(signature = (**indexers))]
     fn sel(&self, indexers: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
         let indexers = indexers.ok_or_else(|| PyValueError::new_err("sel needs an indexer"))?;

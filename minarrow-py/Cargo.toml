@@ -32,6 +32,7 @@ simd = ["minarrow/simd"]
 # N-dimensional tensor with DLPack capsule interchange. The capsule glue
 # lives in minarrow-pyo3's ffi::dlpack, alongside the Arrow capsule glue.
 ndarray = [
+    "scalar_type",
     "minarrow/ndarray",
     "minarrow/dlpack",
     "minarrow/views",

@@ -18,7 +18,11 @@ use crate::enums::error::MinarrowError;
 use crate::enums::operators::ArithmeticOperator;
 use crate::kernels::broadcast::broadcast_value;
 use crate::kernels::routing::arithmetic::resolve_binary_arithmetic;
-use crate::{ArrayV, FieldArray, Scalar, SuperArrayV, SuperTableV, Table, TableV, Value};
+use crate::{ArrayV, FieldArray, Table, TableV, Value};
+#[cfg(feature = "scalar_type")]
+use crate::Scalar;
+#[cfg(feature = "chunked")]
+use crate::{SuperArrayV, SuperTableV};
 
 /// Helper function for TableView-TableView broadcasting - work directly with views
 #[cfg(feature = "views")]

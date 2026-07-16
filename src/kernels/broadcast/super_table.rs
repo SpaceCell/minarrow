@@ -15,9 +15,9 @@
 use crate::enums::error::MinarrowError;
 use crate::enums::operators::ArithmeticOperator;
 use crate::kernels::broadcast::array::broadcast_array_to_table;
-use crate::kernels::broadcast::table::{
-    broadcast_table_to_array, broadcast_table_to_scalar, broadcast_table_with_operator,
-};
+use crate::kernels::broadcast::table::{broadcast_table_to_array, broadcast_table_with_operator};
+#[cfg(feature = "scalar_type")]
+use crate::kernels::broadcast::table::broadcast_table_to_scalar;
 use crate::{SuperTable, SuperTableV, Value};
 use std::sync::Arc;
 

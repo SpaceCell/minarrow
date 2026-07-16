@@ -36,7 +36,7 @@ pub mod simd;
 pub mod std;
 pub mod string;
 pub mod string_ops;
-#[cfg(feature = "broadcast")]
+#[cfg(all(feature = "broadcast", feature = "value_type", feature = "views"))]
 pub mod types;
 
 // Shared tests for SIMD and Std

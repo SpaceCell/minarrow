@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added bitmask-driven gather to Array, Table and their view variants.
 - Added default SIMD chipset behaviour.
 - Added bitwise kernels.
+- Added default display trait impl to `Scalar`.
 - Added `LBuffer::freeze()`.
 - Added `NdArray` n-dimensional array with views and chunked variants.
 - Added `XArray` labelled n-dimensional array.

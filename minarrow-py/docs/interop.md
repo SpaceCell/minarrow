@@ -42,17 +42,19 @@ The PyCapsule interface is part of the Apache Arrow interoperability specificati
 
 ## DLPack tensor interchange
 
-`NdArray` and `XArray` implement `__dlpack__` and `__dlpack_device__` for CPU
-tensor interchange. Their owned arrays and zero-copy selections retain shape
-and element strides, including Minarrow's column-major layout. Versioned
-DLPack exports mark shared storage read-only; legacy exports copy shared data
-because that protocol cannot express read-only memory.
+Minarrow supports DLPack for cross-language tensor interchange.
 
-`ChunkedNdArray` does not pretend its multiple allocations are one DLPack
-tensor. Its `chunks` are `NdArray` objects, and each chunk implements DLPack
-with its own shape, strides, and data pointer. `to_numpy()` consequently
-returns one NumPy array per chunk. Call `to_ndarray()` explicitly when one
-consolidated allocation is required.
+This enables you to land data for e.g., in Rust, when using the Python bridge,
+get the data into PyTorch for Deep Learning, AI or other similar use case.
+
+`NdArray` and `XArray` implement `__dlpack__` and `__dlpack_device__` for CPU
+tensor interchange. Behaviour-wise, their owned arrays and zero-copy selections
+retain shape and element strides, including Minarrow's column-major layout.
+
+`ChunkedNdArray` yields individual arrays. Its `chunks` are `NdArray` objects,
+and each chunk implements DLPack with its own shape, strides, and data pointer.
+`to_numpy()` consequently returns one NumPy array per chunk.
+Call `to_ndarray()` when one consolidated allocation is required.
 
 ## Supported integrations
 

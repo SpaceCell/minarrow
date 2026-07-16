@@ -1,30 +1,38 @@
-//! # **XArray** - *Labelled N-dimensional array for indexed data*
+//! # `XArray`
 //!
-//! Wraps an `NdArray` with named dimensions and optional coordinate labels per
-//! axis, adding coordinate-based queries while retaining positional selection.
+//! A labelled N-dimensional array with named axes and optional coordinates.
 //!
-//! NdArray answers a positional query such as "element `[3, 7]`". XArray can
-//! additionally answer questions such as "latitude 51.5" or "observations
-//! between timestamps 100 and 200". This is useful for spatial, climate,
-//! sensor, and other data whose axes carry domain meaning.
+//! `XArray` associates an [`NdArray`] with dimension names and, optionally,
+//! coordinate labels for each axis. It supports both positional selection and
+//! coordinate-based queries without changing the underlying numerical model.
+//!
+//! Where `NdArray` addresses values by position, such as `[3, 7]`, `XArray`
+//! can address them using domain values such as latitude `51.5`, ticker `"NQ"`,
+//! or timestamps within a specified interval.
+//!
+//! This representation is well-suited to spatial, climate, sensor, time-series, and
+//! other datasets whose dimensions carry semantic meaning.
 //!
 //! ## Storage
-//! Internally holds either an owned [`NdArray`] or a zero-copy [`NdArrayV`]
-//! view behind the same public type, so a selection can remain an XArray
-//! without materialising its data.
 //!
-//! ## Quick reference
-//! ```ignore
+//! An `XArray` contains either an owned [`NdArray`] or a zero-copy [`NdArrayV`]
+//! view behind the same public interface. Selections can therefore remain
+//! labelled `XArray` values without materialising or copying the selected data.
+//!
+//! ## Usage
+//!
+//! `ignore
 //! let xa = XArray::new(data, &["observation", "feature"]);
-//! xa.ax("feature");                       // axis metadata
-//! xa.dim("feature");                      // axis position -> 1
-//! xa.at("feature", 2.0);                 // select by coordinate value
-//! xa.at("ticker", "NQ");                 // string coordinates
-//! xa.at("time", 1_700_000_000_000i64);   // datetime tick coordinates
-//! xa.nearest("time", ts);                // closest coordinate
-//! xa.between("observation", 0.0, 50.0);  // coordinate range
-//! xa.select(&[("lat", &(0..3))]);        // positional selection
-//! ```
+//!
+//! xa.ax("feature");                       // Return axis metadata.
+//! xa.dim("feature");                      // Resolve the axis position: 1.
+//! xa.at("feature", 2.0);                  // Select a numeric coordinate.
+//! xa.at("ticker", "NQ");                  // Select a string coordinate.
+//! xa.at("time", 1_700_000_000_000i64);   // Select a datetime tick.
+//! xa.nearest("time", ts);                 // Select the closest coordinate.
+//! xa.between("observation", 0.0, 50.0);   // Select a coordinate interval.
+//! xa.select(&[("lat", &(0..3))]);         // Select by positional range.
+//! `
 
 use std::fmt;
 
@@ -34,11 +42,16 @@ use crate::ffi::arrow_dtype::ArrowType;
 use crate::structs::ndarray::NdArray;
 #[cfg(all(feature = "views", feature = "select"))]
 use crate::traits::selection::{AxisSelection, DataSelector};
-#[cfg(all(feature = "views", feature = "select"))]
+#[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
 use crate::Scalar;
-#[cfg(all(feature = "views", feature = "select"))]
+#[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
 use crate::{NumericArray, TextArray};
-#[cfg(all(feature = "views", feature = "select", feature = "datetime"))]
+#[cfg(all(
+    feature = "views",
+    feature = "select",
+    feature = "scalar_type",
+    feature = "datetime"
+))]
 use crate::TemporalArray;
 #[cfg(all(feature = "views", feature = "select"))]
 use std::ops::Range;
@@ -461,7 +474,7 @@ impl<T: Float> XArray<T> {
     /// dimension. Returns an error if the value is not found. Float
     /// coordinates match by IEEE equality, so NaN never matches and
     /// derived values may miss - `nearest` tolerates rounding.
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     pub fn try_at(&self, dim_name: &str, value: impl Into<Scalar>) -> Result<XArray<T>, MinarrowError> {
         let dim_idx = self.dim(dim_name);
         let pos = self.axes[dim_idx].try_coord_pos(&value.into())?;
@@ -483,7 +496,7 @@ impl<T: Float> XArray<T> {
     }
 
     /// Select a single position by coordinate value. Panics if not found.
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     pub fn at(&self, dim_name: &str, value: impl Into<Scalar>) -> XArray<T> {
         self.try_at(dim_name, value)
             .unwrap_or_else(|e| panic!("{}", e))
@@ -495,7 +508,7 @@ impl<T: Float> XArray<T> {
     /// do not form a contiguous run i.e. the axis is not monotonic over
     /// the requested bounds - sort the axis or gather by position for
     /// unsorted coordinates.
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     pub fn try_between(
         &self,
         dim_name: &str,
@@ -533,7 +546,7 @@ impl<T: Float> XArray<T> {
 
     /// Select a range by coordinate value bounds. Panics if no values
     /// match, or if the axis is not monotonic over the requested bounds.
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     pub fn between(
         &self,
         dim_name: &str,
@@ -548,7 +561,7 @@ impl<T: Float> XArray<T> {
     /// named axis. Collapses that dimension. Numeric and datetime
     /// coordinates only, since text has no distance metric. Returns an
     /// error if the axis has no comparable coordinates.
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     pub fn try_nearest(&self, dim_name: &str, value: impl Into<Scalar>) -> Result<XArray<T>, MinarrowError> {
         let dim_idx = self.dim(dim_name);
         let pos = self.axes[dim_idx].try_coord_nearest(&value.into())?;
@@ -571,7 +584,7 @@ impl<T: Float> XArray<T> {
 
     /// Select the position whose coordinate is closest to `value`.
     /// Panics if the axis has no comparable coordinates.
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     pub fn nearest(&self, dim_name: &str, value: impl Into<Scalar>) -> XArray<T> {
         self.try_nearest(dim_name, value)
             .unwrap_or_else(|e| panic!("{}", e))
@@ -693,7 +706,7 @@ pub struct Axis {
 /// Scans a typed coordinate slice, widening `start`/`end` over positions
 /// within the inclusive `[lo, hi]` window and counting the matches, so the
 /// caller can detect a span polluted by out-of-range coordinates.
-#[cfg(all(feature = "views", feature = "select"))]
+#[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
 macro_rules! coord_window {
     ($data:expr, $lo:expr, $hi:expr, $domain:ty, $start:ident, $end:ident, $count:ident) => {
         for (i, &v) in $data.iter().enumerate() {
@@ -710,7 +723,7 @@ macro_rules! coord_window {
 /// within the inclusive lexicographic `[lo, hi]` window and counting the
 /// matches, so the caller can detect a span polluted by out-of-range
 /// coordinates.
-#[cfg(all(feature = "views", feature = "select"))]
+#[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
 macro_rules! coord_window_str {
     ($arr:expr, $n:expr, $lo:expr, $hi:expr, $start:ident, $end:ident, $count:ident) => {
         for i in 0..$n {
@@ -727,7 +740,7 @@ macro_rules! coord_window_str {
 
 /// Scans a typed coordinate slice for the position with the smallest
 /// distance to the target. Ties resolve to the earliest position.
-#[cfg(all(feature = "views", feature = "select"))]
+#[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
 macro_rules! coord_nearest {
     ($data:expr, |$v:ident| $dist:expr) => {{
         let mut best = None;
@@ -756,7 +769,7 @@ impl Axis {
     /// categorical coordinates match by string equality, datetime
     /// coordinates by tick value in the axis's time unit, and numeric
     /// coordinates in their native domain (i64, u64, or f64).
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     pub(crate) fn try_coord_pos(&self, value: &Scalar) -> Result<usize, MinarrowError> {
         let coords = self.coords.as_ref().ok_or_else(|| MinarrowError::ShapeError {
             message: format!("axis '{}' has no coordinates for value lookup", self.name),
@@ -842,7 +855,7 @@ impl Axis {
     /// inclusive `[low, high]` bounds. String and categorical coordinates
     /// compare lexicographically, datetime coordinates by tick value, and
     /// numeric coordinates in their native domain (i64, u64, or f64).
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     pub(crate) fn try_coord_range(
         &self,
         low: &Scalar,
@@ -965,7 +978,7 @@ impl Axis {
     /// datetime coordinates as tick difference. String and categorical
     /// coordinates have no distance metric and return an error - use
     /// exact lookup instead. Ties resolve to the earliest position.
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     pub(crate) fn try_coord_nearest(&self, value: &Scalar) -> Result<usize, MinarrowError> {
         let coords = self.coords.as_ref().ok_or_else(|| MinarrowError::ShapeError {
             message: format!("axis '{}' has no coordinates for nearest lookup", self.name),
@@ -1426,7 +1439,7 @@ mod tests {
 
     // *** Coordinate selection ****************************************
 
-    #[cfg(feature = "views")]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     #[test]
     fn at_by_coord() {
         let mut xa = XArray::new(make_2d(), &["obs", "feat"]);
@@ -1438,7 +1451,7 @@ mod tests {
         assert_eq!(vals, vec![4.0, 5.0, 6.0]);
     }
 
-    #[cfg(feature = "views")]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     #[test]
     fn try_at_not_found() {
         let mut xa = XArray::new(make_2d(), &["obs", "feat"]);
@@ -1446,7 +1459,7 @@ mod tests {
         assert!(xa.try_at("feat", 99.0).is_err());
     }
 
-    #[cfg(feature = "views")]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     #[test]
     fn between_coord_range() {
         let data = NdArray::from_slice(
@@ -1461,7 +1474,7 @@ mod tests {
         assert_eq!(vals, vec![2.0, 3.0, 4.0]);
     }
 
-    #[cfg(feature = "views")]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     #[test]
     fn try_between_empty_range() {
         let mut xa = XArray::new(make_2d(), &["obs", "feat"]);
@@ -1469,7 +1482,7 @@ mod tests {
         assert!(xa.try_between("obs", 100.0, 200.0).is_err());
     }
 
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     #[test]
     fn at_string_coords() {
         use crate::arr_str32;
@@ -1486,6 +1499,7 @@ mod tests {
     #[cfg(all(
         feature = "views",
         feature = "select",
+        feature = "scalar_type",
         any(not(feature = "default_categorical_8"), feature = "extended_categorical")
     ))]
     #[test]
@@ -1500,7 +1514,7 @@ mod tests {
         assert!(xa.try_at("ticker", "ZB").is_err());
     }
 
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     #[test]
     fn coord_lookup_integer_coords() {
         use crate::arr_i64;
@@ -1516,7 +1530,7 @@ mod tests {
         assert_eq!(vals, vec![2.0, 5.0]);
     }
 
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     #[test]
     fn between_string_coords() {
         use crate::arr_str32;
@@ -1529,7 +1543,12 @@ mod tests {
         assert_eq!(vals, vec![2.0, 3.0]);
     }
 
-    #[cfg(all(feature = "views", feature = "select", feature = "datetime"))]
+    #[cfg(all(
+        feature = "views",
+        feature = "select",
+        feature = "scalar_type",
+        feature = "datetime"
+    ))]
     #[test]
     fn at_datetime_coords() {
         use crate::arr_dt64;
@@ -1543,7 +1562,12 @@ mod tests {
         assert!(xa.try_at("time", 5_000).is_err());
     }
 
-    #[cfg(all(feature = "views", feature = "select", feature = "datetime"))]
+    #[cfg(all(
+        feature = "views",
+        feature = "select",
+        feature = "scalar_type",
+        feature = "datetime"
+    ))]
     #[test]
     fn between_datetime_coords() {
         use crate::arr_dt64;
@@ -1556,7 +1580,12 @@ mod tests {
         assert_eq!(vals, vec![2.0, 3.0]);
     }
 
-    #[cfg(all(feature = "views", feature = "select", feature = "datetime"))]
+    #[cfg(all(
+        feature = "views",
+        feature = "select",
+        feature = "scalar_type",
+        feature = "datetime"
+    ))]
     #[test]
     fn nearest_datetime_coords() {
         use crate::arr_dt64;
@@ -1568,7 +1597,7 @@ mod tests {
         assert_eq!(vals, vec![2.0, 5.0]);
     }
 
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     #[test]
     fn nearest_numeric_coords() {
         let mut xa = XArray::new(make_2d(), &["obs", "feat"]);
@@ -1583,7 +1612,7 @@ mod tests {
         assert_eq!(vals, vec![2.0, 5.0]);
     }
 
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     #[test]
     fn nearest_text_coords_rejected() {
         use crate::arr_str32;
@@ -1762,7 +1791,7 @@ mod tests {
         assert!(err.to_string().contains("no axis named 'missing'"));
     }
 
-    #[cfg(all(feature = "views", feature = "select"))]
+    #[cfg(all(feature = "views", feature = "select", feature = "scalar_type"))]
     #[test]
     fn try_between_unsorted_coords_errors() {
         // The covering span 0..3 includes the out-of-bounds 100.0, so a

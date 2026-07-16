@@ -1,60 +1,68 @@
-//! # **NdArray** - *N-dimensional float container*
+//! # `NdArray`
 //!
-//! ## Intent
-//! `NdArray` is Minarrow's landing container for n-dimensional numeric data
-//! arriving from a network, sensor, file, or another runtime. It provides the
-//! expected container operations - construction, indexing, views, selection,
-//! iteration, and conversion - and bridges the same data into Python and
-//! DLPack consumers.
+//! An N-dimensional container for contiguous `f32` or `f64` data.
 //!
-//! It is deliberately not a general numerical-computing runtime. Applications
-//! can hand its data to their chosen kernels, BLAS implementation, or machine
-//! learning framework rather than Minarrow duplicating those systems.
-//! 
-//! ## Element type
-//! Generic over `T: Float`, which covers `f32` and `f64`. Rank is determined
-//! at runtime rather than through generics, and dimensions 1D-5D are stored
-//! inline to avoid heap allocation in the common case. A shape with zero axes
-//! (`&[]`) represents a rank-zero array containing one logical value. This is
-//! distinct from `[0]`, which represents a rank-one array with no values.
+//! `NdArray` is Minarrow's general-purpose interchange container for numeric
+//! data received from files, sensors, networks, Python, DLPack, or other
+//! runtimes. It supports construction, indexing, views, selection, iteration,
+//! conversion, and transfer to external numerical systems.
 //!
-//! ## Layout
-//! Compact column-major with no inter-dimension padding, so the buffer is
-//! fully contiguous and hands to DLPack consumers as a dense tensor. The
-//! allocation start is 64-byte aligned through `Vec64`, which serves
-//! whole-buffer SIMD over the flattened data. Padded per-column alignment
-//! for BLAS/LAPACK column access is [`Matrix`]'s job, and `to_matrix`
-//! re-lays data into that form.
+//! It is not intended to provide a complete numerical-computing runtime.
+//! Computational workloads should be delegated to the application's preferred
+//! kernels, BLAS implementation, or machine-learning framework.
 //!
-//! NumPy and PyTorch normally use row-major contiguous layouts. They can
-//! consume NdArray's column-major strides directly; code that specifically
-//! requires C-contiguity can re-lay the tensor on the consumer side, for
-//! example with `.contiguous()` or `np.ascontiguousarray`.
-//! 
-//! ## Why the layout is compact
-//! Minarrow's columnar arrays and [`Matrix`] can pad individual columns for
-//! CPU-oriented access. NdArray instead keeps the tensor compact so its shape
-//! and strides describe all stored values without hidden gaps. This makes the
-//! layout predictable for DLPack and Python consumers while retaining a
-//! 64-byte-aligned allocation start for operations over the flat buffer.
+//! ## Shape and element type
 //!
-//! ## Null handling
-//! NdArray has no null mask. Conversions from nullable tabular data use
-//! NaN for null float values, which means the resulting array cannot
-//! distinguish a source null from an ordinary NaN. Downstream treatment of
-//! those values is defined by the consuming kernel or framework.
+//! `NdArray` is generic over `T: Float`, supporting `f32` and `f64`. Rank is
+//! determined at runtime. Shapes with one to five dimensions are stored inline,
+//! avoiding a heap allocation for the common case.
 //!
-//! ## Interop
-//! - [`Matrix`] to 2D NdArray - zero-copy, the padded stride carries through (f64).
-//! - 2D NdArray to [`Matrix`] - re-lays into the padded column layout, zero-copy
-//!   when the stride already matches (f64).
-//! - 2D NdArray to [`Table`] - each column copies into its own 64-byte aligned
-//!   `FloatArray` (f64).
-//! - 1D NdArray to [`Array`] - moves the buffer into a `FloatArray<f64>`.
-//! - [`Table`] to NdArray via [`TryFrom`] - copies, converting nulls to NaN (f64).
-//! - DLPack export and import for sharing with compatible f32/f64 consumers.
-//!   Ownership, alignment, layout, and protocol requirements determine whether
-//!   a particular transfer is zero-copy.
+//! Shape semantics follow standard tensor conventions:
+//!
+//! - `&[]` is a rank-zero array containing one logical value.
+//! - `[0]` is a rank-one array containing no values.
+//!
+//! ## Memory layout
+//!
+//! Data is stored in compact column-major order without padding between
+//! dimensions. The complete logical array therefore occupies one contiguous
+//! buffer, and its shape and strides describe every stored element without
+//! hidden gaps.
+//!
+//! The allocation start is aligned to 64 bytes by [`Vec64`], allowing efficient
+//! SIMD operations over the flattened buffer.
+//!
+//! Per-column padding for CPU-oriented BLAS and LAPACK access is provided by
+//! [`Matrix`] instead. Converting an `NdArray` with `to_matrix` re-lays the data
+//! into that padded representation when required.
+//!
+//! NumPy and PyTorch can consume the column-major strides directly. Consumers
+//! that require row-major C-contiguous storage must create a contiguous copy,
+//! such as with `np.ascontiguousarray(...)` or `.contiguous()`.
+//!
+//! ## Null values
+//!
+//! `NdArray` does not store a null mask. When converting nullable floating-point
+//! data, nulls are represented as `NaN`. The resulting array cannot distinguish
+//! a source null from an ordinary `NaN`; interpretation is left to the consuming
+//! kernel or framework.
+//!
+//! ## Interoperability
+//!
+//! - [`Matrix`] to a two-dimensional `NdArray`: zero-copy for `f64`; the padded
+//!   column stride is preserved.
+//! - Two-dimensional `NdArray` to [`Matrix`]: re-lays data into the padded column
+//!   format for `f64`, or transfers without copying when the existing stride is
+//!   already compatible.
+//! - Two-dimensional `NdArray` to [`Table`]: copies each `f64` column into a
+//!   separate 64-byte-aligned `FloatArray`.
+//! - One-dimensional `NdArray` to [`Array`]: moves the `f64` buffer into a
+//!   `FloatArray<f64>`.
+//! - [`Table`] to `NdArray` through [`TryFrom`]: copies `f64` values and converts
+//!   nulls to `NaN`.
+//! - DLPack import and export: shares data with compatible `f32` and `f64`
+//!   consumers. Whether a transfer is zero-copy depends on ownership, alignment,
+//!   layout, and protocol constraints.
 
 use std::fmt;
 use std::ops::{Index, IndexMut, Range, RangeFrom, RangeFull, RangeTo};

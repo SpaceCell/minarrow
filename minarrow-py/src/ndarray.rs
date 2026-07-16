@@ -219,7 +219,7 @@ impl PyNdArray {
     }
 
     /// NumPy-style positional indexing. A full integer index returns a
-    /// scalar; any slice or omitted trailing axis returns another NdArray
+    /// scalar. Any slice or omitted trailing axis returns another NdArray
     /// backed by a zero-copy view.
     fn __getitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let shape = dispatch!(&self.0, |a| a.shape().to_vec());

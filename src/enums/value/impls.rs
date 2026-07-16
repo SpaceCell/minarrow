@@ -577,8 +577,10 @@ pub(crate) fn value_variant_name(value: &Value) -> &'static str {
 
 // Consolidate for Vec<Value>
 
+#[cfg(feature = "chunked")]
 use crate::traits::consolidate::Consolidate;
 
+#[cfg(feature = "chunked")]
 impl Consolidate for Vec<Value> {
     type Output = Value;
 

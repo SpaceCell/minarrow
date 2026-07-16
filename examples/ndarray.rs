@@ -28,14 +28,14 @@ fn main() {
     println!("n_obs: {}", a.n_obs());
     println!("a.get(&[2, 1]) = {}\n", a.get(&[2, 1]));
 
-    // Convenience constructors create ordinary NdArray containers.
+    // Constructors create ordinary NdArray containers.
     println!("=== Constructors ===\n");
     let steps = NdArray::<f64>::linspace(0.0, 1.0, 5);
     println!("linspace(0.0, 1.0, 5): {:?}", steps.as_slice());
     let identity = NdArray::<f64>::eye(3);
     println!("eye(3) diagonal: {:?}\n", (0..3).map(|i| identity.get(&[i, i])).collect::<Vec<_>>());
 
-    // Views change shape, offsets, or strides without copying the data.
+    // Views can change shape, offsets, or strides without copying the data.
     println!("=== Views ===\n");
     println!("a.obs(1) - one observation as a 1D view");
     let row = a.obs(1);
@@ -53,7 +53,7 @@ fn main() {
     let t = a.as_view().transpose();
     println!("  shape {:?}, t.get(&[1, 2]) = {}\n", t.shape(), t.get(&[1, 2]));
 
-    // The caller supplies the operation; NdArray supplies traversal.
+    // Apply operation to each array element.
     println!("=== Apply ===\n");
     let doubled = a.apply(|v| v * 2.0);
     println!("a.apply(|v| v * 2.0): doubled[3, 2] = {}\n", doubled.get(&[3, 2]));

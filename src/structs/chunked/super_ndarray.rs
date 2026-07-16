@@ -81,23 +81,44 @@ impl<T: Float> SuperNdArray<T> {
 
     /// Create from existing batches. Panics if shapes are incompatible.
     pub fn from_batches(batches: Vec<NdArray<T>>, name: impl Into<String>) -> Self {
+        Self::try_from_batches(batches, name).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Create from existing batches, returning an error if their shapes are
+    /// incompatible.
+    pub fn try_from_batches(
+        batches: Vec<NdArray<T>>,
+        name: impl Into<String>,
+    ) -> Result<Self, MinarrowError> {
+        let name = name.into();
         if batches.is_empty() {
-            return Self::new(name);
+            return Ok(Self::new(name));
         }
         let ndim = batches[0].ndim();
-        assert!(ndim > 0, "SuperNdArray batches require an axis 0");
-        let inner_shape: Vec<usize> = batches[0].shape()[1..].to_vec();
-        for (i, chunk) in batches.iter().enumerate().skip(1) {
-            assert_eq!(
-                chunk.ndim(), ndim,
-                "SuperNdArray: chunk {} has rank {} but expected {}", i, chunk.ndim(), ndim
-            );
-            assert_eq!(
-                &chunk.shape()[1..], inner_shape.as_slice(),
-                "SuperNdArray: chunk {} inner shape mismatch", i
-            );
+        if ndim == 0 {
+            return Err(MinarrowError::ShapeError {
+                message: "SuperNdArray batches require an axis 0".to_string(),
+            });
         }
-        SuperNdArray { batches, ndim, inner_shape, name: name.into() }
+        let inner_shape: Vec<usize> = batches[0].shape()[1..].to_vec();
+        for (index, batch) in batches.iter().enumerate().skip(1) {
+            if batch.ndim() != ndim {
+                return Err(MinarrowError::ShapeError {
+                    message: format!(
+                        "SuperNdArray: batch {} has rank {} but expected {}",
+                        index,
+                        batch.ndim(),
+                        ndim
+                    ),
+                });
+            }
+            if &batch.shape()[1..] != inner_shape.as_slice() {
+                return Err(MinarrowError::ShapeError {
+                    message: format!("SuperNdArray: batch {} inner shape mismatch", index),
+                });
+            }
+        }
+        Ok(SuperNdArray { batches, ndim, inner_shape, name })
     }
 
     /// Append a batch. Validates shape compatibility.
@@ -366,8 +387,7 @@ impl<T: Float> SuperNdArray<T> {
     // ****************************************************************
 
     /// Apply a function to every logical element, returning a new
-    /// SuperNdArray with the same batch boundaries and name. The caller
-    /// supplies the operation; SuperNdArray supplies traversal per batch.
+    /// SuperNdArray with the same batch boundaries and name.
     pub fn apply(&self, f: impl Fn(T) -> T) -> SuperNdArray<T> {
         let batches: Vec<NdArray<T>> = self.batches.iter().map(|b| b.apply(&f)).collect();
         SuperNdArray::from_batches(batches, self.name.clone())
@@ -1554,6 +1574,63 @@ mod tests {
     }
 
     #[test]
+    fn try_from_batches_empty_then_push_adopts_shape() {
+        let mut snd = SuperNdArray::<f64>::try_from_batches(vec![], "fresh").unwrap();
+        assert_eq!(snd.n_batches(), 0);
+        assert_eq!(snd.ndim(), 0);
+        snd.push(NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]));
+        assert_eq!(snd.inner_shape(), &[2]);
+    }
+
+    #[test]
+    fn try_from_batches_rejects_rank_zero() {
+        let error = SuperNdArray::try_from_batches(
+            vec![NdArray::from_slice(&[1.0], &[])],
+            "bad",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            MinarrowError::ShapeError {
+                message: "SuperNdArray batches require an axis 0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn try_from_batches_rejects_incompatible_shapes() {
+        let rank_error = SuperNdArray::try_from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0], &[2]),
+                NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+            ],
+            "bad",
+        )
+        .unwrap_err();
+        assert_eq!(
+            rank_error,
+            MinarrowError::ShapeError {
+                message: "SuperNdArray: batch 1 has rank 2 but expected 1".to_string(),
+            }
+        );
+
+        let inner_shape_error = SuperNdArray::try_from_batches(
+            vec![
+                NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
+                NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]),
+            ],
+            "bad",
+        )
+        .unwrap_err();
+        assert_eq!(
+            inner_shape_error,
+            MinarrowError::ShapeError {
+                message: "SuperNdArray: batch 1 inner shape mismatch".to_string(),
+            }
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "has rank 2 but expected 1")]
     fn from_batches_rank_mismatch() {
         SuperNdArray::from_batches(vec![
@@ -1563,7 +1640,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "chunk 1 inner shape mismatch")]
+    #[should_panic(expected = "batch 1 inner shape mismatch")]
     fn from_batches_inner_shape_mismatch() {
         SuperNdArray::from_batches(vec![
             NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]),
