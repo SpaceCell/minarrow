@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
+## Unreleased
+
+- Add producer-driven record batch stream export
+
 ## 0.16.0 - 2026-07-16
 
 This version completes Python ecosystem compatibility with DLPack support for landing data (or `ChunkedNdArray`) data in Rust

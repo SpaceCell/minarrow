@@ -15,7 +15,7 @@
 //! # **Arrow-C-FFI Module** - *Share data to another language and/or run-time**
 //!
 //! Implements the *Apache Arrow* **C Data Interface** for Minarrow, enabling zero-copy
-//! data exchange across language boundaries.  
+//! data exchange across language boundaries.
 //! Compatible with any runtime implementing the Arrow C interface, including Python, C++,
 //! Java, and others.
 //!
@@ -51,6 +51,7 @@
 //! https://www.apache.org/foundation/marks/ .
 
 use std::ffi::{CString, c_char, c_void};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::{ptr, slice};
 
@@ -2289,7 +2290,7 @@ unsafe extern "C" fn release_struct_schema(sch: *mut ArrowSchema) {
     unsafe { ptr::write_bytes(sch, 0, 1) };
 }
 
-// ── Stream export: record batches ───────────────────────────────────────
+// ***************** Record batch stream export ***************************
 
 /// Creates an ArrowArrayStream that yields record batches as struct arrays.
 ///
@@ -2437,8 +2438,8 @@ unsafe extern "C" fn rb_stream_get_next(
     // Copy the exported struct array into the caller's out pointer
     unsafe {
         ptr::write(out, ptr::read(arr_ptr));
-        // Free the box wrapper without running drop on the ArrowArray itself
-        // (caller now owns the data through the out pointer)
+        // Free the box wrapper without running drop on the ArrowArray.
+        // i.e., the caller now owns the data through the out pointer.
         std::alloc::dealloc(arr_ptr as *mut u8, std::alloc::Layout::for_value(&*arr_ptr));
     }
 
@@ -2461,11 +2462,225 @@ unsafe extern "C" fn rb_stream_release(stream: *mut ArrowArrayStream) {
     unsafe { ptr::write_bytes(stream, 0, 1) };
 }
 
-// ── Stream export: plain arrays ─────────────────────────────────────────
+/// Errno code returned from `get_next` when the producer fails.
+const PRODUCER_STREAM_EIO: i32 = 5;
 
-/// Creates an ArrowArrayStream that yields plain arrays (one per chunk).
+/// Batch producer for [`export_record_batch_producer_stream`].
 ///
-/// Used for SuperArray / ChunkedArray exchange.
+/// Returns the next batch as column (Array, Schema) pairs, `Ok(None)` at end
+/// of stream, or an error message that surfaces through `get_last_error`.
+pub type RecordBatchProducer =
+    Box<dyn FnMut() -> Result<Option<Vec<(Arc<Array>, Schema)>>, String> + Send>;
+
+/// Private holder for producer-driven record-batch stream state.
+struct RecordBatchProducerStreamHolder {
+    /// Schema fields for the struct array (one per column).
+    fields: Vec<crate::Field>,
+    /// Pulls the next batch on demand.
+    producer: RecordBatchProducer,
+    /// Last error message.
+    last_error: Option<CString>,
+    /// Optional schema-level metadata, encoded in Arrow binary format.
+    /// Kept alive so the pointer in ArrowSchema.metadata remains valid.
+    schema_metadata: Option<Vec<u8>>,
+}
+
+impl HasLastError for RecordBatchProducerStreamHolder {
+    fn last_error(&self) -> Option<&CString> {
+        self.last_error.as_ref()
+    }
+}
+
+/// Creates an ArrowArrayStream that pulls each record batch from `producer`
+/// on demand.
+///
+/// Each `get_next` call invokes the producer once, so the stream serves
+/// sources that generate or receive batches over time. A producer error
+/// surfaces to the consumer through `get_last_error` on the stream.
+///
+/// # Arguments
+/// * `producer` - pulls the next batch, with `Ok(None)` ending the stream
+/// * `fields` - schema fields, one per column
+/// * `metadata` - optional schema-level key-value metadata
+///
+/// # Returns
+/// A heap-allocated ArrowArrayStream. The caller must eventually call its
+/// release callback or pass it to a consumer that will.
+pub fn export_record_batch_producer_stream(
+    producer: RecordBatchProducer,
+    fields: Vec<crate::Field>,
+    metadata: Option<std::collections::BTreeMap<String, String>>,
+) -> Box<ArrowArrayStream> {
+    let schema_metadata = metadata.map(|m| encode_arrow_metadata(&m));
+    let holder = Box::new(RecordBatchProducerStreamHolder {
+        fields,
+        producer,
+        last_error: None,
+        schema_metadata,
+    });
+
+    Box::new(ArrowArrayStream {
+        get_schema: Some(rb_producer_stream_get_schema),
+        get_next: Some(rb_producer_stream_get_next),
+        get_last_error: Some(stream_get_last_error::<RecordBatchProducerStreamHolder>),
+        release: Some(rb_producer_stream_release),
+        private_data: Box::into_raw(holder) as *mut c_void,
+    })
+}
+
+unsafe extern "C" fn rb_producer_stream_get_schema(
+    stream: *mut ArrowArrayStream,
+    out: *mut ArrowSchema,
+) -> i32 {
+    let holder = unsafe { &*((*stream).private_data as *const RecordBatchProducerStreamHolder) };
+
+    // Build a struct schema from the fields
+    let n_fields = holder.fields.len();
+    let mut child_schemas: Vec<*mut ArrowSchema> = Vec::with_capacity(n_fields);
+
+    for field in &holder.fields {
+        let format_cstr = fmt_c(field.dtype.clone());
+        let name_cstr = CString::new(field.name.clone()).unwrap_or_default();
+        let flags = if field.nullable { 2 } else { 0 };
+
+        let metadata_bytes = if field.metadata.is_empty() {
+            None
+        } else {
+            Some(encode_arrow_metadata(&field.metadata))
+        };
+        let metadata_ptr = metadata_bytes
+            .as_ref()
+            .map(|b| b.as_ptr() as *const c_char)
+            .unwrap_or(ptr::null());
+
+        let child_holder = Box::new(StructSchemaHolder {
+            format_cstr,
+            name_cstr,
+            metadata_bytes,
+        });
+
+        let child = Box::new(ArrowSchema {
+            format: child_holder.format_cstr.as_ptr(),
+            name: child_holder.name_cstr.as_ptr(),
+            metadata: metadata_ptr,
+            flags,
+            n_children: 0,
+            children: ptr::null_mut(),
+            dictionary: ptr::null_mut(),
+            release: Some(release_struct_schema),
+            private_data: Box::into_raw(child_holder) as *mut c_void,
+        });
+
+        child_schemas.push(Box::into_raw(child));
+    }
+
+    let children_box = child_schemas.into_boxed_slice();
+    let children_ptr = Box::into_raw(children_box) as *mut *mut ArrowSchema;
+
+    let format_cstr = CString::new("+s").unwrap();
+    let name_cstr = CString::new("").unwrap();
+
+    let metadata_bytes = holder.schema_metadata.clone();
+    let metadata_ptr = metadata_bytes
+        .as_ref()
+        .map(|b| b.as_ptr() as *const c_char)
+        .unwrap_or(ptr::null());
+
+    let schema_holder = Box::new(StructSchemaHolder {
+        format_cstr,
+        name_cstr,
+        metadata_bytes,
+    });
+
+    let struct_schema = ArrowSchema {
+        format: schema_holder.format_cstr.as_ptr(),
+        name: schema_holder.name_cstr.as_ptr(),
+        metadata: metadata_ptr,
+        flags: 0,
+        n_children: n_fields as i64,
+        children: children_ptr,
+        dictionary: ptr::null_mut(),
+        release: Some(release_struct_schema),
+        private_data: Box::into_raw(schema_holder) as *mut c_void,
+    };
+
+    unsafe { ptr::write(out, struct_schema) };
+    0
+}
+
+unsafe extern "C" fn rb_producer_stream_get_next(
+    stream: *mut ArrowArrayStream,
+    out: *mut ArrowArray,
+) -> i32 {
+    let holder =
+        unsafe { &mut *((*stream).private_data as *mut RecordBatchProducerStreamHolder) };
+
+    // Guard the producer call so a panic cannot unwind across the C boundary.
+    let result = catch_unwind(AssertUnwindSafe(|| (holder.producer)()));
+
+    let batch = match result {
+        Ok(Ok(Some(batch))) => batch,
+        Ok(Ok(None)) => {
+            // Signal end of stream: write empty array with release = None
+            unsafe { ptr::write(out, ArrowArray::empty()) };
+            return 0;
+        }
+        Ok(Err(msg)) => {
+            // Interior NUL bytes cannot cross as a C string, so swap them out.
+            holder.last_error = CString::new(msg.replace('\0', " ")).ok();
+            return PRODUCER_STREAM_EIO;
+        }
+        Err(payload) => {
+            // Carry the panic payload text into the error message when it is
+            // a string, since that is what the consumer sees for diagnosis.
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            let msg = if detail.is_empty() {
+                "record batch producer panicked".to_string()
+            } else {
+                format!("record batch producer panicked: {}", detail.replace('\0', " "))
+            };
+            holder.last_error = CString::new(msg).ok();
+            return PRODUCER_STREAM_EIO;
+        }
+    };
+
+    let (arr_ptr, sch_ptr) = export_struct_to_c_inner(batch, None);
+
+    // Copy the exported struct array into the caller's out pointer
+    unsafe {
+        ptr::write(out, ptr::read(arr_ptr));
+        // Free the box wrapper without running drop on the ArrowArray itself
+        // (caller now owns the data through the out pointer)
+        std::alloc::dealloc(arr_ptr as *mut u8, std::alloc::Layout::for_value(&*arr_ptr));
+    }
+
+    // Release the schema (get_next only returns arrays, schema came from get_schema)
+    unsafe {
+        if let Some(release) = (*sch_ptr).release {
+            release(sch_ptr);
+        }
+        let _ = Box::from_raw(sch_ptr);
+    }
+
+    0
+}
+
+unsafe extern "C" fn rb_producer_stream_release(stream: *mut ArrowArrayStream) {
+    if stream.is_null() || (unsafe { &*stream }).release.is_none() {
+        return;
+    }
+    let _ =
+        unsafe { Box::from_raw((*stream).private_data as *mut RecordBatchProducerStreamHolder) };
+    unsafe { ptr::write_bytes(stream, 0, 1) };
+}
+
+/// Creates an ArrowArrayStream that yields arrays (one per chunk).
+///
+/// Used for SuperArray ("ChunkedArray") exchange.
 ///
 /// # Arguments
 /// * `chunks` - the arrays to yield
@@ -2567,8 +2782,6 @@ unsafe extern "C" fn arr_stream_release(stream: *mut ArrowArrayStream) {
     unsafe { ptr::write_bytes(stream, 0, 1) };
 }
 
-// ── Stream export: view variants ────────────────────────────────────────
-//
 // Mirror of the owned `ArrayStreamHolder` / `RecordBatchStreamHolder` flow,
 // but each chunk/batch carries a windowed `(offset, len)` that is propagated
 // to the per-chunk ArrowArray through `export_view_to_c`. No buffer copies
@@ -2928,7 +3141,7 @@ unsafe extern "C" fn stream_get_last_error<T: HasLastError>(
     }
 }
 
-// ── Stream import ───────────────────────────────────────────────────────
+// ************************ Stream import *********************************
 
 /// Consumes an ArrowArrayStream that yields struct arrays (record batches)
 /// and returns a list of Tables.
@@ -3764,6 +3977,170 @@ mod tests {
                 "Field metadata should survive record batch stream round-trip"
             );
         }
+    }
+
+    #[test]
+    fn test_producer_stream_round_trip() {
+        use super::{export_record_batch_producer_stream, import_record_batch_stream_with_metadata};
+        use std::collections::BTreeMap;
+
+        let field = Field::new("vals", ArrowType::Int32, false, None);
+        let col_schema = schema_for("vals", ArrowType::Int32, false);
+
+        // Two single-column batches drained through the producer on demand
+        let mut pending: Vec<Vec<(Arc<Array>, Schema)>> = vec![
+            {
+                let mut arr = IntegerArray::<i32>::default();
+                arr.push(1);
+                arr.push(2);
+                vec![(Arc::new(Array::from_int32(arr)), col_schema.clone())]
+            },
+            {
+                let mut arr = IntegerArray::<i32>::default();
+                arr.push(3);
+                vec![(Arc::new(Array::from_int32(arr)), col_schema.clone())]
+            },
+        ];
+        pending.reverse();
+
+        let mut table_meta = BTreeMap::new();
+        table_meta.insert("table_name".to_string(), "producer_tbl".to_string());
+
+        let stream = export_record_batch_producer_stream(
+            Box::new(move || Ok(pending.pop())),
+            vec![field],
+            Some(table_meta.clone()),
+        );
+        let stream_ptr = Box::into_raw(stream);
+
+        unsafe {
+            let (batches, schema_meta) = import_record_batch_stream_with_metadata(stream_ptr);
+
+            assert_eq!(schema_meta, Some(table_meta));
+            assert_eq!(batches.len(), 2);
+            let (col, imported_field) = &batches[0][0];
+            assert_eq!(imported_field.name, "vals");
+            assert_eq!(col.num().i32().data.as_slice(), &[1, 2]);
+            let (col, _) = &batches[1][0];
+            assert_eq!(col.num().i32().data.as_slice(), &[3]);
+        }
+    }
+
+    #[test]
+    fn test_producer_stream_error_surfaces() {
+        use super::export_record_batch_producer_stream;
+        use std::ffi::CStr;
+
+        let field = Field::new("vals", ArrowType::Int32, false, None);
+        let stream = export_record_batch_producer_stream(
+            Box::new(|| Err("upstream source failed".to_string())),
+            vec![field],
+            None,
+        );
+        let stream_ptr = Box::into_raw(stream);
+
+        unsafe {
+            let mut out = super::ArrowArray::empty();
+            let rc = ((*stream_ptr).get_next.unwrap())(stream_ptr, &mut out);
+            assert_ne!(rc, 0, "producer error should return a non-zero code");
+
+            let msg_ptr = ((*stream_ptr).get_last_error.unwrap())(stream_ptr);
+            assert!(!msg_ptr.is_null());
+            let msg = CStr::from_ptr(msg_ptr).to_string_lossy();
+            assert_eq!(msg, "upstream source failed");
+
+            ((*stream_ptr).release.unwrap())(stream_ptr);
+            let _ = Box::from_raw(stream_ptr);
+        }
+    }
+
+    #[test]
+    fn test_producer_stream_panic_is_caught() {
+        use super::export_record_batch_producer_stream;
+        use std::ffi::CStr;
+
+        let field = Field::new("vals", ArrowType::Int32, false, None);
+        let stream = export_record_batch_producer_stream(
+            Box::new(|| panic!("source connection lost")),
+            vec![field],
+            None,
+        );
+        let stream_ptr = Box::into_raw(stream);
+
+        unsafe {
+            let mut out = super::ArrowArray::empty();
+            let rc = ((*stream_ptr).get_next.unwrap())(stream_ptr, &mut out);
+            assert_ne!(rc, 0, "producer panic should return a non-zero code");
+
+            let msg_ptr = ((*stream_ptr).get_last_error.unwrap())(stream_ptr);
+            assert!(!msg_ptr.is_null());
+            let msg = CStr::from_ptr(msg_ptr).to_string_lossy();
+            assert_eq!(msg, "record batch producer panicked: source connection lost");
+
+            ((*stream_ptr).release.unwrap())(stream_ptr);
+            let _ = Box::from_raw(stream_ptr);
+        }
+    }
+
+    #[test]
+    fn test_producer_stream_empty() {
+        use super::{export_record_batch_producer_stream, import_record_batch_stream_with_metadata};
+
+        let field = Field::new("vals", ArrowType::Int32, false, None);
+        let stream =
+            export_record_batch_producer_stream(Box::new(|| Ok(None)), vec![field], None);
+        let stream_ptr = Box::into_raw(stream);
+
+        unsafe {
+            let (batches, schema_meta) = import_record_batch_stream_with_metadata(stream_ptr);
+            assert!(batches.is_empty());
+            assert_eq!(schema_meta, None);
+        }
+    }
+
+    #[test]
+    fn test_producer_stream_release_drops_producer() {
+        use super::export_record_batch_producer_stream;
+
+        let sentinel = Arc::new(());
+        let captured = Arc::clone(&sentinel);
+        let col_schema = schema_for("vals", ArrowType::Int32, false);
+
+        // An unbounded producer, so release happens with batches still pending
+        let field = Field::new("vals", ArrowType::Int32, false, None);
+        let stream = export_record_batch_producer_stream(
+            Box::new(move || {
+                let _keepalive = &captured;
+                let mut arr = IntegerArray::<i32>::default();
+                arr.push(7);
+                Ok(Some(vec![(
+                    Arc::new(Array::from_int32(arr)),
+                    col_schema.clone(),
+                )]))
+            }),
+            vec![field],
+            None,
+        );
+        let stream_ptr = Box::into_raw(stream);
+
+        unsafe {
+            let mut out = super::ArrowArray::empty();
+            let rc = ((*stream_ptr).get_next.unwrap())(stream_ptr, &mut out);
+            assert_eq!(rc, 0);
+            if let Some(release) = out.release {
+                release(&mut out);
+            }
+
+            assert_eq!(Arc::strong_count(&sentinel), 2);
+            ((*stream_ptr).release.unwrap())(stream_ptr);
+            let _ = Box::from_raw(stream_ptr);
+        }
+
+        assert_eq!(
+            Arc::strong_count(&sentinel),
+            1,
+            "release should drop the producer and everything it captured"
+        );
     }
 
     #[test]
