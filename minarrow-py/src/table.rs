@@ -15,8 +15,8 @@
 //! `Table` - the native Python table object over minarrow.
 //!
 //! Holds an owned `Arc<Table>` or a zero-copy `Arc<TableV>` window. The data
-//! surface lives on `PyTableInner` so the standalone library here and the
-//! `astrobears` compute wheel wrap the same inner. Indexing maps onto minarrow's
+//! surface lives on `PyTableInner` so a downstream compute wrapper reuses the
+//! same inner. Indexing maps onto minarrow's
 //! selection traits: string keys select columns, integer and slice keys select
 //! positional rows, and a 2-tuple is `(rows, cols)`.
 

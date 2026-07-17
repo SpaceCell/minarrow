@@ -15,9 +15,9 @@
 //! `Array` - the native Python array object over minarrow.
 //!
 //! One Python type holds an unnamed `Array`, a named `FieldArray`, or a
-//! zero-copy `ArrayV` window. The data surface lives on `PyArrayInner` so the
-//! standalone library here and the `astrobears` compute wheel wrap the same
-//! inner and stay in lockstep. Conversions are `From` impls over minarrow's own
+//! zero-copy `ArrayV` window. The data surface lives on `PyArrayInner` so a
+//! downstream compute wrapper reuses the same inner and stays in lockstep with
+//! this standalone library. Conversions are `From` impls over minarrow's own
 //! built-in conversions.
 //!
 //! The data is held behind `Arc`. An `Arc` is an 8-aligned pointer to the
