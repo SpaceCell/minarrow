@@ -61,6 +61,8 @@ use crate::traits::{
 };
 #[cfg(all(feature = "views", feature = "select"))]
 use crate::Bitmask;
+#[cfg(all(feature = "views", feature = "chunked", feature = "size"))]
+use crate::{ByteSize, SuperTableV};
 #[cfg(feature = "views")]
 use crate::{Array, BitmaskV, NumericArrayV, TableV, TextArrayV};
 
@@ -464,6 +466,38 @@ impl Table {
         assert!(offset <= self.n_rows, "offset out of bounds");
         assert!(offset + len <= self.n_rows, "slice window out of bounds");
         TableV::from_table(self.clone(), offset, len)
+    }
+
+    /// Splits this table into a [`SuperTableV`] of zero-copy row views
+    /// sized towards `target_bytes` each.
+    ///
+    /// The row count per view derives from the table's average bytes per
+    /// row via [`ByteSize::est_bytes`]. Views carry row bounds rather
+    /// than buffers, so no column data moves and the parent's buffers
+    /// stay untouched. The final view holds the remaining rows, and a
+    /// table that fits within `target_bytes` returns a single view.
+    ///
+    /// `target_bytes` is a sizing target rather than a strict bound, as
+    /// a view's actual bytes follow its rows' variable-width content.
+    #[cfg(all(feature = "views", feature = "chunked", feature = "size"))]
+    pub fn get_views_for_target_batch_size(&self, target_bytes: usize) -> SuperTableV {
+        let rows = self.n_rows;
+        if rows == 0 {
+            return SuperTableV {
+                slices: vec![self.slice(0, 0)],
+                len: 0,
+            };
+        }
+        let per_row = (self.est_bytes() / rows).max(1);
+        let stride = (target_bytes / per_row).clamp(1, rows);
+        let mut slices = Vec::with_capacity(rows.div_ceil(stride));
+        let mut offset = 0;
+        while offset < rows {
+            let len = stride.min(rows - offset);
+            slices.push(self.slice(offset, len));
+            offset += stride;
+        }
+        SuperTableV { slices, len: rows }
     }
 
     /// Gather the rows at the given indices into a new materialised Table.
@@ -1309,7 +1343,96 @@ mod tests {
     #[cfg(all(feature = "views", feature = "select"))]
     use crate::traits::selection::ColumnSelection;
     use crate::{Array, BooleanArray, IntegerArray, NumericArray};
+    #[cfg(all(feature = "views", feature = "chunked", feature = "size"))]
+    use crate::{ByteSize, FloatArray, StringArray};
     use crate::{fa_bool, fa_i32, fa_i64, fa_u32};
+
+    #[cfg(all(feature = "views", feature = "chunked", feature = "size"))]
+    fn view_batch_table(rows: usize) -> Table {
+        let ids: Vec<i32> = (0..rows as i32).collect();
+        let values: Vec<f64> = (0..rows).map(|i| i as f64 * 0.5).collect();
+        let labels: Vec<String> = (0..rows).map(|i| format!("row_{}", i)).collect();
+        let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        Table::new(
+            "bench".to_string(),
+            Some(vec![
+                FieldArray::from_arr("ids", IntegerArray::<i32>::from_slice(&ids)),
+                FieldArray::from_arr("values", FloatArray::<f64>::from_slice(&values)),
+                FieldArray::from_arr("labels", StringArray::<u32>::from_slice(&label_refs)),
+            ]),
+        )
+    }
+
+    #[test]
+    #[cfg(all(feature = "views", feature = "chunked", feature = "size"))]
+    fn views_tile_the_table_with_a_remainder() {
+        let rows = 1300;
+        let table = view_batch_table(rows);
+        let per_row = (table.est_bytes() / rows).max(1);
+        let st = table.get_views_for_target_batch_size(500 * per_row);
+        let counts: Vec<usize> = st.slices.iter().map(|s| s.len).collect();
+        assert_eq!(counts, vec![500, 500, 300]);
+        assert_eq!(st.len, rows);
+        let offsets: Vec<usize> = st.slices.iter().map(|s| s.offset).collect();
+        assert_eq!(offsets, vec![0, 500, 1000]);
+    }
+
+    #[test]
+    #[cfg(all(feature = "views", feature = "chunked", feature = "size"))]
+    fn views_read_the_parent_rows_in_place() {
+        let rows = 1200;
+        let table = view_batch_table(rows);
+        let per_row = (table.est_bytes() / rows).max(1);
+        let st = table.get_views_for_target_batch_size(500 * per_row);
+        let parent_ptr = match &table.cols[0].array {
+            Array::NumericArray(NumericArray::Int32(a)) => a.data.as_slice().as_ptr(),
+            _ => panic!("expected Int32 column"),
+        };
+        let mut row = 0usize;
+        for view in &st.slices {
+            // The view's array is the parent array behind a reference
+            // count, so its buffer pointer matches the parent's.
+            let (array, offset, len) = view.cols[0].as_tuple_ref();
+            assert_eq!(offset, row);
+            match array {
+                Array::NumericArray(NumericArray::Int32(a)) => {
+                    assert_eq!(a.data.as_slice().as_ptr(), parent_ptr);
+                    for i in 0..len {
+                        assert_eq!(a.data.as_slice()[offset + i], (row + i) as i32);
+                    }
+                }
+                _ => panic!("expected Int32 column"),
+            }
+            for i in 0..view.len {
+                assert_eq!(
+                    view.cols[2].get_str(i).unwrap(),
+                    format!("row_{}", row + i)
+                );
+            }
+            row += view.len;
+        }
+        assert_eq!(row, rows);
+    }
+
+    #[test]
+    #[cfg(all(feature = "views", feature = "chunked", feature = "size"))]
+    fn table_within_target_returns_one_view() {
+        let rows = 700;
+        let table = view_batch_table(rows);
+        let st = table.get_views_for_target_batch_size(usize::MAX);
+        assert_eq!(st.slices.len(), 1);
+        assert_eq!(st.slices[0].len, rows);
+        assert_eq!(st.len, rows);
+    }
+
+    #[test]
+    #[cfg(all(feature = "views", feature = "chunked", feature = "size"))]
+    fn empty_table_returns_one_empty_view() {
+        let table = Table::new("empty".to_string(), None);
+        let st = table.get_views_for_target_batch_size(1024);
+        assert_eq!(st.slices.len(), 1);
+        assert_eq!(st.len, 0);
+    }
 
     #[test]
     fn test_new_table() {
