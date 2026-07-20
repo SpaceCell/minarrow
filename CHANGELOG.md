@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- Add producer-driven record batch stream export
+### Added
+- Table::get_views_for_target_batch_size for easier Table -> wire batching.
+- Producer-driven record batch stream export for FFI.
 
 ## 0.16.0 - 2026-07-16
 
