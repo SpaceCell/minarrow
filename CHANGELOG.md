@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- Added `ByteSize::logical_bytes` for logical byte size accounting.
 - Table::get_views_for_target_batch_size for easier Table -> wire batching.
 - Producer-driven record batch stream export for FFI.
 
