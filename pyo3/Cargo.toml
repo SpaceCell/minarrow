@@ -1,6 +1,6 @@
 [package]
 name = "minarrow-pyo3"
-version = "0.16.0"
+version = "0.16.1"
 edition = "2024"
 authors = ['Peter G. Bower']
 license = "Apache-2.0"
@@ -24,7 +24,7 @@ name = "minarrow_pyo3"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-minarrow = { version = "0.16.0", path = "..", features = ["large_string"] }
+minarrow = { version = "0.16.1", path = "..", features = ["large_string"] }
 pyo3 = { version = "0.29" }
 thiserror = "2"
 
