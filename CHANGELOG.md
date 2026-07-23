@@ -7,12 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
-## 0.16.1 - 2026-07-23
+## 0.16.2 - 2026-07-23
 
 ### Added
 - Added `ByteSize::logical_bytes` for logical byte size accounting.
 - Table::get_views_for_target_batch_size for easier Table -> wire batching.
 - Producer-driven record batch stream export for FFI.
+
+### Bug fix
+- `TextArrayV` conversions from `Vec64<String>`, `Vec<String>` and `&[&str]` now build a `String32` variant when the `large_string` feature is off.
 
 ## 0.16.0 - 2026-07-16
 
