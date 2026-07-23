@@ -2,7 +2,7 @@ cargo-features = ["trim-paths"]
 
 [package]
 name = "minarrow-py"
-version = "0.16.0"
+version = "0.16.1"
 edition = "2024"
 authors = ["Peter G. Bower"]
 license = "Apache-2.0"

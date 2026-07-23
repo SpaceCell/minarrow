@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
-## Unreleased
+## 0.16.1 - 2026-07-23
 
 ### Added
 - Added `ByteSize::logical_bytes` for logical byte size accounting.
