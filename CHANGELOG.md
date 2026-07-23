@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
+## 0.16.2 - 2026-07-23
+
+### Fixed
+- `TextArrayV` conversions from `Vec64<String>`, `Vec<String>` and `&[&str]` now build a `String32` variant when the `large_string` feature is off, so the crate compiles without `large_string`. These `From` impls previously always constructed `String64`, which only exists under `large_string`, so any build that disabled the feature failed to compile.
+
 ## 0.16.1 - 2026-07-23
 
 ### Added
