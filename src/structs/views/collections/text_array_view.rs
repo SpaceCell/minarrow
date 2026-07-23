@@ -295,7 +295,12 @@ impl From<ArrayV> for TextArrayV {
 
 impl From<vec64::Vec64<String>> for TextArrayV {
     fn from(strings: vec64::Vec64<String>) -> Self {
+        #[cfg(feature = "large_string")]
         let array = TextArray::String64(Arc::new(StringArray::<u64>::from_vec64_owned(
+            strings, None,
+        )));
+        #[cfg(not(feature = "large_string"))]
+        let array = TextArray::String32(Arc::new(StringArray::<u32>::from_vec64_owned(
             strings, None,
         )));
         TextArrayV::from(array)
@@ -311,7 +316,10 @@ impl From<Vec<String>> for TextArrayV {
 
 impl<'a> From<&'a [&'a str]> for TextArrayV {
     fn from(strings: &'a [&'a str]) -> Self {
+        #[cfg(feature = "large_string")]
         let array = TextArray::String64(Arc::new(StringArray::<u64>::from_slice(strings)));
+        #[cfg(not(feature = "large_string"))]
+        let array = TextArray::String32(Arc::new(StringArray::<u32>::from_slice(strings)));
         TextArrayV::from(array)
     }
 }
