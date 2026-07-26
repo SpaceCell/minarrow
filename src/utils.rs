@@ -39,6 +39,10 @@ use crate::{
 #[inline(always)]
 pub fn validate_null_mask_len(data_len: usize, null_mask: &Option<Bitmask>) {
     if let Some(mask) = null_mask {
+        #[cfg(feature = "lbuffer")]
+        if mask.is_lbuffer_backed() {
+            return;
+        }
         assert_eq!(
             mask.len(),
             data_len,
