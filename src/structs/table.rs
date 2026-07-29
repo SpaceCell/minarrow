@@ -46,6 +46,7 @@ use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator};
 use super::field_array::FieldArray;
 #[cfg(all(feature = "views", feature = "select"))]
 use crate::ArrayV;
+use crate::Array;
 use crate::Field;
 #[cfg(feature = "chunked")]
 use crate::SuperTable;
@@ -64,7 +65,7 @@ use crate::Bitmask;
 #[cfg(all(feature = "views", feature = "chunked", feature = "size"))]
 use crate::{ByteSize, SuperTableV};
 #[cfg(feature = "views")]
-use crate::{Array, BitmaskV, NumericArrayV, TableV, TextArrayV};
+use crate::{BitmaskV, NumericArrayV, TableV, TextArrayV};
 
 // Global counter for unnamed table instances
 static UNNAMED_COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -1177,7 +1178,7 @@ impl Display for Table {
         // row-index column (“idx”)
         let idx_width = usize::max(
             3, // “idx”
-            ((self.n_rows - 1) as f64).log10().floor() as usize + 1,
+            ((self.n_rows.saturating_sub(1)) as f64).log10().floor() as usize + 1,
         );
 
         // Render header
@@ -1333,6 +1334,55 @@ macro_rules! tbl {
     ($name:expr) => {
         $crate::Table::new(::std::string::String::from($name), ::std::option::Option::None)
     };
+}
+
+impl From<Array> for Table {
+    /// Presents a single array as a one-column table, naming the column by
+    /// position since a standalone array carries no field of its own.
+    fn from(value: Array) -> Self {
+        Table::new("array".to_string(), Some(vec![FieldArray::from_arr("column_0", value)]))
+    }
+}
+
+impl TryFrom<Vec<Table>> for Table {
+    type Error = MinarrowError;
+
+    /// Joins a sequence of tables end to end by rows.
+    ///
+    /// The pieces must share a schema, which the join itself enforces. An
+    /// empty sequence yields the typed-empty table.
+    fn try_from(value: Vec<Table>) -> Result<Self, Self::Error> {
+        let mut pieces = value.into_iter();
+        let Some(mut joined) = pieces.next() else {
+            return Ok(Table::new_empty());
+        };
+        for next in pieces {
+            joined = joined.concat(next)?;
+        }
+        Ok(joined)
+    }
+}
+
+impl TryFrom<Table> for Array {
+    type Error = MinarrowError;
+
+    /// Takes the array of a one-column table.
+    ///
+    /// A single-column table is that column, which is the shape a
+    /// one-column projection arrives in. A wider table has no single
+    /// reading, so it reports the column count instead of taking the first.
+    fn try_from(value: Table) -> Result<Self, Self::Error> {
+        match value.n_cols() {
+            1 => Ok(value.cols()[0].array.clone()),
+            n => Err(MinarrowError::TypeError {
+                from: "Table",
+                to: "Array",
+                message: Some(format!(
+                    "a single column is needed, the table held {n} columns"
+                )),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]

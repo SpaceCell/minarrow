@@ -453,6 +453,15 @@ impl<T: Float> From<SuperNdArray<T>> for SuperNdArrayV<T> {
     }
 }
 
+impl<T: Float> From<SuperNdArrayV<T>> for SuperNdArray<T> {
+    /// Materialises the viewed windows as the batches of an owned chunked
+    /// array, preserving the chunk boundaries the view carries.
+    fn from(value: SuperNdArrayV<T>) -> Self {
+        let batches: Vec<NdArray<T>> = value.chunks().map(|slice| slice.to_ndarray()).collect();
+        SuperNdArray::from_batches(batches, value.name.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

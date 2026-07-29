@@ -29,7 +29,7 @@
 //! - Logical type: temporal values with a defined [`TimeUnit`] (seconds, milliseconds,
 //!   microseconds, nanoseconds, days).
 //! - Physical storage: i64 integers representing raw time offsets from
-//!   the UNIX epoch or a base date, plus an optional bit-packed validity mask.
+//!   the UNIX epoch or a base date, plus an optional bit-packed null mask.
 //! - Single generic type supports all Arrow datetime/timestamp variants via `Field`
 //!   metadata, avoiding multiple specialised array structs.
 //! - Integrates with Arrow FFI for zero-copy interop.
@@ -41,7 +41,7 @@
 //! ## Features
 //! - **Construction** from slices, `Vec64` or plain `Vec` buffers, with optional null mask.
 //! - **Mutation**: push, set, and bulk null insertion.
-//! - **Null handling**: optional validity mask with length validation.
+//! - **Null handling**: optional null mask with length validation.
 //! - **Conversion**: when `datetime_ops` feature is enabled, convert to native date/time
 //!   values via the `time` crate, plus component extraction and datetime operations.
 //! - **Datetime operations**: full suite of standard datetime operations under ./datetime_ops
@@ -102,13 +102,13 @@ pub const UNIX_EPOCH_JULIAN_DAY: i64 = 2_440_588;
 ///   with units defined by [`TimeUnit`].
 /// - A single struct supports all Arrow datetime/timestamp variants, with the exact logical
 ///   type determined by an associated `Field`'s `ArrowType`.
-/// - `null_mask` is an optional bit-packed validity bitmap (`1 = valid`, `0 = null`).
+/// - `null_mask` is an optional bit-packed null mask (`1 = valid`, `0 = null`).
 /// - Implements [`MaskedArray`] for consistent nullable array behaviour.
 /// - When `datetime_ops` is enabled, provides conversion to native date/time via the `time` crate.
 ///
 /// ### Fields
 /// - `data`: backing buffer storing raw temporal values.
-/// - `null_mask`: optional bit-packed validity bitmap.
+/// - `null_mask`: optional bit-packed bitmap.
 /// - `time_unit`: time units associated with the stored values.
 ///
 /// ## Example
@@ -170,7 +170,7 @@ impl<T: Integer> DatetimeArray<T> {
         Self {
             data: Vec64::with_capacity(cap).into(),
             null_mask: if null_mask {
-                // All-valid (1) default - reserved validity slots default to
+                // All-valid (1) default - reserved null mask slots default to
                 // valid under Arrow's 1=valid, 0=null convention.
                 Some(Bitmask::new_set_all(cap, true))
             } else {
@@ -190,7 +190,7 @@ impl<T: Integer> DatetimeArray<T> {
         }
     }
 
-    /// Constructs an DateTimeArray from a slice (dense, no nulls).
+    /// Constructs an DateTimeArray from a slice (contiguous, no nulls).
     #[inline]
     pub fn from_slice(slice: &[T], time_unit: Option<TimeUnit>) -> Self {
         Self {

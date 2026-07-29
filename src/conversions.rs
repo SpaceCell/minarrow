@@ -58,6 +58,7 @@ use std::convert::{From, TryFrom};
 use std::sync::Arc;
 
 use crate::enums::error::MinarrowError;
+use crate::traits::concatenate::Concatenate;
 #[cfg(feature = "views")]
 use crate::traits::view::View;
 use crate::{
@@ -1294,6 +1295,51 @@ impl View for BooleanArray<()> {
 // --------------------------------
 //      From Scalar for Array
 // --------------------------------
+
+impl TryFrom<Vec<Array>> for Array {
+    type Error = MinarrowError;
+
+
+    /// Joins a sequence of arrays end to end.
+    ///
+    /// The pieces must share an element type, which the join itself
+    /// enforces. An empty sequence yields the default array.
+    fn try_from(value: Vec<Array>) -> Result<Self, Self::Error> {
+        let mut pieces = value.into_iter();
+        let Some(mut joined) = pieces.next() else {
+            return Ok(Array::default());
+        };
+        for next in pieces {
+            joined = joined.concat(next)?;
+        }
+        Ok(joined)
+    }
+}
+
+#[cfg(feature = "scalar_type")]
+impl TryFrom<Array> for Scalar {
+    type Error = MinarrowError;
+
+    /// Reads a single-element array as that element.
+    /// 
+    /// Rejects lengths > 1.
+    fn try_from(value: Array) -> Result<Self, Self::Error> {
+        match value.len() {
+            1 => value.get_scalar(0).ok_or_else(|| MinarrowError::TypeError {
+                from: "Array",
+                to: "Scalar",
+                message: Some("the element could not be read as a scalar".to_owned()),
+            }),
+            n => Err(MinarrowError::TypeError {
+                from: "Array",
+                to: "Scalar",
+                message: Some(format!(
+                    "a single value is needed, the array held {n} elements"
+                )),
+            }),
+        }
+    }
+}
 
 #[cfg(feature = "scalar_type")]
 impl From<Scalar> for Array {

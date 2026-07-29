@@ -447,7 +447,7 @@ pub fn export_to_c(array: Arc<Array>, schema: Schema) -> (*mut ArrowArray, *mut 
 /// `ArrowArray.offset` and `ArrowArray.length`. Buffer pointers always
 /// point at the start of the backing buffers; consumers read
 /// `length` elements starting at `offset` from each buffer
-/// (validity bitmap, primitive data or codes, string offsets/values).
+/// (null mask, primitive data or codes, string offsets/values).
 ///
 /// The full backing [`Array`] is kept alive in the FFI holder, so the
 /// pointers remain valid for the lifetime of the exported `ArrowArray`.
@@ -1143,7 +1143,7 @@ unsafe fn import_array_zero_copy(
 
 /// Imports a null bitmap honouring an `ArrowArray.offset` bit window.
 ///
-/// The Arrow C Data Interface stores the validity bitmap at the start of the
+/// The Arrow C Data Interface stores the null mask at the start of the
 /// parent buffer; consumers read `length` bits starting at bit `offset`.
 /// When `offset == 0` this is a straight copy; otherwise the source bits are
 /// realigned into a fresh `Bitmask`.
@@ -1465,7 +1465,7 @@ unsafe fn import_utf8<T: Integer>(
 /// - Long string (length > 12): `[i32 length][4 bytes prefix][i32 buf_index][i32 offset]`
 ///
 /// In the Arrow C Data Interface, Utf8View arrays have buffers:
-/// `[validity, views, variadic_buf_0, ..., variadic_buf_n, variadic_sizes]`
+/// `[null mask, views, variadic_buf_0, ..., variadic_buf_n, variadic_sizes]`
 ///
 /// # Safety
 /// `arr` must contain a valid Utf8View ArrowArray.
@@ -1620,7 +1620,7 @@ unsafe fn import_categorical(
             .collect(),
         _ => panic!("Expected String32 dictionary"),
     };
-    // Honours bit-level offset for the codes' validity bitmap.
+    // Honours bit-level offset for the codes' null mask.
     let null_mask = if !null_ptr.is_null() {
         Some(unsafe { import_null_mask_offset(null_ptr, offset, len) })
     } else {
@@ -4478,7 +4478,7 @@ mod tests {
     }
 
     /// Exercises `import_null_mask_offset`: a windowed view that spans
-    /// across byte boundaries in the validity bitmap (offset=3, len=7),
+    /// across byte boundaries in the null mask (offset=3, len=7),
     /// with nulls at non-aligned positions.
     #[cfg(feature = "views")]
     #[test]

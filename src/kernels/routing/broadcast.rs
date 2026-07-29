@@ -48,7 +48,7 @@ pub fn broadcast_length_1_array(av: ArrayV, len: usize) -> Result<Array, KernelE
                 Ok(Array::BooleanArray(BooleanArray::new(bitmask, None).into()))
             }
             None => Err(KernelError::UnsupportedType(
-                "broadcasting null boolean values not supported in dense mode".into(),
+                "broadcasting null boolean values not supported when no mask is supplied".into(),
             )),
         },
         Array::TextArray(TextArray::String32(a)) => {

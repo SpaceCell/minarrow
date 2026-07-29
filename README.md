@@ -84,7 +84,7 @@ Six typed arrays back standard workloads:
 | `IntegerArray<T>` | i8 through u64 |
 | `FloatArray<T>` | f32, f64 |
 | `StringArray<T>` | UTF-8 with u32 or u64 offsets |
-| `BooleanArray` | Bit-packed with validity mask |
+| `BooleanArray` | Bit-packed with null mask |
 | `CategoricalArray<T>` | Dictionary-encoded |
 | `DatetimeArray<T>` | Timestamps, dates, durations |
 

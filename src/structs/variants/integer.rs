@@ -19,7 +19,7 @@
 //! ## Overview
 //! - Logical type: fixed-width signed/unsigned integers (`T: Integer`).
 //! - Physical storage: `Buffer<T>` (backed by `Vec64<T>` for 64-byte alignment) plus
-//!   optional bit-packed validity mask (`Bitmask`).
+//!   optional bit-packed null mask (`Bitmask`).
 //! - Usable standalone or as the numeric arm of higher-level enums (`NumericArray`, `Array`).
 //! - Zero-copy friendly and integrates with Arrow FFI.
 //!
@@ -76,20 +76,20 @@ use vec64::Vec64;
 ///
 /// ## Description
 /// - Stores fixed-width integer values in a contiguous `Buffer<T>` (`Vec64<T>` under the hood).
-/// - Optional Arrow-style validity bitmap (`1 = valid`, `0 = null`) via `Bitmask`.
+/// - Optional Arrow-style null mask (`1 = valid`, `0 = null`) via `Bitmask`.
 /// - Implements [`MaskedArray`] for consistent nullable array behavior and interop with
 ///   higher-level containers/enums.
 /// - Can be used as a standalone numeric buffer or as the numeric arm of `NumericArray` / `Array`.
 ///
 /// ### Fields
 /// - `data`: backing buffer of integer values (`Buffer<T>`).
-/// - `null_mask`: optional bit-packed validity bitmap.
+/// - `null_mask`: optional bit-packed bitmap.
 ///
 /// ## Example
 /// ```rust
 /// use minarrow::{IntegerArray, MaskedArray};
 ///
-/// // Dense, no nulls
+/// // Contiguous, no nulls
 /// let arr = IntegerArray::<i64>::from_slice(&[1, 2, 3, 4]);
 /// assert_eq!(arr.len(), 4);
 /// assert_eq!(arr.get(2), Some(3));

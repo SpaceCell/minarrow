@@ -19,7 +19,7 @@
 //!
 //! ## Overview
 //! - Logical type: boolean values (`true` / `false`) with optional `null` state.
-//! - Physical storage: bit-packed `Bitmask` for values, optional `Bitmask` for validity.
+//! - Physical storage: bit-packed `Bitmask` for values, optional `Bitmask` for the null mask.
 //! - Backed by `Vec64<u8>`-aligned buffers for CPU-friendly operations.
 //! - Integrates with Arrow FFI and MaskedArray trait for schema-agnostic use.
 //!
@@ -27,11 +27,11 @@
 //! - **Construction** from raw bitmasks, byte buffers, or boolean slices.
 //! - **Mutation**: bulk bit writes, per-element set, push, null insertion.
 //! - **Iteration**: sequential and parallel (with `parallel_proc` feature).
-//! - **Null handling**: optional validity mask with auto-growth and validation.
+//! - **Null handling**: optional null mask with auto-growth and validation.
 //! - **Slicing**: zero-copy tuple views or cloned logical slices.
 //!
 //! ## Intended Use Cases
-//! - High-performance analytical pipelines requiring dense boolean representation.
+//! - High-performance analytical pipelines requiring contiguous boolean representation.
 //! - Interop with Apache Arrow or other columnar formats.
 //! - Streaming or batch ingestion with incremental append.
 //!
@@ -77,14 +77,14 @@ use crate::{Length, Offset, Vec64, impl_arc_masked_array};
 /// ## Description
 /// - Stores boolean values in a compact `Bitmask` for memory efficiency.
 ///   The first value is stored in the least significant bit (LSB).
-/// - Optional `null_mask` stores validity bits (`1 = valid`, `0 = null`).
+/// - Optional `null_mask` stores the null mask bits (`1 = valid`, `0 = null`).
 /// - The `len` field tracks the number of logical elements, not the byte length of the backing buffer.
 /// - Provides both safe (`get`) and unsafe (`get_unchecked`) element access.
 /// - Implements [`MaskedArray`] for consistent inner array behaviour.
 ///
 /// ### Fields
 /// - `data`: bit-packed boolean values.
-/// - `null_mask`: optional bit-packed validity bitmap.
+/// - `null_mask`: optional bit-packed bitmap.
 /// - `len`: number of logical elements.
 /// - `_phantom`: marker for generic type `T` (unused at runtime).
 ///
@@ -156,7 +156,7 @@ impl BooleanArray<()> {
         Self {
             data: Bitmask::with_capacity(cap),
             null_mask: if null_mask {
-                // All-valid (1) default - reserved validity slots default to
+                // All-valid (1) default - reserved null mask slots default to
                 // valid under Arrow's 1=valid, 0=null convention.
                 Some(Bitmask::new_set_all(cap, true))
             } else {
@@ -167,7 +167,7 @@ impl BooleanArray<()> {
         }
     }
 
-    /// Constructs a dense BoolArray from a slice of `bool` values (no nulls).
+    /// Constructs a contiguous BoolArray from a slice of `bool` values (no nulls).
     #[inline]
     pub fn from_slice(slice: &[bool]) -> Self {
         let n = slice.len();
@@ -1470,7 +1470,7 @@ mod tests_parallel {
 
     #[test]
     fn par_iter_range_opt_with_nulls() {
-        // validity bits: 1,1,0,1,1  (index 2 is null)
+        // null mask bits: 1,1,0,1,1  (index 2 is null)
         let mask = Bitmask::from_bools(&[true, true, false, true, true]);
         let mut arr = BooleanArray::from_slice(&[true, false, true, false, true]);
         arr.null_mask = Some(mask);
@@ -1490,7 +1490,7 @@ mod tests_parallel {
 
     #[test]
     fn par_iter_opt_unchecked_with_nulls() {
-        // validity bits: 1,0,0,1,1,0  (only 0,3,4 valid)
+        // null mask bits: 1,0,0,1,1,0  (only 0,3,4 valid)
         let mask = Bitmask::from_bools(&[true, false, false, true, true, false]);
         let mut arr = BooleanArray::from_slice(&[true, false, true, false, true, false]);
         arr.null_mask = Some(mask);

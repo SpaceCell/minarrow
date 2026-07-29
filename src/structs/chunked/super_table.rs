@@ -1245,6 +1245,37 @@ macro_rules! st {
     };
 }
 
+impl From<Table> for SuperTable {
+    /// Holds a single table as one batch.
+    fn from(value: Table) -> Self {
+        SuperTable::from_batches(vec![Arc::new(value)], None)
+    }
+}
+
+impl From<Vec<Table>> for SuperTable {
+    /// Holds a sequence of tables as its batches, in the order given.
+    fn from(value: Vec<Table>) -> Self {
+        SuperTable::from_batches(value.into_iter().map(Arc::new).collect(), None)
+    }
+}
+
+impl TryFrom<SuperTable> for Table {
+    type Error = MinarrowError;
+
+    /// Rejoins the batches into one table.
+    fn try_from(mut value: SuperTable) -> Result<Self, Self::Error> {
+        let rows = value.n_rows();
+        if rows == 0 {
+            return Ok(Table::default());
+        }
+        value.rechunk_to(rows, RechunkStrategy::Count(rows))?;
+        match value.batches().first() {
+            Some(batch) => Ok((**batch).clone()),
+            None => Ok(Table::default()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

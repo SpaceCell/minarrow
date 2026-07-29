@@ -107,7 +107,7 @@ Unless you have a very large unique category count, this should not cause perfor
 
 ### Nullability
 
-All array types support null values via MinArrow's `MaskedArray` wrapper. The validity bitmap is transferred through the Arrow C Data Interface and PyArrow reconstructs the same null positions on import.
+All array types support null values via MinArrow's `MaskedArray` wrapper. The null mask is transferred through the Arrow C Data Interface and PyArrow reconstructs the same null positions on import.
 
 ## Conversion Path
 

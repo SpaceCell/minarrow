@@ -14,7 +14,7 @@
 
 //! # **Matrix Module** - *De-facto Matrix Memory Layout for BLAS/LAPACK ecosystem compatibility*
 //!
-//! Dense column-major matrix type for high-performance linear algebra.
+//! Contiguous column-major matrix type for high-performance linear algebra.
 //! BLAS/LAPACK compatible with built-inconversions from `Table` data.
 
 use std::fmt;
@@ -30,7 +30,7 @@ use crate::{SharedBuffer, TableV};
 
 /// # Matrix
 ///
-/// Column-major dense matrix.
+/// Column-major contiguous matrix.
 ///
 /// ### Description
 /// This struct is compatible with Arrow, LAPACK, BLAS, and all
@@ -49,7 +49,7 @@ use crate::{SharedBuffer, TableV};
 /// - `name`: Optional matrix name for diagnostics.
 ///
 /// ### Null handling
-/// - It is dense - nulls can be represented through `f64::NAN`
+/// - It is contiguous - nulls can be represented through `f64::NAN`
 /// - However this is not always reliable, as a single *NaN* can affect vectorised
 /// calculations when integrating with various frameworks.
 ///
@@ -79,7 +79,7 @@ pub struct Matrix {
     /// Backing storage. `Buffer<f64>` carries either an owned `Vec64<f64>` or a
     /// shared view into an existing allocation. The shared variant enables
     /// zero-copy construction from upstream `TableV` arenas via
-    /// `TableV::try_as_matrix_zc` without sacrificing the dense column-major
+    /// `TableV::try_as_matrix_zc` without sacrificing the contiguous column-major
     /// stride layout that BLAS/LAPACK expects.
     pub data: Buffer<f64>,
     pub name: Option<String>,
@@ -95,7 +95,7 @@ pub(crate) const fn aligned_stride(n_rows: usize) -> usize {
 }
 
 impl Matrix {
-    /// Constructs a new dense Matrix with shape and optional name.
+    /// Constructs a new contiguous Matrix with shape and optional name.
     /// Data buffer is zeroed. Columns are padded to 64-byte alignment.
     pub fn new(n_rows: usize, n_cols: usize, name: Option<impl Into<String>>) -> Self {
         let stride = aligned_stride(n_rows);
@@ -181,7 +181,7 @@ impl Matrix {
 
     /// Constructs a Matrix from a slice of `FloatArray<f64>` columns. Each
     /// column becomes one Matrix column; null masks are rejected so Matrix
-    /// stays dense.
+    /// stays contiguous.
     ///
     /// `impl AsRef<[FloatArray<f64>]>` accepts any contiguous layout at the
     /// call-site: `&[FloatArray<f64>]`, `&Vec<FloatArray<f64>>`,
@@ -218,7 +218,7 @@ impl Matrix {
             if col.null_mask.as_ref().map_or(false, |m| m.has_nulls()) {
                 return Err(MinarrowError::NullError {
                     message: Some(format!(
-                        "Matrix::try_from_cols: column {i} contains null values; Matrix requires dense data"
+                        "Matrix::try_from_cols: column {i} contains null values; Matrix requires contiguous data"
                     )),
                 });
             }
@@ -229,7 +229,7 @@ impl Matrix {
         let pad = stride - n_rows;
         let mut vec = Vec64::with_capacity(stride * n_cols);
 
-        // Each column is a guaranteed-dense slice, so
+        // Each column is a guaranteed-contiguous slice, so
         // extend_from_slice is a straight memcpy into the column-major buffer.
         for col in columns {
             let col_slice: &[f64] = col.data.as_slice();
@@ -526,7 +526,7 @@ impl TableV {
     /// Attempt a zero-copy construction of a `Matrix` from this view.
     ///
     /// Succeeds when the columns are already laid out in memory the way a
-    /// Matrix expects: every active column is a dense, null-free
+    /// Matrix expects: every active column is a contiguous, null-free
     /// `FloatArray<f64>` whose `Buffer` is a `Shared` view into one common
     /// `SharedBuffer`, with column `i` starting at `base + i * stride` elements
     /// (where `stride = aligned_stride(n_rows)`). When that holds, the Matrix
@@ -563,7 +563,7 @@ impl TableV {
         let mut base_offset: usize = 0;
         let mut owner_elem_len: usize = 0;
 
-        // Every column must be a dense null-free f64 view into
+        // Every column must be a contiguous null-free f64 view into
         // the same SharedBuffer, with column_i starting at base + i * stride.
         // ArrayV::new enforces offset+len <= array.len at construction so the
         // window bound is already invariant; ArrayV::null_count() covers the
@@ -1276,6 +1276,14 @@ mod try_as_matrix_zc_tests {
             .try_as_matrix()
             .expect_err("non-f64 column must reject");
         assert!(matches!(err, MinarrowError::TypeError { .. }));
+    }
+}
+
+impl From<Matrix> for Table {
+    /// Presents the matrix columns as table columns, naming them by
+    /// position where the matrix carries no field names of its own.
+    fn from(value: Matrix) -> Self {
+        value.to_table_gen()
     }
 }
 

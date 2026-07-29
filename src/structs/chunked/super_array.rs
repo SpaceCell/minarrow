@@ -1424,6 +1424,23 @@ impl Display for SuperArray {
     }
 }
 
+impl TryFrom<SuperArray> for Array {
+    type Error = MinarrowError;
+
+    /// Rejoins the chunks into one array.
+    fn try_from(mut value: SuperArray) -> Result<Self, Self::Error> {
+        let len = value.len();
+        if len == 0 {
+            return Ok(Array::default());
+        }
+        value.rechunk(RechunkStrategy::Count(len))?;
+        match value.into_chunks().into_iter().next() {
+            Some(array) => Ok(array),
+            None => Ok(Array::default()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

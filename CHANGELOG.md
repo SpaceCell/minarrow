@@ -32,7 +32,7 @@ where any bugs or reasonable feature requests may be requested anonymously / tre
 ### Added
 
 **NdArray, XArray and DLPack Feature**:
-- `NdArray` n-dimensional dense array (`ndarray` feature) over `Buffer<T>`,
+- `NdArray` n-dimensional contiguous array (`ndarray` feature) over `Buffer<T>`,
   generic over f32/f64, with NaN null semantics, `NdArrayV` zero-copy views,
   transpose and axis permutation, and Table/Matrix/Array interop.
 - `SuperNdArray` chunked n-dimensional array with `SuperNdArrayV`

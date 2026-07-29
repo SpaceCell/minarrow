@@ -293,6 +293,15 @@ impl Concatenate for SuperArrayV {
     }
 }
 
+impl From<SuperArrayV> for SuperArray {
+    /// Materialises the viewed slices as the chunks of an owned chunked
+    /// array, preserving the chunk boundaries the view carries.
+    fn from(value: SuperArrayV) -> Self {
+        let chunks: Vec<Array> = value.chunks().map(|slice| slice.to_array()).collect();
+        SuperArray::from_arrays_with_field(chunks, value.field)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

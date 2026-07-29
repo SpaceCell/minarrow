@@ -14,10 +14,10 @@
 
 //! # **Bitmask Module** - *Fast Bitpacked Byte Bitmask*
 //!
-//! Arrow-compatible, packed validity/boolean bitmask with 64-byte alignment.
+//! Arrow-compatible, packed null mask and boolean bitmask with 64-byte alignment.
 //!
 //! ## Purpose
-//! - Validity (null) masks for all array types (1 = valid, 0 = null).
+//! - Null masks for all array types (1 = valid, 0 = null).
 //! - Backing storage for `BooleanArray`.
 //!
 //! ## Behaviour
@@ -48,7 +48,7 @@ use vec64::Vec64;
 /// 64-byte–aligned packed bitmask.
 ///
 /// ### Description
-/// - Used for `BooleanArray` data and as the validity/null mask for all datatypes.
+/// - Used for `BooleanArray` data and as the null mask for all datatypes.
 /// - Arrow-compatible: LSB = first element, 1 = set/valid, 0 = cleared/null.
 /// - Automatically enforced alignment enables efficient bitwise filtering on SIMD targets.
 ///
@@ -191,7 +191,7 @@ impl Bitmask {
         mask
     }
 
-    /// Wrap a validity view from an [`crate::LBuffer`], sharing its bytes and
+    /// Wrap a null mask view from an [`crate::LBuffer`], sharing its bytes and
     /// trailing partial byte. Length and bits are read through the view; the
     /// stored `len` is the owned bit count, zero here.
     #[cfg(feature = "lbuffer")]

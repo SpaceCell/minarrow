@@ -85,8 +85,8 @@ pub fn bitmask_unop(src: BitmaskVT<'_>, op: UnaryOperator) -> Bitmask {
 ///
 /// # Usage
 /// ```rust,ignore
-/// // Combine validity masks from two nullable arrays
-/// let combined_validity = and_masks(
+/// // Combine null masks from two nullable arrays
+/// let combined_null_mask = and_masks(
 ///     (&array_a.null_mask, 0, array_a.len()),
 ///     (&array_b.null_mask, 0, array_b.len())
 /// );
@@ -307,7 +307,7 @@ pub fn all_ne(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
 /// # Usage
 /// ```rust,ignore
 /// // Determine if computation is worthwhile
-/// let valid_count = popcount_mask((&validity_mask, 0, array.len()));
+/// let valid_count = popcount_mask((&null_mask, 0, array.len()));
 /// if valid_count == 0 {
 ///     // Skip expensive operations on all-null data
 ///     return Array::new_null(array.len());

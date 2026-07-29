@@ -19,7 +19,7 @@
 //! ## Overview
 //! - Logical type: fixed-width floats (`T: Float`).
 //! - Physical storage: `Buffer<T>` (backed by `Vec64<T>` for 64-byte alignment) plus optional
-//!   Arrow-style validity mask (`Bitmask`).
+//!   Arrow-style null mask (`Bitmask`).
 //! - Usable standalone or as the floating-point arm of higher-level enums (`NumericArray`, `Array`).
 //! - Supports both explicit null masks and NaN-as-null semantics (at the caller’s discretion).
 //! - Zero-copy compatible with standard `Vec` and slice types.
@@ -79,7 +79,7 @@ use vec64::Vec64;
 ///
 /// ## Description
 /// - Stores floating-point values in a contiguous `Buffer<T>` (`Vec64<T>` under the hood).
-/// - Optional Arrow-style validity bitmap (`1 = valid`, `0 = null`) via `Bitmask`.
+/// - Optional Arrow-style null mask (`1 = valid`, `0 = null`) via `Bitmask`.
 /// - Can omit null mask entirely and represent missing values with `NaN` where acceptable.
 /// - Implements [`MaskedArray`] for consistent nullable array behaviour and interop with
 ///   higher-level containers/enums.
@@ -87,13 +87,13 @@ use vec64::Vec64;
 ///
 /// ### Fields
 /// - `data`: backing buffer of float values (`Buffer<T>`).
-/// - `null_mask`: optional bit-packed validity bitmap.
+/// - `null_mask`: optional bit-packed bitmap.
 ///
 /// ## Example
 /// ```rust
 /// use minarrow::{FloatArray, MaskedArray};
 ///
-/// // Dense, no nulls
+/// // Contiguous, no nulls
 /// let arr = FloatArray::<f64>::from_slice(&[1.1, 2.2, 3.3]);
 /// assert_eq!(arr.len(), 3);
 /// assert_eq!(arr.get(1), Some(2.2));

@@ -16,7 +16,7 @@
 //!
 //! Element-wise bitwise AND, OR, XOR over two integer arrays, plus unary bitwise
 //! complement, with null-aware semantics. Bitwise operations never fail, so a
-//! result carries the same validity as its input.
+//! result carries the same null mask as its input.
 //!
 //! ## Overview
 //! - **SIMD path**: `std::simd` vectorisation with a scalar tail, selected for
@@ -82,8 +82,8 @@ pub fn int_bitwise_body_std<T: PrimInt>(
 }
 
 /// Scalar integer bitwise kernel with null mask support.
-/// Bitwise operations never nullify, so the output validity equals the input
-/// validity. Invalid lanes carry a zero value.
+/// Bitwise operations never nullify, so the output null mask equals the input
+/// null mask. Invalid lanes carry a zero value.
 #[inline(always)]
 pub fn int_bitwise_masked_body_std<T: PrimInt>(
     op: BitwiseOperator,
@@ -188,7 +188,7 @@ pub fn int_bitwise_body_simd<T, const LANES: usize>(
 }
 
 /// SIMD integer bitwise kernel with null mask support, with a scalar tail.
-/// Validity is preserved exactly: the output mask equals the input mask.
+/// The null mask is preserved exactly: the output mask equals the input mask.
 #[cfg(feature = "simd")]
 #[inline(always)]
 pub fn int_bitwise_masked_body_simd<T, const LANES: usize>(
@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn bitwise_masked_preserves_validity() {
+    fn bitwise_masked_preserves_the_null_mask() {
         let lhs: Vec<i64> = (0..20).collect();
         let rhs: Vec<i64> = (0..20).map(|x| x + 5).collect();
         let mut mask = Bitmask::new_set_all(20, true);

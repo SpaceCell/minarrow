@@ -28,7 +28,7 @@
 //! - Optional `null_mask`: bit-packed, where `1 = valid`, `0 = null`
 //! - Builders from raw values (`from_values`, `from_vec64`) and from raw parts.
 //! - Iterators over indices and over resolved strings (nullable and non-nullable).
-//! - Convert to a dense `StringArray` via `to_string_array()` when needed.
+//! - Convert to a contiguous `StringArray` via `to_string_array()` when needed.
 //! - Parallel helpers behind `parallel_proc` feature.
 //!
 //! ## When to use
@@ -95,7 +95,7 @@ fn add_category<T: Integer>(unique_values: &mut Vec64<String>, value: &str) -> T
 /// ### Fields:
 /// - `data`: indices buffer referencing entries in `unique_values`.
 /// - `unique_values`: dictionary of unique string values.
-/// - `null_mask`: optional bit-packed validity bitmap (1=valid, 0=null).
+/// - `null_mask`: optional bit-packed bitmap (1=valid, 0=null).
 ///
 /// ## Purpose
 /// Consider this when you have a common set of unique string values, and want to
@@ -219,7 +219,7 @@ impl<T: Integer> CategoricalArray<T> {
             #[cfg(feature = "shared_dict")]
             dictionary: unique_values.map(Dictionary::from).unwrap_or_default(),
             null_mask: if null_mask {
-                // All-valid (1) default - reserved validity slots default to
+                // All-valid (1) default - reserved null mask slots default to
                 // valid under Arrow's 1=valid, 0=null convention.
                 Some(Bitmask::new_set_all(cap, true))
             } else {
@@ -310,7 +310,7 @@ impl<T: Integer> CategoricalArray<T> {
         }
     }
 
-    /// Constructs a dense DictionaryArray from index and value slices (no nulls).
+    /// Constructs a contiguous DictionaryArray from index and value slices (no nulls).
     #[inline]
     pub fn from_slices(indices: &[T], unique_values: &[String]) -> Self {
         assert!(
@@ -604,7 +604,7 @@ impl<T: Integer> CategoricalArray<T> {
         }
     }
 
-    /// Materialise the categorical as a dense StringArray<T>.
+    /// Materialise the categorical as a contiguous StringArray<T>.
     #[inline]
     pub fn to_string_array(&self) -> StringArray<T> {
         let len = self.data.len();
