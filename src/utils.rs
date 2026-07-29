@@ -205,12 +205,12 @@ pub fn is_simd_aligned<T>(slice: &[T]) -> bool {
 /// - `N`: Number of SIMD lanes, must match the SIMD vector width for the target operation
 ///
 /// # Parameters
-/// - `mask`: Source bitmask containing validity information
+/// - `mask`: Source bitmask containing null mask information
 /// - `offset`: Starting bit offset within the bitmask
 /// - `len`: Maximum number of bits to consider (bounds checking)
 ///
 /// # Returns
-/// A `Mask<T, N>` where each lane corresponds to the validity of the corresponding input element.
+/// A `Mask<T, N>` where each lane corresponds to the null mask bit of the corresponding input element.
 /// Lanes beyond `len` are set to false for safety.
 ///
 /// # Usage Example

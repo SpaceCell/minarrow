@@ -616,6 +616,13 @@ impl<T: Float> fmt::Debug for NdArrayV<T> {
     }
 }
 
+impl<T: Float> From<NdArrayV<T>> for NdArray<T> {
+    /// Materialises the viewed window as an owned contiguous array.
+    fn from(value: NdArrayV<T>) -> Self {
+        value.to_ndarray()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

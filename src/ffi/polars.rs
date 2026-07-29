@@ -58,7 +58,7 @@
 //! ## Null masks
 //!
 //! Polars preserves the null mask in every direction we test, including
-//! across the type promotions above. Validity bits sit on the underlying
+//! across the type promotions above. Null mask bits sit on the underlying
 //! Arrow array and travel through `Series::to_arrow` / `Series::from_arrow`
 //! along with the data buffer.
 

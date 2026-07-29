@@ -78,7 +78,7 @@ use vec64::Vec64;
 /// ## Fields
 /// - **Offsets**: indices into the `data` buffer. The i-th string is at `data[offsets[i]..offsets[i+1]]`.
 /// - **Data**: concatenated UTF-8 encoded bytes for all strings.
-/// - **Null mask**: optional bit-packed validity bitmap (1=valid, 0=null).
+/// - **Null mask**: optional bit-packed bitmap (1=valid, 0=null).
 ///
 /// ## Arrow compatibility
 /// The `Apache Arrow` framework defines two string types:
@@ -135,7 +135,7 @@ impl<T: Integer> StringArray<T> {
         }
     }
 
-    /// Constructs a dense StringArray from a slice of string slices (no nulls).
+    /// Constructs a contiguous StringArray from a slice of string slices (no nulls).
     #[inline]
     pub fn from_slice(slice: &[&str]) -> Self {
         let n = slice.len();
@@ -162,7 +162,7 @@ impl<T: Integer> StringArray<T> {
             offsets: offsets.into(),
             data: Vec64::with_capacity(values_cap).into(),
             null_mask: if null_mask {
-                // All-valid (1) default - reserved validity slots default to
+                // All-valid (1) default - reserved null mask slots default to
                 // valid under Arrow's 1=valid, 0=null convention.
                 Some(Bitmask::new_set_all(n_strings, true))
             } else {
@@ -750,7 +750,7 @@ impl<T: Integer> MaskedArray for StringArray<T> {
     /// If `n` is greater than the current length, the `value` is appended repeatedly.
     /// If `n` is smaller, the array is truncated at the correct byte and offset boundary.
     ///
-    /// The `null_mask` is left untouched. Callers are responsible for managing validity if needed.
+    /// The `null_mask` is left untouched. Callers are responsible for managing the null mask if needed.
     ///
     /// # Panics
     /// Panics if `offsets` are invalid or not of length `self.len() + 1`.

@@ -898,6 +898,23 @@ impl<T: Float> fmt::Debug for SuperNdArray<T> {
 // Tests
 // ****************************************************************
 
+impl<T: Float> TryFrom<SuperNdArray<T>> for NdArray<T> {
+    type Error = MinarrowError;
+
+    /// Rejoins the batches into one contiguous array.
+    fn try_from(mut value: SuperNdArray<T>) -> Result<Self, Self::Error> {
+        let len = value.len();
+        if len == 0 {
+            return Ok(NdArray::new(&[0]));
+        }
+        value.rechunk(RechunkStrategy::Count(len))?;
+        match value.batches.into_iter().next() {
+            Some(array) => Ok(array),
+            None => Ok(NdArray::new(&[0])),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

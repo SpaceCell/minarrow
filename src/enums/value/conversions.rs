@@ -34,8 +34,6 @@ use crate::SuperNdArray;
 use crate::SuperNdArrayV;
 #[cfg(feature = "xarray")]
 use crate::XArray;
-use crate::traits::concatenate::Concatenate;
-use crate::traits::masked_array::MaskedArray;
 use crate::{Array, FieldArray, Table, enums::error::MinarrowError};
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -624,31 +622,34 @@ macro_rules! impl_value_from {
     };
 }
 
-/// Macro to implement `TryFrom<Value>` for `Value` variants.
-macro_rules! impl_tryfrom_value {
-    ($variant:ident: $t:ty) => {
-        impl TryFrom<Value> for $t {
-            type Error = MinarrowError;
-            fn try_from(v: Value) -> Result<Self, Self::Error> {
-                match v {
-                    Value::$variant(inner) => Ok(inner),
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: stringify!($t),
-                        message: Some("Value type mismatch".to_owned()),
-                    }),
-                }
-            }
-        }
-    };
-}
-
 // Scalar Conversions
 
 #[cfg(feature = "scalar_type")]
 impl_value_from!(Scalar: Scalar);
 #[cfg(feature = "scalar_type")]
-impl_tryfrom_value!(Scalar: Scalar);
+impl TryFrom<Value> for Scalar {
+    type Error = MinarrowError;
+
+    /// Takes the scalar carried by `Value::Scalar`, unwrapping the recursive
+    /// `BoxValue` and `ArcValue` wrappers first.
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::Scalar(s) => Ok(s),
+            Value::BoxValue(inner) => Scalar::try_from(*inner),
+            Value::ArcValue(inner) => {
+                Scalar::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
+                to: "Scalar",
+                message: Some(format!(
+                    "Value::{} does not convert to Scalar",
+                    value_variant_name(&other)
+                )),
+            }),
+        }
+    }
+}
 
 // Primitive numerics -> Value (wrap as Value::Scalar).
 
@@ -752,20 +753,13 @@ macro_rules! impl_tryfrom_value_numeric {
             type Error = MinarrowError;
             #[inline]
             fn try_from(v: Value) -> Result<Self, Self::Error> {
-                match v {
-                    Value::Scalar(s) => match s {
-                        Scalar::Null => Err(MinarrowError::TypeError {
-                            from: "Value::Scalar(Null)",
-                            to: stringify!($t),
-                            message: Some("Cannot convert Null to numeric type".to_owned()),
-                        }),
-                        _ => Ok(s.$method()),
-                    },
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
+                match Scalar::try_from(v)? {
+                    Scalar::Null => Err(MinarrowError::TypeError {
+                        from: "Value::Scalar(Null)",
                         to: stringify!($t),
-                        message: Some("Expected Value::Scalar variant".to_owned()),
+                        message: Some("a null value has no numeric reading".to_owned()),
                     }),
+                    s => Ok(s.$method()),
                 }
             }
         }
@@ -795,16 +789,9 @@ macro_rules! impl_tryfrom_value_option {
             type Error = MinarrowError;
             #[inline]
             fn try_from(v: Value) -> Result<Self, Self::Error> {
-                match v {
-                    Value::Scalar(s) => match s {
-                        Scalar::Null => Ok(None),
-                        _ => Ok(Some(s.$method())),
-                    },
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: concat!("Option<", stringify!($t), ">"),
-                        message: Some("Expected Value::Scalar variant".to_owned()),
-                    }),
+                match Scalar::try_from(v)? {
+                    Scalar::Null => Ok(None),
+                    s => Ok(Some(s.$method())),
                 }
             }
         }
@@ -983,7 +970,7 @@ impl From<TemporalArrayV> for Value {
 
 /// Wrap a `BitmaskV` as `Value::ArrayView` of a `BooleanArray`. The bitmask
 /// data is taken as the BooleanArray's data; `null_mask` is `None` since
-/// `BitmaskV` carries no separate validity.
+/// `BitmaskV` carries no separate null mask.
 #[cfg(feature = "views")]
 impl<'a> From<BitmaskV<'a>> for Value {
     #[inline]
@@ -1015,10 +1002,13 @@ impl From<BooleanArrayV> for Value {
 impl TryFrom<Value> for Array {
     type Error = MinarrowError;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        let err = || MinarrowError::TypeError {
-            from: "Value",
+        let err = |v: &Value| MinarrowError::TypeError {
+            from: value_variant_name(v),
             to: "Array",
-            message: Some("Value type mismatch".to_owned()),
+            message: Some(format!(
+                "Value::{} does not convert to Array",
+                value_variant_name(v)
+            )),
         };
         match v {
             Value::Array(inner) => Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone())),
@@ -1033,58 +1023,67 @@ impl TryFrom<Value> for Array {
             }
             #[cfg(feature = "scalar_type")]
             Value::Scalar(s) => Ok(Array::from(s)),
-            Value::Table(_) => Err(err()),
+            Value::BoxValue(inner) => Array::try_from(*inner),
+            Value::ArcValue(inner) => {
+                Array::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::Table(inner) => {
+                Array::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
             #[cfg(feature = "views")]
-            Value::TableView(_) => Err(err()),
+            Value::TableView(inner) => Array::try_from(Table::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )),
             #[cfg(feature = "chunked")]
-            Value::SuperArray(_) => Err(err()),
+            Value::SuperArray(inner) => {
+                Array::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
             #[cfg(all(feature = "chunked", feature = "views"))]
-            Value::SuperArrayView(_) => Err(err()),
+            Value::SuperArrayView(inner) => {
+                let view = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                Array::try_from(SuperArray::from(view))
+            }
             #[cfg(feature = "chunked")]
-            Value::SuperTable(_) => Err(err()),
+            Value::SuperTable(_) => Array::try_from(Table::try_from(v)?),
             #[cfg(all(feature = "chunked", feature = "views"))]
-            Value::SuperTableView(_) => Err(err()),
+            Value::SuperTableView(_) => Array::try_from(Table::try_from(v)?),
             #[cfg(feature = "matrix")]
-            Value::Matrix(_) => Err(err()),
+            Value::Matrix(_) => Array::try_from(Table::try_from(v)?),
             #[cfg(feature = "ndarray")]
             Value::NdArray(inner) => {
                 let nd = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
                 nd.to_array()
             }
             #[cfg(all(feature = "ndarray", feature = "views"))]
-            Value::NdArrayView(_) => Err(err()),
-            #[cfg(all(feature = "ndarray", feature = "chunked"))]
-            Value::SuperNdArray(_) => Err(err()),
-            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
-            Value::SuperNdArrayView(_) => Err(err()),
+            Value::NdArrayView(inner) => Array::try_from(NdArray::<f64>::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )),
             #[cfg(feature = "xarray")]
-            Value::XArray(_) => Err(err()),
+            Value::XArray(_) => Array::try_from(Table::try_from(v)?),
             #[cfg(feature = "cube")]
-            Value::Cube(_) => Err(err()),
+            Value::Cube(_) => Array::try_from(Table::try_from(v)?),
             Value::VecValue(inner) => {
                 let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                match values.len() {
-                    0 => Ok(Array::default()),
-                    1 => Array::try_from(values.into_iter().next().unwrap()),
-                    _ => {
-                        let mut iter = values.into_iter();
-                        let mut acc = Array::try_from(iter.next().unwrap())?;
-                        for v in iter {
-                            let next = Array::try_from(v)?;
-                            acc = acc.concat(next)?;
-                        }
-                        Ok(acc)
-                    }
-                }
+                let pieces: Result<Vec<Array>, _> =
+                    values.into_iter().map(Array::try_from).collect();
+                Array::try_from(pieces?)
             }
-            Value::BoxValue(_) => Err(err()),
-            Value::ArcValue(_) => Err(err()),
-            Value::Tuple2(_) => Err(err()),
-            Value::Tuple3(_) => Err(err()),
-            Value::Tuple4(_) => Err(err()),
-            Value::Tuple5(_) => Err(err()),
-            Value::Tuple6(_) => Err(err()),
-            Value::Custom(_) => Err(err()),
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(inner) => Array::try_from(NdArray::<f64>::try_from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )?),
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(inner) => Array::try_from(NdArray::<f64>::try_from(
+                SuperNdArray::<f64>::from(
+                    Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+                ),
+            )?),
+            Value::Tuple2(_)
+            | Value::Tuple3(_)
+            | Value::Tuple4(_)
+            | Value::Tuple5(_)
+            | Value::Tuple6(_)
+            | Value::Custom(_) => Err(err(&v)),
         }
     }
 }
@@ -1092,20 +1091,17 @@ impl TryFrom<Value> for Array {
 #[cfg(feature = "views")]
 impl TryFrom<Value> for ArrayV {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to an `Array`, which includes a
+    /// `FieldArray`, a `Scalar`, chunked arrays and the recursive wrappers.
+    /// An incoming view passes through with its window intact rather than
+    /// being materialised.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::ArrayView(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            Value::Array(inner) => {
-                let array = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                Ok(ArrayV::from(array))
-            }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "ArrayV",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+            other => Ok(ArrayV::from(Array::try_from(other)?)),
         }
     }
 }
@@ -1113,122 +1109,72 @@ impl TryFrom<Value> for ArrayV {
 #[cfg(feature = "views")]
 impl TryFrom<Value> for NumericArrayV {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to an `Array` carrying a
+    /// `NumericArray` payload. The conversion routes through `ArrayV`, so an
+    /// incoming view keeps its window instead of materialising it, and every
+    /// input `Array` accepts is accepted here too.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        match v {
-            Value::ArrayView(inner) => {
-                let view = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                let (array, offset, len) = view.as_tuple();
-                match array {
-                    Array::NumericArray(num_arr) => Ok(NumericArrayV::new(num_arr, offset, len)),
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: "NumericArrayV",
-                        message: Some("ArrayV is not a NumericArray".to_owned()),
-                    }),
-                }
-            }
-            Value::Array(inner) => {
-                let arr = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                match arr {
-                    Array::NumericArray(num_arr) => {
-                        let len = num_arr.len();
-                        Ok(NumericArrayV::new(num_arr, 0, len))
-                    }
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: "NumericArrayV",
-                        message: Some("Array is not a NumericArray".to_owned()),
-                    }),
-                }
-            }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "NumericArrayV",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+        let view = ArrayV::try_from(v)?;
+        if matches!(view.array, Array::NumericArray(_)) {
+            return Ok(NumericArrayV::from(view));
         }
+        Err(MinarrowError::TypeError {
+            from: "Array",
+            to: "NumericArrayV",
+            message: Some(format!(
+                "the array holds {:?}, which is not a NumericArray",
+                view.array.arrow_type()
+            )),
+        })
     }
 }
 
 #[cfg(feature = "views")]
 impl TryFrom<Value> for TextArrayV {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to an `Array` carrying a
+    /// `TextArray` payload. The conversion routes through `ArrayV`, so an
+    /// incoming view keeps its window instead of materialising it, and every
+    /// input `Array` accepts is accepted here too.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        match v {
-            Value::ArrayView(inner) => {
-                let view = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                let (array, offset, len) = view.as_tuple();
-                match array {
-                    Array::TextArray(text_arr) => Ok(TextArrayV::new(text_arr, offset, len)),
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: "TextArrayV",
-                        message: Some("ArrayV is not a TextArray".to_owned()),
-                    }),
-                }
-            }
-            Value::Array(inner) => {
-                let array = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                match array {
-                    Array::TextArray(text_arr) => {
-                        let len = text_arr.len();
-                        Ok(TextArrayV::new(text_arr, 0, len))
-                    }
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: "TextArrayV",
-                        message: Some("Array is not a TextArray".to_owned()),
-                    }),
-                }
-            }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "TextArrayV",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+        let view = ArrayV::try_from(v)?;
+        if matches!(view.array, Array::TextArray(_)) {
+            return Ok(TextArrayV::from(view));
         }
+        Err(MinarrowError::TypeError {
+            from: "Array",
+            to: "TextArrayV",
+            message: Some(format!(
+                "the array holds {:?}, which is not a TextArray",
+                view.array.arrow_type()
+            )),
+        })
     }
 }
 
 #[cfg(all(feature = "views", feature = "datetime"))]
 impl TryFrom<Value> for TemporalArrayV {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to an `Array` carrying a
+    /// `TemporalArray` payload. The conversion routes through `ArrayV`, so an
+    /// incoming view keeps its window instead of materialising it, and every
+    /// input `Array` accepts is accepted here too.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        match v {
-            Value::ArrayView(inner) => {
-                let view = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                let (array, offset, len) = view.as_tuple();
-                match array {
-                    Array::TemporalArray(temp_arr) => {
-                        Ok(TemporalArrayV::new(temp_arr, offset, len))
-                    }
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: "TemporalArrayV",
-                        message: Some("ArrayV is not a TemporalArray".to_owned()),
-                    }),
-                }
-            }
-            Value::Array(inner) => {
-                let array = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                match array {
-                    Array::TemporalArray(temp_arr) => {
-                        let len = temp_arr.len();
-                        Ok(TemporalArrayV::new(temp_arr, 0, len))
-                    }
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: "TemporalArrayV",
-                        message: Some("Array is not a TemporalArray".to_owned()),
-                    }),
-                }
-            }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "TemporalArrayV",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+        let view = ArrayV::try_from(v)?;
+        if matches!(view.array, Array::TemporalArray(_)) {
+            return Ok(TemporalArrayV::from(view));
         }
+        Err(MinarrowError::TypeError {
+            from: "Array",
+            to: "TemporalArrayV",
+            message: Some(format!(
+                "the array holds {:?}, which is not a TemporalArray",
+                view.array.arrow_type()
+            )),
+        })
     }
 }
 
@@ -1241,6 +1187,14 @@ impl TryFrom<Value> for TemporalArrayV {
 impl<'a> TryFrom<&'a Value> for BitmaskV<'a> {
     type Error = MinarrowError;
     fn try_from(v: &'a Value) -> Result<Self, Self::Error> {
+        let err = |v: &Value| MinarrowError::TypeError {
+            from: value_variant_name(v),
+            to: "BitmaskV",
+            message: Some(format!(
+                "Value::{} does not convert to BitmaskV",
+                value_variant_name(v)
+            )),
+        };
         match v {
             Value::ArrayView(inner) => {
                 let (array, offset, len) = inner.as_tuple_ref();
@@ -1264,11 +1218,43 @@ impl<'a> TryFrom<&'a Value> for BitmaskV<'a> {
                     message: Some("Array is not a BooleanArray".to_owned()),
                 }),
             },
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "BitmaskV",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+            #[cfg(feature = "scalar_type")]
+            Value::Scalar(_) => Err(err(v)),
+            #[cfg(feature = "views")]
+            Value::TableView(_) => Err(err(v)),
+            #[cfg(feature = "chunked")]
+            Value::SuperArray(_) => Err(err(v)),
+            #[cfg(all(feature = "chunked", feature = "views"))]
+            Value::SuperArrayView(_) => Err(err(v)),
+            #[cfg(feature = "chunked")]
+            Value::SuperTable(_) => Err(err(v)),
+            #[cfg(all(feature = "chunked", feature = "views"))]
+            Value::SuperTableView(_) => Err(err(v)),
+            #[cfg(feature = "matrix")]
+            Value::Matrix(_) => Err(err(v)),
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(_) => Err(err(v)),
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(_) => Err(err(v)),
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(_) => Err(err(v)),
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(_) => Err(err(v)),
+            #[cfg(feature = "xarray")]
+            Value::XArray(_) => Err(err(v)),
+            #[cfg(feature = "cube")]
+            Value::Cube(_) => Err(err(v)),
+            Value::FieldArray(_)
+            | Value::Table(_)
+            | Value::VecValue(_)
+            | Value::BoxValue(_)
+            | Value::ArcValue(_)
+            | Value::Tuple2(_)
+            | Value::Tuple3(_)
+            | Value::Tuple4(_)
+            | Value::Tuple5(_)
+            | Value::Tuple6(_)
+            | Value::Custom(_) => Err(err(v)),
         }
     }
 }
@@ -1276,50 +1262,37 @@ impl<'a> TryFrom<&'a Value> for BitmaskV<'a> {
 #[cfg(feature = "views")]
 impl TryFrom<Value> for BooleanArrayV {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to an `Array` carrying a
+    /// `BooleanArray` payload. The conversion routes through `ArrayV`, so an
+    /// incoming view keeps its window instead of materialising it, and every
+    /// input `Array` accepts is accepted here too.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        match v {
-            Value::ArrayView(inner) => {
-                let view = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                let (array, offset, len) = view.as_tuple();
-                match array {
-                    Array::BooleanArray(bool_arr) => Ok(BooleanArrayV::new(bool_arr, offset, len)),
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: "BooleanArrayV",
-                        message: Some("ArrayV is not a BooleanArray".to_owned()),
-                    }),
-                }
-            }
-            Value::Array(inner) => {
-                let array = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                match array {
-                    Array::BooleanArray(bool_arr) => {
-                        let len = bool_arr.len();
-                        Ok(BooleanArrayV::new(bool_arr, 0, len))
-                    }
-                    _ => Err(MinarrowError::TypeError {
-                        from: "Value",
-                        to: "BooleanArrayV",
-                        message: Some("Array is not a BooleanArray".to_owned()),
-                    }),
-                }
-            }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "BooleanArrayV",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+        let view = ArrayV::try_from(v)?;
+        if matches!(view.array, Array::BooleanArray(_)) {
+            return Ok(BooleanArrayV::from(view));
         }
+        Err(MinarrowError::TypeError {
+            from: "Array",
+            to: "BooleanArrayV",
+            message: Some(format!(
+                "the array holds {:?}, which is not a BooleanArray",
+                view.array.arrow_type()
+            )),
+        })
     }
 }
 
 impl TryFrom<Value> for Table {
     type Error = MinarrowError;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        let err = || MinarrowError::TypeError {
-            from: "Value",
+        let err = |v: &Value| MinarrowError::TypeError {
+            from: value_variant_name(v),
             to: "Table",
-            message: Some("Value type mismatch".to_owned()),
+            message: Some(format!(
+                "Value::{} does not convert to Table",
+                value_variant_name(v)
+            )),
         };
         match v {
             Value::Table(inner) => Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone())),
@@ -1328,88 +1301,79 @@ impl TryFrom<Value> for Table {
                 let view = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
                 Ok(view.to_table())
             }
-            Value::Array(inner) => {
-                let array = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                Ok(Table::new(
-                    "array".to_string(),
-                    Some(vec![FieldArray::from_arr("column_0", array)]),
-                ))
-            }
+            Value::Array(inner) => Ok(Table::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )),
             #[cfg(feature = "views")]
-            Value::ArrayView(inner) => {
-                let view = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                Ok(Table::new(
-                    "array".to_string(),
-                    Some(vec![FieldArray::from_arr("column_0", view.to_array())]),
-                ))
-            }
+            Value::ArrayView(_) => Ok(Table::from(Array::try_from(v)?)),
             Value::FieldArray(inner) => {
                 let fa = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
                 Ok(Table::new("array".to_string(), Some(vec![fa])))
             }
             #[cfg(feature = "scalar_type")]
-            Value::Scalar(s) => {
-                let array = Array::from(s);
-                Ok(Table::new(
-                    "scalar".to_string(),
-                    Some(vec![FieldArray::from_arr("column_0", array)]),
-                ))
+            Value::Scalar(s) => Ok(Table::from(Array::from(s))),
+            #[cfg(feature = "chunked")]
+            Value::SuperArray(_) => Ok(Table::from(Array::try_from(v)?)),
+            #[cfg(all(feature = "chunked", feature = "views"))]
+            Value::SuperArrayView(_) => Ok(Table::from(Array::try_from(v)?)),
+            #[cfg(feature = "chunked")]
+            Value::SuperTable(inner) => {
+                Table::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            #[cfg(feature = "chunked")]
-            Value::SuperArray(_) => Err(err()),
             #[cfg(all(feature = "chunked", feature = "views"))]
-            Value::SuperArrayView(_) => Err(err()),
-            #[cfg(feature = "chunked")]
-            Value::SuperTable(_) => Err(err()),
-            #[cfg(all(feature = "chunked", feature = "views"))]
-            Value::SuperTableView(_) => Err(err()),
+            Value::SuperTableView(inner) => Table::try_from(SuperTable::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )),
             #[cfg(feature = "matrix")]
-            Value::Matrix(_) => Err(err()),
+            Value::Matrix(inner) => Ok(Table::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )),
             #[cfg(feature = "ndarray")]
             Value::NdArray(inner) => {
                 let nd = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
                 nd.to_table(None)
             }
             #[cfg(all(feature = "ndarray", feature = "views"))]
-            Value::NdArrayView(_) => Err(err()),
-            #[cfg(all(feature = "ndarray", feature = "chunked"))]
-            Value::SuperNdArray(_) => Err(err()),
-            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
-            Value::SuperNdArrayView(_) => Err(err()),
+            Value::NdArrayView(inner) => Table::try_from(NdArray::<f64>::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )),
             #[cfg(feature = "xarray")]
             Value::XArray(inner) => {
                 let xa = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
                 xa.to_table()
             }
             #[cfg(feature = "cube")]
-            Value::Cube(_) => Err(err()),
-            // VecValue terminal coercion: engine wire produced by `Long` fan-out gather.
-            // Empty -> Table::new_empty (typed-empty); single -> recurse on inner;
-            // many -> concat-fold across inner Tables.
+            Value::Cube(inner) => {
+                Table::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            // A sequence of tables is a chunked table, which the chunked
+            // layer rejoins.
             Value::VecValue(inner) => {
                 let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                match values.len() {
-                    0 => Ok(Table::new_empty()),
-                    1 => Table::try_from(values.into_iter().next().unwrap()),
-                    _ => {
-                        let mut iter = values.into_iter();
-                        let mut acc = Table::try_from(iter.next().unwrap())?;
-                        for v in iter {
-                            let next = Table::try_from(v)?;
-                            acc = acc.concat(next)?;
-                        }
-                        Ok(acc)
-                    }
-                }
+                let pieces: Result<Vec<Table>, _> =
+                    values.into_iter().map(Table::try_from).collect();
+                Table::try_from(pieces?)
             }
-            Value::BoxValue(_) => Err(err()),
-            Value::ArcValue(_) => Err(err()),
-            Value::Tuple2(_) => Err(err()),
-            Value::Tuple3(_) => Err(err()),
-            Value::Tuple4(_) => Err(err()),
-            Value::Tuple5(_) => Err(err()),
-            Value::Tuple6(_) => Err(err()),
-            Value::Custom(_) => Err(err()),
+            Value::BoxValue(inner) => Table::try_from(*inner),
+            Value::ArcValue(inner) => {
+                Table::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(inner) => Table::try_from(NdArray::<f64>::try_from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )?),
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(inner) => Table::try_from(NdArray::<f64>::try_from(
+                SuperNdArray::<f64>::from(
+                    Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+                ),
+            )?),
+            Value::Tuple2(_)
+            | Value::Tuple3(_)
+            | Value::Tuple4(_)
+            | Value::Tuple5(_)
+            | Value::Tuple6(_)
+            | Value::Custom(_) => Err(err(&v)),
         }
     }
 }
@@ -1417,35 +1381,42 @@ impl TryFrom<Value> for Table {
 #[cfg(feature = "views")]
 impl TryFrom<Value> for TableV {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to a `Table`, which includes a
+    /// single array or field array as a one-column table, chunked tables and
+    /// the recursive wrappers. An incoming view keeps its window and column
+    /// projection.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::TableView(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            Value::Table(inner) => {
-                let table = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                Ok(TableV::from(table))
-            }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "TableV",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+            other => Ok(TableV::from(Table::try_from(other)?)),
         }
     }
 }
 
 impl TryFrom<Value> for FieldArray {
     type Error = MinarrowError;
+
+    /// Takes the field array carried by `Value::FieldArray`, unwrapping the
+    /// recursive `BoxValue` and `ArcValue` wrappers first.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::FieldArray(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
+            Value::BoxValue(inner) => FieldArray::try_from(*inner),
+            Value::ArcValue(inner) => {
+                FieldArray::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
                 to: "FieldArray",
-                message: Some("Value type mismatch".to_owned()),
+                message: Some(format!(
+                    "Value::{} does not convert to FieldArray",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -1454,60 +1425,31 @@ impl TryFrom<Value> for FieldArray {
 #[cfg(feature = "chunked")]
 impl TryFrom<Value> for SuperTable {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to a `Table`, which becomes a
+    /// chunked table of one batch. A `VecValue` keeps its elements as
+    /// separate batches.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::SuperTable(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            // VecValue terminal coercion: wrap inner Tables as chunks. Mirrors the
-            // `SuperArray::try_from(VecValue)` precedent. No row-data reallocation;
-            // each chunk holds an Arc<Table>. `None` lets SuperTable inherit its
-            // name from the first batch rather than imposing a fresh one.
-            //
-            // `SuperTable::from_batches` panics on schema mismatch between
-            // chunks; validate up-front and surface mismatches as a typed
-            // MinarrowError so this conversion never aborts the caller.
+            #[cfg(feature = "views")]
+            Value::SuperTableView(inner) => Ok(SuperTable::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )),
             Value::VecValue(inner) => {
                 let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                let chunks: Result<Vec<Arc<Table>>, _> = values
-                    .into_iter()
-                    .map(|v| Table::try_from(v).map(Arc::new))
-                    .collect();
-                let chunks = chunks?;
-                if let Some(first) = chunks.first() {
-                    let n_cols = first.n_cols();
-                    for (idx, chunk) in chunks.iter().enumerate().skip(1) {
-                        if chunk.n_cols() != n_cols {
-                            return Err(MinarrowError::TypeError {
-                                from: "Value::VecValue",
-                                to: "SuperTable",
-                                message: Some(format!(
-                                    "batch {idx} column-count mismatch: {} vs {}",
-                                    chunk.n_cols(),
-                                    n_cols
-                                )),
-                            });
-                        }
-                        for (col_idx, fa) in chunk.cols.iter().enumerate() {
-                            if fa.field != first.cols[col_idx].field {
-                                return Err(MinarrowError::TypeError {
-                                    from: "Value::VecValue",
-                                    to: "SuperTable",
-                                    message: Some(format!(
-                                        "batch {idx} col {col_idx} schema mismatch"
-                                    )),
-                                });
-                            }
-                        }
-                    }
-                }
-                Ok(SuperTable::from_batches(chunks, None))
+                let pieces: Result<Vec<Table>, _> =
+                    values.into_iter().map(Table::try_from).collect();
+                Ok(SuperTable::from(pieces?))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "SuperTable",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+            // A cube stacks tables that become the chunked table's batches.
+            #[cfg(feature = "cube")]
+            Value::Cube(inner) => Ok(SuperTable::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )),
+            other => Ok(SuperTable::from(Table::try_from(other)?)),
         }
     }
 }
@@ -1515,13 +1457,23 @@ impl TryFrom<Value> for SuperTable {
 #[cfg(feature = "cube")]
 impl TryFrom<Value> for Cube {
     type Error = MinarrowError;
+
+    /// Takes the `Cube` carried by `Value::Cube`, unwrapping the recursive
+    /// `BoxValue` and `ArcValue` wrappers first.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::Cube(inner) => Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone())),
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
+            Value::BoxValue(inner) => Cube::try_from(*inner),
+            Value::ArcValue(inner) => {
+                Cube::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
                 to: "Cube",
-                message: Some("Value type mismatch".to_owned()),
+                message: Some(format!(
+                    "Value::{} does not convert to Cube",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -1530,6 +1482,10 @@ impl TryFrom<Value> for Cube {
 #[cfg(feature = "chunked")]
 impl TryFrom<Value> for SuperArray {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to an `Array`, which becomes a
+    /// chunked array of one chunk. A `VecValue` keeps its elements as
+    /// separate chunks rather than concatenating them.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::SuperArray(inner) => {
@@ -1537,15 +1493,11 @@ impl TryFrom<Value> for SuperArray {
             }
             Value::VecValue(inner) => {
                 let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                let chunks: Result<Vec<Array>, _> =
+                let pieces: Result<Vec<Array>, _> =
                     values.into_iter().map(Array::try_from).collect();
-                Ok(SuperArray::from_arrays(chunks?))
+                Ok(SuperArray::from(pieces?))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "SuperArray",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+            other => Ok(SuperArray::from(Array::try_from(other)?)),
         }
     }
 }
@@ -1553,16 +1505,15 @@ impl TryFrom<Value> for SuperArray {
 #[cfg(all(feature = "chunked", feature = "views"))]
 impl TryFrom<Value> for SuperArrayV {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to a chunked array, viewed over its
+    /// full extent. An incoming view passes through with its window intact.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::SuperArrayView(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "SuperArrayV",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+            other => Ok(SuperArrayV::from(SuperArray::try_from(other)?)),
         }
     }
 }
@@ -1570,14 +1521,16 @@ impl TryFrom<Value> for SuperArrayV {
 #[cfg(feature = "matrix")]
 impl TryFrom<Value> for Matrix {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to a `Table` whose columns are all
+    /// float columns of equal length, which is the shape a contiguous matrix
+    /// holds.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::Matrix(inner) => Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone())),
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "Matrix",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+            Value::Matrix(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            other => Matrix::try_from(Table::try_from(other)?),
         }
     }
 }
@@ -1585,16 +1538,15 @@ impl TryFrom<Value> for Matrix {
 #[cfg(all(feature = "chunked", feature = "views"))]
 impl TryFrom<Value> for SuperTableV {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to a chunked table, viewed over its
+    /// full extent. An incoming view passes through with its window intact.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::SuperTableView(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "SuperTableV",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+            other => Ok(SuperTableV::from(SuperTable::try_from(other)?)),
         }
     }
 }
@@ -1602,16 +1554,16 @@ impl TryFrom<Value> for SuperTableV {
 #[cfg(feature = "ndarray")]
 impl TryFrom<Value> for NdArray<f64> {
     type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to a `Table` of float columns of
+    /// equal length, which is the shape a contiguous n-dimensional array holds.
+    /// The column-type requirement is enforced by the `Table` conversion.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::NdArray(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "NdArray<f64>",
-                message: Some("Value type mismatch".to_owned()),
-            }),
+            other => NdArray::<f64>::try_from(Table::try_from(other)?),
         }
     }
 }
@@ -1619,15 +1571,23 @@ impl TryFrom<Value> for NdArray<f64> {
 #[cfg(all(feature = "ndarray", feature = "views"))]
 impl TryFrom<Value> for NdArrayV<f64> {
     type Error = MinarrowError;
+
+    /// Takes the `NdArrayV` carried by `Value::NdArrayView`, unwrapping the
+    /// recursive `BoxValue` and `ArcValue` wrappers first.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::NdArrayView(inner) => {
-                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            Value::NdArrayView(inner) => Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone())),
+            Value::BoxValue(inner) => NdArrayV::<f64>::try_from(*inner),
+            Value::ArcValue(inner) => {
+                NdArrayV::<f64>::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "NdArrayV<f64>",
-                message: Some("Value type mismatch".to_owned()),
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
+                to: "NdArrayV",
+                message: Some(format!(
+                    "Value::{} does not convert to NdArrayV",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -1636,15 +1596,23 @@ impl TryFrom<Value> for NdArrayV<f64> {
 #[cfg(all(feature = "ndarray", feature = "chunked"))]
 impl TryFrom<Value> for SuperNdArray<f64> {
     type Error = MinarrowError;
+
+    /// Takes the `SuperNdArray` carried by `Value::SuperNdArray`, unwrapping
+    /// the recursive `BoxValue` and `ArcValue` wrappers first.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::SuperNdArray(inner) => {
-                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            Value::SuperNdArray(inner) => Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone())),
+            Value::BoxValue(inner) => SuperNdArray::<f64>::try_from(*inner),
+            Value::ArcValue(inner) => {
+                SuperNdArray::<f64>::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "SuperNdArray<f64>",
-                message: Some("Value type mismatch".to_owned()),
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
+                to: "SuperNdArray",
+                message: Some(format!(
+                    "Value::{} does not convert to SuperNdArray",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -1653,15 +1621,23 @@ impl TryFrom<Value> for SuperNdArray<f64> {
 #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
 impl TryFrom<Value> for SuperNdArrayV<f64> {
     type Error = MinarrowError;
+
+    /// Takes the `SuperNdArrayV` carried by `Value::SuperNdArrayView`,
+    /// unwrapping the recursive `BoxValue` and `ArcValue` wrappers first.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::SuperNdArrayView(inner) => {
-                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            Value::SuperNdArrayView(inner) => Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone())),
+            Value::BoxValue(inner) => SuperNdArrayV::<f64>::try_from(*inner),
+            Value::ArcValue(inner) => {
+                SuperNdArrayV::<f64>::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "SuperNdArrayV<f64>",
-                message: Some("Value type mismatch".to_owned()),
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
+                to: "SuperNdArrayV",
+                message: Some(format!(
+                    "Value::{} does not convert to SuperNdArrayV",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -1670,15 +1646,23 @@ impl TryFrom<Value> for SuperNdArrayV<f64> {
 #[cfg(feature = "xarray")]
 impl TryFrom<Value> for XArray<f64> {
     type Error = MinarrowError;
+
+    /// Takes the `XArray` carried by `Value::XArray`, unwrapping the
+    /// recursive `BoxValue` and `ArcValue` wrappers first.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::XArray(inner) => {
-                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            Value::XArray(inner) => Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone())),
+            Value::BoxValue(inner) => XArray::<f64>::try_from(*inner),
+            Value::ArcValue(inner) => {
+                XArray::<f64>::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "XArray<f64>",
-                message: Some("Value type mismatch".to_owned()),
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
+                to: "XArray",
+                message: Some(format!(
+                    "Value::{} does not convert to XArray",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -1725,29 +1709,82 @@ impl From<(Value, Value, Value, Value, Value, Value)> for Value {
 // TryFrom for recursive containers
 impl TryFrom<Value> for Vec<Value> {
     type Error = MinarrowError;
+
+    /// Accepts a `VecValue` as its elements and a tuple as its members. Any
+    /// other `Value` is a single-element sequence, so it converts rather
+    /// than rejecting.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::VecValue(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "Vec<Value>",
-                message: Some("Expected VecValue variant".to_owned()),
-            }),
+            Value::BoxValue(inner) => Vec::<Value>::try_from(*inner),
+            Value::ArcValue(inner) => {
+                Vec::<Value>::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::Tuple2(inner) => {
+                let (a, b) = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                Ok(vec![a, b])
+            }
+            Value::Tuple3(inner) => {
+                let (a, b, c) = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                Ok(vec![a, b, c])
+            }
+            Value::Tuple4(inner) => {
+                let (a, b, c, d) = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                Ok(vec![a, b, c, d])
+            }
+            Value::Tuple5(inner) => {
+                let (a, b, c, d, e) = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                Ok(vec![a, b, c, d, e])
+            }
+            Value::Tuple6(inner) => {
+                let (a, b, c, d, e, f) =
+                    Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                Ok(vec![a, b, c, d, e, f])
+            }
+            other => Ok(vec![other]),
         }
     }
 }
 
 impl TryFrom<Value> for (Value, Value) {
     type Error = MinarrowError;
+
+    /// Accepts the matching tuple variant, and a `VecValue` holding exactly
+    /// 2 elements. The recursive wrappers unwrap first, so a boxed or
+    /// shared tuple converts as its payload.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::Tuple2(tuple) => Ok(Arc::try_unwrap(tuple).unwrap_or_else(|arc| (*arc).clone())),
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "(Value, Value)",
-                message: Some("Expected Tuple2 variant".to_owned()),
+            Value::Tuple2(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::BoxValue(inner) => Self::try_from(*inner),
+            Value::ArcValue(inner) => {
+                Self::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::VecValue(inner) => {
+                let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                let got = values.len();
+                let Ok(members): Result<[Value; 2], _> = values.try_into() else {
+                    return Err(MinarrowError::TypeError {
+                        from: "VecValue",
+                        to: "Tuple2",
+                        message: Some(format!(
+                            "a Tuple2 needs 2 elements, the sequence held {got}"
+                        )),
+                    });
+                };
+                let [a, b] = members;
+                Ok((a, b))
+            }
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
+                to: "Tuple2",
+                message: Some(format!(
+                    "Value::{} does not convert to a 2-member tuple",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -1755,13 +1792,41 @@ impl TryFrom<Value> for (Value, Value) {
 
 impl TryFrom<Value> for (Value, Value, Value) {
     type Error = MinarrowError;
+
+    /// Accepts the matching tuple variant, and a `VecValue` holding exactly
+    /// 3 elements. The recursive wrappers unwrap first, so a boxed or
+    /// shared tuple converts as its payload.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::Tuple3(tuple) => Ok(Arc::try_unwrap(tuple).unwrap_or_else(|arc| (*arc).clone())),
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "(Value, Value, Value)",
-                message: Some("Expected Tuple3 variant".to_owned()),
+            Value::Tuple3(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::BoxValue(inner) => Self::try_from(*inner),
+            Value::ArcValue(inner) => {
+                Self::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::VecValue(inner) => {
+                let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                let got = values.len();
+                let Ok(members): Result<[Value; 3], _> = values.try_into() else {
+                    return Err(MinarrowError::TypeError {
+                        from: "VecValue",
+                        to: "Tuple3",
+                        message: Some(format!(
+                            "a Tuple3 needs 3 elements, the sequence held {got}"
+                        )),
+                    });
+                };
+                let [a, b, c] = members;
+                Ok((a, b, c))
+            }
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
+                to: "Tuple3",
+                message: Some(format!(
+                    "Value::{} does not convert to a 3-member tuple",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -1769,13 +1834,41 @@ impl TryFrom<Value> for (Value, Value, Value) {
 
 impl TryFrom<Value> for (Value, Value, Value, Value) {
     type Error = MinarrowError;
+
+    /// Accepts the matching tuple variant, and a `VecValue` holding exactly
+    /// 4 elements. The recursive wrappers unwrap first, so a boxed or
+    /// shared tuple converts as its payload.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::Tuple4(tuple) => Ok(Arc::try_unwrap(tuple).unwrap_or_else(|arc| (*arc).clone())),
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "(Value, Value, Value, Value)",
-                message: Some("Expected Tuple4 variant".to_owned()),
+            Value::Tuple4(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::BoxValue(inner) => Self::try_from(*inner),
+            Value::ArcValue(inner) => {
+                Self::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::VecValue(inner) => {
+                let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                let got = values.len();
+                let Ok(members): Result<[Value; 4], _> = values.try_into() else {
+                    return Err(MinarrowError::TypeError {
+                        from: "VecValue",
+                        to: "Tuple4",
+                        message: Some(format!(
+                            "a Tuple4 needs 4 elements, the sequence held {got}"
+                        )),
+                    });
+                };
+                let [a, b, c, d] = members;
+                Ok((a, b, c, d))
+            }
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
+                to: "Tuple4",
+                message: Some(format!(
+                    "Value::{} does not convert to a 4-member tuple",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -1783,13 +1876,41 @@ impl TryFrom<Value> for (Value, Value, Value, Value) {
 
 impl TryFrom<Value> for (Value, Value, Value, Value, Value) {
     type Error = MinarrowError;
+
+    /// Accepts the matching tuple variant, and a `VecValue` holding exactly
+    /// 5 elements. The recursive wrappers unwrap first, so a boxed or
+    /// shared tuple converts as its payload.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::Tuple5(tuple) => Ok(Arc::try_unwrap(tuple).unwrap_or_else(|arc| (*arc).clone())),
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "(Value, Value, Value, Value, Value)",
-                message: Some("Expected Tuple5 variant".to_owned()),
+            Value::Tuple5(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::BoxValue(inner) => Self::try_from(*inner),
+            Value::ArcValue(inner) => {
+                Self::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::VecValue(inner) => {
+                let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                let got = values.len();
+                let Ok(members): Result<[Value; 5], _> = values.try_into() else {
+                    return Err(MinarrowError::TypeError {
+                        from: "VecValue",
+                        to: "Tuple5",
+                        message: Some(format!(
+                            "a Tuple5 needs 5 elements, the sequence held {got}"
+                        )),
+                    });
+                };
+                let [a, b, c, d, e] = members;
+                Ok((a, b, c, d, e))
+            }
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
+                to: "Tuple5",
+                message: Some(format!(
+                    "Value::{} does not convert to a 5-member tuple",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -1797,13 +1918,41 @@ impl TryFrom<Value> for (Value, Value, Value, Value, Value) {
 
 impl TryFrom<Value> for (Value, Value, Value, Value, Value, Value) {
     type Error = MinarrowError;
+
+    /// Accepts the matching tuple variant, and a `VecValue` holding exactly
+    /// 6 elements. The recursive wrappers unwrap first, so a boxed or
+    /// shared tuple converts as its payload.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::Tuple6(tuple) => Ok(Arc::try_unwrap(tuple).unwrap_or_else(|arc| (*arc).clone())),
-            _ => Err(MinarrowError::TypeError {
-                from: "Value",
-                to: "(Value, Value, Value, Value, Value, Value)",
-                message: Some("Expected Tuple6 variant".to_owned()),
+            Value::Tuple6(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::BoxValue(inner) => Self::try_from(*inner),
+            Value::ArcValue(inner) => {
+                Self::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::VecValue(inner) => {
+                let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                let got = values.len();
+                let Ok(members): Result<[Value; 6], _> = values.try_into() else {
+                    return Err(MinarrowError::TypeError {
+                        from: "VecValue",
+                        to: "Tuple6",
+                        message: Some(format!(
+                            "a Tuple6 needs 6 elements, the sequence held {got}"
+                        )),
+                    });
+                };
+                let [a, b, c, d, e, f] = members;
+                Ok((a, b, c, d, e, f))
+            }
+            other => Err(MinarrowError::TypeError {
+                from: value_variant_name(&other),
+                to: "Tuple6",
+                message: Some(format!(
+                    "Value::{} does not convert to a 6-member tuple",
+                    value_variant_name(&other)
+                )),
             }),
         }
     }
@@ -2272,7 +2421,14 @@ mod accessor_tests {
 
         let back = NdArray::<f64>::try_from(Value::from(nd.clone())).unwrap();
         assert_eq!(back, nd);
-        assert!(NdArray::<f64>::try_from(Value::Table(Arc::new(Table::new_empty()))).is_err());
+        // A tuple carries no single dense array, so it does not convert.
+        assert!(
+            NdArray::<f64>::try_from(Value::Tuple2(Arc::new((
+                Value::from(1.0_f64),
+                Value::from(2.0_f64),
+            ))))
+            .is_err()
+        );
 
         #[cfg(feature = "views")]
         {
@@ -2437,13 +2593,11 @@ mod vecvalue_terminal_coercion_tests {
 
     #[test]
     fn try_from_vecvalue_array_rejects_unconvertible_inner() {
-        // SuperArray inside VecValue cannot become an Array; first conversion errors.
-        #[cfg(feature = "chunked")]
-        {
-            let inner = Value::SuperArray(Arc::new(SuperArray::new()));
-            let v = Value::VecValue(Arc::new(vec![inner]));
-            let res = Array::try_from(v);
-            assert!(res.is_err());
-        }
+        // A tuple carries no single array, so the element conversion errors
+        // and the sequence conversion fails with it.
+        let inner = Value::Tuple2(Arc::new((Value::from(1.0_f64), Value::from(2.0_f64))));
+        let v = Value::VecValue(Arc::new(vec![inner]));
+        let res = Array::try_from(v);
+        assert!(res.is_err());
     }
 }

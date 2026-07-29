@@ -750,6 +750,33 @@ impl crate::traits::selection::ColumnSelection for Cube {
     }
 }
 
+impl TryFrom<Cube> for Table {
+    type Error = MinarrowError;
+
+    /// Joins the cube's tables end to end into one table.
+    ///
+    /// A cube stacks tables that share a schema, so the flattened form is
+    /// those tables concatenated by rows. An empty cube yields the
+    /// typed-empty table.
+    fn try_from(value: Cube) -> Result<Self, Self::Error> {
+        let tables: Vec<Table> = value
+            .tables
+            .into_iter()
+            .map(|t| Arc::try_unwrap(t).unwrap_or_else(|arc| (*arc).clone()))
+            .collect();
+        Table::try_from(tables)
+    }
+}
+
+#[cfg(feature = "chunked")]
+impl From<Cube> for crate::SuperTable {
+    /// Presents the cube's tables as the batches of a chunked table,
+    /// keeping the cube's name.
+    fn from(value: Cube) -> Self {
+        crate::SuperTable::from_batches(value.tables, Some(value.name))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

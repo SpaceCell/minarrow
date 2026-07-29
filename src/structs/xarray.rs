@@ -1226,6 +1226,22 @@ impl TryFrom<Table> for XArray<f64> {
 // Tests
 // ****************************************************************
 
+impl TryFrom<XArray<f64>> for Table {
+    type Error = MinarrowError;
+
+    /// Presents the labelled axes as table columns.
+    fn try_from(value: XArray<f64>) -> Result<Self, Self::Error> {
+        value.to_table()
+    }
+}
+
+impl From<XArray<f64>> for NdArray<f64> {
+    /// Drops the axis labels and keeps the contiguous payload.
+    fn from(value: XArray<f64>) -> Self {
+        value.into_ndarray()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

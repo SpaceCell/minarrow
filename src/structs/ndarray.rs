@@ -90,7 +90,7 @@ use crate::ffi::dlpack::{
 // NdArray
 // ****************************************************************
 
-/// N-dimensional dense array of float values.
+/// N-dimensional contiguous array of float values.
 ///
 /// Backed by [`Buffer<T>`] for zero-copy interop with external memory.
 /// Compact column-major layout with a 64-byte aligned allocation start.
@@ -1131,7 +1131,7 @@ macro_rules! nd {
 /// Compute compact column-major strides with no inter-dimension padding.
 ///
 /// For a shape `[a, b, c]`, the strides are `[1, a, a * b]`. The buffer is
-/// fully contiguous, so DLPack consumers receive a dense tensor and range
+/// fully contiguous, so DLPack consumers receive a contiguous tensor and range
 /// indexing over the outermost axis reads logical data with no gaps. The
 /// backing allocation start remains 64-byte aligned through `Vec64`.
 pub(crate) fn col_major_strides(shape: &[usize]) -> Vec<usize> {
@@ -1986,6 +1986,36 @@ impl<T: Float> fmt::Debug for NdArray<T> {
     }
 }
 
+impl TryFrom<NdArray<f64>> for Table {
+    type Error = MinarrowError;
+
+    /// Presents the leading axis as rows and the trailing axis as columns,
+    /// naming the columns by position. Shapes that do not lay out as a
+    /// table report the reason.
+    fn try_from(value: NdArray<f64>) -> Result<Self, Self::Error> {
+        value.to_table(None)
+    }
+}
+
+impl TryFrom<NdArray<f64>> for Array {
+    type Error = MinarrowError;
+
+    /// Reads a one-dimensional array as a single column.
+    fn try_from(value: NdArray<f64>) -> Result<Self, Self::Error> {
+        value.to_array()
+    }
+}
+
+#[cfg(feature = "matrix")]
+impl TryFrom<NdArray<f64>> for Matrix {
+    type Error = MinarrowError;
+
+    /// Reads a two-dimensional array as a contiguous matrix.
+    fn try_from(value: NdArray<f64>) -> Result<Self, Self::Error> {
+        value.to_matrix()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2834,7 +2864,7 @@ mod tests {
     fn try_from_table_coerces_unparseable_text_to_nan() {
         // TryFrom<&Table> uses the library's lenient numeric cast. Text that
         // does not parse as a number coerces to nulls, which surface as NaN
-        // in the dense NdArray rather than failing the conversion.
+        // in the contiguous NdArray rather than failing the conversion.
         let c0 = FieldArray::from_arr("name", Array::from_string32(
             StringArray::from_slice(&["a", "b"])
         ));

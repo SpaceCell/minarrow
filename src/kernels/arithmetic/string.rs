@@ -141,7 +141,7 @@ where
             }
         }
 
-        // Push offset regardless of validity to keep offsets aligned
+        // Push offset regardless of the null mask to keep offsets aligned
         // This ensures we can still slice [a..b] intuitively.
         let new_offset = O::from(data.len()).expect("offset conversion overflow");
         offsets.push(new_offset);
@@ -687,7 +687,7 @@ where
     let lmask_ref = lmask_slice.as_ref();
     let rmask_ref = rmask_slice.as_ref();
 
-    // build per-position validity
+    // build per-position null mask
     let lmask = lmask_ref;
     let rmask = rmask_ref;
     let mut out_mask = Bitmask::new_set_all(llen, false);

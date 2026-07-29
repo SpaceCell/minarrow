@@ -307,12 +307,12 @@ fn is_null_row(i: usize) -> bool {
 }
 
 #[test]
-fn masked_concurrent_validity_reads() {
+fn masked_concurrent_null_mask_reads() {
     let secs = env_or("STRESS_SECS", 2u64);
     let cap = env_or("STRESS_WINDOW", 8_000_000usize);
     let readers = env_or("STRESS_READERS", 4usize);
 
-    // One masked window. Readers share the value buffer and the validity
+    // One masked window. Readers share the value buffer and the null
     // mask, both LBuffer-backed views over the same writer.
     let mut buf = LBuffer::<i64>::with_capacity_masked(cap);
     let mask = buf.as_bitmask();
@@ -337,12 +337,12 @@ fn masked_concurrent_validity_reads() {
                     assert_eq!(
                         mask.get(last),
                         !is_null_row(last),
-                        "reader {reader_id}: torn validity at {last}"
+                        "reader {reader_id}: torn null mask at {last}"
                     );
                     assert_eq!(
                         mask.get(0),
                         !is_null_row(0),
-                        "reader {reader_id}: head validity"
+                        "reader {reader_id}: head null mask"
                     );
                     if !is_null_row(last) {
                         assert_eq!(
@@ -389,7 +389,7 @@ fn masked_concurrent_validity_reads() {
     let slice = data.as_slice();
     for i in 0..produced {
         let want_null = is_null_row(i);
-        assert_eq!(mask.get(i), !want_null, "final validity at {i}");
+        assert_eq!(mask.get(i), !want_null, "final null mask at {i}");
         if want_null {
             nulls += 1;
         } else {
@@ -399,5 +399,5 @@ fn masked_concurrent_validity_reads() {
     assert_eq!(mask.count_zeros(), nulls, "null count mismatch");
     assert!(produced > 0, "stress produced no rows");
 
-    println!("verified {produced} rows ({nulls} nulls) with {readers} readers, no torn validity");
+    println!("verified {produced} rows ({nulls} nulls) with {readers} readers, no torn null mask");
 }

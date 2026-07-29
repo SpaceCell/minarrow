@@ -82,7 +82,7 @@ macro_rules! impl_numeric_array_constructors {
                 }
             }
 
-            /// Constructs a dense typed Array from a slice.
+            /// Constructs a contiguous typed Array from a slice.
             ///
             /// This is a streamlined constructor - if the Array has nulls the mask
             /// must be applied after construction.

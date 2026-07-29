@@ -410,7 +410,7 @@ macro_rules! str_predicate {
 
             for i in 0..len {
                 unsafe {
-                    // Check null‐mask validity without bounds checks
+                    // Check the null mask without bounds checks
                     let lv = lmask.map_or(true, |m| m.get_unchecked(loff + i));
                     let rv = rmask.map_or(true, |m| m.get_unchecked(roff + i));
                     if !lv || !rv {

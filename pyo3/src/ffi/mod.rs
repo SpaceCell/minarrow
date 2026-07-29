@@ -166,7 +166,7 @@
 //! ## Nullability
 //!
 //! All array types support null values via MinArrow's `MaskedArray` wrapper. When an
-//! array contains nulls, the validity bitmap is transferred through the Arrow C Data
+//! array contains nulls, the null mask is transferred through the Arrow C Data
 //! Interface. PyArrow reconstructs the same null positions on import.
 //!
 //! ## Ownership Model

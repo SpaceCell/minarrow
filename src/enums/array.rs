@@ -26,6 +26,8 @@
 
 use std::any::TypeId;
 use std::fmt::{Display, Formatter};
+#[cfg(feature = "scalar_type")]
+use std::ops::Range;
 use std::sync::Arc;
 
 #[cfg(any(feature = "cast_arrow", feature = "cast_polars"))]
@@ -974,6 +976,8 @@ impl Array {
     }
 
     /// Sets the element at `idx` to `value`, converting it to the element type.
+    /// A `Scalar::Null` value masks the element null and leaves the buffer
+    /// contents in place.
     ///
     /// Returns an error when the value cannot be represented as the array's type,
     /// or the array is `Null`. Mutation is copy-on-write.
@@ -985,6 +989,18 @@ impl Array {
             to: "array element",
             message: Some(format!("cannot set a value in a {dtype:?} array")),
         };
+        if matches!(value, crate::Scalar::Null) {
+            if matches!(self, Array::Null) {
+                return Err(unsupported());
+            }
+            let mut mask = self
+                .null_mask()
+                .cloned()
+                .unwrap_or_else(|| Bitmask::new_set_all(self.len(), true));
+            mask.set(idx, false);
+            self.set_null_mask(mask);
+            return Ok(());
+        }
         match self {
             Array::NumericArray(inner) => match inner {
                 #[cfg(feature = "extended_numeric_types")]
@@ -1062,6 +1078,241 @@ impl Array {
                 }
                 TemporalArray::Datetime64(a) => {
                     Arc::make_mut(a).set(idx, value.try_i64().ok_or_else(unsupported)?)
+                }
+                TemporalArray::Null => return Err(unsupported()),
+            },
+            Array::Null => return Err(unsupported()),
+        }
+        Ok(())
+    }
+
+    /// Sets every element in `range` to `value`, converting it to the element type.
+    ///
+    /// The scalar converts once and each variant then writes through its own
+    /// typed buffer, so the per-element work carries no dispatch. A
+    /// `Scalar::Null` value masks the whole range null and leaves the buffer
+    /// contents in place. Categorical arrays intern the value into the
+    /// dictionary once and repeat its code across the range.
+    ///
+    /// Returns an error when the value cannot be represented as the array's
+    /// type, when the range reaches past the array's length, or when the
+    /// array is `Null`. Mutation is copy-on-write.
+    #[cfg(feature = "scalar_type")]
+    pub fn set_range(
+        &mut self,
+        range: Range<usize>,
+        value: crate::Scalar,
+    ) -> Result<(), MinarrowError> {
+        use crate::Scalar;
+        let dtype = self.arrow_type();
+        let unsupported = || MinarrowError::TypeError {
+            from: "scalar",
+            to: "array element",
+            message: Some(format!("cannot set a value in a {dtype:?} array")),
+        };
+        if range.end > self.len() {
+            return Err(MinarrowError::IndexError(format!(
+                "set_range: range {}..{} exceeds array length {}",
+                range.start,
+                range.end,
+                self.len()
+            )));
+        }
+        if range.is_empty() {
+            return Ok(());
+        }
+        if matches!(value, Scalar::Null) {
+            if matches!(self, Array::Null) {
+                return Err(unsupported());
+            }
+            let mut mask = self
+                .null_mask()
+                .cloned()
+                .unwrap_or_else(|| Bitmask::new_set_all(self.len(), true));
+            mask.set_range(range.start, range.end, false);
+            self.set_null_mask(mask);
+            return Ok(());
+        }
+        match self {
+            Array::NumericArray(inner) => match inner {
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(a) => {
+                    let v = value.try_i8().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(a) => {
+                    let v = value.try_i16().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                NumericArray::Int32(a) => {
+                    let v = value.try_i32().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                NumericArray::Int64(a) => {
+                    let v = value.try_i64().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(a) => {
+                    let v = value.try_u8().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(a) => {
+                    let v = value.try_u16().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                NumericArray::UInt32(a) => {
+                    let v = value.try_u32().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                NumericArray::UInt64(a) => {
+                    let v = value.try_u64().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                NumericArray::Float32(a) => {
+                    let v = value.try_f32().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                NumericArray::Float64(a) => {
+                    let v = value.try_f64().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                NumericArray::Null => return Err(unsupported()),
+            },
+            Array::BooleanArray(a) => {
+                let v = value.try_bool().ok_or_else(unsupported)?;
+                let arr = Arc::make_mut(a);
+                arr.data.set_range(range.start, range.end, v);
+                if let Some(mask) = &mut arr.null_mask {
+                    mask.set_range(range.start, range.end, true);
+                }
+            }
+            Array::TextArray(inner) => match inner {
+                TextArray::String32(a) => {
+                    let v = value.try_str().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    for idx in range.clone() {
+                        arr.set_str(idx, &v);
+                    }
+                }
+                #[cfg(feature = "large_string")]
+                TextArray::String64(a) => {
+                    let v = value.try_str().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    for idx in range.clone() {
+                        arr.set_str(idx, &v);
+                    }
+                }
+                #[cfg(feature = "default_categorical_8")]
+                TextArray::Categorical8(a) => {
+                    let v = value.try_str().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    // The first element goes through set_str so the dictionary
+                    // interning happens once. The rest repeat its code.
+                    arr.set_str(range.start, &v);
+                    let code = arr.data[range.start];
+                    arr.data.as_mut_slice()[range.start + 1..range.end].fill(code);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical16(a) => {
+                    let v = value.try_str().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.set_str(range.start, &v);
+                    let code = arr.data[range.start];
+                    arr.data.as_mut_slice()[range.start + 1..range.end].fill(code);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
+                TextArray::Categorical32(a) => {
+                    let v = value.try_str().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.set_str(range.start, &v);
+                    let code = arr.data[range.start];
+                    arr.data.as_mut_slice()[range.start + 1..range.end].fill(code);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical64(a) => {
+                    let v = value.try_str().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.set_str(range.start, &v);
+                    let code = arr.data[range.start];
+                    arr.data.as_mut_slice()[range.start + 1..range.end].fill(code);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                TextArray::Null => return Err(unsupported()),
+            },
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(inner) => match inner {
+                TemporalArray::Datetime32(a) => {
+                    let v = value.try_i32().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                TemporalArray::Datetime64(a) => {
+                    let v = value.try_i64().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
                 }
                 TemporalArray::Null => return Err(unsupported()),
             },
@@ -4887,6 +5138,93 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "scalar_type")]
+    #[test]
+    fn test_array_set_range_numeric() {
+        let mut arr = Array::from_int64(IntegerArray::<i64>::from_slice(&[1, 2, 3, 4, 5]));
+        arr.set_range(1..4, crate::Scalar::Int64(9)).unwrap();
+        if let Array::NumericArray(NumericArray::Int64(a)) = &arr {
+            assert_eq!(a.data.as_slice(), &[1, 9, 9, 9, 5]);
+            assert!(a.null_mask.is_none(), "a value write must not create a mask");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[cfg(feature = "scalar_type")]
+    #[test]
+    fn test_array_set_range_null_scalar_masks_the_range() {
+        let mut arr = Array::from_int64(IntegerArray::<i64>::from_slice(&[1, 2, 3]));
+        arr.set_range(0..2, crate::Scalar::Null).unwrap();
+        let mask = arr.null_mask().expect("the null write creates the mask");
+        assert!(!mask.get(0));
+        assert!(!mask.get(1));
+        assert!(mask.get(2));
+    }
+
+    #[cfg(feature = "scalar_type")]
+    #[test]
+    fn test_array_set_range_revalidates_masked_entries() {
+        let mut arr = Array::from_int64(IntegerArray::<i64>::from_slice(&[1, 2, 3]));
+        arr.set_range(0..3, crate::Scalar::Null).unwrap();
+        arr.set_range(1..3, crate::Scalar::Int64(7)).unwrap();
+        let mask = arr.null_mask().expect("the mask persists once created");
+        assert!(!mask.get(0));
+        assert!(mask.get(1));
+        assert!(mask.get(2));
+        if let Array::NumericArray(NumericArray::Int64(a)) = &arr {
+            assert_eq!(a.data.as_slice()[1..], [7, 7]);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[cfg(feature = "scalar_type")]
+    #[test]
+    fn test_array_set_range_string() {
+        let mut arr =
+            Array::from_string32(StringArray::<u32>::from_slice(&["a", "bb", "ccc", "d"]));
+        arr.set_range(1..3, crate::Scalar::String32("zz".into())).unwrap();
+        if let Array::TextArray(TextArray::String32(a)) = &arr {
+            assert_eq!(a.get(0), Some("a"));
+            assert_eq!(a.get(1), Some("zz"));
+            assert_eq!(a.get(2), Some("zz"));
+            assert_eq!(a.get(3), Some("d"));
+            assert!(a.null_mask.is_none(), "a value write must not create a mask");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[cfg(all(feature = "scalar_type", feature = "default_categorical_8"))]
+    #[test]
+    fn test_array_set_range_categorical_interns_once() {
+        let mut arr = Array::from_categorical8(CategoricalArray::<u8>::from_slices(
+            &[0, 1, 0],
+            &["red".to_string(), "blue".to_string()],
+        ));
+        arr.set_range(0..3, crate::Scalar::String32("green".into())).unwrap();
+        if let Array::TextArray(TextArray::Categorical8(a)) = &arr {
+            assert_eq!(a.unique_values(), &["red", "blue", "green"]);
+            assert_eq!(a.data.as_slice(), &[2, 2, 2]);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[cfg(feature = "scalar_type")]
+    #[test]
+    fn test_array_set_range_rejects_unrepresentable_and_oversize() {
+        let mut arr = Array::from_int64(IntegerArray::<i64>::from_slice(&[1, 2, 3]));
+        assert!(arr.set_range(0..2, crate::Scalar::String32("pear".into())).is_err());
+        assert!(arr.set_range(1..4, crate::Scalar::Int64(9)).is_err());
+        if let Array::NumericArray(NumericArray::Int64(a)) = &arr {
+            assert_eq!(a.data.as_slice(), &[1, 2, 3], "a failed write leaves the data alone");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
     #[test]
     fn test_array_is_nullable() {
         assert!(Array::Null.is_nullable());
@@ -5536,7 +5874,7 @@ mod macro_tests {
     // ===== numeric types =====
 
     #[test]
-    fn arr_i32_vec64_dense() {
+    fn arr_i32_vec64_contiguous() {
         let v = vec64![1i32, 2, 3];
         let arr = arr_i32!(v);
         if let Array::NumericArray(NumericArray::Int32(a)) = arr {
@@ -5560,7 +5898,7 @@ mod macro_tests {
     }
 
     #[test]
-    fn arr_f64_vec64_dense() {
+    fn arr_f64_vec64_contiguous() {
         let v = vec64![1.1f64, 2.2, 3.3];
         let arr = arr_f64!(v);
         if let Array::NumericArray(NumericArray::Float64(a)) = arr {
@@ -5586,7 +5924,7 @@ mod macro_tests {
     // ===== bool =====
 
     #[test]
-    fn arr_bool_vec64_dense() {
+    fn arr_bool_vec64_contiguous() {
         let v = vec64![true, false, true];
         let arr = arr_bool!(v);
         if let Array::BooleanArray(a) = arr {
@@ -5616,7 +5954,7 @@ mod macro_tests {
     // ===== string =====
 
     #[test]
-    fn arr_str32_vec64_dense() {
+    fn arr_str32_vec64_contiguous() {
         let v = vec64!["a", "b", "c"];
         let arr = arr_str32!(v);
         if let Array::TextArray(TextArray::String32(a)) = arr {
@@ -5650,7 +5988,7 @@ mod macro_tests {
         feature = "extended_categorical"
     ))]
     #[test]
-    fn arr_cat32_vec64_dense() {
+    fn arr_cat32_vec64_contiguous() {
         let v = vec64!["red", "green", "red"];
         let arr = arr_cat32!(v);
         if let Array::TextArray(TextArray::Categorical32(a)) = arr {
@@ -6294,7 +6632,7 @@ mod arr_macro_extensions_tests {
     }
 
     #[test]
-    fn arr_f64_accepts_slice_dense() {
+    fn arr_f64_accepts_slice_contiguous() {
         let s: &[f64] = &[1.0, 2.0, 3.0];
         let (data, mask) = expect_f64_mask(arr_f64!(s));
         assert_eq!(data, vec![1.0, 2.0, 3.0]);
@@ -6302,7 +6640,7 @@ mod arr_macro_extensions_tests {
     }
 
     #[test]
-    fn arr_f64_accepts_vec64_dense() {
+    fn arr_f64_accepts_vec64_contiguous() {
         let v: Vec64<f64> = vec64![1.0, 2.0, 3.0];
         let (data, mask) = expect_f64_mask(arr_f64!(v));
         assert_eq!(data, vec![1.0, 2.0, 3.0]);
