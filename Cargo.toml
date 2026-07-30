@@ -61,7 +61,7 @@ criterion = { version = "0.8.2", features = ["html_reports"] }
 cc = { version = "1", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+libc = { version = "0.2", optional = true }
 
 [features]
 
@@ -283,7 +283,7 @@ select = []
 # Enables memfd-backed buffers for zero-copy cross-process sharing (Linux only).
 # Use `MemfdBuffer::new()` to create a buffer, then pass the fd to child processes.
 # Children call `MemfdBuffer::reopen()` to access the same physical memory.
-memfd = []
+memfd = ["dep:libc"]
 
 # Consider enabling this for improved Vec64 performance on Linux.
 #
