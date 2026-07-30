@@ -52,7 +52,7 @@ hashbrown = { version = "0.15", optional = true }
 parking_lot = { version = "0.12", optional = true }
 regex = { version = "1.12.3", optional = true }
 vec64 = { version = "0.4.7" }
-log = "0.4.29"
+log = { version = "0.4.29", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
@@ -64,6 +64,9 @@ cc = { version = "1", optional = true }
 libc = "0.2"
 
 [features]
+
+# Enables logging output via the log crate. When disabled, warnings fall back to eprintln!
+log = ["dep:log"]
 
 # Adds parallel iterators via `Rayon`
 parallel_proc = ["rayon"]
@@ -312,6 +315,7 @@ default = [
     "large_string",
     "simd",
     "select",
+    "log"
 ]
 
 [package.metadata.cargo-all-features]

@@ -81,7 +81,7 @@ use std::fmt::{Display, Formatter};
 use std::ops::{Deref, DerefMut, RangeBounds};
 use std::{fmt, mem};
 
-use log::warn;
+use crate::log::warn;
 
 use crate::Vec64;
 #[cfg(feature = "lbuffer")]

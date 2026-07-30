@@ -262,6 +262,7 @@ pub mod traits {
 
 pub mod aliases;
 pub mod conversions;
+pub mod log;
 pub mod macros;
 pub mod utils;
 
