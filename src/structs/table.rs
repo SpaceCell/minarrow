@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "cast_arrow")]
 use arrow::array::RecordBatch;
-use log::warn;
+use crate::log::warn;
 #[cfg(feature = "cast_polars")]
 use polars::frame::DataFrame;
 #[cfg(feature = "cast_polars")]
