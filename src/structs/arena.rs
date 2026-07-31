@@ -1607,7 +1607,14 @@ pub(crate) fn consolidate_tables_arena(
     }
 
     // --- Step 3: Freeze and reconstruct via Table::from_arena ---
-    Table::from_arena(name, &schema, arena, regions, n_rows)
+    #[allow(unused_mut)]
+    let mut table = Table::from_arena(name, &schema, arena, regions, n_rows);
+    // Carry the first table's schema-level metadata
+    #[cfg(feature = "table_metadata")]
+    {
+        table.metadata = tables[0].metadata.clone();
+    }
+    table
 }
 
 #[cfg(test)]
