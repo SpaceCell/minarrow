@@ -215,6 +215,15 @@ impl TemporalArrayV {
         (self.array.clone(), self.offset, self.len)
     }
 
+    /// Returns a reference tuple: `(&TemporalArray, offset, len)`.
+    ///
+    /// This avoids cloning and returns a reference with a lifetime tied to
+    /// this TemporalArrayV.
+    #[inline]
+    pub fn as_tuple_ref(&self) -> (&TemporalArray, usize, usize) {
+        (&self.array, self.offset, self.len)
+    }
+
     /// Returns the number of nulls in the view.
     #[inline]
     pub fn null_count(&self) -> usize {

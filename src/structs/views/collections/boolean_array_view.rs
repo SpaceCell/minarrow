@@ -190,6 +190,15 @@ impl BooleanArrayV {
         (self.array.clone(), self.offset, self.len)
     }
 
+    /// Returns a reference tuple: `(&BooleanArray, offset, len)`.
+    ///
+    /// This avoids cloning the Arc and returns a reference with a lifetime
+    /// tied to this BooleanArrayV.
+    #[inline]
+    pub fn as_tuple_ref(&self) -> (&BooleanArray<()>, usize, usize) {
+        (self.array.as_ref(), self.offset, self.len)
+    }
+
     /// Returns the number of nulls in the view.
     ///
     /// Caches it after the first calculation.

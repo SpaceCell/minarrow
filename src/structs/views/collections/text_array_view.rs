@@ -208,6 +208,15 @@ impl TextArrayV {
         (self.array.clone(), self.offset, self.len)
     }
 
+    /// Returns a reference tuple: `(&TextArray, offset, len)`.
+    ///
+    /// This avoids cloning and returns a reference with a lifetime tied to
+    /// this TextArrayV.
+    #[inline]
+    pub fn as_tuple_ref(&self) -> (&TextArray, usize, usize) {
+        (&self.array, self.offset, self.len)
+    }
+
     /// Returns the number of nulls in the view.
     ///
     /// Caches it after the first calculation.
