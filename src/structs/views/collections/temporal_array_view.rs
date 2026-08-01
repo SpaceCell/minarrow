@@ -50,7 +50,7 @@ use crate::enums::shape_dim::ShapeDim;
 use crate::traits::concatenate::Concatenate;
 use crate::traits::print::MAX_PREVIEW;
 use crate::traits::shape::Shape;
-use crate::{Array, ArrayV, BitmaskV, MaskedArray, TemporalArray};
+use crate::{Array, ArrayV, BitmaskV, MaskedArray, TemporalArray, TimeUnit};
 
 /// # TemporalArrayView
 ///
@@ -181,6 +181,17 @@ impl TemporalArrayV {
     #[inline]
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// The time unit the samples are measured in i.e. seconds, milliseconds,
+    /// microseconds, nanoseconds, or days.
+    ///
+    /// Reads the unit off the backing datetime array, so the window's offset
+    /// and length do not affect it. Returns `None` for the `Null` placeholder
+    /// variant, which carries no datetime payload and therefore no unit.
+    #[inline]
+    pub fn time_unit(&self) -> Option<TimeUnit> {
+        self.array.time_unit()
     }
 
     /// Returns the full backing array wrapped as an `Array` enum, ignoring the view's offset and length.
@@ -338,7 +349,6 @@ impl Display for TemporalArrayV {
         {
             use time::OffsetDateTime;
 
-            use crate::TimeUnit;
             let unit = match &self.array {
                 TemporalArray::Datetime32(arr) => &arr.time_unit,
                 TemporalArray::Datetime64(arr) => &arr.time_unit,
@@ -389,8 +399,6 @@ impl Display for TemporalArrayV {
 
         #[cfg(not(feature = "datetime_ops"))]
         {
-            use crate::TimeUnit;
-
             let unit = match &self.array {
                 TemporalArray::Datetime32(arr) => &arr.time_unit,
                 TemporalArray::Datetime64(arr) => &arr.time_unit,
@@ -421,9 +429,6 @@ impl Display for TemporalArrayV {
 
 #[cfg(feature = "datetime_ops")]
 use crate::DatetimeOps;
-
-#[cfg(feature = "datetime_ops")]
-use crate::enums::time_units::TimeUnit;
 
 #[cfg(feature = "datetime_ops")]
 use time::Duration;
