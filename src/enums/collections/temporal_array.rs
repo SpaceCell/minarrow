@@ -30,7 +30,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{Bitmask, DatetimeArray, MaskedArray};
+use crate::{Bitmask, DatetimeArray, MaskedArray, TimeUnit};
 use crate::{
     enums::{error::MinarrowError, shape_dim::ShapeDim},
     traits::{concatenate::Concatenate, shape::Shape},
@@ -99,6 +99,20 @@ impl TemporalArray {
             TemporalArray::Datetime32(arr) => arr.len(),
             TemporalArray::Datetime64(arr) => arr.len(),
             TemporalArray::Null => 0,
+        }
+    }
+
+    /// The time unit the samples are measured in i.e. seconds, milliseconds,
+    /// microseconds, nanoseconds, or days.
+    ///
+    /// Returns `None` for the `Null` placeholder variant, which carries no
+    /// datetime payload and therefore no unit.
+    #[inline]
+    pub fn time_unit(&self) -> Option<TimeUnit> {
+        match self {
+            TemporalArray::Datetime32(arr) => Some(arr.time_unit),
+            TemporalArray::Datetime64(arr) => Some(arr.time_unit),
+            TemporalArray::Null => None,
         }
     }
 
@@ -325,7 +339,7 @@ impl Concatenate for TemporalArray {
 use crate::DatetimeOps;
 
 #[cfg(feature = "datetime_ops")]
-use crate::enums::time_units::{TimePeriod, TimeUnit};
+use crate::enums::time_units::TimePeriod;
 
 #[cfg(feature = "datetime_ops")]
 use time::Duration;
