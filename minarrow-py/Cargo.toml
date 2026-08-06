@@ -53,7 +53,7 @@ large_string = ["minarrow/large_string"]
 scalar_type = ["minarrow/scalar_type"]
 value_type = ["minarrow/value_type"]
 cube = ["minarrow/cube"]
-default_categorical_8 = ["minarrow/default_categorical_8"]
+default_categorical_8 = ["minarrow/default_categorical_8", "minarrow-pyo3?/default_categorical_8"]
 # Mirrors the core crate, where `extended_categorical` implies `default_categorical_8`.
 # `minarrow-pyo3` needs `extended_numeric_types` too, as its dictionary-index conversion
 # gates the 8 and 16-bit key arms on both features.

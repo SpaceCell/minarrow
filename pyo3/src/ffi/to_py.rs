@@ -131,10 +131,14 @@ fn arrow_type_to_pyarrow<'py>(
 
         ArrowType::Dictionary(key_type) => {
             let index_ty = match key_type {
-                #[cfg(all(feature = "extended_categorical", feature = "extended_numeric_types"))]
+                #[cfg(feature = "default_categorical_8")]
                 CategoricalIndexType::UInt8 => pa.call_method0("uint8")?,
-                #[cfg(all(feature = "extended_categorical", feature = "extended_numeric_types"))]
+                #[cfg(feature = "extended_categorical")]
                 CategoricalIndexType::UInt16 => pa.call_method0("uint16")?,
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
                 CategoricalIndexType::UInt32 => pa.call_method0("uint32")?,
                 #[cfg(feature = "extended_categorical")]
                 CategoricalIndexType::UInt64 => pa.call_method0("uint64")?,

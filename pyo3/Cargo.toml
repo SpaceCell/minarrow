@@ -33,6 +33,11 @@ default = ["datetime", "extended_numeric_types"]
 extension-module = ["pyo3/extension-module"]
 datetime = ["minarrow/datetime"]
 extended_numeric_types = ["minarrow/extended_numeric_types"]
+# Mirrors the core crate, using 8-bit key (256 max unique categorical values) instead of 32-bit
+# for efficiency
+default_categorical_8 = ["minarrow/default_categorical_8"]
+# Enables 8, 16 and 64 byte categorical bit widths. When combined with default_categorical_8,
+# the extra one added is the 32 byte (making the other feature unused).
 extended_categorical = ["minarrow/extended_categorical"]
 table_metadata = ["minarrow/table_metadata"]
 # N-dimensional tensor bridging with DLPack capsule interchange.
