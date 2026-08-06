@@ -17,7 +17,7 @@
 //! Unified Minarrow representations of supported *Apache Arrow* data types.
 //!
 //! ## Overview
-//! - Covers integer, floating-point, boolean, string, dictionary-encoded, and optional temporal types  
+//! - Covers integer, floating-point, boolean, string, dictionary-encoded, and optional temporal types
 //!   (date, time, duration, timestamp, interval).
 //! - Each Minarrow array type implements `arrow_type()` to return its matching `ArrowType`.
 //! - Enables consistent Arrow FFI compatibility without requiring the full Arrow type system.
@@ -37,7 +37,7 @@
 //! ## Copyright Notice
 //! - The `Minarrow` crate is not affiliated with the `Apache Arrow` project.
 //! - The term `Apache Arrow` is a trademark of the *Apache Software Foundation*.
-//! - The term `Arrow` is used here under fair use to implement the public FFI compatibility standard,  
+//! - The term `Arrow` is used here under fair use to implement the public FFI compatibility standard,
 //!   in accordance with the official guidance: <https://www.apache.org/foundation/marks/>.
 //!
 //! See `./LICENSE` for more information.
@@ -58,7 +58,7 @@ use crate::{BooleanArray, CategoricalArray, Float, FloatArray, Integer, StringAr
 /// ## Purpose
 /// - Encodes the physical type and, for temporal variants, associated unit information for all supported Minarrow arrays.
 /// - Provides a single discriminant used across the crate for schema definitions, type matching, and Arrow FFI export.
-/// - Implements a focused subset of the official Arrow type specification:  
+/// - Implements a focused subset of the official Arrow type specification:
 ///   <https://arrow.apache.org/docs/python/api/datatypes.html>.
 ///
 /// ## Coverage
@@ -74,7 +74,7 @@ use crate::{BooleanArray, CategoricalArray, Float, FloatArray, Integer, StringAr
 /// - Simplifies Minarrow’s type system *(e.g., one `DatetimeArray` type)* while tagging `ArrowType` on `Field` for ecosystem compatibility.
 ///
 /// ## Notes
-/// - For `DatetimeArray` types, `ArrowType` reflects only the physical encoding.  
+/// - For `DatetimeArray` types, `ArrowType` reflects only the physical encoding.
 ///   Logical distinctions (e.g., interpreting a `Date64` as a timestamp vs. a duration) are stored in `Field` metadata.
 /// - Dictionary key widths are defined by the associated `CategoricalIndexType`.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
@@ -123,6 +123,40 @@ pub enum ArrowType {
 }
 
 impl ArrowType {
+    /// High-level typing categories: Numeric, Text, Boolean,
+    /// Datetime, or `Null`.
+    ///
+    /// These are not part of the Apache Arrow specification.
+    pub fn minarrow_category_label(&self) -> &'static str {
+        match self {
+            ArrowType::Null => "Null",
+            ArrowType::Boolean => "Boolean",
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::Int8 | ArrowType::Int16 | ArrowType::UInt8 | ArrowType::UInt16 => {
+                "Numeric"
+            }
+            ArrowType::Int32
+            | ArrowType::Int64
+            | ArrowType::UInt32
+            | ArrowType::UInt64
+            | ArrowType::Float32
+            | ArrowType::Float64 => "Numeric",
+            #[cfg(feature = "datetime")]
+            ArrowType::Date32
+            | ArrowType::Date64
+            | ArrowType::Time32(_)
+            | ArrowType::Time64(_)
+            | ArrowType::Duration32(_)
+            | ArrowType::Duration64(_)
+            | ArrowType::Timestamp(_, _)
+            | ArrowType::Interval(_) => "Datetime",
+            ArrowType::String | ArrowType::Utf8View => "Text",
+            #[cfg(feature = "large_string")]
+            ArrowType::LargeString => "Text",
+            ArrowType::Dictionary(_) => "Text",
+        }
+    }
+
     /// Upcast target for a binary operation over a pair of input types.
     ///
     /// Returns the element type that carries the result of a binary

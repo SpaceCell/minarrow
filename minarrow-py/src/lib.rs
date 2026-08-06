@@ -37,8 +37,8 @@ mod xarray;
 
 use pyo3::prelude::*;
 
-use array::PyArray;
-use table::PyTable;
+pub use array::PyArray;
+pub use table::PyTable;
 
 pub use array::PyArrayInner;
 pub use arrow_type::{PyArrowType, PyCategoricalIndexType};
