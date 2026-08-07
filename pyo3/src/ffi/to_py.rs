@@ -29,7 +29,7 @@ use minarrow::ffi::arrow_c_ffi::{
     export_super_table_view_stream, export_to_c, export_view_to_c, ArrowArray, ArrowArrayStream,
     ArrowSchema,
 };
-use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
+use minarrow::ffi::arrow_dtype::ArrowType;
 #[cfg(feature = "datetime")]
 use minarrow::enums::time_units::TimeUnit;
 use minarrow::ffi::schema::Schema;
@@ -130,19 +130,7 @@ fn arrow_type_to_pyarrow<'py>(
         }
 
         ArrowType::Dictionary(key_type) => {
-            let index_ty = match key_type {
-                #[cfg(feature = "default_categorical_8")]
-                CategoricalIndexType::UInt8 => pa.call_method0("uint8")?,
-                #[cfg(feature = "extended_categorical")]
-                CategoricalIndexType::UInt16 => pa.call_method0("uint16")?,
-                #[cfg(any(
-                    not(feature = "default_categorical_8"),
-                    feature = "extended_categorical"
-                ))]
-                CategoricalIndexType::UInt32 => pa.call_method0("uint32")?,
-                #[cfg(feature = "extended_categorical")]
-                CategoricalIndexType::UInt64 => pa.call_method0("uint64")?,
-            };
+            let index_ty = pa.call_method0(key_type.arrow_index_name())?;
             let value_ty = pa.call_method0("utf8")?;
             pa.call_method1("dictionary", (index_ty, value_ty))
         }

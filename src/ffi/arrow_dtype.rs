@@ -404,6 +404,31 @@ pub enum CategoricalIndexType {
     UInt64,
 }
 
+impl CategoricalIndexType {
+    /// The Arrow name of the integer type that carries the dictionary's keys,
+    /// as used by Arrow and PyArrow.
+    ///
+    /// The variants present in a build depend on the categorical width
+    /// features. A downstream crate reads the name here rather than matching on
+    /// the enum, because such a match compiles only while both crates select
+    /// the same widths.
+    pub fn arrow_index_name(&self) -> &'static str {
+        match self {
+            #[cfg(feature = "default_categorical_8")]
+            CategoricalIndexType::UInt8 => "uint8",
+            #[cfg(feature = "extended_categorical")]
+            CategoricalIndexType::UInt16 => "uint16",
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            CategoricalIndexType::UInt32 => "uint32",
+            #[cfg(feature = "extended_categorical")]
+            CategoricalIndexType::UInt64 => "uint64",
+        }
+    }
+}
+
 // Design documentation: arrow_type()
 //
 // Whilst `arrow_type()` could be on a trait, the ergonomics of using one aren't great
