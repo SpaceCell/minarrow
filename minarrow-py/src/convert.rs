@@ -129,11 +129,6 @@ pub fn parse_dtype(name: &str) -> PyResult<ArrowType> {
         "string" | "str" | "utf8" | "str32" => ArrowType::String,
         "large_string" | "largestring" | "str64" => ArrowType::LargeString,
         "bool" | "boolean" => ArrowType::Boolean,
-        // The unqualified spelling means whichever dictionary key this build
-        // works in, so a caller with no stake in the key width writes
-        // `categorical` and gets the width the rest of the build agrees on.
-        // The numbered spellings ask for one width and are available only where
-        // that width is compiled.
         "categorical" | "category" | "cat" => {
             #[cfg(feature = "default_categorical_8")]
             {

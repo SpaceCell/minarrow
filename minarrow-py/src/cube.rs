@@ -150,6 +150,21 @@ impl PyCube {
         ))
     }
 
+    /// The table for a key, looked up on the key's own type.
+    ///
+    /// A cube split on an `Int32` column is reached with an `int`, and on a
+    /// `Float64` column with a `float`. This is the lookup a grouped cube is
+    /// built for; `cube[i]` reads by position and `cube["name"]` by name.
+    fn group(&self, key: &Bound<'_, PyAny>) -> PyResult<PyTable> {
+        let scalar = crate::convert::py_to_scalar(key)?;
+        let index = self
+            .0
+            .resolve(&scalar)
+            .ok_or_else(|| PyKeyError::new_err(format!("no group keyed {scalar} in this cube")))?;
+        table_at(&self.0, index)
+            .ok_or_else(|| PyKeyError::new_err(format!("no group keyed {scalar} in this cube")))
+    }
+
     /// Whether a table of this name is present.
     fn __contains__(&self, name: &str) -> bool {
         self.0.has_table(name)
