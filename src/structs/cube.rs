@@ -145,6 +145,61 @@ impl Cube {
         }
     }
 
+    /// Splits a table into one table per distinct value of a column, which
+    /// becomes the cube's third dimension.
+    ///
+    /// The column is read in order and each value not seen before opens a
+    /// table, so the tables come back in the order their values first appear.
+    /// Each takes its value as its name, and the column is dropped from it,
+    /// since it held that one value repeated down every row.
+    pub fn from_table(
+        table: &Table,
+        col: &str,
+        name: impl Into<String>,
+    ) -> Result<Self, MinarrowError> {
+        let col_idx = table
+            .col_name_index(col)
+            .ok_or_else(|| MinarrowError::ShapeError {
+                message: format!("Cube::from_table: column '{col}' not found"),
+            })?;
+        let values = &table.cols[col_idx].array;
+
+        // The rows of each table are gathered before any is built, so a row is
+        // visited once.
+        let mut rows: Vec<Vec<usize>> = Vec::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut resolver: HashMap<String, usize> = HashMap::new();
+        for row in 0..table.n_rows {
+            let value = values
+                .get_scalar(row)
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            match resolver.get(&value) {
+                Some(&at) => rows[at].push(row),
+                None => {
+                    resolver.insert(value.clone(), rows.len());
+                    names.push(value);
+                    rows.push(vec![row]);
+                }
+            }
+        }
+
+        let mut tables = Vec::with_capacity(rows.len());
+        for (at, value) in names.into_iter().enumerate() {
+            let mut entry = table.gather_rows(&rows[at]);
+            entry.remove_col(col);
+            entry.set_name(value);
+            tables.push(Arc::new(entry));
+        }
+
+        Ok(Self {
+            tables,
+            name: name.into(),
+            third_dim_index: Some(vec![col.to_string()]),
+            resolver,
+        })
+    }
+
     /// Constructs a new, empty Cube with a globally unique name.
     pub fn new_empty() -> Self {
         let id = UNNAMED_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1072,4 +1127,30 @@ mod tests {
         names.sort_unstable();
         assert_eq!(names, vec!["a", "b"]);
     }
+
+    /// Splitting on a column turns it into the third dimension: one table per
+    /// distinct value, in first-seen order, and the column itself gone.
+    #[test]
+    fn from_table_splits_on_a_column() {
+        let table = build_test_table("t", &[2, 1, 2, 3, 1], &[true, false, true, false, true]);
+        let cube = Cube::from_table(&table, "ints", "grouped").unwrap();
+
+        assert_eq!(cube.n_tables(), 3);
+        assert_eq!(cube.n_rows(), vec![2, 2, 1]);
+
+        // The column is the third dimension, and each table is one of its
+        // distinct values.
+        assert_eq!(cube.third_dim_index().unwrap(), &["ints"]);
+        assert_eq!(cube.table_names(), vec!["2", "1", "3"]);
+
+        // It is gone from the tables, and only it.
+        assert_eq!(cube.col_names(), vec!["bools"]);
+
+        // The resolver reaches a table by its value without walking the index.
+        assert_eq!(cube.resolve("2"), Some(0));
+        assert_eq!(cube.resolve("3"), Some(2));
+        assert_eq!(cube.resolve("9"), None);
+        assert_eq!(cube.tables[cube.resolve("1").unwrap()].n_rows, 2);
+    }
+
 }
