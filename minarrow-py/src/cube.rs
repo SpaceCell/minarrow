@@ -153,16 +153,22 @@ impl PyCube {
     /// The table for a key, looked up on the key's own type.
     ///
     /// A cube split on an `Int32` column is reached with an `int`, and on a
-    /// `Float64` column with a `float`. This is the lookup a grouped cube is
-    /// built for; `cube[i]` reads by position and `cube["name"]` by name.
-    fn group(&self, key: &Bound<'_, PyAny>) -> PyResult<PyTable> {
-        let scalar = crate::convert::py_to_scalar(key)?;
-        let index = self
-            .0
-            .resolve(&scalar)
-            .ok_or_else(|| PyKeyError::new_err(format!("no group keyed {scalar} in this cube")))?;
-        table_at(&self.0, index)
-            .ok_or_else(|| PyKeyError::new_err(format!("no group keyed {scalar} in this cube")))
+    /// `Float64` column with a `float`. A cube split on several columns takes
+    /// one value per column, in the order they were grouped on. This is the
+    /// lookup a grouped cube is built for; `cube[i]` reads by position and
+    /// `cube["name"]` by name.
+    #[pyo3(signature = (*key))]
+    fn group(&self, key: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyTable> {
+        let parts: Vec<minarrow::Scalar> = key
+            .iter()
+            .map(|k| crate::convert::py_to_scalar(&k))
+            .collect::<PyResult<_>>()?;
+        let named = || {
+            let joined: Vec<String> = parts.iter().map(ToString::to_string).collect();
+            PyKeyError::new_err(format!("no group keyed {} in this cube", joined.join("|")))
+        };
+        let index = self.0.resolve(&parts).ok_or_else(named)?;
+        table_at(&self.0, index).ok_or_else(named)
     }
 
     /// Whether a table of this name is present.

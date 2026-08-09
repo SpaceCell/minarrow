@@ -87,10 +87,12 @@ pub struct Cube {
     // O(1) lookup from group key to position in the tables vec.
     // Maintained alongside tables for fast group resolution across batches.
     //
-    // The key is a `Scalar`, so a group taken from an `Int32` column resolves
-    // on an `Int32` and hands that type back. A table that carries a name
-    // rather than a key resolves on the name as a `String32`.
-    pub resolver: HashMap<Scalar, usize>,
+    // The key holds one `Scalar` per column of the third dimension, so a group
+    // taken from an `Int32` column resolves on an `Int32` and hands that type
+    // back, and a group taken from several columns resolves on all of them. A
+    // table that carries a name rather than a key resolves on the name as a
+    // `String32`.
+    pub resolver: HashMap<Vec<Scalar>, usize>,
 }
 
 impl Cube {
@@ -117,7 +119,7 @@ impl Cube {
 
         if let Some(cols) = cols {
             let table = Table::new(name.clone(), Some(cols));
-            resolver.insert(Scalar::String32(table.name.clone()), 0);
+            resolver.insert(vec![Scalar::String32(table.name.clone())], 0);
             tables.push(Arc::new(table));
         }
 
@@ -139,7 +141,7 @@ impl Cube {
         let arc_tables: Vec<Arc<Table>> = tables.into_iter().map(Arc::new).collect();
         let mut resolver = HashMap::new();
         for (i, t) in arc_tables.iter().enumerate() {
-            resolver.insert(Scalar::String32(t.name.clone()), i);
+            resolver.insert(vec![Scalar::String32(t.name.clone())], i);
         }
         Self {
             tables: arc_tables,
@@ -157,7 +159,7 @@ impl Cube {
     ///
     /// The key column is dropped from each group, since it would hold one value
     /// repeated down every row. That value is the group's key in the resolver
-    /// and its name, so `cube.resolve(&Scalar::Int32(2))` reaches the group
+    /// and its name, so `cube.resolve(&[Scalar::Int32(2)])` reaches the group
     /// without a scan and without the key losing its type.
     ///
     /// The column name is recorded as the cube's third dimension.
@@ -196,7 +198,7 @@ impl Cube {
             let mut group_table = table.gather_rows(&rows[group]);
             group_table.remove_col(key_col);
             group_table.set_name(key.to_string());
-            resolver.insert(key, group);
+            resolver.insert(vec![key], group);
             tables.push(Arc::new(group_table));
         }
 
@@ -245,7 +247,7 @@ impl Cube {
         }
 
         let idx = self.tables.len();
-        self.resolver.insert(Scalar::String32(table.name.clone()), idx);
+        self.resolver.insert(vec![Scalar::String32(table.name.clone())], idx);
         self.tables.push(Arc::new(table));
     }
 
@@ -311,7 +313,7 @@ impl Cube {
     pub fn remove_table_at(&mut self, idx: usize) -> bool {
         if idx < self.tables.len() {
             let removed = self.tables.remove(idx);
-            self.resolver.remove(&Scalar::String32(removed.name.clone()));
+            self.resolver.remove(&vec![Scalar::String32(removed.name.clone())]);
             // Rebuild resolver indices for entries after the removed position
             for (_, pos) in self.resolver.iter_mut() {
                 if *pos > idx {
@@ -326,7 +328,7 @@ impl Cube {
 
     /// Removes a table by name.
     pub fn remove_table(&mut self, name: &str) -> bool {
-        if let Some(idx) = self.resolver.remove(&Scalar::String32(name.to_string())) {
+        if let Some(idx) = self.resolver.remove(&vec![Scalar::String32(name.to_string())]) {
             self.tables.remove(idx);
             // Rebuild resolver indices for entries after the removed position
             for (_, pos) in self.resolver.iter_mut() {
@@ -453,20 +455,20 @@ impl Cube {
     /// The key is the value the group was built on, so an `Int32` column
     /// resolves on an `Int32`. A table carrying a name rather than a key
     /// resolves on `Scalar::String32`, which [`Self::resolve_name`] wraps.
-    pub fn resolve(&self, key: &Scalar) -> Option<usize> {
+    pub fn resolve(&self, key: &[Scalar]) -> Option<usize> {
         self.resolver.get(key).copied()
     }
 
     /// Resolve a table position by name.
     pub fn resolve_name(&self, name: &str) -> Option<usize> {
-        self.resolve(&Scalar::String32(name.to_string()))
+        self.resolve(&[Scalar::String32(name.to_string())])
     }
 
     /// Rebuild the resolver from the current tables vec.
     pub fn rebuild_resolver(&mut self) {
         self.resolver.clear();
         for (i, t) in self.tables.iter().enumerate() {
-            self.resolver.insert(Scalar::String32(t.name.clone()), i);
+            self.resolver.insert(vec![Scalar::String32(t.name.clone())], i);
         }
     }
 
@@ -541,7 +543,7 @@ impl Cube {
             .collect();
         let mut resolver = HashMap::new();
         for (i, t) in tables.iter().enumerate() {
-            resolver.insert(Scalar::String32(t.name.clone()), i);
+            resolver.insert(vec![Scalar::String32(t.name.clone())], i);
         }
         let name = format!("{}[{}, {})", self.name, offset, offset + len);
         Cube {
@@ -710,7 +712,7 @@ impl Concatenate for Cube {
         result_tables.extend(other.tables);
         let mut resolver = HashMap::new();
         for (i, t) in result_tables.iter().enumerate() {
-            resolver.insert(Scalar::String32(t.name.clone()), i);
+            resolver.insert(vec![Scalar::String32(t.name.clone())], i);
         }
 
         Ok(Cube {
@@ -771,7 +773,7 @@ impl crate::traits::selection::ColumnSelection for Cube {
 
         let mut resolver = HashMap::new();
         for (i, t) in tables.iter().enumerate() {
-            resolver.insert(Scalar::String32(t.name.clone()), i);
+            resolver.insert(vec![Scalar::String32(t.name.clone())], i);
         }
         Cube {
             tables,
@@ -1078,7 +1080,7 @@ mod tests {
             tables: vec![Arc::new(table)],
             name: "test".to_string(),
             third_dim_index: Some(vec!["timestamp".to_string()]),
-            resolver: HashMap::from([(Scalar::String32("single".to_string()), 0)]),
+            resolver: HashMap::from([(vec![Scalar::String32("single".to_string())], 0)]),
         };
         assert_eq!(cube.n_tables(), 1);
         assert_eq!(cube.n_cols(), 2);
@@ -1160,11 +1162,11 @@ mod tests {
         assert_eq!(cube.col_names(), vec!["bools"]);
 
         // The key resolves as the type it was read from, not as text.
-        let at = cube.resolve(&Scalar::Int32(2)).expect("Int32 key resolves");
+        let at = cube.resolve(&[Scalar::Int32(2)]).expect("Int32 key resolves");
         assert_eq!(cube.tables[at].n_rows, 2);
-        assert_eq!(cube.resolve(&Scalar::Int32(9)), None);
+        assert_eq!(cube.resolve(&[Scalar::Int32(9)]), None);
         assert_eq!(
-            cube.resolve(&Scalar::String32("2".to_string())),
+            cube.resolve(&[Scalar::String32("2".to_string())]),
             None,
             "an Int32 key is not the same key as the text that prints it"
         );
