@@ -25,6 +25,8 @@ mod chunked_array;
 mod chunked_ndarray;
 mod chunked_table;
 mod convert;
+#[cfg(feature = "cube")]
+mod cube;
 mod dtype;
 mod field;
 #[cfg(feature = "matrix")]
@@ -51,6 +53,8 @@ pub use chunked_array::PyChunkedArray;
 pub use chunked_ndarray::{PyChunkedNdArray, PyChunkedNdArrayInner};
 pub use chunked_table::PyChunkedTable;
 pub use convert::{build_array, py_to_scalar, resolve_index, scalar_to_py};
+#[cfg(feature = "cube")]
+pub use cube::PyCube;
 pub use dtype::{dtype_from_arrow, width_from_arrow, DType, TypeClass};
 pub use field::{PyField, PySchema};
 #[cfg(feature = "matrix")]
@@ -91,6 +95,8 @@ fn minarrow_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     m.add_class::<PyChunkedArray>()?;
     m.add_class::<PyChunkedTable>()?;
+    #[cfg(feature = "cube")]
+    m.add_class::<PyCube>()?;
     #[cfg(feature = "matrix")]
     m.add_class::<PyMatrix>()?;
     m.add_class::<PyField>()?;
