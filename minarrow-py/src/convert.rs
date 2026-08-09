@@ -129,10 +129,18 @@ pub fn parse_dtype(name: &str) -> PyResult<ArrowType> {
         "string" | "str" | "utf8" | "str32" => ArrowType::String,
         "large_string" | "largestring" | "str64" => ArrowType::LargeString,
         "bool" | "boolean" => ArrowType::Boolean,
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
-        "categorical" | "category" | "cat" | "cat32" => {
-            ArrowType::Dictionary(CategoricalIndexType::UInt32)
+        "categorical" | "category" | "cat" => {
+            #[cfg(feature = "default_categorical_8")]
+            {
+                ArrowType::Dictionary(CategoricalIndexType::UInt8)
+            }
+            #[cfg(not(feature = "default_categorical_8"))]
+            {
+                ArrowType::Dictionary(CategoricalIndexType::UInt32)
+            }
         }
+        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
+        "cat32" => ArrowType::Dictionary(CategoricalIndexType::UInt32),
         "cat8" => {
             #[cfg(feature = "default_categorical_8")]
             {
