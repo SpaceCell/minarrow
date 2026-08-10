@@ -53,6 +53,21 @@ use crate::traits::selection::{DataSelector, RowSelection};
 use crate::traits::shape::Shape;
 use crate::{Array, Bitmask, BitmaskV, FieldArray, MaskedArray, TextArray};
 
+/// Keeps a stride of gathered loads in flight so their memory latency
+/// overlaps rather than serialising, since gather indices land anywhere
+/// in the window. Both index gathers hint the read this many indices
+/// ahead. A no-op off x86-64.
+const PREFETCH_AHEAD: usize = 16;
+
+#[inline(always)]
+#[allow(unused_variables)]
+fn prefetch_read<T>(ptr: *const T) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::x86_64::_mm_prefetch(ptr as *const i8, core::arch::x86_64::_MM_HINT_T0);
+    }
+}
+
 /// # ArrayView
 ///
 /// Logical, windowed view over an `Array`.
@@ -393,290 +408,428 @@ impl ArrayV {
     }
 
     /// Gather specific indices from this view into a new materialised Array.
-    /// Indices are relative to this view's window.
+    /// Indices are relative to this view's window and must lie within it.
+    ///
+    /// The array variant is matched once for the whole gather, so each
+    /// element costs one indexed copy from the typed buffer rather than a
+    /// per-element downcast and null test. The output carries a null mask
+    /// only when the source does, with each gathered position's bit read
+    /// from the source mask. The value under a null position is
+    /// unspecified, matching the mask-driven gathers.
     #[cfg(feature = "select")]
     pub fn gather_indices(&self, indices: &[usize]) -> Array {
         use crate::{
             BooleanArray, CategoricalArray, FloatArray, IntegerArray, NumericArray, StringArray,
-            TextArray,
+            TextArray, Vec64,
         };
         #[cfg(feature = "datetime")]
         use crate::{DatetimeArray, TemporalArray};
 
+        // Gathers a primitive-typed window into (Vec64<T>, Option<Bitmask>)
+        // with one indexed copy per element, the read a stride ahead
+        // prefetched, and null bits read from the source mask at each
+        // gathered position.
+        macro_rules! gather_idx_prim {
+            ($self_:expr, $arr:expr, $indices:expr, $T:ty) => {{
+                let offset = $self_.offset;
+                let view_len = $self_.len();
+                let data = &$arr.data.as_slice()[offset..offset + view_len];
+                let src_mask = $arr.null_mask.as_ref();
+                let mut out = Vec64::<$T>::with_capacity($indices.len());
+                for (i, &idx) in $indices.iter().enumerate() {
+                    if let Some(&ahead) = $indices.get(i + PREFETCH_AHEAD) {
+                        // wrapping_add keeps a contract-violating index
+                        // defined here, and the hint itself cannot fault.
+                        prefetch_read(data.as_ptr().wrapping_add(ahead));
+                    }
+                    debug_assert!(idx < data.len(), "gather index outside the window");
+                    // Safety: the window contract puts every index inside
+                    // `data`, asserted above in debug builds.
+                    out.push(unsafe { *data.get_unchecked(idx) });
+                }
+                let out_mask = src_mask.map(|sm| {
+                    let mut m = Bitmask::new_set_all($indices.len(), true);
+                    for (i, &idx) in $indices.iter().enumerate() {
+                        // Safety: the value loop's contract puts every index
+                        // inside the window, the mask spans the backing
+                        // array, and `i` counts within the output mask's
+                        // own length.
+                        unsafe {
+                            if !sm.get_unchecked(offset + idx) {
+                                m.set_unchecked(i, false);
+                            }
+                        }
+                    }
+                    m
+                });
+                (out, out_mask)
+            }};
+        }
+
+        // Gathers a string-family window through `get_str`, recording null
+        // positions to restore after construction.
+        macro_rules! gather_idx_str {
+            ($self_:expr, $indices:expr, $ArrTy:ty, $from:path) => {{
+                let mut values: Vec<&str> = Vec::with_capacity($indices.len());
+                let mut null_at: Vec<usize> = Vec::new();
+                for &idx in $indices {
+                    match $self_.get_str(idx) {
+                        Some(v) => values.push(v),
+                        None => {
+                            null_at.push(values.len());
+                            values.push("");
+                        }
+                    }
+                }
+                let mut new_arr = <$ArrTy>::from_vec(values, None);
+                for &i in &null_at {
+                    new_arr.set_null(i);
+                }
+                $from(new_arr)
+            }};
+        }
+
         match &self.array {
             Array::Null => Array::Null,
             Array::NumericArray(num_arr) => match num_arr {
-                NumericArray::Int32(_) => {
-                    let mut new_arr = IntegerArray::<i32>::with_capacity(indices.len(), true);
-                    for &idx in indices {
-                        if let Some(val) = self.get::<IntegerArray<i32>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_int32(new_arr)
+                NumericArray::Int32(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, i32);
+                    Array::from_int32(IntegerArray::new(d, m))
                 }
-                NumericArray::Int64(_) => {
-                    let mut new_arr = IntegerArray::<i64>::with_capacity(indices.len(), true);
-                    for &idx in indices {
-                        if let Some(val) = self.get::<IntegerArray<i64>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_int64(new_arr)
+                NumericArray::Int64(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, i64);
+                    Array::from_int64(IntegerArray::new(d, m))
                 }
-                NumericArray::Float32(_) => {
-                    let mut new_arr = FloatArray::<f32>::with_capacity(indices.len(), true);
-                    for &idx in indices {
-                        if let Some(val) = self.get::<FloatArray<f32>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_float32(new_arr)
+                NumericArray::Float32(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, f32);
+                    Array::from_float32(FloatArray::new(d, m))
                 }
-                NumericArray::Float64(_) => {
-                    let mut new_arr = FloatArray::<f64>::with_capacity(indices.len(), true);
-                    for &idx in indices {
-                        if let Some(val) = self.get::<FloatArray<f64>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_float64(new_arr)
+                NumericArray::Float64(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, f64);
+                    Array::from_float64(FloatArray::new(d, m))
                 }
-                NumericArray::UInt32(_) => {
-                    let mut new_arr = IntegerArray::<u32>::with_capacity(indices.len(), true);
-                    for &idx in indices {
-                        if let Some(val) = self.get::<IntegerArray<u32>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_uint32(new_arr)
+                NumericArray::UInt32(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, u32);
+                    Array::from_uint32(IntegerArray::new(d, m))
                 }
-                NumericArray::UInt64(_) => {
-                    let mut new_arr = IntegerArray::<u64>::with_capacity(indices.len(), true);
-                    for &idx in indices {
-                        if let Some(val) = self.get::<IntegerArray<u64>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_uint64(new_arr)
+                NumericArray::UInt64(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, u64);
+                    Array::from_uint64(IntegerArray::new(d, m))
                 }
                 #[cfg(feature = "extended_numeric_types")]
-                NumericArray::Int8(_) => {
-                    let mut new_arr = IntegerArray::<i8>::with_capacity(indices.len(), true);
-                    for &idx in indices {
-                        if let Some(val) = self.get::<IntegerArray<i8>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_int8(new_arr)
+                NumericArray::Int8(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, i8);
+                    Array::from_int8(IntegerArray::new(d, m))
                 }
                 #[cfg(feature = "extended_numeric_types")]
-                NumericArray::Int16(_) => {
-                    let mut new_arr = IntegerArray::<i16>::with_capacity(indices.len(), true);
-                    for &idx in indices {
-                        if let Some(val) = self.get::<IntegerArray<i16>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_int16(new_arr)
+                NumericArray::Int16(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, i16);
+                    Array::from_int16(IntegerArray::new(d, m))
                 }
                 #[cfg(feature = "extended_numeric_types")]
-                NumericArray::UInt8(_) => {
-                    let mut new_arr = IntegerArray::<u8>::with_capacity(indices.len(), true);
-                    for &idx in indices {
-                        if let Some(val) = self.get::<IntegerArray<u8>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_uint8(new_arr)
+                NumericArray::UInt8(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, u8);
+                    Array::from_uint8(IntegerArray::new(d, m))
                 }
                 #[cfg(feature = "extended_numeric_types")]
-                NumericArray::UInt16(_) => {
-                    let mut new_arr = IntegerArray::<u16>::with_capacity(indices.len(), true);
-                    for &idx in indices {
-                        if let Some(val) = self.get::<IntegerArray<u16>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_uint16(new_arr)
+                NumericArray::UInt16(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, u16);
+                    Array::from_uint16(IntegerArray::new(d, m))
                 }
                 NumericArray::Null => Array::Null,
             },
             Array::TextArray(text_arr) => match text_arr {
                 TextArray::String32(_) => {
-                    let mut values: Vec<&str> = Vec::with_capacity(indices.len());
-                    for &idx in indices {
-                        if let Some(val) = self.get_str(idx) {
-                            values.push(val);
-                        } else {
-                            values.push("");
-                        }
-                    }
-                    let mut new_arr = StringArray::<u32>::from_vec(values, None);
-                    for (i, &idx) in indices.iter().enumerate() {
-                        if self.get_str(idx).is_none() {
-                            new_arr.set_null(i);
-                        }
-                    }
-                    Array::from_string32(new_arr)
+                    gather_idx_str!(self, indices, StringArray<u32>, Array::from_string32)
                 }
                 #[cfg(feature = "large_string")]
                 TextArray::String64(_) => {
-                    let mut values: Vec<&str> = Vec::with_capacity(indices.len());
-                    for &idx in indices {
-                        if let Some(val) = self.get_str(idx) {
-                            values.push(val);
-                        } else {
-                            values.push("");
-                        }
-                    }
-                    let mut new_arr = StringArray::<u64>::from_vec(values, None);
-                    for (i, &idx) in indices.iter().enumerate() {
-                        if self.get_str(idx).is_none() {
-                            new_arr.set_null(i);
-                        }
-                    }
-                    Array::from_string64(new_arr)
+                    gather_idx_str!(self, indices, StringArray<u64>, Array::from_string64)
                 }
                 #[cfg(any(
                     not(feature = "default_categorical_8"),
                     feature = "extended_categorical"
                 ))]
                 TextArray::Categorical32(_) => {
-                    let mut values: Vec<&str> = Vec::with_capacity(indices.len());
-                    for &idx in indices {
-                        if let Some(val) = self.get_str(idx) {
-                            values.push(val);
-                        } else {
-                            values.push("");
-                        }
-                    }
-                    let mut new_arr = CategoricalArray::<u32>::from_vec(values, None);
-                    for (i, &idx) in indices.iter().enumerate() {
-                        if self.get_str(idx).is_none() {
-                            new_arr.set_null(i);
-                        }
-                    }
-                    Array::from_categorical32(new_arr)
+                    gather_idx_str!(
+                        self,
+                        indices,
+                        CategoricalArray<u32>,
+                        Array::from_categorical32
+                    )
                 }
                 #[cfg(feature = "default_categorical_8")]
                 TextArray::Categorical8(_) => {
-                    let mut values: Vec<&str> = Vec::with_capacity(indices.len());
-                    for &idx in indices {
-                        if let Some(val) = self.get_str(idx) {
-                            values.push(val);
-                        } else {
-                            values.push("");
-                        }
-                    }
-                    let mut new_arr = CategoricalArray::<u8>::from_vec(values, None);
-                    for (i, &idx) in indices.iter().enumerate() {
-                        if self.get_str(idx).is_none() {
-                            new_arr.set_null(i);
-                        }
-                    }
-                    Array::from_categorical8(new_arr)
+                    gather_idx_str!(
+                        self,
+                        indices,
+                        CategoricalArray<u8>,
+                        Array::from_categorical8
+                    )
                 }
                 #[cfg(feature = "extended_categorical")]
                 TextArray::Categorical16(_) => {
-                    let mut values: Vec<&str> = Vec::with_capacity(indices.len());
-                    for &idx in indices {
-                        if let Some(val) = self.get_str(idx) {
-                            values.push(val);
-                        } else {
-                            values.push("");
-                        }
-                    }
-                    let mut new_arr = CategoricalArray::<u16>::from_vec(values, None);
-                    for (i, &idx) in indices.iter().enumerate() {
-                        if self.get_str(idx).is_none() {
-                            new_arr.set_null(i);
-                        }
-                    }
-                    Array::from_categorical16(new_arr)
+                    gather_idx_str!(
+                        self,
+                        indices,
+                        CategoricalArray<u16>,
+                        Array::from_categorical16
+                    )
                 }
                 #[cfg(feature = "extended_categorical")]
                 TextArray::Categorical64(_) => {
-                    let mut values: Vec<&str> = Vec::with_capacity(indices.len());
-                    for &idx in indices {
-                        if let Some(val) = self.get_str(idx) {
-                            values.push(val);
-                        } else {
-                            values.push("");
-                        }
-                    }
-                    let mut new_arr = CategoricalArray::<u64>::from_vec(values, None);
-                    for (i, &idx) in indices.iter().enumerate() {
-                        if self.get_str(idx).is_none() {
-                            new_arr.set_null(i);
-                        }
-                    }
-                    Array::from_categorical64(new_arr)
+                    gather_idx_str!(
+                        self,
+                        indices,
+                        CategoricalArray<u64>,
+                        Array::from_categorical64
+                    )
                 }
                 TextArray::Null => Array::Null,
             },
-            Array::BooleanArray(_) => {
-                let mut new_arr = BooleanArray::with_capacity(indices.len(), true);
+            Array::BooleanArray(arr) => {
+                let offset = self.offset;
+                let src_mask = arr.null_mask.as_ref();
+                // Both start at length zero - appends set the final length.
+                let mut bits = Bitmask::new_set_all(0, false);
+                let mut out_mask = src_mask.map(|_| Bitmask::new_set_all(0, false));
                 for &idx in indices {
-                    if let Some(val) = self.get::<BooleanArray<()>>(idx) {
-                        new_arr.push(val);
-                    } else {
-                        new_arr.push_null();
+                    bits.extend_from_bitmask_range(&arr.data, offset + idx, 1);
+                    if let (Some(om), Some(sm)) = (out_mask.as_mut(), src_mask) {
+                        om.extend_from_bitmask_range(sm, offset + idx, 1);
                     }
                 }
-                Array::from_bool(new_arr)
+                Array::from_bool(BooleanArray::new(bits, out_mask))
             }
             #[cfg(feature = "datetime")]
             Array::TemporalArray(temp_arr) => match temp_arr {
                 TemporalArray::Datetime32(arr) => {
-                    let mut new_arr = DatetimeArray::<i32>::with_capacity(
-                        indices.len(),
-                        true,
-                        Some(arr.time_unit),
-                    );
-                    for &idx in indices {
-                        if let Some(val) = self.get::<DatetimeArray<i32>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
-                        }
-                    }
-                    Array::from_datetime_i32(new_arr)
+                    let (d, m) = gather_idx_prim!(self, arr, indices, i32);
+                    Array::from_datetime_i32(DatetimeArray::new(d, m, Some(arr.time_unit)))
                 }
                 TemporalArray::Datetime64(arr) => {
-                    let mut new_arr = DatetimeArray::<i64>::with_capacity(
-                        indices.len(),
-                        true,
-                        Some(arr.time_unit),
-                    );
-                    for &idx in indices {
-                        if let Some(val) = self.get::<DatetimeArray<i64>>(idx) {
-                            new_arr.push(val);
-                        } else {
-                            new_arr.push_null();
+                    let (d, m) = gather_idx_prim!(self, arr, indices, i64);
+                    Array::from_datetime_i64(DatetimeArray::new(d, m, Some(arr.time_unit)))
+                }
+                TemporalArray::Null => Array::Null,
+            },
+        }
+    }
+
+    /// Gather specific indices from this view with a pad sentinel:
+    /// every index equal to `pad` produces a null at its output
+    /// position, and every other index copies as
+    /// [`gather_indices`](Self::gather_indices) does.
+    ///
+    /// This is the one-pass form of a padded gather. Callers such as the
+    /// preserved-side joins otherwise gather through a placeholder index
+    /// and clear the padded bits afterwards, which costs a second index
+    /// buffer and a mask combine that this function does not.
+    #[cfg(feature = "select")]
+    pub fn gather_indices_padded(&self, indices: &[usize], pad: usize) -> Array {
+        use crate::{
+            BooleanArray, CategoricalArray, FloatArray, IntegerArray, NumericArray, StringArray,
+            TextArray, Vec64,
+        };
+        #[cfg(feature = "datetime")]
+        use crate::{DatetimeArray, TemporalArray};
+
+        // Gathers a primitive-typed window into (Vec64<T>, Bitmask), with
+        // the pad sentinel clearing its output bit and contributing an
+        // unspecified value, and the source mask's bit carrying through
+        // at every real index.
+        macro_rules! gather_pad_prim {
+            ($self_:expr, $arr:expr, $indices:expr, $pad:expr, $T:ty) => {{
+                let offset = $self_.offset;
+                let view_len = $self_.len();
+                let data = &$arr.data.as_slice()[offset..offset + view_len];
+                let src_mask = $arr.null_mask.as_ref();
+                let mut out = Vec64::<$T>::with_capacity($indices.len());
+                let mut mask = Bitmask::new_set_all($indices.len(), true);
+                for (i, &idx) in $indices.iter().enumerate() {
+                    if let Some(&ahead) = $indices.get(i + PREFETCH_AHEAD) {
+                        if ahead != $pad {
+                            prefetch_read(data.as_ptr().wrapping_add(ahead));
                         }
                     }
-                    Array::from_datetime_i64(new_arr)
+                    if idx == $pad {
+                        out.push(<$T>::default());
+                        unsafe { mask.set_unchecked(i, false) };
+                    } else {
+                        debug_assert!(idx < data.len(), "gather index outside the window");
+                        // Safety: the window contract puts every real index
+                        // inside `data`, asserted above in debug builds, the
+                        // mask spans the backing array, and `i` counts
+                        // within the output mask's own length.
+                        unsafe {
+                            out.push(*data.get_unchecked(idx));
+                            if let Some(sm) = src_mask {
+                                if !sm.get_unchecked(offset + idx) {
+                                    mask.set_unchecked(i, false);
+                                }
+                            }
+                        }
+                    }
+                }
+                (out, Some(mask))
+            }};
+        }
+
+        // Gathers a string-family window through `get_str`, with the pad
+        // sentinel recorded as a null position.
+        macro_rules! gather_pad_str {
+            ($self_:expr, $indices:expr, $pad:expr, $ArrTy:ty, $from:path) => {{
+                let mut values: Vec<&str> = Vec::with_capacity($indices.len());
+                let mut null_at: Vec<usize> = Vec::new();
+                for &idx in $indices {
+                    let val = if idx == $pad { None } else { $self_.get_str(idx) };
+                    match val {
+                        Some(v) => values.push(v),
+                        None => {
+                            null_at.push(values.len());
+                            values.push("");
+                        }
+                    }
+                }
+                let mut new_arr = <$ArrTy>::from_vec(values, None);
+                for &i in &null_at {
+                    new_arr.set_null(i);
+                }
+                $from(new_arr)
+            }};
+        }
+
+        match &self.array {
+            Array::Null => Array::Null,
+            Array::NumericArray(num_arr) => match num_arr {
+                NumericArray::Int32(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, i32);
+                    Array::from_int32(IntegerArray::new(d, m))
+                }
+                NumericArray::Int64(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, i64);
+                    Array::from_int64(IntegerArray::new(d, m))
+                }
+                NumericArray::Float32(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, f32);
+                    Array::from_float32(FloatArray::new(d, m))
+                }
+                NumericArray::Float64(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, f64);
+                    Array::from_float64(FloatArray::new(d, m))
+                }
+                NumericArray::UInt32(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, u32);
+                    Array::from_uint32(IntegerArray::new(d, m))
+                }
+                NumericArray::UInt64(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, u64);
+                    Array::from_uint64(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, i8);
+                    Array::from_int8(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, i16);
+                    Array::from_int16(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, u8);
+                    Array::from_uint8(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, u16);
+                    Array::from_uint16(IntegerArray::new(d, m))
+                }
+                NumericArray::Null => Array::Null,
+            },
+            Array::TextArray(text_arr) => match text_arr {
+                TextArray::String32(_) => {
+                    gather_pad_str!(self, indices, pad, StringArray<u32>, Array::from_string32)
+                }
+                #[cfg(feature = "large_string")]
+                TextArray::String64(_) => {
+                    gather_pad_str!(self, indices, pad, StringArray<u64>, Array::from_string64)
+                }
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
+                TextArray::Categorical32(_) => {
+                    gather_pad_str!(
+                        self,
+                        indices,
+                        pad,
+                        CategoricalArray<u32>,
+                        Array::from_categorical32
+                    )
+                }
+                #[cfg(feature = "default_categorical_8")]
+                TextArray::Categorical8(_) => {
+                    gather_pad_str!(
+                        self,
+                        indices,
+                        pad,
+                        CategoricalArray<u8>,
+                        Array::from_categorical8
+                    )
+                }
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical16(_) => {
+                    gather_pad_str!(
+                        self,
+                        indices,
+                        pad,
+                        CategoricalArray<u16>,
+                        Array::from_categorical16
+                    )
+                }
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical64(_) => {
+                    gather_pad_str!(
+                        self,
+                        indices,
+                        pad,
+                        CategoricalArray<u64>,
+                        Array::from_categorical64
+                    )
+                }
+                TextArray::Null => Array::Null,
+            },
+            Array::BooleanArray(arr) => {
+                let offset = self.offset;
+                let src_mask = arr.null_mask.as_ref();
+                // Both start at length zero - appends set the final length.
+                let mut bits = Bitmask::new_set_all(0, false);
+                let mut mask = Bitmask::new_set_all(0, false);
+                for &idx in indices {
+                    if idx == pad {
+                        bits.push_bits(false, 1);
+                        mask.push_bits(false, 1);
+                    } else {
+                        bits.extend_from_bitmask_range(&arr.data, offset + idx, 1);
+                        match src_mask {
+                            Some(sm) => mask.extend_from_bitmask_range(sm, offset + idx, 1),
+                            None => mask.push_bits(true, 1),
+                        }
+                    }
+                }
+                Array::from_bool(BooleanArray::new(bits, Some(mask)))
+            }
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(temp_arr) => match temp_arr {
+                TemporalArray::Datetime32(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, i32);
+                    Array::from_datetime_i32(DatetimeArray::new(d, m, Some(arr.time_unit)))
+                }
+                TemporalArray::Datetime64(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, i64);
+                    Array::from_datetime_i64(DatetimeArray::new(d, m, Some(arr.time_unit)))
                 }
                 TemporalArray::Null => Array::Null,
             },
@@ -766,7 +919,9 @@ impl ArrayV {
                         }
                     },
                     |idx| {
-                        out.push(data[idx]);
+                        debug_assert!(idx < data.len());
+                        // Safety: the walk bounds `idx` by the window length.
+                        out.push(unsafe { *data.get_unchecked(idx) });
                         if let (Some(om), Some(sm)) = (out_mask.as_mut(), src_mask) {
                             om.extend_from_bitmask_range(sm, offset + idx, 1);
                         }
