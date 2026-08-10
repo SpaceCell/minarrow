@@ -353,3 +353,29 @@ pub fn all_false_mask(mask: &Bitmask) -> bool {
         crate::kernels::bitmask::std::all_false_mask(mask)
     }
 }
+
+// --- Bit Position Iteration ---
+
+/// Iterates window-relative indices of a bitmask window where the bit
+/// equals `bit_value`, in ascending order.
+///
+/// Commonly used to enumerate the valid or null positions of a nullable
+/// array without materialising a full index vector.
+///
+/// # Parameters
+/// - `m`: Bitmask window as `(mask, offset, length)` tuple
+/// - `bit_value`: The bit value to search for, true for set bits and false for cleared bits
+///
+/// # Returns
+/// An iterator of window-relative bit indices matching `bit_value`.
+#[inline(always)]
+pub fn iter_window_bits(m: BitmaskVT<'_>, bit_value: bool) -> impl Iterator<Item = usize> + '_ {
+    #[cfg(feature = "simd")]
+    {
+        crate::kernels::bitmask::simd::iter_window_bits_simd::<W8>(m, bit_value)
+    }
+    #[cfg(not(feature = "simd"))]
+    {
+        crate::kernels::bitmask::std::iter_window_bits(m, bit_value)
+    }
+}

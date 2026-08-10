@@ -50,6 +50,7 @@ use std::ops::Index;
 #[cfg(feature = "views")]
 use crate::ArrayV;
 use crate::enums::shape_dim::ShapeDim;
+use crate::kernels::bitmask::dispatch::iter_window_bits;
 use crate::traits::print::MAX_PREVIEW;
 use crate::traits::shape::Shape;
 use crate::{Array, Bitmask, BitmaskVT, BooleanArray};
@@ -158,13 +159,48 @@ impl<'a> BitmaskV<'a> {
     }
 
     /// Returns an iterator over all set bits (indices relative to the window).
+    ///
+    /// The scan walks the backing mask one 64-bit word at a time from the
+    /// window's bit offset, so a word with no set bits costs a single
+    /// comparison and each set bit is located through a trailing-zeros
+    /// count.
     pub fn iter_set(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.len).filter(move |&i| self.get(i))
+
+        // Exception case verifies per bit ensuring atomic consistency
+        #[cfg(feature = "lbuffer")]
+        if self.bitmask.is_lbuffer_backed() {
+            return Box::new((0..self.len).filter(move |&i| self.get(i)))
+                as Box<dyn Iterator<Item = usize> + '_>;
+        }
+
+        let scan = iter_window_bits((self.bitmask, self.offset, self.len), true);
+
+        #[cfg(feature = "lbuffer")]
+        return Box::new(scan) as Box<dyn Iterator<Item = usize> + '_>;
+        #[cfg(not(feature = "lbuffer"))]
+        return scan;
     }
 
     /// Returns an iterator over all cleared bits (indices relative to the window).
+    ///
+    /// The scan walks the backing mask one 64-bit word at a time from the
+    /// window's bit offset, so a fully valid word costs a single comparison
+    /// and each null is located through a trailing-zeros count.
     pub fn iter_cleared(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.len).filter(move |&i| !self.get(i))
+
+        // Exception case verifies per bit ensuring atomic consistency
+        #[cfg(feature = "lbuffer")]
+        if self.bitmask.is_lbuffer_backed() {
+            return Box::new((0..self.len).filter(move |&i| !self.get(i)))
+                as Box<dyn Iterator<Item = usize> + '_>;
+        }
+
+        let scan = iter_window_bits((self.bitmask, self.offset, self.len), false);
+
+        #[cfg(feature = "lbuffer")]
+        return Box::new(scan) as Box<dyn Iterator<Item = usize> + '_>;
+        #[cfg(not(feature = "lbuffer"))]
+        return scan;
     }
 
     /// Counts number of set bits in the view.
@@ -491,5 +527,49 @@ mod tests {
         assert!(out.get(0));
         assert!(!out.get(1));
         assert!(out.get(2));
+    }
+
+    #[test]
+    fn test_iterators_match_per_bit_definition_across_offsets() {
+        let n = 200;
+        let bits: Vec<bool> = (0..n).map(|i| (i * 7 + i / 13) % 3 == 0).collect();
+        let mask = Bitmask::from_bools(&bits);
+
+        for offset in [0, 1, 5, 7, 8, 63, 64, 65, 127, 128, 130] {
+            for len in [0, 1, 3, 63, 64, 65, n - offset] {
+                if offset + len > n {
+                    continue;
+                }
+                let view = BitmaskV::new(&mask, offset, len);
+                let set: Vec<usize> = view.iter_set().collect();
+                let expected_set: Vec<usize> =
+                    (0..len).filter(|&i| bits[offset + i]).collect();
+                assert_eq!(set, expected_set, "iter_set at offset {offset} len {len}");
+
+                let cleared: Vec<usize> = view.iter_cleared().collect();
+                let expected_cleared: Vec<usize> =
+                    (0..len).filter(|&i| !bits[offset + i]).collect();
+                assert_eq!(
+                    cleared, expected_cleared,
+                    "iter_cleared at offset {offset} len {len}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_iterators_uniform_windows() {
+        let all_set = Bitmask::from_bools(&[true; 130]);
+        let view = BitmaskV::new(&all_set, 3, 120);
+        assert_eq!(view.iter_cleared().count(), 0);
+        assert_eq!(view.iter_set().count(), 120);
+
+        let all_clear = Bitmask::from_bools(&[false; 130]);
+        let view = BitmaskV::new(&all_clear, 3, 120);
+        assert_eq!(view.iter_set().count(), 0);
+        assert_eq!(
+            view.iter_cleared().collect::<Vec<_>>(),
+            (0..120).collect::<Vec<_>>()
+        );
     }
 }

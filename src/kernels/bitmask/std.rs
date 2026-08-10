@@ -51,7 +51,7 @@ use crate::{Bitmask, BitmaskVT};
 
 use crate::{
     enums::operators::{LogicalOperator, UnaryOperator},
-    kernels::bitmask::{bitmask_window_bytes, bitmask_window_bytes_mut},
+    kernels::bitmask::{bitmask_window_bytes, bitmask_window_bytes_mut, load_word},
 };
 
 /// Performs bitwise binary operations (AND/OR/XOR) over two bitmask slices using word-level processing.
@@ -516,6 +516,37 @@ pub fn all_false_mask(mask: &Bitmask) -> bool {
         }
     }
     true
+}
+
+/// Scans the bits of the window `m` one 64-bit word at a time, returning
+/// window-relative indices where the bit equals `bit_value`. A word
+/// containing no matching bits is skipped with a single comparison, and
+/// each match is located through a trailing-zeros count, so the traversal
+/// cost scales with the number of matches rather than the number of bits
+/// scanned.
+pub fn iter_window_bits(m: BitmaskVT<'_>, bit_value: bool) -> impl Iterator<Item = usize> + '_ {
+    let (mask, offset, len) = m;
+    let n_words = len.div_ceil(64);
+    (0..n_words).flat_map(move |wi| {
+        let base = wi * 64;
+        let take = (len - base).min(64);
+        let mut w = load_word(mask, offset + base);
+        if !bit_value {
+            w = !w;
+        }
+        if take < 64 {
+            w &= u64::MAX >> (64 - take);
+        }
+        std::iter::from_fn(move || {
+            if w == 0 {
+                None
+            } else {
+                let tz = w.trailing_zeros() as usize;
+                w &= w - 1;
+                Some(base + tz)
+            }
+        })
+    })
 }
 
 #[cfg(test)]

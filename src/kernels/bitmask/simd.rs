@@ -62,7 +62,7 @@ use crate::kernels::arithmetic::simd::{W8, W16, W32, W64};
 use crate::{Bitmask, BitmaskVT};
 
 use crate::enums::operators::{LogicalOperator, UnaryOperator};
-use crate::kernels::bitmask::{bitmask_window_bytes, bitmask_window_bytes_mut};
+use crate::kernels::bitmask::{bitmask_window_bytes, bitmask_window_bytes_mut, load_word};
 
 /// Primitive bit ops
 
@@ -928,6 +928,84 @@ where
     true
 }
 
+/// Scans the bits of the window `m` in batches of `LANES` 64-bit words,
+/// returning window-relative indices where the bit equals `bit_value`.
+///
+/// Each batch is compared against zero with a single SIMD operation, so a
+/// batch with no matches is rejected in one comparison rather than `LANES`
+/// separate word checks. A batch flagged as containing a match falls back
+/// to a scalar trailing-zeros scan restricted to its flagged words, so the
+/// exact positions are worked out only where they exist. The words left
+/// over at the end of the window, too few to fill a batch, scan
+/// individually.
+#[inline]
+pub fn iter_window_bits_simd<const LANES: usize>(
+    m: BitmaskVT<'_>,
+    bit_value: bool,
+) -> impl Iterator<Item = usize> + '_
+where
+{
+    use std::simd::cmp::SimdPartialEq;
+
+    let (mask, offset, len) = m;
+    let n_words = len.div_ceil(64);
+    let n_batches = n_words / LANES;
+
+    let word_at = move |word_index: usize| {
+        let bit_base = word_index * 64;
+        let take = (len - bit_base).min(64);
+        let mut w = load_word(mask, offset + bit_base);
+        if !bit_value {
+            w = !w;
+        }
+        if take < 64 {
+            w &= u64::MAX >> (64 - take);
+        }
+        w
+    };
+
+    let batched = (0..n_batches).flat_map(move |bi| {
+        let batch_base = bi * LANES;
+        let mut words = [0u64; LANES];
+        for (j, word) in words.iter_mut().enumerate() {
+            *word = word_at(batch_base + j);
+        }
+        let hits = Simd::<u64, LANES>::from_array(words)
+            .simd_ne(Simd::<u64, LANES>::splat(0))
+            .to_bitmask() as u64;
+        let mut pending = hits;
+        std::iter::from_fn(move || {
+            if pending == 0 {
+                return None;
+            }
+            let lane = pending.trailing_zeros() as usize;
+            let w = &mut words[lane];
+            let tz = w.trailing_zeros() as usize;
+            *w &= *w - 1;
+            if *w == 0 {
+                pending &= pending - 1;
+            }
+            Some((batch_base + lane) * 64 + tz)
+        })
+    });
+
+    let tail = (n_batches * LANES..n_words).flat_map(move |wi| {
+        let mut w = word_at(wi);
+        let base = wi * 64;
+        std::iter::from_fn(move || {
+            if w == 0 {
+                None
+            } else {
+                let tz = w.trailing_zeros() as usize;
+                w &= w - 1;
+                Some(base + tz)
+            }
+        })
+    });
+
+    batched.chain(tail)
+}
+
 /// Generates a SIMD equality mask function for a given element type and lane count.
 /// Processes LANES elements per iteration, with a scalar tail for the remainder.
 macro_rules! impl_simd_eq_mask {
@@ -1133,6 +1211,34 @@ mod tests {
                     assert!(!all_false_mask_simd::<LANES>(&all_true));
                     let all_false = Bitmask::new_set_all(64 * LANES, false);
                     assert!(all_false_mask_simd::<LANES>(&all_false));
+                }
+
+                #[test]
+                fn test_iter_window_bits_simd() {
+                    // Spans several full LANES batches plus a tail of words too few
+                    // to fill a batch, so both scan paths run.
+                    let n = 64 * LANES * 2 + 37;
+                    let bits: Vec<bool> = (0..n).map(|i| i % 3 == 0).collect();
+                    let mask = bm(&bits);
+
+                    let set: Vec<usize> = iter_window_bits_simd::<LANES>(slice(&mask), true).collect();
+                    let expected_set: Vec<usize> = (0..n).filter(|&i| bits[i]).collect();
+                    assert_eq!(set, expected_set);
+
+                    let cleared: Vec<usize> =
+                        iter_window_bits_simd::<LANES>(slice(&mask), false).collect();
+                    let expected_cleared: Vec<usize> = (0..n).filter(|&i| !bits[i]).collect();
+                    assert_eq!(cleared, expected_cleared);
+
+                    // A bit-unaligned window offset crosses word boundaries within
+                    // every batch, exercising load_word's shift-combine path.
+                    let offset = 13;
+                    let len = n - offset - 5;
+                    let windowed: Vec<usize> =
+                        iter_window_bits_simd::<LANES>((&mask, offset, len), true).collect();
+                    let expected_windowed: Vec<usize> =
+                        (0..len).filter(|&i| bits[offset + i]).collect();
+                    assert_eq!(windowed, expected_windowed);
                 }
             }
         };
