@@ -19,16 +19,57 @@ use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 use minarrow::arr_str64_opt;
 #[cfg(feature = "extended_numeric_types")]
 use minarrow::{arr_i8_opt, arr_i16_opt, arr_u8_opt, arr_u16_opt};
+use minarrow::enums::array::extract_option_values64;
+use minarrow::enums::time_units::TimeUnit;
 use minarrow::{
     arr_bool_opt, arr_f32_opt, arr_f64_opt, arr_i32_opt, arr_i64_opt, arr_str32_opt, arr_u32_opt,
-    arr_u64_opt, Array, Bitmask, CategoricalArray, Scalar, Vec64,
+    arr_u64_opt, Array, ArrayV, Bitmask, CategoricalArray, DatetimeArray, Scalar, Vec64,
 };
 
+use crate::array::PyArray;
 use crate::arrow_type::PyArrowType;
 use pyo3::exceptions::{PyIndexError, PyNotImplementedError, PyTypeError, PyValueError};
+use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::PyBool;
+use pyo3::types::{PyBool, PyString};
 use pyo3::IntoPyObjectExt;
+
+/// Reads a Python sequence into a single 64-byte aligned `Vec64` buffer.
+///
+/// This is the extraction step for the constructors that accept a Python
+/// sequence. Extracting through pyo3's `Vec` would allocate through the
+/// global allocator and then need a second allocation and copy to reach
+/// minarrow's 64-byte buffer alignment, so each element is instead extracted
+/// into the aligned buffer as it is read.
+///
+/// Acceptance matches pyo3's `Vec` extraction. The input must satisfy the
+/// Python sequence protocol and must not be a `str`, otherwise the function
+/// raises `TypeError`.
+fn read_sequence<'py, T>(data: &Bound<'py, PyAny>) -> PyResult<Vec64<T>>
+where
+    T: for<'a> FromPyObject<'a, 'py>,
+    for<'a> PyErr: From<<T as FromPyObject<'a, 'py>>::Error>,
+{
+    if data.is_instance_of::<PyString>() {
+        return Err(PyTypeError::new_err(
+            "expected a sequence of values, not a str",
+        ));
+    }
+    // pyo3 gates `extract::<Vec<T>>` on the sequence protocol, so acceptance
+    // here matches it and an object passing the gate supports the length and
+    // iteration below.
+    if unsafe { ffi::PySequence_Check(data.as_ptr()) } == 0 {
+        return Err(PyTypeError::new_err(format!(
+            "expected a sequence of values, got {}",
+            data.get_type().name()?
+        )));
+    }
+    let mut values = Vec64::with_capacity(data.len().unwrap_or(0));
+    for item in data.try_iter()? {
+        values.push(item?.extract()?);
+    }
+    Ok(values)
+}
 
 /// Build a minarrow `Array` from a Python sequence, inferring the element type
 /// from its values. `None` becomes null. Integers promote to float when a
@@ -39,21 +80,27 @@ use pyo3::IntoPyObjectExt;
 /// there is no per-element type check. `bool` is tried before `int` because a
 /// Python `bool` is an `int` subclass.
 pub fn build_array(data: &Bound<'_, PyAny>) -> PyResult<Array> {
-    if let Ok(values) = data.extract::<Vec<Option<bool>>>() {
+    // Reuse an existing Array as-is rather than re-inferring the dtype from
+    // its values, which mistypes temporal and categorical columns. The ArrayV
+    // conversion materialises a windowed array into a standalone copy.
+    if let Ok(array) = data.extract::<PyRef<'_, PyArray>>() {
+        return Ok(ArrayV::from(&array.0).to_array());
+    }
+    if let Ok(values) = read_sequence::<Option<bool>>(data) {
         if !values.iter().all(Option::is_none) {
-            return Ok(arr_bool_opt!(values.into_iter().collect::<Vec64<_>>()));
+            return Ok(arr_bool_opt!(values));
         }
     }
-    if let Ok(values) = data.extract::<Vec<Option<i64>>>() {
+    if let Ok(values) = read_sequence::<Option<i64>>(data) {
         if !values.iter().all(Option::is_none) {
-            return Ok(arr_i64_opt!(values.into_iter().collect::<Vec64<_>>()));
+            return Ok(arr_i64_opt!(values));
         }
     }
-    if let Ok(values) = data.extract::<Vec<Option<f64>>>() {
-        return Ok(arr_f64_opt!(values.into_iter().collect::<Vec64<_>>()));
+    if let Ok(values) = read_sequence::<Option<f64>>(data) {
+        return Ok(arr_f64_opt!(values));
     }
-    if let Ok(values) = data.extract::<Vec<Option<String>>>() {
-        return Ok(arr_str32_opt!(values.into_iter().collect::<Vec64<_>>()));
+    if let Ok(values) = read_sequence::<Option<String>>(data) {
+        return Ok(arr_str32_opt!(values));
     }
     Err(PyTypeError::new_err(
         "Array elements must be bool, int, float, str, or None",
@@ -62,14 +109,30 @@ pub fn build_array(data: &Bound<'_, PyAny>) -> PyResult<Array> {
 
 /// Build a minarrow `Array` from a Python sequence coerced to `dtype`. `None`
 /// becomes null. A value that does not fit the target type raises the
-/// extraction's own `TypeError` or `OverflowError`. Types that need more than a
-/// flat sequence, such as categorical and temporal, are not built here.
+/// extraction's own `TypeError` or `OverflowError`.
+///
+/// Temporal dtypes accept integer values in the unit the dtype declares, so
+/// `ArrowType::Timestamp(TimeUnit::Milliseconds, None)` over
+/// `[1700000000000, ...]` builds a millisecond-precision timestamp column.
 pub fn build_array_typed(data: &Bound<'_, PyAny>, dtype: &ArrowType) -> PyResult<Array> {
     macro_rules! build {
         ($t:ty, $make:ident) => {{
-            let values: Vec64<Option<$t>> =
-                data.extract::<Vec<Option<$t>>>()?.into_iter().collect();
-            Ok($make!(values))
+            Ok($make!(read_sequence::<Option<$t>>(data)?))
+        }};
+    }
+    // Temporal dtypes build through DatetimeArray rather than the arr_*_opt
+    // macros because the array stores the dtype's TimeUnit alongside its
+    // values. Null handling matches the other types, with None entries
+    // recorded in the null mask by extract_option_values64.
+    macro_rules! build_temporal {
+        ($t:ty, $make:ident, $unit:expr) => {{
+            let (values, null_mask) =
+                extract_option_values64(read_sequence::<Option<$t>>(data)?);
+            Ok(Array::$make(DatetimeArray::<$t>::from_vec64(
+                values,
+                null_mask,
+                Some($unit),
+            )))
         }};
     }
     match dtype {
@@ -92,6 +155,15 @@ pub fn build_array_typed(data: &Bound<'_, PyAny>, dtype: &ArrowType) -> PyResult
         #[cfg(feature = "large_string")]
         ArrowType::LargeString => build!(String, arr_str64_opt),
         ArrowType::Dictionary(index) => categorical_from_values(data, index),
+        ArrowType::Date32 => build_temporal!(i32, from_datetime_i32, TimeUnit::Days),
+        ArrowType::Date64 => build_temporal!(i64, from_datetime_i64, TimeUnit::Milliseconds),
+        ArrowType::Time32(unit) | ArrowType::Duration32(unit) => {
+            build_temporal!(i32, from_datetime_i32, *unit)
+        }
+        ArrowType::Time64(unit) | ArrowType::Duration64(unit) => {
+            build_temporal!(i64, from_datetime_i64, *unit)
+        }
+        ArrowType::Timestamp(unit, _) => build_temporal!(i64, from_datetime_i64, *unit),
         other => Err(PyValueError::new_err(format!(
             "dtype {} cannot be built from a Python sequence; use from_arrow instead",
             other
@@ -102,6 +174,12 @@ pub fn build_array_typed(data: &Bound<'_, PyAny>, dtype: &ArrowType) -> PyResult
 /// Parse a dtype string such as `"int32"`, `"f64"`, `"string"`, or `"categorical"`.
 /// Categorical granularities beyond `UInt32` are accepted only when the matching
 /// feature is compiled into the build.
+///
+/// Temporal dtypes include their unit in the string, so `"timestamp[ms]"`
+/// parses to `Timestamp(TimeUnit::Milliseconds, None)` and `"timestamp"`
+/// without a unit raises `ValueError`. A timezone cannot be written in a
+/// string, so timezone-aware timestamps are constructed as an `ArrowType`
+/// and passed to `dtype=` in place of a string.
 pub fn parse_dtype(name: &str) -> PyResult<ArrowType> {
     Ok(match name.trim().to_ascii_lowercase().as_str() {
         #[cfg(feature = "extended_numeric_types")]
@@ -129,6 +207,23 @@ pub fn parse_dtype(name: &str) -> PyResult<ArrowType> {
         "string" | "str" | "utf8" | "str32" => ArrowType::String,
         "large_string" | "largestring" | "str64" => ArrowType::LargeString,
         "bool" | "boolean" => ArrowType::Boolean,
+        "date32" => ArrowType::Date32,
+        "date64" => ArrowType::Date64,
+        "timestamp[s]" | "datetime[s]" => ArrowType::Timestamp(TimeUnit::Seconds, None),
+        "timestamp[ms]" | "datetime[ms]" => ArrowType::Timestamp(TimeUnit::Milliseconds, None),
+        "timestamp[us]" | "datetime[us]" => ArrowType::Timestamp(TimeUnit::Microseconds, None),
+        "timestamp[ns]" | "datetime[ns]" => ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
+        "timestamp" | "datetime" => {
+            return Err(PyValueError::new_err(
+                "a timestamp dtype names its unit, as 'timestamp[ms]' or 'datetime[ms]'. \
+                 Pass an ArrowType for a timezone-aware timestamp",
+            ));
+        }
+        "date" => {
+            return Err(PyValueError::new_err(
+                "a date dtype names its width, as 'date32' (days) or 'date64' (milliseconds)",
+            ));
+        }
         "categorical" | "category" | "cat" => {
             #[cfg(feature = "default_categorical_8")]
             {
@@ -199,11 +294,8 @@ fn categorical_from_values(
     data: &Bound<'_, PyAny>,
     index: &CategoricalIndexType,
 ) -> PyResult<Array> {
-    let values: Vec64<Option<String>> = data
-        .extract::<Vec<Option<String>>>()
-        .map_err(|_| PyTypeError::new_err("categorical values must be a list of strings or None"))?
-        .into_iter()
-        .collect();
+    let values: Vec64<Option<String>> = read_sequence::<Option<String>>(data)
+        .map_err(|_| PyTypeError::new_err("categorical values must be a list of strings or None"))?;
     let mut mask = Bitmask::new_set_all(values.len(), true);
     let mut strings: Vec64<&str> = Vec64::with_capacity(values.len());
     for (row, value) in values.iter().enumerate() {
