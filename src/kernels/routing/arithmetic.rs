@@ -44,13 +44,15 @@ pub fn scalar_arithmetic(
         (Scalar::Int32(l), Scalar::Int32(r), Add) => Scalar::Int32(l + r),
         (Scalar::Int32(l), Scalar::Int32(r), Subtract) => Scalar::Int32(l - r),
         (Scalar::Int32(l), Scalar::Int32(r), Multiply) => Scalar::Int32(l * r),
-        (Scalar::Int32(l), Scalar::Int32(r), Divide) => Scalar::Int32(l / r),
+        // Integer scalar division is true division and returns a Float64
+        // scalar, so 7 / 2 is 3.5 and division by zero follows IEEE 754.
+        (Scalar::Int32(l), Scalar::Int32(r), Divide) => Scalar::Float64(l as f64 / r as f64),
 
         // Int64 operations
         (Scalar::Int64(l), Scalar::Int64(r), Add) => Scalar::Int64(l + r),
         (Scalar::Int64(l), Scalar::Int64(r), Subtract) => Scalar::Int64(l - r),
         (Scalar::Int64(l), Scalar::Int64(r), Multiply) => Scalar::Int64(l * r),
-        (Scalar::Int64(l), Scalar::Int64(r), Divide) => Scalar::Int64(l / r),
+        (Scalar::Int64(l), Scalar::Int64(r), Divide) => Scalar::Float64(l as f64 / r as f64),
 
         // Float32 operations
         (Scalar::Float32(l), Scalar::Float32(r), Add) => Scalar::Float32(l + r),
@@ -86,7 +88,7 @@ pub fn scalar_arithmetic(
         #[cfg(feature = "extended_numeric_types")]
         (Scalar::Int8(l), Scalar::Int8(r), Multiply) => Scalar::Int8(l * r),
         #[cfg(feature = "extended_numeric_types")]
-        (Scalar::Int8(l), Scalar::Int8(r), Divide) => Scalar::Int8(l / r),
+        (Scalar::Int8(l), Scalar::Int8(r), Divide) => Scalar::Float64(l as f64 / r as f64),
 
         // Int16
         #[cfg(feature = "extended_numeric_types")]
@@ -96,7 +98,7 @@ pub fn scalar_arithmetic(
         #[cfg(feature = "extended_numeric_types")]
         (Scalar::Int16(l), Scalar::Int16(r), Multiply) => Scalar::Int16(l * r),
         #[cfg(feature = "extended_numeric_types")]
-        (Scalar::Int16(l), Scalar::Int16(r), Divide) => Scalar::Int16(l / r),
+        (Scalar::Int16(l), Scalar::Int16(r), Divide) => Scalar::Float64(l as f64 / r as f64),
 
         // UInt8
         #[cfg(feature = "extended_numeric_types")]
@@ -106,7 +108,7 @@ pub fn scalar_arithmetic(
         #[cfg(feature = "extended_numeric_types")]
         (Scalar::UInt8(l), Scalar::UInt8(r), Multiply) => Scalar::UInt8(l * r),
         #[cfg(feature = "extended_numeric_types")]
-        (Scalar::UInt8(l), Scalar::UInt8(r), Divide) => Scalar::UInt8(l / r),
+        (Scalar::UInt8(l), Scalar::UInt8(r), Divide) => Scalar::Float64(l as f64 / r as f64),
 
         // UInt16
         #[cfg(feature = "extended_numeric_types")]
@@ -116,19 +118,19 @@ pub fn scalar_arithmetic(
         #[cfg(feature = "extended_numeric_types")]
         (Scalar::UInt16(l), Scalar::UInt16(r), Multiply) => Scalar::UInt16(l * r),
         #[cfg(feature = "extended_numeric_types")]
-        (Scalar::UInt16(l), Scalar::UInt16(r), Divide) => Scalar::UInt16(l / r),
+        (Scalar::UInt16(l), Scalar::UInt16(r), Divide) => Scalar::Float64(l as f64 / r as f64),
 
         // UInt32
         (Scalar::UInt32(l), Scalar::UInt32(r), Add) => Scalar::UInt32(l + r),
         (Scalar::UInt32(l), Scalar::UInt32(r), Subtract) => Scalar::UInt32(l - r),
         (Scalar::UInt32(l), Scalar::UInt32(r), Multiply) => Scalar::UInt32(l * r),
-        (Scalar::UInt32(l), Scalar::UInt32(r), Divide) => Scalar::UInt32(l / r),
+        (Scalar::UInt32(l), Scalar::UInt32(r), Divide) => Scalar::Float64(l as f64 / r as f64),
 
         // UInt64
         (Scalar::UInt64(l), Scalar::UInt64(r), Add) => Scalar::UInt64(l + r),
         (Scalar::UInt64(l), Scalar::UInt64(r), Subtract) => Scalar::UInt64(l - r),
         (Scalar::UInt64(l), Scalar::UInt64(r), Multiply) => Scalar::UInt64(l * r),
-        (Scalar::UInt64(l), Scalar::UInt64(r), Divide) => Scalar::UInt64(l / r),
+        (Scalar::UInt64(l), Scalar::UInt64(r), Divide) => Scalar::Float64(l as f64 / r as f64),
         // String concatenation
         (Scalar::String32(l), Scalar::String32(r), Add) => Scalar::String32(format!("{}{}", l, r)),
         #[cfg(feature = "large_string")]
