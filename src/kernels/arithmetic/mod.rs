@@ -290,6 +290,81 @@ mod tests {
         apply_int_u64
     );
 
+    // At the slice-kernel level, integer division rounds towards negative
+    // infinity. Rust's `/` truncates towards zero, so the two differ on
+    // every negative inexact quotient: -7 / 2 floors to -4 where truncation
+    // gives -3. Divide and FloorDiv therefore agree on integer slices.
+    // Remainder keeps the dividend's sign per Rust's `%`.
+
+    #[test]
+    fn int_divide_floors_towards_negative_infinity_dense() {
+        let lhs = vec64![-7i64, 7, -7, 8, -8];
+        let rhs = vec64![2i64, 2, -2, 2, 2];
+
+        let out = apply_int_i64(&lhs, &rhs, ArithmeticOperator::Divide, None).unwrap();
+        assert_int(&out, &[-4, 3, 3, 4, -4], None);
+
+        let floor = apply_int_i64(&lhs, &rhs, ArithmeticOperator::FloorDiv, None).unwrap();
+        assert_eq!(
+            out.data.as_slice(),
+            floor.data.as_slice(),
+            "Divide and FloorDiv agree on integers"
+        );
+    }
+
+    #[test]
+    fn int_divide_floors_towards_negative_infinity_masked() {
+        let lhs = vec64![-7i64, 8, 9];
+        let rhs = vec64![2i64, 0, 3];
+        let mask = bitmask(&[true, true, true]);
+
+        let out = apply_int_i64(&lhs, &rhs, ArithmeticOperator::Divide, Some(&mask)).unwrap();
+        assert_int(&out, &[-4, 0, 3], Some(&[true, false, true]));
+    }
+
+    #[test]
+    fn int_divide_unsigned_never_rounds() {
+        // Unsigned quotients never round below zero, so the floor rule
+        // leaves them identical to truncation.
+        let lhs = vec64![7u64, 9];
+        let rhs = vec64![2u64, 4];
+
+        let out = apply_int_u64(&lhs, &rhs, ArithmeticOperator::Divide, None).unwrap();
+        assert_int(&out, &[3, 2], None);
+    }
+
+    #[test]
+    fn int_remainder_keeps_dividend_sign() {
+        let lhs = vec64![-7i64, 7, -7];
+        let rhs = vec64![2i64, -2, -2];
+
+        let out = apply_int_i64(&lhs, &rhs, ArithmeticOperator::Remainder, None).unwrap();
+        assert_int(&out, &[-1, 1, -1], None);
+    }
+
+    #[cfg(feature = "scalar_type")]
+    #[test]
+    fn scalar_divide_is_true_division() {
+        use crate::Scalar;
+        use crate::kernels::routing::arithmetic::scalar_arithmetic;
+
+        let out = scalar_arithmetic(
+            Scalar::Int64(-7),
+            Scalar::Int64(2),
+            ArithmeticOperator::Divide,
+        )
+        .unwrap();
+        assert_eq!(out, Scalar::Float64(-3.5));
+
+        let out = scalar_arithmetic(
+            Scalar::UInt32(7),
+            Scalar::UInt32(2),
+            ArithmeticOperator::Divide,
+        )
+        .unwrap();
+        assert_eq!(out, Scalar::Float64(3.5));
+    }
+
     macro_rules! float_kernel_suite {
         ($test_fn:ident, $ty:ty, $apply_fn:ident, $eps:expr) => {
             #[test]

@@ -30,15 +30,38 @@
 //!   branch-free loop per operation
 //! - Intentionally avoids parallelisation to allow higher-level chunking strategies
 //! - Wrapping arithmetic for integers to prevent overflow panics
+//! - `Divide` and `FloorDiv` share one arm: integer `/` truncates toward zero,
+//!   so the result is corrected to floor towards negative infinity
 //! - Division by zero handling: panics for integers, produces Inf/NaN for floats
 
 use crate::Bitmask;
 use crate::enums::operators::ArithmeticOperator;
 use num_traits::{Float, PrimInt, ToPrimitive, WrappingAdd, WrappingMul, WrappingSub};
 
+/// Wrapping integer exponentiation by squaring.
+///
+/// Overflow wraps modulo the lane width, matching the wrapping
+/// add/subtract/multiply arms, so a large power never panics. Wrapping
+/// multiplication is associative modulo `2^n`, so squaring produces the same
+/// result as repeated multiplication.
+#[inline(always)]
+pub fn wrapping_pow_u32<T: PrimInt + WrappingMul>(base: T, exp: u32) -> T {
+    let mut acc = T::one();
+    let mut base = base;
+    let mut exp = exp;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            acc = acc.wrapping_mul(&base);
+        }
+        base = base.wrapping_mul(&base);
+        exp >>= 1;
+    }
+    acc
+}
+
 /// Scalar integer arithmetic kernel for dense arrays (no nulls).
 /// Performs element-wise operations using wrapping arithmetic to prevent overflow panics.
-/// Panics on division/remainder by zero.
+/// Panics on division/remainder by zero, or on a `Power` exponent outside `u32` range.
 #[inline(always)]
 pub fn int_dense_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub + WrappingMul>(
     op: ArithmeticOperator,
@@ -60,24 +83,12 @@ pub fn int_dense_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub +
         ArithmeticOperator::Add => run!(|x, y| x.wrapping_add(&y)),
         ArithmeticOperator::Subtract => run!(|x, y| x.wrapping_sub(&y)),
         ArithmeticOperator::Multiply => run!(|x, y| x.wrapping_mul(&y)),
-        ArithmeticOperator::Divide => run!(|x, y| {
+        // Integer `/` truncates toward zero, so this arm corrects the result
+        // to floor towards negative infinity, giving Divide and FloorDiv the
+        // same result and letting them share one arm.
+        ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => run!(|x, y| {
             if y == T::zero() {
                 panic!("Division by zero")
-            } else {
-                x / y
-            }
-        }),
-        ArithmeticOperator::Remainder => run!(|x, y| {
-            if y == T::zero() {
-                panic!("Remainder by zero")
-            } else {
-                x % y
-            }
-        }),
-        ArithmeticOperator::Power => run!(|x, y| x.pow(y.to_u32().unwrap_or(0))),
-        ArithmeticOperator::FloorDiv => run!(|x, y| {
-            if y == T::zero() {
-                panic!("Floor division by zero")
             } else {
                 let d = x / y;
                 let r = x % y;
@@ -89,12 +100,24 @@ pub fn int_dense_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub +
                 }
             }
         }),
+        ArithmeticOperator::Remainder => run!(|x, y| {
+            if y == T::zero() {
+                panic!("Remainder by zero")
+            } else {
+                x % y
+            }
+        }),
+        ArithmeticOperator::Power => run!(|x, y| match y.to_u32() {
+            Some(e) => wrapping_pow_u32(x, e),
+            None => panic!("Power exponent out of u32 range"),
+        }),
     }
 }
 
 /// Scalar integer arithmetic kernel with null mask support.
 /// Handles division by zero gracefully by marking results as null instead of panicking.
-/// Invalid inputs (mask=false) and zero division produce null outputs.
+/// A cleared input bit, a zero divisor, and a `Power` exponent outside `u32`
+/// range all produce a null output rather than panicking.
 #[inline(always)]
 pub fn int_masked_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub + WrappingMul>(
     op: ArithmeticOperator,
@@ -130,24 +153,12 @@ pub fn int_masked_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub 
         ArithmeticOperator::Add => run!(|x, y| (x.wrapping_add(&y), true)),
         ArithmeticOperator::Subtract => run!(|x, y| (x.wrapping_sub(&y), true)),
         ArithmeticOperator::Multiply => run!(|x, y| (x.wrapping_mul(&y), true)),
-        ArithmeticOperator::Divide => run!(|x, y| {
+        // Integer `/` truncates toward zero, so this arm corrects the result
+        // to floor towards negative infinity, giving Divide and FloorDiv the
+        // same result and letting them share one arm.
+        ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => run!(|x, y| {
             if y == T::zero() {
                 (T::zero(), false) // division by zero -> invalid
-            } else {
-                (x / y, true)
-            }
-        }),
-        ArithmeticOperator::Remainder => run!(|x, y| {
-            if y == T::zero() {
-                (T::zero(), false) // remainder by zero -> invalid
-            } else {
-                (x % y, true)
-            }
-        }),
-        ArithmeticOperator::Power => run!(|x, y| (x.pow(y.to_u32().unwrap_or(0)), true)),
-        ArithmeticOperator::FloorDiv => run!(|x, y| {
-            if y == T::zero() {
-                (T::zero(), false)
             } else {
                 let d = x / y;
                 let r = x % y;
@@ -157,6 +168,17 @@ pub fn int_masked_body_std<T: PrimInt + ToPrimitive + WrappingAdd + WrappingSub 
                     (d, true)
                 }
             }
+        }),
+        ArithmeticOperator::Remainder => run!(|x, y| {
+            if y == T::zero() {
+                (T::zero(), false) // remainder by zero -> invalid
+            } else {
+                (x % y, true)
+            }
+        }),
+        ArithmeticOperator::Power => run!(|x, y| match y.to_u32() {
+            Some(e) => (wrapping_pow_u32(x, e), true),
+            None => (T::zero(), false), // exponent out of u32 range -> null
         }),
     }
 }

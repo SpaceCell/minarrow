@@ -160,7 +160,7 @@ impl Value {
             Value::Array(a) => a.len(),
 
             #[cfg(feature = "views")]
-            Value::ArrayView(av) => av.array.len(),
+            Value::ArrayView(av) => av.len(),
 
             Value::FieldArray(fa) => fa.array.len(),
 
@@ -376,3 +376,61 @@ impl Value {
 }
 
 // Also see typed accessors in ./conversions.rs and trait impls in ./impls.rs
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::{
+        Array, ArrayV, ArrowType, Field, FieldArray, IntegerArray, MaskedArray, NumericArray, Table,
+    };
+
+    fn seq_array(n: usize) -> Array {
+        let mut arr = IntegerArray::<i64>::default();
+        for i in 0..n {
+            arr.push(i as i64);
+        }
+        Array::NumericArray(NumericArray::Int64(Arc::new(arr)))
+    }
+
+    /// `len` counts the rows a view covers, so callers can pass the count
+    /// straight to `slice`.
+    #[cfg(feature = "views")]
+    #[test]
+    fn len_of_an_array_view_counts_the_window() {
+        let view = ArrayV::new(seq_array(100), 30, 10);
+        let value = Value::ArrayView(Arc::new(view));
+
+        assert_eq!(value.len(), 10, "the window, not the backing array");
+    }
+
+    /// The two view variants agree, so an operator sizing its work from
+    /// `len` behaves the same whichever shape it was handed.
+    #[cfg(feature = "views")]
+    #[test]
+    fn len_agrees_across_the_view_variants() {
+        let array = Value::ArrayView(Arc::new(ArrayV::new(seq_array(100), 30, 10)));
+
+        let mut table = Table::new("t".to_string(), None);
+        table.add_col(FieldArray::new(
+            Field::new("v", ArrowType::Int64, false, None),
+            seq_array(100),
+        ));
+        let table = Value::Table(Arc::new(table)).slice(30, 10);
+
+        assert_eq!(array.len(), table.len());
+    }
+
+    /// `len` bounds a `slice` on the same value. The two are read together
+    /// wherever work is split into row ranges, so a `len` drawn from the
+    /// backing array would run a window past its own end.
+    #[cfg(feature = "views")]
+    #[test]
+    fn len_bounds_a_slice_of_the_same_value() {
+        let value = Value::ArrayView(Arc::new(ArrayV::new(seq_array(100), 30, 10)));
+
+        let whole = value.slice(0, value.len());
+        assert_eq!(whole.len(), 10);
+    }
+}

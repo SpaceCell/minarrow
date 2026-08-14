@@ -52,7 +52,7 @@ use crate::structs::views::bitmask_view::BitmaskV;
 use crate::traits::concatenate::Concatenate;
 use crate::traits::print::MAX_PREVIEW;
 use crate::traits::shape::Shape;
-use crate::{Array, ArrayV, Bitmask, FieldArray, MaskedArray, NumericArray};
+use crate::{Array, ArrayV, FieldArray, MaskedArray, NumericArray};
 
 /// # NumericArrayView
 ///
@@ -301,23 +301,24 @@ impl NumericArrayV {
     /// that still reference the original will cast independently when they
     /// reach this call, so it generally is best avoided in such contexts as it would
     /// clone for every independent window view.
-    pub fn guarantee_f64(&mut self) -> (&[f64], Option<&Bitmask>, Option<usize>) {
+    pub fn guarantee_f64(&mut self) -> (&[f64], Option<BitmaskV<'_>>, Option<usize>) {
         if !matches!(&self.array, NumericArray::Float64(_)) {
             // Take the old array out, leaving Null as placeholder
             let old = std::mem::take(&mut self.array);
             self.array = old.cow_into_f64();
         }
-        // Safe: the branch above guarantees Float64 at this point
-        let NumericArray::Float64(arr) = &self.array else {
-            unreachable!()
-        };
-        let slice = &arr.data.as_slice()[self.offset..self.offset + self.len];
-        let mask = arr.null_mask.as_ref();
-        let nc = if mask.is_some() {
+        let nc = if self.array.null_mask().is_some() {
             Some(self.null_count())
         } else {
             None
         };
+        let (offset, len) = (self.offset, self.len);
+        // Safe: the branch above guarantees Float64 at this point
+        let NumericArray::Float64(arr) = &self.array else {
+            unreachable!()
+        };
+        let slice = &arr.data.as_slice()[offset..offset + len];
+        let mask = arr.null_mask.as_ref().map(|m| m.view(offset, len));
         (slice, mask, nc)
     }
 }
@@ -470,7 +471,52 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::{Array, Bitmask, IntegerArray, NumericArray, vec64};
+    use crate::{Array, Bitmask, FloatArray, IntegerArray, NumericArray, vec64};
+
+    #[test]
+    fn guarantee_f64_windows_the_null_mask_with_the_slice() {
+        let mut arr = FloatArray::<f64>::default();
+        for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
+            arr.push(v);
+        }
+        let mut mask = Bitmask::new_set_all(5, true);
+        mask.set(0, false);
+        mask.set(1, false);
+        arr.null_mask = Some(mask);
+
+        let mut view = NumericArrayV::new(NumericArray::Float64(Arc::new(arr)), 2, 3);
+        let (slice, mask, nc) = view.guarantee_f64();
+
+        assert_eq!(slice, &[30.0, 40.0, 50.0]);
+        let mask = mask.expect("the backing array carries a null mask");
+        assert_eq!(mask.len(), 3);
+        // Reading the parent's bits from zero would report the first two
+        // window rows as null.
+        assert!((0..3).all(|i| mask.get(i)), "every window row is valid");
+        assert_eq!(nc, Some(0));
+    }
+
+    #[test]
+    fn guarantee_f64_windows_the_null_mask_after_casting() {
+        let mut arr = IntegerArray::<i32>::default();
+        for v in [1, 2, 3, 4, 5] {
+            arr.push(v);
+        }
+        let mut mask = Bitmask::new_set_all(5, true);
+        mask.set(1, false);
+        mask.set(3, false);
+        arr.null_mask = Some(mask);
+
+        let mut view = NumericArrayV::new(NumericArray::Int32(Arc::new(arr)), 2, 3);
+        let (slice, mask, _) = view.guarantee_f64();
+
+        assert_eq!(slice, &[3.0, 4.0, 5.0]);
+        let mask = mask.expect("the backing array carries a null mask");
+        // Window row 1 is parent row 3, the null one.
+        assert!(mask.get(0));
+        assert!(!mask.get(1));
+        assert!(mask.get(2));
+    }
 
     #[test]
     fn test_numeric_array_view_basic_indexing_and_slice() {

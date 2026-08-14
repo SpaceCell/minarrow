@@ -44,12 +44,14 @@ use crate::Bitmask;
 use num_traits::{One, PrimInt, ToPrimitive, WrappingAdd, WrappingMul, WrappingSub, Zero};
 
 use crate::enums::operators::ArithmeticOperator;
+use crate::kernels::arithmetic::std::wrapping_pow_u32;
 use crate::kernels::bitmask::simd::all_true_mask_simd;
 use crate::utils::{simd_mask, write_simd_mask_bits};
 
 /// SIMD integer arithmetic kernel for dense arrays (no nulls).
 /// Vectorised operations with scalar fallback for power operations and array tails.
-/// Panics on division/remainder by zero (consistent with scalar behaviour).
+/// Panics on division/remainder by zero, or on a `Power` exponent outside `u32`
+/// range (consistent with scalar behaviour).
 #[inline(always)]
 pub fn int_dense_body_simd<T, const LANES: usize>(
     op: ArithmeticOperator,
@@ -57,7 +59,15 @@ pub fn int_dense_body_simd<T, const LANES: usize>(
     rhs: &[T],
     out: &mut [T],
 ) where
-    T: Copy + One + PrimInt + ToPrimitive + Zero + SimdElement + WrappingMul,
+    T: Copy
+        + One
+        + PrimInt
+        + ToPrimitive
+        + Zero
+        + SimdElement
+        + WrappingAdd
+        + WrappingMul
+        + WrappingSub,
     Simd<T, LANES>: Add<Output = Simd<T, LANES>>
         + Sub<Output = Simd<T, LANES>>
         + Mul<Output = Simd<T, LANES>>
@@ -65,8 +75,12 @@ pub fn int_dense_body_simd<T, const LANES: usize>(
         + Rem<Output = Simd<T, LANES>>,
 {
     let n = lhs.len();
+    // The scalar tail takes its own closure because SIMD integer lanes wrap
+    // by definition while the raw scalar operators panic on overflow in a
+    // debug build, so the tail wraps through the same wrapping calls as the
+    // scalar kernels to keep one overflow policy across the whole input.
     macro_rules! run {
-        ($vec_op:tt) => {{
+        ($vec_op:tt, $scalar:expr) => {{
             let vectorisable = n / LANES * LANES;
             let mut i = 0;
             while i < vectorisable {
@@ -77,31 +91,32 @@ pub fn int_dense_body_simd<T, const LANES: usize>(
             }
             // Scalar tail
             for idx in vectorisable..n {
-                out[idx] = lhs[idx] $vec_op rhs[idx];
+                out[idx] = $scalar(lhs[idx], rhs[idx]);
             }
         }};
     }
     match op {
-        ArithmeticOperator::Add => run!(+),
-        ArithmeticOperator::Subtract => run!(-),
-        ArithmeticOperator::Multiply => run!(*),
-        ArithmeticOperator::Divide => run!(/),    // Panics if divisor is zero
-        ArithmeticOperator::Remainder => run!(%), // Panics if divisor is zero
-        // Power and floor division run per element on the whole input.
+        ArithmeticOperator::Add => run!(+, |x: T, y: T| x.wrapping_add(&y)),
+        ArithmeticOperator::Subtract => run!(-, |x: T, y: T| x.wrapping_sub(&y)),
+        ArithmeticOperator::Multiply => run!(*, |x: T, y: T| x.wrapping_mul(&y)),
+        ArithmeticOperator::Remainder => run!(%, |x: T, y: T| x % y), // Panics if divisor is zero
+        // Power and division run per element on the whole input. There is no
+        // hardware SIMD integer divide, so the per-element loop costs nothing
+        // over the lane form. Integer division rounds towards negative
+        // infinity, so Divide and FloorDiv share one arm. Panics if the
+        // divisor is zero.
         ArithmeticOperator::Power => {
             for idx in 0..n {
-                let mut acc = T::one();
-                let exp = rhs[idx].to_u32().unwrap_or(0);
-                for _ in 0..exp {
-                    acc = acc.wrapping_mul(&lhs[idx]);
-                }
-                out[idx] = acc;
+                out[idx] = match rhs[idx].to_u32() {
+                    Some(e) => wrapping_pow_u32(lhs[idx], e),
+                    None => panic!("Power exponent out of u32 range"),
+                };
             }
         }
-        ArithmeticOperator::FloorDiv => {
+        ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => {
             for idx in 0..n {
                 out[idx] = if rhs[idx] == T::zero() {
-                    panic!("Floor division by zero")
+                    panic!("Division by zero")
                 } else {
                     let d = lhs[idx] / rhs[idx];
                     let r = lhs[idx] % rhs[idx];
@@ -117,7 +132,8 @@ pub fn int_dense_body_simd<T, const LANES: usize>(
 }
 
 /// SIMD integer arithmetic kernel with null mask support.
-/// Division/remainder by zero produces null results (mask=false) rather than panicking.
+/// Division/remainder by zero, and a `Power` exponent outside `u32` range,
+/// produce null results (mask=false) rather than panicking.
 #[inline(always)]
 pub fn int_masked_body_simd<T, const LANES: usize>(
     op: ArithmeticOperator,
@@ -192,27 +208,34 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
             ArithmeticOperator::Add => run!(+),
             ArithmeticOperator::Subtract => run!(-),
             ArithmeticOperator::Multiply => run!(*),
-            ArithmeticOperator::Divide => run_div!(/),
             ArithmeticOperator::Remainder => run_div!(%),
+            // An exponent outside u32 range nulls its lane.
             ArithmeticOperator::Power => {
                 let mut i = 0;
                 while i < vectorisable {
                     let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
                     let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
                     let mut tmp = [T::zero(); LANES];
+                    let mut exp_ok = [false; LANES];
                     for l in 0..LANES {
-                        tmp[l] = a[l].pow(b[l].to_u32().unwrap_or(0));
+                        if let Some(e) = b[l].to_u32() {
+                            tmp[l] = wrapping_pow_u32(a[l], e);
+                            exp_ok[l] = true;
+                        }
                     }
                     Simd::<T, LANES>::from_array(tmp).copy_to_slice(&mut out[i..i + LANES]);
                     write_simd_mask_bits(
                         out_mask,
                         i,
-                        Mask::<<T as SimdElement>::Mask, LANES>::splat(true),
+                        Mask::<<T as SimdElement>::Mask, LANES>::from_array(exp_ok),
                     );
                     i += LANES;
                 }
             }
-            ArithmeticOperator::FloorDiv => {
+            // Integer `/` truncates toward zero, so this arm corrects the
+            // result to floor towards negative infinity, giving Divide and
+            // FloorDiv the same result. A zero divisor nulls its lane.
+            ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => {
                 let mut i = 0;
                 while i < vectorisable {
                     let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
@@ -259,29 +282,35 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
                     }
                 }
                 ArithmeticOperator::Power => {
-                    out[idx] = lhs[idx].pow(rhs[idx].to_u32().unwrap_or(0));
-                    unsafe {
-                        out_mask.set_unchecked(idx, true);
+                    if let Some(e) = rhs[idx].to_u32() {
+                        out[idx] = wrapping_pow_u32(lhs[idx], e);
+                        unsafe {
+                            out_mask.set_unchecked(idx, true);
+                        }
+                    } else {
+                        out[idx] = T::zero();
+                        unsafe {
+                            out_mask.set_unchecked(idx, false);
+                        }
                     }
                 }
-                ArithmeticOperator::Divide | ArithmeticOperator::Remainder => {
+                ArithmeticOperator::Remainder => {
                     if rhs[idx] == T::zero() {
                         out[idx] = T::zero();
                         unsafe {
                             out_mask.set_unchecked(idx, false);
                         }
                     } else {
-                        out[idx] = match op {
-                            ArithmeticOperator::Divide => lhs[idx] / rhs[idx],
-                            ArithmeticOperator::Remainder => lhs[idx] % rhs[idx],
-                            _ => unreachable!(),
-                        };
+                        out[idx] = lhs[idx] % rhs[idx];
                         unsafe {
                             out_mask.set_unchecked(idx, true);
                         }
                     }
                 }
-                ArithmeticOperator::FloorDiv => {
+                // Integer `/` truncates toward zero, so this arm corrects
+                // the result to floor towards negative infinity, giving
+                // Divide and FloorDiv the same result.
+                ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => {
                     if rhs[idx] == T::zero() {
                         out[idx] = T::zero();
                         unsafe {
@@ -339,8 +368,8 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
         ArithmeticOperator::Add => run!(+),
         ArithmeticOperator::Subtract => run!(-),
         ArithmeticOperator::Multiply => run!(*),
-        ArithmeticOperator::Divide => run_div!(/),
         ArithmeticOperator::Remainder => run_div!(%),
+        // An exponent outside u32 range nulls its lane.
         ArithmeticOperator::Power => {
             while i + LANES <= n {
                 let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
@@ -348,17 +377,25 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
                 let m_src: Mask<<T as SimdElement>::Mask, LANES> = simd_mask(mask, i, n);
                 // scalar per-lane power
                 let mut tmp = [T::zero(); LANES];
+                let mut exp_ok = [false; LANES];
                 for l in 0..LANES {
-                    tmp[l] = a[l].pow(b[l].to_u32().unwrap_or(0));
+                    if let Some(e) = b[l].to_u32() {
+                        tmp[l] = wrapping_pow_u32(a[l], e);
+                        exp_ok[l] = true;
+                    }
                 }
+                let exp_ok = Mask::<<T as SimdElement>::Mask, LANES>::from_array(exp_ok);
                 let selected =
                     m_src.select(Simd::<T, LANES>::from_array(tmp), Simd::splat(T::zero()));
                 selected.copy_to_slice(&mut out[i..i + LANES]);
-                write_simd_mask_bits(out_mask, i, m_src);
+                write_simd_mask_bits(out_mask, i, m_src & exp_ok);
                 i += LANES;
             }
         }
-        ArithmeticOperator::FloorDiv => {
+        // Integer `/` truncates toward zero, so this arm corrects the
+        // result to floor towards negative infinity, giving Divide and
+        // FloorDiv the same result. A zero divisor nulls its lane.
+        ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => {
             while i + LANES <= n {
                 let a = Simd::<T, LANES>::from_slice(&lhs[i..i + LANES]);
                 let b = Simd::<T, LANES>::from_slice(&rhs[i..i + LANES]);
@@ -394,13 +431,6 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
                 ArithmeticOperator::Add => (lhs[j].wrapping_add(&rhs[j]), true),
                 ArithmeticOperator::Subtract => (lhs[j].wrapping_sub(&rhs[j]), true),
                 ArithmeticOperator::Multiply => (lhs[j].wrapping_mul(&rhs[j]), true),
-                ArithmeticOperator::Divide => {
-                    if rhs[j] == T::zero() {
-                        (T::zero(), false) // division by zero -> invalid
-                    } else {
-                        (lhs[j] / rhs[j], true)
-                    }
-                }
                 ArithmeticOperator::Remainder => {
                     if rhs[j] == T::zero() {
                         (T::zero(), false) // remainder by zero -> invalid
@@ -408,10 +438,16 @@ pub fn int_masked_body_simd<T, const LANES: usize>(
                         (lhs[j] % rhs[j], true)
                     }
                 }
-                ArithmeticOperator::Power => (lhs[j].pow(rhs[j].to_u32().unwrap_or(0)), true),
-                ArithmeticOperator::FloorDiv => {
+                ArithmeticOperator::Power => match rhs[j].to_u32() {
+                    Some(e) => (wrapping_pow_u32(lhs[j], e), true),
+                    None => (T::zero(), false), // exponent out of u32 range -> null
+                },
+                // Integer `/` truncates toward zero, so this arm corrects
+                // the result to floor towards negative infinity, giving
+                // Divide and FloorDiv the same result.
+                ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => {
                     if rhs[j] == T::zero() {
-                        (T::zero(), false)
+                        (T::zero(), false) // division by zero -> invalid
                     } else {
                         let d = lhs[j] / rhs[j];
                         let r = lhs[j] % rhs[j];

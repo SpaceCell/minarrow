@@ -25,18 +25,33 @@ pub enum ArithmeticOperator {
     Multiply,
     /// Division (`lhs / rhs`)
     ///
-    /// For integers, division by zero panics in unmasked arrays and nullifies in masked arrays.
-    /// For floating-point, follows IEEE 754 (yields ±Inf or NaN).
+    /// Division is true division: `7 / 2` is `3.5`. The `Scalar` arms
+    /// return a `Float64` scalar for integer operands, and callers dividing
+    /// integer arrays cast their operands to `f64` before dispatch so the
+    /// float kernels produce the float result.
+    ///
+    /// The integer slice kernels themselves serve `FloorDiv`, so `Divide`
+    /// handed raw integer slices at the kernel level behaves as floor
+    /// division. Cast to float first for a true-division result.
+    ///
+    /// Division by zero on floats follows IEEE 754: a nonzero value over
+    /// zero yields Inf with the operands' sign, and zero over zero yields
+    /// NaN. On raw integer slices it panics in unmasked arrays and
+    /// nullifies in masked arrays.
     Divide,
     /// Modulus/remainder operation (`lhs % rhs`)
     ///
-    /// Behaviour matches Rust's `%` operator. Division by zero handling follows same
-    /// rules as `Divide` operation.
+    /// Behaviour matches Rust's `%` operator: the result keeps the
+    /// dividend's sign, so `-7 % 2` is `-1`. Division by zero handling
+    /// follows same rules as `Divide` operation.
     Remainder,
     /// Exponentiation (`lhs ^ rhs`)
     ///
-    /// For integers, uses repeated multiplication. For floating-point, uses `pow()` function.
-    /// Negative exponents on integers may yield zero due to truncation.
+    /// For integers, exponentiation by squaring with wrapping
+    /// multiplication, so overflow wraps like the other integer arms. The
+    /// exponent must convert to `u32`: a negative or larger exponent
+    /// returns an error advising a cast to float. For floating-point, uses
+    /// logarithmic computation.
     Power,
     /// Floor division (`lhs // rhs`)
     ///

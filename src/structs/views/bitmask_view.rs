@@ -82,7 +82,7 @@ use crate::{Array, Bitmask, BitmaskVT, BooleanArray};
 /// assert!(view.get(1));
 /// assert!(view.get(2));
 /// ```
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct BitmaskV<'a> {
     /// The **outer bitmask** that this view is derived from - we retain a reference to it.
     /// Importantly, this is the ***full bitmask*** - not the *view*, and thus should not be
@@ -131,6 +131,21 @@ impl<'a> BitmaskV<'a> {
             self.len
         );
         self.bitmask.get(self.offset + i)
+    }
+
+    /// Returns the value at logical index `i` within the view, skipping the
+    /// bounds check.
+    ///
+    /// Element-wise kernels read a flagged null_mask (valid) bit per row, so the checked
+    /// [`get`](Self::get) costs a comparison in the innermost loop. This is
+    /// the unchecked counterpart for loops that have already established
+    /// `i < len`.
+    ///
+    /// # Safety
+    /// `i` must be less than the view's length.
+    #[inline]
+    pub unsafe fn get_unchecked(&self, i: usize) -> bool {
+        unsafe { self.bitmask.get_unchecked(self.offset + i) }
     }
 
     /// Returns a slice of the bitmask’s bytes
