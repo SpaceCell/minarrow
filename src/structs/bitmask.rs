@@ -32,6 +32,7 @@ use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::ops::{BitAnd, BitOr, Deref, DerefMut, Index, Not};
 
 use crate::enums::shape_dim::ShapeDim;
+use crate::kernels::bitmask::dispatch::iter_window_bits;
 #[cfg(feature = "lbuffer")]
 use crate::structs::lbuffer::LBufferV;
 use crate::traits::concatenate::Concatenate;
@@ -983,29 +984,19 @@ impl Bitmask {
 
     /// Iterator over all indices with set bits (valid).
     ///
-    /// Under the `lbuffer` feature an LBuffer-backed mask reads each bit
-    /// through [`get`](Self::get) for a consistent view of the producer's
-    /// published bits. Any other storage takes the plain byte scan, so a
-    /// non-LBuffer-backed mask pays nothing for the feature being enabled.
+    /// The scan walks the mask one 64-bit word at a time, so a word with no
+    /// set bits costs a single comparison and each set bit is located
+    /// through a trailing-zeros count.
     pub fn iter_set(&self) -> impl Iterator<Item = usize> + '_ {
+
+        // Exception case ensuring atomic consistency
         #[cfg(feature = "lbuffer")]
         if self.is_lbuffer_backed() {
             return Box::new((0..self.len()).filter(move |&i| self.get(i)))
                 as Box<dyn Iterator<Item = usize> + '_>;
         }
 
-        let n = self.len();
-        let scan = self.bits.iter().enumerate().flat_map(move |(byte_i, &b)| {
-            let base = byte_i * 8;
-            (0..8).filter_map(move |bit| {
-                let idx = base + bit;
-                if idx < n && ((b >> bit) & 1) != 0 {
-                    Some(idx)
-                } else {
-                    None
-                }
-            })
-        });
+        let scan = iter_window_bits((self, 0, self.len()), true);
 
         #[cfg(feature = "lbuffer")]
         return Box::new(scan) as Box<dyn Iterator<Item = usize> + '_>;
@@ -1015,29 +1006,19 @@ impl Bitmask {
 
     /// Iterator over all indices with cleared bits (nulls).
     ///
-    /// Under the `lbuffer` feature an LBuffer-backed mask reads each bit
-    /// through [`get`](Self::get) for a consistent view of the producer's
-    /// published bits. Any other storage takes the plain byte scan, so a
-    /// non-LBuffer-backed mask pays nothing for the feature being enabled.
+    /// The scan walks the mask one 64-bit word at a time, so a fully valid
+    /// word costs a single comparison and each null is located through a
+    /// trailing-zeros count.
     pub fn iter_cleared(&self) -> impl Iterator<Item = usize> + '_ {
+
+        // Exception case ensuring atomic consistency
         #[cfg(feature = "lbuffer")]
         if self.is_lbuffer_backed() {
             return Box::new((0..self.len()).filter(move |&i| !self.get(i)))
                 as Box<dyn Iterator<Item = usize> + '_>;
         }
 
-        let n = self.len();
-        let scan = self.bits.iter().enumerate().flat_map(move |(byte_i, &b)| {
-            let base = byte_i * 8;
-            (0..8).filter_map(move |bit| {
-                let idx = base + bit;
-                if idx < n && ((b >> bit) & 1) == 0 {
-                    Some(idx)
-                } else {
-                    None
-                }
-            })
-        });
+        let scan = iter_window_bits((self, 0, self.len()), false);
 
         #[cfg(feature = "lbuffer")]
         return Box::new(scan) as Box<dyn Iterator<Item = usize> + '_>;

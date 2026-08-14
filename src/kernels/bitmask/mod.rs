@@ -58,6 +58,9 @@
 //! - **`all_true_mask`**: Test if all bits in bitmask are set to 1
 //! - **`all_false_mask`**: Test if all bits in bitmask are set to 0
 //!
+//! ### **Bit Position Iteration**
+//! - **`iter_window_bits`**: Enumerate window-relative indices of set or cleared bits
+//!
 //! ## Arrow Compatibility
 //!
 //! All operations maintain full compatibility with Apache Arrow's bitmask format:
@@ -134,6 +137,27 @@ pub fn bitmask_window_bytes_mut(mask: &mut Bitmask, offset: usize, len: usize) -
     let start = offset / 8;
     let end = (offset + len + 7) / 8;
     &mut mask.bits[start..end]
+}
+
+/// Assemble one 64-bit word of the mask starting at `bit_start`, LSB
+/// first, reading past the buffer's end as zeros. An unaligned start
+/// combines the two overlapping loads with a shift, so the caller walks
+/// any bit window in whole words.
+#[inline(always)]
+pub fn load_word(mask: &Bitmask, bit_start: usize) -> u64 {
+    let byte_start = bit_start / 8;
+    let shift = bit_start % 8;
+    let mut buf = [0u8; 9];
+    let end = (byte_start + 9).min(mask.bits.len());
+    if byte_start < end {
+        buf[..end - byte_start].copy_from_slice(&mask.bits[byte_start..end]);
+    }
+    let lo = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+    if shift == 0 {
+        lo
+    } else {
+        (lo >> shift) | ((buf[8] as u64) << (64 - shift))
+    }
 }
 
 /// Zero all slack bits ≥ `bm.len()`.
