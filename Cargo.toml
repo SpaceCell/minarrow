@@ -97,8 +97,8 @@ extended_categorical = ["default_categorical_8"]
 extended_numeric_types = []
 
 # Adds a cube object for stacking tables on an extra axis
-# Useful for time series, and group analytics
-cube = []
+# Useful for time series, and group analytics.
+cube = ["views", "select", "hash"]
 
 # Adds a unified scalar type, that's useful for `Array` aggregations, and other use cases where you end up with one value.
 # However, it is one of several downcasting methods available in Rust, and when predominantly

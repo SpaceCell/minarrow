@@ -157,6 +157,9 @@ impl Cube {
         col: &str,
         name: impl Into<String>,
     ) -> Result<Self, MinarrowError> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+
         let col_idx = table
             .col_name_index(col)
             .ok_or_else(|| MinarrowError::ShapeError {
@@ -166,29 +169,38 @@ impl Cube {
 
         // The rows of each table are gathered before any is built, so a row is
         // visited once.
+        let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
         let mut rows: Vec<Vec<usize>> = Vec::new();
-        let mut names: Vec<String> = Vec::new();
-        let mut resolver: HashMap<String, usize> = HashMap::new();
         for row in 0..table.n_rows {
-            let value = values
-                .get_scalar(row)
-                .map(|v| v.to_string())
-                .unwrap_or_default();
-            match resolver.get(&value) {
-                Some(&at) => rows[at].push(row),
+            let mut hasher = DefaultHasher::new();
+            values.hash_element_at(row, &mut hasher);
+            let candidates = buckets.entry(hasher.finish()).or_default();
+            let known = candidates
+                .iter()
+                .copied()
+                .find(|&at| values.value_eq(row, values, rows[at][0]));
+            match known {
+                Some(at) => rows[at].push(row),
                 None => {
-                    resolver.insert(value.clone(), rows.len());
-                    names.push(value);
+                    candidates.push(rows.len());
                     rows.push(vec![row]);
                 }
             }
         }
 
+        // The name each group resolves on is built once per group, from its
+        // first row.
         let mut tables = Vec::with_capacity(rows.len());
-        for (at, value) in names.into_iter().enumerate() {
-            let mut entry = table.gather_rows(&rows[at]);
+        let mut resolver: HashMap<String, usize> = HashMap::with_capacity(rows.len());
+        for (at, group_rows) in rows.iter().enumerate() {
+            let value = values
+                .get_scalar(group_rows[0])
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let mut entry = table.gather_rows(group_rows);
             entry.remove_col(col);
-            entry.set_name(value);
+            entry.set_name(value.clone());
+            resolver.insert(value, at);
             tables.push(Arc::new(entry));
         }
 
