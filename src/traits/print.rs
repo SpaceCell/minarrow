@@ -183,6 +183,111 @@ pub(crate) fn format_float<T: Float + Display>(v: T) -> String {
     }
 }
 
+/// Render a dense numeric grid in the bordered table layout, eliding
+/// rows beyond [`MAX_PREVIEW`].
+#[cfg(any(feature = "matrix", feature = "ndarray"))]
+pub(crate) fn print_float_grid<T: Float + Display>(
+    f: &mut Formatter<'_>,
+    headers: &[String],
+    n_rows: usize,
+    cell: impl Fn(usize, usize) -> T,
+) -> fmt::Result {
+    let n_cols = headers.len();
+
+    // Show every row for a short grid, otherwise the first and last ten.
+    let row_indices: Vec<usize> = if n_rows <= MAX_PREVIEW {
+        (0..n_rows).collect()
+    } else {
+        let mut idx = (0..10).collect::<Vec<_>>();
+        idx.extend((n_rows - 10)..n_rows);
+        idx
+    };
+
+    // Each column widens to fit its header and the values shown beneath it.
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(row_indices.len());
+    for &r in &row_indices {
+        let mut row = Vec::with_capacity(n_cols);
+        for c in 0..n_cols {
+            let text = format_float(cell(r, c));
+            widths[c] = widths[c].max(text.len());
+            row.push(text);
+        }
+        rows.push(row);
+    }
+
+    let idx_width = usize::max(
+        3,
+        ((n_rows.saturating_sub(1)) as f64).log10().floor() as usize + 1,
+    );
+
+    print_rule(f, idx_width, &widths)?;
+    print_header_row(f, idx_width, headers, &widths)?;
+    print_rule(f, idx_width, &widths)?;
+
+    for (logical_row, cells) in rows.iter().enumerate() {
+        let physical_row = row_indices[logical_row];
+        write!(f, "| {idx:^w$} |", idx = physical_row, w = idx_width)?;
+        for (c, text) in cells.iter().enumerate() {
+            write!(f, " {val:^w$} |", val = text, w = widths[c])?;
+        }
+        writeln!(f)?;
+        if logical_row == 9 && n_rows > MAX_PREVIEW {
+            print_ellipsis_row(f, idx_width, &widths)?;
+        }
+    }
+    print_rule(f, idx_width, &widths)
+}
+
+/// Render the body of an N-dimensional float array beneath a caller-written
+/// title, with the leading axis as rows and trailing axes flattened into
+/// columns.
+#[cfg(feature = "ndarray")]
+pub(crate) fn print_ndarray_body<T: Float + Display>(
+    f: &mut Formatter<'_>,
+    shape: &[usize],
+    cell: impl Fn(&[usize]) -> T,
+) -> fmt::Result {
+    match shape.len() {
+        0 => writeln!(f, "  {}", format_float(cell(&[]))),
+        1 => {
+            let headers = [String::from("value")];
+            print_float_grid(f, &headers, shape[0], |r, _| cell(&[r]))
+        }
+        2 => {
+            let headers: Vec<String> = (0..shape[1]).map(|c| format!("col_{c}")).collect();
+            print_float_grid(f, &headers, shape[0], |r, c| cell(&[r, c]))
+        }
+        _ => {
+            // The trailing axes flatten into columns, so each column header
+            // names the coordinate its values carry on those axes.
+            let outer = &shape[1..];
+            let n_outer: usize = outer.iter().product();
+            let headers: Vec<String> = (0..n_outer)
+                .map(|j| {
+                    let mut remaining = j;
+                    let mut coords = Vec::with_capacity(outer.len());
+                    for &size in outer {
+                        coords.push((remaining % size).to_string());
+                        remaining /= size;
+                    }
+                    format!("({})", coords.join(","))
+                })
+                .collect();
+            print_float_grid(f, &headers, shape[0], |r, j| {
+                let mut index = Vec::with_capacity(shape.len());
+                index.push(r);
+                let mut remaining = j;
+                for &size in &shape[1..] {
+                    index.push(remaining % size);
+                    remaining /= size;
+                }
+                cell(&index)
+            })
+        }
+    }
+}
+
 #[cfg(feature = "datetime")]
 pub(crate) fn format_datetime_value<T>(
     arr: &DatetimeArray<T>,

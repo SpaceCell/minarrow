@@ -30,6 +30,7 @@
 //! labels. SuperNdArray remains a separate container.
 
 use std::fmt;
+use std::fmt::{Display, Formatter};
 
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
@@ -891,6 +892,31 @@ impl<T: Float> fmt::Debug for SuperNdArray<T> {
             f, "SuperNdArray '{}': {} batches, {}D, shape {:?}, {} elements",
             self.name, self.n_batches(), self.ndim, self.shape(), self.len()
         )
+    }
+}
+
+impl<T: Float + Display> Display for SuperNdArray<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let shape = self.shape();
+        let elem = std::any::type_name::<T>();
+        let dims = if shape.is_empty() {
+            String::from("scalar")
+        } else {
+            shape.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" × ")
+        };
+        writeln!(
+            f,
+            "SuperNdArray \"{}\" [{}, {} batches, {}]",
+            self.name, dims, self.n_batches(), elem
+        )?;
+        for (i, batch) in self.batches.iter().enumerate() {
+            writeln!(f, "  ├─ Batch {i}: {} elements", batch.len())?;
+            let indent = "    │ ";
+            for line in format!("{batch}").lines() {
+                writeln!(f, "{indent}{line}")?;
+            }
+        }
+        Ok(())
     }
 }
 

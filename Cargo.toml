@@ -412,14 +412,10 @@ path = "examples/ffi/apache_arrow_ffi.rs"
 name = "polars_ffi"
 path = "examples/ffi/polars_ffi.rs"
 
-# Print examples
+# Print example
 [[example]]
-name = "print_arrays"
-path = "examples/print/print_arrays.rs"
-
-[[example]]
-name = "print_table"
-path = "examples/print/print_table.rs"
+name = "print"
+path = "examples/print.rs"
 
 # Selection example
 [[example]]

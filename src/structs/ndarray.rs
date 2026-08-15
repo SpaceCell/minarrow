@@ -65,12 +65,14 @@
 //!   layout, and protocol constraints.
 
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::ops::{Index, IndexMut, Range, RangeFrom, RangeFull, RangeTo};
 use std::sync::Arc;
 
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::buffer::Buffer;
+use crate::traits::print::print_ndarray_body;
 #[cfg(all(feature = "views", feature = "select"))]
 use crate::traits::selection::{AxisSelection, DataSelector, RowSelection};
 use crate::traits::type_unions::Float;
@@ -1983,6 +1985,23 @@ impl<T: Float> fmt::Debug for NdArray<T> {
             write!(f, " ]")?;
         }
         Ok(())
+    }
+}
+
+impl<T: Float + Display> Display for NdArray<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let shape = self.shape();
+        let elem = std::any::type_name::<T>();
+        let dims = if shape.is_empty() {
+            String::from("scalar")
+        } else {
+            shape.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" × ")
+        };
+        match &self.name {
+            Some(name) => writeln!(f, "NdArray \"{}\" [{}, {}]", name, dims, elem)?,
+            None => writeln!(f, "NdArray [{}, {}]", dims, elem)?,
+        }
+        print_ndarray_body(f, shape, |index| self.get(index))
     }
 }
 
