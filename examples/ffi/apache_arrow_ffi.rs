@@ -30,7 +30,7 @@ mod apache_arrow_test {
     use arrow::array::ffi::{
         FFI_ArrowArray, FFI_ArrowSchema, from_ffi as arrow_from_ffi, to_ffi as arrow_to_ffi,
     };
-    use arrow::array::{ArrayRef, RecordBatch, make_array};
+    use arrow::array::{ArrayRef, make_array};
     use minarrow::ffi::arrow_c_ffi::{export_to_c, import_from_c};
     #[cfg(any(
         not(feature = "default_categorical_8"),
@@ -260,13 +260,12 @@ mod apache_arrow_test {
             // Convert ArrayData to ArrayRef
             let array_ref: ArrayRef = make_array(array_data.clone());
 
-            // Pretty print as a table
-            let arrow_schema = Arc::new(arrow::datatypes::Schema::new(vec![
-                arrow::datatypes::Field::new(field_name, array_ref.data_type().clone(), false),
-            ]));
-            let batch = RecordBatch::try_new(arrow_schema, vec![array_ref.clone()]).unwrap();
-            println!("Arrow-RS pretty-print for '{}':", field_name);
-            arrow::util::pretty::print_batches(&[batch]).unwrap();
+            println!(
+                "Arrow-RS array for '{}': {:?} (len={})",
+                field_name,
+                array_ref.data_type(),
+                array_ref.len(),
+            );
 
             // ---- 7. Export Arrow-RS back to Minarrow FFI, roundtrip ----
             let (ffi_out_arr, ffi_out_schema) =

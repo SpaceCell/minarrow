@@ -37,9 +37,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use arrow::array::RecordBatch;
 use crate::log::warn;
 #[cfg(feature = "cast_polars")]
-use polars::frame::DataFrame;
+use polars_core::frame::DataFrame;
 #[cfg(feature = "cast_polars")]
-use polars::prelude::Column;
+use polars_core::prelude::Column;
 #[cfg(feature = "parallel_proc")]
 use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator};
 

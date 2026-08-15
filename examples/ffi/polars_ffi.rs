@@ -41,7 +41,7 @@ mod polars_roundtrip {
     use minarrow::{Array, ArrowType, Field, FieldArray, NumericArray, Table, TextArray};
     #[cfg(feature = "datetime")]
     use minarrow::{TemporalArray, TimeUnit};
-    use polars::prelude::*;
+    use polars_core::prelude::*;
     use polars_arrow as pa;
 
     // -------------------------------------------------------------------------

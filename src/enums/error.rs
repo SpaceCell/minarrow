@@ -188,8 +188,8 @@ impl From<arrow::error::ArrowError> for MinarrowError {
 }
 
 #[cfg(feature = "cast_polars")]
-impl From<polars::error::PolarsError> for MinarrowError {
-    fn from(e: polars::error::PolarsError) -> Self {
+impl From<polars_core::error::PolarsError> for MinarrowError {
+    fn from(e: polars_core::error::PolarsError) -> Self {
         MinarrowError::BridgeError {
             source: "polars",
             message: e.to_string(),

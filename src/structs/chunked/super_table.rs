@@ -1045,21 +1045,21 @@ impl SuperTable {
     /// [`SuperTable::try_to_polars`].
     #[cfg(feature = "cast_polars")]
     #[inline]
-    pub fn to_polars(&self) -> polars::frame::DataFrame {
+    pub fn to_polars(&self) -> polars_core::frame::DataFrame {
         self.try_to_polars().expect("SuperTable::to_polars failed")
     }
 
     /// Fallible variant of [`SuperTable::to_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_to_polars(&self) -> Result<polars::frame::DataFrame, MinarrowError> {
-        use polars::prelude::Column;
+    pub fn try_to_polars(&self) -> Result<polars_core::frame::DataFrame, MinarrowError> {
+        use polars_core::prelude::Column;
         if self.batches.is_empty() {
             // Build an empty DataFrame matching the schema.
-            return Ok(polars::frame::DataFrame::default());
+            return Ok(polars_core::frame::DataFrame::default());
         }
 
         let n_cols = self.batches[0].n_cols();
-        let mut col_series: Vec<polars::prelude::Series> = Vec::with_capacity(n_cols);
+        let mut col_series: Vec<polars_core::prelude::Series> = Vec::with_capacity(n_cols);
 
         // Per column, fold per-batch Series via `append` so chunks survive.
         for col_idx in 0..n_cols {
@@ -1077,7 +1077,7 @@ impl SuperTable {
             .into_iter()
             .map(|s| Column::new(s.name().clone(), s))
             .collect();
-        Ok(polars::frame::DataFrame::new(self.n_rows, cols)?)
+        Ok(polars_core::frame::DataFrame::new(self.n_rows, cols)?)
     }
 
     /// Build a `SuperTable` from a slice of arrow-rs `RecordBatch` values.
@@ -1127,20 +1127,20 @@ impl SuperTable {
     /// [`SuperTable::try_from_polars`].
     #[cfg(feature = "cast_polars")]
     #[inline]
-    pub fn from_polars(df: &polars::frame::DataFrame) -> SuperTable {
+    pub fn from_polars(df: &polars_core::frame::DataFrame) -> SuperTable {
         Self::try_from_polars(df).expect("SuperTable::from_polars failed")
     }
 
     /// Fallible variant of [`SuperTable::from_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_from_polars(df: &polars::frame::DataFrame) -> Result<SuperTable, MinarrowError> {
+    pub fn try_from_polars(df: &polars_core::frame::DataFrame) -> Result<SuperTable, MinarrowError> {
         let columns = df.columns();
         if columns.is_empty() {
             return Ok(SuperTable::new(String::new()));
         }
 
         // Materialise each column to a Series and read its chunk count.
-        let series: Vec<&polars::prelude::Series> =
+        let series: Vec<&polars_core::prelude::Series> =
             columns.iter().map(|c| c.as_materialized_series()).collect();
         let n_chunks = series[0].n_chunks();
         let aligned = series.iter().all(|s| s.n_chunks() == n_chunks);
@@ -1158,7 +1158,7 @@ impl SuperTable {
 
         // Aligned: build one Table per chunk index by importing the i'th
         // chunk of each Series directly through the polars bridge.
-        use polars::prelude::CompatLevel;
+        use polars_core::prelude::CompatLevel;
         let mut batches = Vec::with_capacity(n_chunks);
         for chunk_idx in 0..n_chunks {
             let mut cols = Vec::with_capacity(series.len());
@@ -1183,8 +1183,8 @@ impl From<&[arrow::array::RecordBatch]> for SuperTable {
 }
 
 #[cfg(feature = "cast_polars")]
-impl From<&polars::frame::DataFrame> for SuperTable {
-    fn from(df: &polars::frame::DataFrame) -> Self {
+impl From<&polars_core::frame::DataFrame> for SuperTable {
+    fn from(df: &polars_core::frame::DataFrame) -> Self {
         SuperTable::from_polars(df)
     }
 }

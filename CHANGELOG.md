@@ -75,6 +75,13 @@ overflow wraps consistently with add/subtract/multiply.
 - `log` dependency is now optional, included in default features. When disabled,
   `warn!` falls back to `eprintln!`.
 - `vec64` dependency bumped to 0.5.0 for Rust nightly compatibility.
+- `cast_polars` feature now depends on `polars-core` instead of the umbrella
+  `polars` crate. This improves compile times when the polars (FFI bridge)
+  feature is on and avoids `quick-xml` security advisories (RUSTSEC-2026-0194, RUSTSEC-2026-0195)
+  that were getting pulled in transitively.
+- Bumped `arrow` / `arrow-schema` from 58.x to 59.2.0 and `polars-core` /
+  `polars-arrow` from 0.53.0 to 0.55.2. Trimmed back Arrow feature flags.
+- `cargo update` across all transitive dependencies.
 
 ### Fixed
 - `Value::len()` for `ArrayView` variants now returns the view length instead

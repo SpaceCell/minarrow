@@ -1254,13 +1254,13 @@ impl SuperArray {
     /// see [`SuperArray::try_to_polars`].
     #[cfg(feature = "cast_polars")]
     #[inline]
-    pub fn to_polars(&self) -> polars::prelude::Series {
+    pub fn to_polars(&self) -> polars_core::prelude::Series {
         self.try_to_polars().expect("SuperArray::to_polars failed")
     }
 
     /// Fallible variant of [`SuperArray::to_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_to_polars(&self) -> Result<polars::prelude::Series, MinarrowError> {
+    pub fn try_to_polars(&self) -> Result<polars_core::prelude::Series, MinarrowError> {
         let field = self
             .field
             .as_deref()
@@ -1344,14 +1344,14 @@ impl SuperArray {
     /// [`SuperArray::try_from_polars`].
     #[cfg(feature = "cast_polars")]
     #[inline]
-    pub fn from_polars(s: &polars::prelude::Series) -> SuperArray {
+    pub fn from_polars(s: &polars_core::prelude::Series) -> SuperArray {
         Self::try_from_polars(s).expect("SuperArray::from_polars failed")
     }
 
     /// Fallible variant of [`SuperArray::from_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_from_polars(s: &polars::prelude::Series) -> Result<SuperArray, MinarrowError> {
-        use polars::prelude::CompatLevel;
+    pub fn try_from_polars(s: &polars_core::prelude::Series) -> Result<SuperArray, MinarrowError> {
+        use polars_core::prelude::CompatLevel;
         let n = s.n_chunks();
         if n == 0 {
             return Ok(SuperArray::new());
@@ -1371,8 +1371,8 @@ impl SuperArray {
 }
 
 #[cfg(feature = "cast_polars")]
-impl From<&polars::prelude::Series> for SuperArray {
-    fn from(s: &polars::prelude::Series) -> Self {
+impl From<&polars_core::prelude::Series> for SuperArray {
+    fn from(s: &polars_core::prelude::Series) -> Self {
         SuperArray::from_polars(s)
     }
 }

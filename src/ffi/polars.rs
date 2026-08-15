@@ -64,7 +64,7 @@
 
 use std::sync::Arc;
 
-use polars::prelude::Series;
+use polars_core::prelude::Series;
 
 use crate::enums::error::MinarrowError;
 use crate::ffi::arrow_c_ffi::{ArrowArray, ArrowSchema, export_to_c, import_from_c_owned};
