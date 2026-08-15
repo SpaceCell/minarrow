@@ -41,7 +41,7 @@ use std::sync::Arc;
 #[cfg(feature = "cast_arrow")]
 use arrow::array::ArrayRef;
 #[cfg(feature = "cast_polars")]
-use polars::series::Series;
+use polars_core::series::Series;
 
 #[cfg(all(feature = "select", feature = "views"))]
 use crate::ArrayV;
@@ -436,13 +436,13 @@ impl FieldArray {
     /// [`FieldArray::try_from_polars`].
     #[cfg(feature = "cast_polars")]
     #[inline]
-    pub fn from_polars(s: &polars::prelude::Series) -> FieldArray {
+    pub fn from_polars(s: &polars_core::prelude::Series) -> FieldArray {
         Self::try_from_polars(s).expect("FieldArray::from_polars failed")
     }
 
     /// Fallible variant of [`FieldArray::from_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_from_polars(s: &polars::prelude::Series) -> Result<FieldArray, MinarrowError> {
+    pub fn try_from_polars(s: &polars_core::prelude::Series) -> Result<FieldArray, MinarrowError> {
         use crate::SuperArray;
         use crate::traits::consolidate::Consolidate;
         let sa = SuperArray::try_from_polars(s)?;
@@ -456,8 +456,8 @@ impl FieldArray {
 // Panics on FFI failure - users who want the fallible flavour should call
 // the named `FieldArray::try_from_polars(&s)?` method instead.
 #[cfg(feature = "cast_polars")]
-impl From<&polars::prelude::Series> for FieldArray {
-    fn from(s: &polars::prelude::Series) -> Self {
+impl From<&polars_core::prelude::Series> for FieldArray {
+    fn from(s: &polars_core::prelude::Series) -> Self {
         FieldArray::from_polars(s)
     }
 }

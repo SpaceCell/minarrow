@@ -24,7 +24,7 @@ use minarrow::{
 };
 #[cfg(feature = "datetime")]
 use minarrow::{TemporalArray, TimeUnit};
-use polars::prelude::*;
+use polars_core::prelude::*;
 
 // ----- helpers -----
 
@@ -63,7 +63,7 @@ fn test_array_to_polars_numeric() {
     assert_eq!(s.len(), 3);
     assert_eq!(s.dtype(), &DataType::Int32);
     assert_eq!(
-        s.i32().unwrap().into_no_null_iter().collect::<Vec<_>>(),
+        s.i32().unwrap().iter().map(|v| v.unwrap()).collect::<Vec<_>>(),
         vec![1, 2, 3]
     );
 }
@@ -77,8 +77,8 @@ fn test_array_to_polars_string() {
     assert_eq!(
         s.str()
             .unwrap()
-            .into_no_null_iter()
-            .map(|v| v.to_string())
+            .iter()
+            .map(|v| v.unwrap().to_string())
             .collect::<Vec<_>>(),
         vec!["a".to_string(), "b".to_string(), "".to_string()]
     );
@@ -150,7 +150,7 @@ fn test_array_to_polars_with_field_via_field_array() {
     let s = FieldArray::new(f, a).to_polars();
     assert_eq!(s.dtype(), &DataType::Int64);
     assert_eq!(
-        s.i64().unwrap().into_no_null_iter().collect::<Vec<_>>(),
+        s.i64().unwrap().iter().map(|v| v.unwrap()).collect::<Vec<_>>(),
         vec![10, 20]
     );
 }
@@ -440,7 +440,7 @@ fn rt_polars_categorical32_element_equal() {
     // type depending on CompatLevel and version; compare values either way.
     let back_strings: Vec<String> = match &back {
         Array::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
-            .map(|i| c.dictionary.values()[c.data[i] as usize].clone())
+            .map(|i| c.unique_values[c.data[i] as usize].clone())
             .collect(),
         Array::TextArray(_) => arr_strings_back(&back),
         _ => panic!("unexpected back type: {:?}", back),
@@ -1049,7 +1049,7 @@ fn rt_polars_super_table_shared_categorical32() {
         .iter()
         .map(|b| match &b.cols[0].array {
             Array::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
-                .map(|i| c.dictionary.values()[c.data[i] as usize].clone())
+                .map(|i| c.unique_values[c.data[i] as usize].clone())
                 .collect(),
             _ => panic!("expected Categorical32"),
         })
@@ -1066,7 +1066,7 @@ fn rt_polars_super_table_shared_categorical32() {
         .iter()
         .map(|b| match &b.cols[0].array {
             Array::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
-                .map(|i| c.dictionary.values()[c.data[i] as usize].clone())
+                .map(|i| c.unique_values[c.data[i] as usize].clone())
                 .collect(),
             Array::TextArray(TextArray::String32(s)) => (0..s.len())
                 .map(|i| {

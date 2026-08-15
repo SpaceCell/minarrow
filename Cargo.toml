@@ -23,24 +23,20 @@ description = "Apache Arrow-compatible, Rust-first columnar data library for hig
 
 # Arrow and Polars are for optional to/from_apache_arrow() and to/from_polars() via the optional
 # `cast_arrow` and `cast_polars` features.
-arrow = { version = "58.2.0", default-features = false, features = [
+arrow = { version = "59.2.0", default-features = false, features = [
     "ffi",
-    "prettyprint",
 ], optional = true }
-arrow-schema = { version = "58.0.0", features = ["ffi"], optional = true }
-polars = { version = "0.53.0", features = [
-    # Core needed for Series/DataFrame
-    "lazy",
+arrow-schema = { version = "59.2.0", default-features = false, features = ["ffi"], optional = true }
+polars-core = { version = "0.55.2", default-features = false, features = [
     "dtype-categorical",
     "dtype-date",
     "dtype-datetime",
+    "dtype-duration",
     "dtype-time",
     "dtype-struct",
     "dtype-decimal",
-    "performant",
-    "fmt",
 ], optional = true }
-polars-arrow = { version = "0.53.0", optional = true }
+polars-arrow = { version = "0.55.2", optional = true }
 time = { version = "0.3", optional = true, features = ["parsing", "formatting", "macros", "local-offset"] }
 phf = { version = "0.13.1", features = ["macros"], optional = true }
 num-traits = "0.2.19"
@@ -168,7 +164,7 @@ cast_arrow = ["arrow", "arrow-schema"]
 # the full range of compact numeric types (i8/i16/u8/u16). Importing those
 # without the matching variants present would panic at the FFI boundary.
 cast_polars = [
-    "polars",
+    "polars-core",
     "polars-arrow",
     "large_string",
     "extended_categorical",

@@ -3702,13 +3702,13 @@ impl Array {
     /// For Timestamp/Time/Duration/Interval, wrap in a `FieldArray` with the
     /// desired `Field` and use `FieldArray::to_polars()`.
     #[cfg(feature = "cast_polars")]
-    pub fn to_polars(&self, name: &str) -> polars::prelude::Series {
+    pub fn to_polars(&self, name: &str) -> polars_core::prelude::Series {
         self.try_to_polars(name).expect("Array::to_polars failed")
     }
 
     /// Fallible variant of [`Array::to_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_to_polars(&self, name: &str) -> Result<polars::prelude::Series, MinarrowError> {
+    pub fn try_to_polars(&self, name: &str) -> Result<polars_core::prelude::Series, MinarrowError> {
         // Map physical Datetime variants to a sensible Arrow logical type for
         // export; specific Timestamp/Time/Duration/Interval semantics need a
         // FieldArray with an explicit Field.
@@ -3802,13 +3802,13 @@ impl Array {
     /// [`Array::try_from_polars`].
     #[cfg(feature = "cast_polars")]
     #[inline]
-    pub fn from_polars(s: &polars::prelude::Series) -> Array {
+    pub fn from_polars(s: &polars_core::prelude::Series) -> Array {
         Self::try_from_polars(s).expect("Array::from_polars failed")
     }
 
     /// Fallible variant of [`Array::from_polars`].
     #[cfg(feature = "cast_polars")]
-    pub fn try_from_polars(s: &polars::prelude::Series) -> Result<Array, MinarrowError> {
+    pub fn try_from_polars(s: &polars_core::prelude::Series) -> Result<Array, MinarrowError> {
         use crate::SuperArray;
         use crate::traits::consolidate::Consolidate;
         Ok(SuperArray::try_from_polars(s)?.consolidate())

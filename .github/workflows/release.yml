@@ -103,12 +103,33 @@ jobs:
           nm -D --defined-only "$so" 2>/dev/null | awk '{print $3}' | grep -v '^$' | sort -u || true
           echo "binary audit passed"
 
+  # Install the built wheel and run the minarrow-py test suite.
+  test:
+    name: Python tests
+    runs-on: ubuntu-latest
+    needs: [linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux-x86_64
+          path: dist
+      - name: Install wheel and run pytest
+        run: |
+          set -euo pipefail
+          pip install dist/*.whl
+          pip install pytest pyarrow
+          python -m pytest minarrow-py/tests/ -v
+
   # Manual run -> TestPyPI
   publish-testpypi:
     name: Publish to TestPyPI
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    needs: [linux, macos, windows, sdist, audit]
+    needs: [linux, macos, windows, sdist, audit, test]
     environment:
       name: testpypi
       url: https://test.pypi.org/project/minarrow/
@@ -130,7 +151,7 @@ jobs:
     name: Publish to PyPI
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
-    needs: [linux, macos, windows, sdist, audit]
+    needs: [linux, macos, windows, sdist, audit, test]
     environment:
       name: pypi
       url: https://pypi.org/project/minarrow/
