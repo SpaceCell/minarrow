@@ -18,6 +18,7 @@ use crate::enums::shape_dim::ShapeDim;
 use crate::traits::concatenate::Concatenate;
 use crate::traits::shape::Shape;
 use crate::{BooleanArray, FloatArray, IntegerArray, StringArray};
+use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
 #[cfg(feature = "datetime")]
@@ -78,6 +79,79 @@ impl PartialEq for Value {
 /// Since PartialEq is reflexive, symmetric, and transitive for Value,
 /// we can safely implement Eq.
 impl Eq for Value {}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        use super::Value::*;
+
+        let render_seq = |f: &mut Formatter<'_>, header: &str, elems: &[&Value]| -> fmt::Result {
+            writeln!(f, "{header}")?;
+            for (i, value) in elems.iter().enumerate() {
+                writeln!(f, "  ├─ .{i}")?;
+                for line in format!("{value}").lines() {
+                    writeln!(f, "    │ {line}")?;
+                }
+            }
+            Ok(())
+        };
+
+        match self {
+            #[cfg(feature = "scalar_type")]
+            Scalar(s) => write!(f, "{s}"),
+            Array(a) => write!(f, "{a}"),
+            #[cfg(feature = "views")]
+            ArrayView(v) => write!(f, "{v}"),
+            FieldArray(fa) => write!(f, "{fa}"),
+            Table(t) => write!(f, "{t}"),
+            #[cfg(feature = "views")]
+            TableView(tv) => write!(f, "{tv}"),
+            #[cfg(feature = "chunked")]
+            SuperArray(sa) => write!(f, "{sa}"),
+            #[cfg(all(feature = "chunked", feature = "views"))]
+            SuperArrayView(sav) => write!(f, "{sav}"),
+            #[cfg(feature = "chunked")]
+            SuperTable(st) => write!(f, "{st}"),
+            #[cfg(all(feature = "chunked", feature = "views"))]
+            SuperTableView(stv) => write!(f, "{stv}"),
+            #[cfg(feature = "matrix")]
+            Matrix(m) => write!(f, "{m}"),
+            #[cfg(feature = "ndarray")]
+            NdArray(nd) => write!(f, "{nd}"),
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            NdArrayView(v) => write!(f, "{v}"),
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            SuperNdArray(snd) => write!(f, "{snd}"),
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            SuperNdArrayView(v) => write!(f, "{v}"),
+            #[cfg(feature = "xarray")]
+            XArray(xa) => write!(f, "{xa}"),
+            #[cfg(feature = "cube")]
+            Cube(c) => write!(f, "{c}"),
+
+            VecValue(values) => {
+                writeln!(f, "Vec [{} values]", values.len())?;
+                for (i, value) in values.iter().enumerate() {
+                    writeln!(f, "  ├─ [{i}]")?;
+                    for line in format!("{value}").lines() {
+                        writeln!(f, "    │ {line}")?;
+                    }
+                }
+                Ok(())
+            }
+
+            BoxValue(value) => write!(f, "{value}"),
+            ArcValue(value) => write!(f, "{value}"),
+
+            Tuple2(t) => render_seq(f, "Tuple2", &[&t.0, &t.1]),
+            Tuple3(t) => render_seq(f, "Tuple3", &[&t.0, &t.1, &t.2]),
+            Tuple4(t) => render_seq(f, "Tuple4", &[&t.0, &t.1, &t.2, &t.3]),
+            Tuple5(t) => render_seq(f, "Tuple5", &[&t.0, &t.1, &t.2, &t.3, &t.4]),
+            Tuple6(t) => render_seq(f, "Tuple6", &[&t.0, &t.1, &t.2, &t.3, &t.4, &t.5]),
+
+            Custom(cv) => write!(f, "{cv:?}"),
+        }
+    }
+}
 
 // Shape Implementation
 

@@ -7,11 +7,13 @@
 //! copying data.
 
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::ops::Index;
 
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::ndarray::{NdArray, NdArrayIter, NdDims, offset_of_impl};
+use crate::traits::print::print_ndarray_body;
 #[cfg(feature = "select")]
 use crate::structs::ndarray::gather_obs_impl;
 #[cfg(feature = "select")]
@@ -613,6 +615,27 @@ impl<T: Float> fmt::Debug for NdArrayV<T> {
             f, "NdArrayV: {:?} [{}D, offset={}]",
             self.dims.shape(), self.ndim(), self.offset,
         )
+    }
+}
+
+impl<T: Float + Display> Display for NdArrayV<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let shape = self.shape();
+        let elem = std::any::type_name::<T>();
+        let dims = if shape.is_empty() {
+            String::from("scalar")
+        } else {
+            shape.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" × ")
+        };
+        match &self.source.name {
+            Some(name) => writeln!(
+                f,
+                "NdArrayView \"{}\" [{}, {}] (offset: {})",
+                name, dims, elem, self.offset
+            )?,
+            None => writeln!(f, "NdArrayView [{}, {}] (offset: {})", dims, elem, self.offset)?,
+        }
+        print_ndarray_body(f, shape, |index| self.get(index))
     }
 }
 

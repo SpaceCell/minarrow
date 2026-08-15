@@ -35,6 +35,7 @@
 //! `
 
 use std::fmt;
+use std::fmt::{Display, Formatter};
 
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
@@ -55,6 +56,7 @@ use crate::{NumericArray, TextArray};
 use crate::TemporalArray;
 #[cfg(all(feature = "views", feature = "select"))]
 use std::ops::Range;
+use crate::traits::print::print_ndarray_body;
 use crate::traits::type_unions::Float;
 use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::{Array, Field, StringArray, Table};
@@ -1192,6 +1194,32 @@ impl<T: Float> fmt::Debug for XArray<T> {
             NdArrayE::View(_) => "view",
         };
         write!(f, "XArray [{}] ({})", dims.join(", "), storage)
+    }
+}
+
+impl<T: Float + Display> Display for XArray<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let shape = self.shape();
+        let elem = std::any::type_name::<T>();
+        let dims: Vec<String> = self
+            .axes
+            .iter()
+            .zip(shape.iter())
+            .map(|(axis, &size)| {
+                if axis.coords.is_some() {
+                    format!("{}={} (labelled)", axis.name, size)
+                } else {
+                    format!("{}={}", axis.name, size)
+                }
+            })
+            .collect();
+        let dim_desc = if dims.is_empty() {
+            String::from("scalar")
+        } else {
+            dims.join(", ")
+        };
+        writeln!(f, "XArray [{}, {}]", dim_desc, elem)?;
+        print_ndarray_body(f, &shape, |index| self.get(index))
     }
 }
 

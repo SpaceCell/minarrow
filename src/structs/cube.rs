@@ -36,6 +36,7 @@
 //! Feature-gated and **WIP/unstable**. APIs may evolve.
 
 use std::collections::HashMap;
+use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -611,6 +612,31 @@ impl IntoIterator for Cube {
 impl Shape for Cube {
     fn shape(&self) -> ShapeDim {
         ShapeDim::Collection(self.tables.iter().map(|t| t.shape()).collect())
+    }
+}
+
+impl Display for Cube {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if self.tables.is_empty() {
+            return writeln!(f, "Cube \"{}\" [0 tables]", self.name);
+        }
+        let index = match &self.third_dim_index {
+            Some(cols) => cols.join(", "),
+            None => String::from("none"),
+        };
+        writeln!(
+            f,
+            "Cube \"{}\" [{} tables, {} cols] (index: {})",
+            self.name, self.n_tables(), self.n_cols(), index
+        )?;
+        for (i, table) in self.tables.iter().enumerate() {
+            writeln!(f, "  ├─ Table {i}: \"{}\" [{} rows]", table.name, table.n_rows)?;
+            let indent = "    │ ";
+            for line in format!("{table}").lines() {
+                writeln!(f, "{indent}{line}")?;
+            }
+        }
+        Ok(())
     }
 }
 

@@ -45,6 +45,7 @@
 //! - `len` is the logical row count of this view.
 //! - `slices` are ordered, non-overlapping, and cover at most `len` rows.
 //! - `field` is the schema for the underlying array and is shared by all slices.
+use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
 use crate::{
@@ -299,6 +300,24 @@ impl From<SuperArrayV> for SuperArray {
     fn from(value: SuperArrayV) -> Self {
         let chunks: Vec<Array> = value.chunks().map(|slice| slice.to_array()).collect();
         SuperArray::from_arrays_with_field(chunks, value.field)
+    }
+}
+
+impl Display for SuperArrayV {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "SuperArrayView \"{}\" [{} rows, {} slices] (dtype: {})",
+            self.field.name, self.len, self.n_slices(), self.field.dtype
+        )?;
+        for (i, slice) in self.slices.iter().enumerate() {
+            writeln!(f, "  ├─ Slice {i}: {} rows", slice.len())?;
+            let indent = "    │ ";
+            for line in format!("{slice}").lines() {
+                writeln!(f, "{indent}{line}")?;
+            }
+        }
+        Ok(())
     }
 }
 

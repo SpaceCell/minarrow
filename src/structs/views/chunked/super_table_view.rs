@@ -46,6 +46,7 @@
 //! - `slices` are ordered, non-overlapping, and each covers a contiguous region
 //!   within its underlying table batch.
 
+use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
 use crate::enums::error::MinarrowError;
@@ -251,6 +252,28 @@ impl From<SuperTable> for SuperTableV {
             };
         }
         super_table.view(0, super_table.n_rows())
+    }
+}
+
+impl Display for SuperTableV {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "SuperTableView [{} rows, {} columns, {} slices]",
+            self.len, self.n_cols(), self.n_slices()
+        )?;
+        for (i, slice) in self.slices.iter().enumerate() {
+            writeln!(
+                f,
+                "  ├─ Slice {i}: {} rows, {} columns",
+                slice.n_rows(), slice.n_cols()
+            )?;
+            let indent = "    │ ";
+            for line in format!("{slice}").lines() {
+                writeln!(f, "{indent}{line}")?;
+            }
+        }
+        Ok(())
     }
 }
 

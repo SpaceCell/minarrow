@@ -18,11 +18,13 @@
 //! BLAS/LAPACK compatible with built-inconversions from `Table` data.
 
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::buffer::Buffer;
+use crate::traits::print::print_float_grid;
 use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::{Array, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
 #[cfg(feature = "views")]
@@ -713,6 +715,24 @@ impl Concatenate for Matrix {
             data: Buffer::from_vec64(result_vec),
             name: None,
         })
+    }
+}
+
+impl Display for Matrix {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match &self.name {
+            Some(name) => writeln!(
+                f,
+                "Matrix \"{}\" [{} rows × {} cols, f64]",
+                name, self.n_rows, self.n_cols
+            )?,
+            None => writeln!(f, "Matrix [{} rows × {} cols, f64]", self.n_rows, self.n_cols)?,
+        }
+        if self.n_cols == 0 {
+            return Ok(());
+        }
+        let headers: Vec<String> = (0..self.n_cols).map(|c| format!("col_{c}")).collect();
+        print_float_grid(f, &headers, self.n_rows, |row, col| self.get(row, col))
     }
 }
 
