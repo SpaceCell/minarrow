@@ -7,6 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
+## 0.17.0 - 2026-08-15
+
+This release:
+    - Corrects integer arithmetic rounding semantics for scalar
+    - Adds `Display` for all public types
+    - Includes a broad set of API additions and performance improvements.
+
+### Numerical result changes
+
+Several arithmetic corrections in this release produce different results for
+integer inputs compared to 0.16.x. The affected operations are listed below so
+that users can validate downstream expectations.
+
+**Please consider the below carefully before upgrading:**
+
+- **Integer array division now floors toward negative infinity.** Previously the
+SIMD and scalar kernel paths used Rust's truncating `/` (toward zero). Both
+`Divide` and `FloorDiv` now floor consistently, matching Python and NumPy
+semantics. For example, `-7 / 2` at the array kernel level was `-3` and is now
+`-4`. Unsigned integer division is unaffected.
+
+- **Scalar integer division returns `Scalar::Float64`.** `Scalar::Int64(-7) /
+Scalar::Int64(2)` was `Scalar::Int64(-3)` and is now `Scalar::Float64(-3.5)`.
+Division by zero follows IEEE 754 (Inf/NaN) instead of panicking.
+
+- **Integer power with an out-of-range exponent.** Previously an exponent that
+did not fit `u32` was silently treated as 0, returning 1. The kernel now panics
+for dense arrays and nullifies the lane for masked arrays. Integer power
+overflow wraps consistently with add/subtract/multiply.
+
+### Added
+- `Display` implementation for `Value` and every constituent type that
+  previously lacked one: `Matrix`, `NdArray`, `NdArrayV`, `SuperNdArray`,
+  `SuperNdArrayV`, `SuperArrayV`, `SuperTableV`, `XArray` and `Cube`. Each
+  type's output matches the register of the existing `Table` display, with
+  `MAX_PREVIEW` truncation for large data.
+- `Bitmask` iteration kernels (`iter_window_bits`) with a SIMD fast path on
+  x86-64. `Bitmask::iter_set()` and `iter_cleared()` now run in
+  O(matching_bits) rather than O(total_bits).
+- `BitmaskV` gains `get_unchecked` and now derives `Copy`.
+- `as_tuple_ref()` on `BooleanArrayV`, `TextArrayV` and `TemporalArrayV` for
+  borrow-only access without `Arc::clone`.
+- `TemporalArray::time_unit()` and `TemporalArrayV::time_unit()` returning the
+  backing `TimeUnit`.
+- `TryFrom<Vec<Array>> for Array` for end-to-end concatenation.
+- `TryFrom<Array> for Scalar` for single-element extraction.
+- `Array::set_range(range, scalar)` and `Array::set(idx, Scalar::Null)` for
+  in-place range fills and null masking.
+- Broadened `TryFrom<Value>` and `From` impls across `BoxValue`, `ArcValue`,
+  `SuperArray`, `SuperNdArray`, `SuperTable`, `NdArrayV`, `Cube` and their view
+  counterparts. Wrapped values now unwrap transparently.
+- `ArrowType::minarrow_category_label()` returning high-level type categories.
+- `CategoricalIndexType::arrow_index_name()` for the Arrow index type string.
+- `Cube::from_table(table, col, name)` for splitting a table into a cube along
+  a column's distinct values.
+
+### Changed
+- `ArrayV::gather_indices` rewritten for throughput: single variant match per
+  gather, bulk null mask transfer, x86-64 prefetch hints, and `TableV` gather
+  now delegates per-column to avoid duplicated per-type logic.
+- `Cube::from_table` grouping uses hash-based value equality via
+  `hash_element_at` and `value_eq` instead of per-row string allocation.
+- `cube` feature now implies `views`, `select` and `hash`.
+- `Cube` has had various semantic improvements to its operation.
+- `libc` dependency is now optional, gated behind the `memfd` feature.
+- `log` dependency is now optional, included in default features. When disabled,
+  `warn!` falls back to `eprintln!`.
+- `vec64` dependency bumped to 0.5.0 for Rust nightly compatibility.
+
+### Fixed
+- `Value::len()` for `ArrayView` variants now returns the view length instead
+  of the backing array length.
+- `NumericArrayV::guarantee_f64()` returns a windowed `BitmaskV` aligned with
+  the data slice, fixing misaligned null masks on non-zero-offset views.
+- Schema-level metadata preserved during arena-based table consolidation when
+  the `table_metadata` feature is enabled.
+
+# Minarrow-py / Minarrow-pyo3
+
+## 0.17.0 - 2026-08-15
+
+### Added
+- `PyMatrix` class with construction from rows, columns or a `PyTable`,
+  indexing, transpose, row/column extraction and `to_table()`.
+- `PyCube` class with construction from a list of tables, positional and named
+  indexing, iteration, and `from_table` for column-based splitting.
+- Temporal dtype support in `build_array`: `Date32`, `Date64`, `Time32`,
+  `Time64`, `Duration32`, `Duration64` and `Timestamp` with unit specifiers.
+- `py_to_scalar` publicly re-exported from minarrow-py.
+- `PyArray` and `PyTable` publicly re-exported from minarrow-py for downstream
+  pyo3 crates.
+- Efficient `read_sequence<T>` extraction into `Vec64<T>`, avoiding double
+  allocation through pyo3's `Vec` path.
+
+### Changed
+- `parse_dtype` categorical alias respects `default_categorical_8`, returning
+  `UInt8` when that feature is active.
+- `default_categorical_8` feature propagates from minarrow-py to minarrow-pyo3.
+- Bumped minarrow dependency to 0.17.0.
+
+---
+
 ## 0.16.2 - 2026-07-23
 
 ### Added
