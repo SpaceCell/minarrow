@@ -893,7 +893,6 @@ fn arr_i32_like(vals: &[i32]) -> MArray {
 ))]
 #[test]
 fn rt_arrow_super_table_shared_categorical32() {
-    use minarrow::structs::dictionary::Dictionary;
     use minarrow::{CategoricalArray, SuperTable};
 
     // Two batches, each Categorical32. The second batch introduces a value

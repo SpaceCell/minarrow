@@ -471,7 +471,6 @@ impl_apply_int_not!(apply_int_not_u8, u8, W8);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MaskedArray;
 
     #[test]
     fn bitwise_and_or_xor_no_nulls() {

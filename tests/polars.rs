@@ -440,7 +440,7 @@ fn rt_polars_categorical32_element_equal() {
     // type depending on CompatLevel and version; compare values either way.
     let back_strings: Vec<String> = match &back {
         Array::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
-            .map(|i| c.unique_values[c.data[i] as usize].clone())
+            .map(|i| c.unique_values()[c.data[i] as usize].clone())
             .collect(),
         Array::TextArray(_) => arr_strings_back(&back),
         _ => panic!("unexpected back type: {:?}", back),
@@ -1014,7 +1014,6 @@ fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
 ))]
 #[test]
 fn rt_polars_super_table_shared_categorical32() {
-    use minarrow::structs::dictionary::Dictionary;
     use minarrow::{CategoricalArray, SuperTable};
 
     let cat_a = Arc::new(CategoricalArray::<u32>::from_slices(
@@ -1049,7 +1048,7 @@ fn rt_polars_super_table_shared_categorical32() {
         .iter()
         .map(|b| match &b.cols[0].array {
             Array::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
-                .map(|i| c.unique_values[c.data[i] as usize].clone())
+                .map(|i| c.unique_values()[c.data[i] as usize].clone())
                 .collect(),
             _ => panic!("expected Categorical32"),
         })
@@ -1066,7 +1065,7 @@ fn rt_polars_super_table_shared_categorical32() {
         .iter()
         .map(|b| match &b.cols[0].array {
             Array::TextArray(TextArray::Categorical32(c)) => (0..c.data.len())
-                .map(|i| c.unique_values[c.data[i] as usize].clone())
+                .map(|i| c.unique_values()[c.data[i] as usize].clone())
                 .collect(),
             Array::TextArray(TextArray::String32(s)) => (0..s.len())
                 .map(|i| {
