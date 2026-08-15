@@ -81,7 +81,7 @@ overflow wraps consistently with add/subtract/multiply.
   that were getting pulled in transitively.
 - Bumped `arrow` / `arrow-schema` from 58.x to 59.2.0 and `polars-core` /
   `polars-arrow` from 0.53.0 to 0.55.2. Trimmed back Arrow feature flags.
-- Full `cargo update` across all transitive dependencies.
+- `cargo update` across all transitive dependencies.
 
 ### Fixed
 - `Value::len()` for `ArrayView` variants now returns the view length instead
