@@ -17,7 +17,7 @@
 //! Contains the Scalar type for holding a single value.
 //!
 //! ## Purpose
-//! - Supports numeric, text, temporal, and null variants.  
+//! - Supports numeric, text, temporal, and null variants.
 //! - Used for unifying type signatures and other cases when one would like
 //! to match to one of a range of possible values.
 
@@ -31,8 +31,13 @@ use num_traits::Pow;
 #[cfg(feature = "datetime")]
 #[cfg(feature = "scalar_type")]
 use crate::DatetimeArray;
+#[cfg(feature = "datetime")]
 #[cfg(feature = "scalar_type")]
-use crate::{Array, Bitmask, BooleanArray, FloatArray, IntegerArray, MaskedArray, StringArray};
+use crate::IntervalUnit;
+#[cfg(feature = "scalar_type")]
+use crate::{
+    Array, ArrowType, Bitmask, BooleanArray, FloatArray, IntegerArray, MaskedArray, StringArray
+};
 
 /// # Scalar
 ///
@@ -1452,6 +1457,37 @@ impl Scalar {
         }
     }
 
+    /// Returns the `ArrowType` of this Scalar's value.
+    pub fn arrow_type(&self) -> ArrowType {
+        match self {
+            Scalar::Null => ArrowType::Null,
+            Scalar::Boolean(_) => ArrowType::Boolean,
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::Int8(_) => ArrowType::Int8,
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::Int16(_) => ArrowType::Int16,
+            Scalar::Int32(_) => ArrowType::Int32,
+            Scalar::Int64(_) => ArrowType::Int64,
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::UInt8(_) => ArrowType::UInt8,
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::UInt16(_) => ArrowType::UInt16,
+            Scalar::UInt32(_) => ArrowType::UInt32,
+            Scalar::UInt64(_) => ArrowType::UInt64,
+            Scalar::Float32(_) => ArrowType::Float32,
+            Scalar::Float64(_) => ArrowType::Float64,
+            Scalar::String32(_) => ArrowType::String,
+            #[cfg(feature = "large_string")]
+            Scalar::String64(_) => ArrowType::LargeString,
+            #[cfg(feature = "datetime")]
+            Scalar::Datetime32(_) => ArrowType::Date32,
+            #[cfg(feature = "datetime")]
+            Scalar::Datetime64(_) => ArrowType::Date64,
+            #[cfg(feature = "datetime")]
+            Scalar::Interval => ArrowType::Interval(IntervalUnit::MonthDaysNs)
+        }
+    }
+
     /// Converts a scalar Value to an Array by repeating the scalar `len` times.
     pub fn array_from_value(self, len: usize) -> Array {
         match self {
@@ -2152,6 +2188,32 @@ mod tests {
             assert_eq!(Scalar::Datetime32(123).to_string(), "123");
             assert_eq!(Scalar::Datetime64(456).to_string(), "456");
             assert_eq!(Scalar::Interval.to_string(), "Interval");
+        }
+    }
+
+    #[test]
+    fn arrow_type_matches_the_array_mapping() {
+        assert_eq!(Scalar::Null.arrow_type(), ArrowType::Null);
+        assert_eq!(Scalar::Boolean(true).arrow_type(), ArrowType::Boolean);
+        assert_eq!(Scalar::Int32(1).arrow_type(), ArrowType::Int32);
+        assert_eq!(Scalar::Int64(1).arrow_type(), ArrowType::Int64);
+        assert_eq!(Scalar::UInt32(1).arrow_type(), ArrowType::UInt32);
+        assert_eq!(Scalar::UInt64(1).arrow_type(), ArrowType::UInt64);
+        assert_eq!(Scalar::Float32(1.0).arrow_type(), ArrowType::Float32);
+        assert_eq!(Scalar::Float64(1.0).arrow_type(), ArrowType::Float64);
+        assert_eq!(Scalar::String32("v".into()).arrow_type(), ArrowType::String);
+
+        #[cfg(feature = "large_string")]
+        assert_eq!(Scalar::String64("v".into()).arrow_type(), ArrowType::LargeString);
+
+        #[cfg(feature = "datetime")]
+        {
+            assert_eq!(Scalar::Datetime32(1).arrow_type(), ArrowType::Date32);
+            assert_eq!(Scalar::Datetime64(1).arrow_type(), ArrowType::Date64);
+            assert_eq!(
+                Scalar::Interval.arrow_type(),
+                ArrowType::Interval(IntervalUnit::MonthDaysNs)
+            );
         }
     }
 
