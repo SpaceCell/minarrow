@@ -999,6 +999,26 @@ impl From<BooleanArrayV> for Value {
 
 // TryFrom for Array-like Types
 
+// Checks that VecValue is a single type that can actually be consolidated
+fn vecvalue_single_variant(values: &[Value], to: &'static str) -> Result<(), MinarrowError> {
+    let Some(first) = values.first() else {
+        return Ok(());
+    };
+    let head = std::mem::discriminant(first);
+    if let Some(mixed) = values[1..].iter().find(|v| std::mem::discriminant(*v) != head) {
+        return Err(MinarrowError::TypeError {
+            from: "Value::VecValue",
+            to,
+            message: Some(format!(
+                "VecValue mixes different types {} and {}. A heterogeneous VecValue cannot coerce to {to}",
+                value_variant_name(first),
+                value_variant_name(mixed)
+            )),
+        });
+    }
+    Ok(())
+}
+
 impl TryFrom<Value> for Array {
     type Error = MinarrowError;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
@@ -1064,6 +1084,7 @@ impl TryFrom<Value> for Array {
             Value::Cube(_) => Array::try_from(Table::try_from(v)?),
             Value::VecValue(inner) => {
                 let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                vecvalue_single_variant(&values, "Array")?;
                 let pieces: Result<Vec<Array>, _> =
                     values.into_iter().map(Array::try_from).collect();
                 Array::try_from(pieces?)
@@ -1350,6 +1371,7 @@ impl TryFrom<Value> for Table {
             // layer rejoins.
             Value::VecValue(inner) => {
                 let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                vecvalue_single_variant(&values, "Table")?;
                 let pieces: Result<Vec<Table>, _> =
                     values.into_iter().map(Table::try_from).collect();
                 Table::try_from(pieces?)
@@ -1440,6 +1462,7 @@ impl TryFrom<Value> for SuperTable {
             )),
             Value::VecValue(inner) => {
                 let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                vecvalue_single_variant(&values, "SuperTable")?;
                 let pieces: Result<Vec<Table>, _> =
                     values.into_iter().map(Table::try_from).collect();
                 Ok(SuperTable::from(pieces?))
@@ -1493,6 +1516,7 @@ impl TryFrom<Value> for SuperArray {
             }
             Value::VecValue(inner) => {
                 let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                vecvalue_single_variant(&values, "SuperArray")?;
                 let pieces: Result<Vec<Array>, _> =
                     values.into_iter().map(Array::try_from).collect();
                 Ok(SuperArray::from(pieces?))
@@ -2464,9 +2488,6 @@ mod accessor_tests {
     }
 }
 
-// VecValue -> typed-T terminal coercion tests. Exercises the engine wire format
-// produced by `Long` fan-out gather (`Value::VecValue<Vec<Value>>`) flowing into
-// `BlockStack<T>::collect()`'s `T::try_from(value)` step.
 #[cfg(test)]
 mod vecvalue_terminal_coercion_tests {
     use super::*;
