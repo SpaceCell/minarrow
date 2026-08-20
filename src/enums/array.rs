@@ -5181,6 +5181,40 @@ mod tests {
 
     #[cfg(feature = "scalar_type")]
     #[test]
+    fn test_array_set_range_shared_null_mask_is_copied_on_write() {
+        use crate::Buffer;
+        use crate::structs::shared_buffer::SharedBuffer;
+
+        // The null mask bytes arrive zero-copy, so the write owns them first
+        // and the source stays as the reader handed it over.
+        let mut source = Vec64::<u8>::with_capacity(1);
+        source.resize(1, 0b0000_0001u8);
+        let shared = SharedBuffer::from_vec64(source);
+        let mut inner = IntegerArray::<i64>::from_slice(&[1, 2, 3, 4]);
+        inner.null_mask = Some(Bitmask::new(Buffer::from_shared(shared.clone()), 4));
+        let mut arr = Array::from_int64(inner);
+
+        arr.set_range(1..3, crate::Scalar::Int64(9)).unwrap();
+
+        if let Array::NumericArray(NumericArray::Int64(a)) = &arr {
+            assert_eq!(a.data.as_slice(), &[1, 9, 9, 4]);
+            let mask = a.null_mask.as_ref().expect("the mask survives the write");
+            assert!(mask.get(0));
+            assert!(mask.get(1), "the written entries become valid");
+            assert!(mask.get(2), "the written entries become valid");
+            assert!(!mask.get(3), "the untouched entry stays null");
+        } else {
+            panic!("wrong variant");
+        }
+        assert_eq!(
+            shared.as_slice(),
+            &[0b0000_0001],
+            "the shared source keeps its own bytes"
+        );
+    }
+
+    #[cfg(feature = "scalar_type")]
+    #[test]
     fn test_array_set_range_string() {
         let mut arr =
             Array::from_string32(StringArray::<u32>::from_slice(&["a", "bb", "ccc", "d"]));

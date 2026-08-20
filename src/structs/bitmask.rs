@@ -96,7 +96,7 @@ impl Bitmask {
         // over a larger Buffer<u8>.
         let last = (self.len + 7) / 8 - 1;
         let mask = (1u8 << (self.len & 7)) - 1;
-        self.bits[last] &= mask;
+        self.bits.as_mut_slice()[last] &= mask;
     }
 
     /// Removes the bits in `[start, end)`, shifting later bits left.
@@ -137,10 +137,11 @@ impl Bitmask {
             let n_bytes = self.bits.len();
             let first = start / 8;
             let last = (new_len - 1) / 8;
+            let bytes = self.bits.as_mut_slice();
             for byte_idx in first..=last {
-                let lo = self.bits[byte_idx + q];
+                let lo = bytes[byte_idx + q];
                 let hi = if byte_idx + q + 1 < n_bytes {
-                    self.bits[byte_idx + q + 1]
+                    bytes[byte_idx + q + 1]
                 } else {
                     0
                 };
@@ -150,9 +151,9 @@ impl Bitmask {
                     (lo >> sh) | (hi << (8 - sh))
                 };
                 let keep = start & 7;
-                self.bits[byte_idx] = if byte_idx == first && keep != 0 {
+                bytes[byte_idx] = if byte_idx == first && keep != 0 {
                     let mask = (1u8 << keep) - 1;
-                    (self.bits[byte_idx] & mask) | (shifted & !mask)
+                    (bytes[byte_idx] & mask) | (shifted & !mask)
                 } else {
                     shifted
                 };
@@ -401,7 +402,7 @@ impl Bitmask {
     #[inline]
     pub fn set(&mut self, i: usize, value: bool) {
         self.ensure_capacity(i + 1);
-        let byte = &mut self.bits[i >> 3];
+        let byte = &mut self.bits.as_mut_slice()[i >> 3];
         let bit = 1u8 << (i & 7);
         if value {
             *byte |= bit;
@@ -490,6 +491,9 @@ impl Bitmask {
             return;
         }
         self.ensure_capacity(end);
+
+        // Materialise shared storage so the writes below act on owned memory.
+        self.bits.as_mut_slice();
 
         // Byte boundary at or after `start`, and at or before `end`.
         let head_end = ((start + 7) / 8) * 8;
@@ -952,7 +956,7 @@ impl Bitmask {
     pub fn union(&self, other: &Self) -> Self {
         assert_eq!(self.len, other.len, "Bitmask::union length mismatch");
         let mut out = self.clone();
-        for (a, b) in out.bits.iter_mut().zip(other.bits.iter()) {
+        for (a, b) in out.bits.as_mut_slice().iter_mut().zip(other.bits.iter()) {
             *a |= *b;
         }
         out.mask_trailing_bits();
@@ -964,7 +968,7 @@ impl Bitmask {
     pub fn intersect(&self, other: &Self) -> Self {
         assert_eq!(self.len, other.len, "Bitmask::intersect length mismatch");
         let mut out = self.clone();
-        for (a, b) in out.bits.iter_mut().zip(other.bits.iter()) {
+        for (a, b) in out.bits.as_mut_slice().iter_mut().zip(other.bits.iter()) {
             *a &= *b;
         }
         out.mask_trailing_bits();
@@ -975,7 +979,7 @@ impl Bitmask {
     #[inline]
     pub fn invert(&self) -> Self {
         let mut out = self.clone();
-        for b in out.bits.iter_mut() {
+        for b in out.bits.as_mut_slice().iter_mut() {
             *b = !*b;
         }
         out.mask_trailing_bits();
@@ -1161,7 +1165,7 @@ impl AsRef<[u8]> for Bitmask {
 impl AsMut<[u8]> for Bitmask {
     #[inline]
     fn as_mut(&mut self) -> &mut [u8] {
-        self.bits.as_mut()
+        self.bits.as_mut_slice()
     }
 }
 
@@ -1177,7 +1181,7 @@ impl Deref for Bitmask {
 impl DerefMut for Bitmask {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.bits.as_mut()
+        self.bits.as_mut_slice()
     }
 }
 
@@ -1363,6 +1367,83 @@ mod tests {
         assert!(m.get(1));
         assert!(!m.get(2));
         assert!(!m.get(5));
+    }
+
+    #[test]
+    fn test_set_range_shared_bits_are_copied_on_write() {
+        use crate::structs::shared_buffer::SharedBuffer;
+
+        // 24 cleared bits arriving zero-copy, written across two byte
+        // boundaries so the head, middle-byte fill and tail all run.
+        let mut source = Vec64::<u8>::with_capacity(3);
+        source.resize(3, 0u8);
+        let shared = SharedBuffer::from_vec64(source);
+        let mut m = Bitmask::new(Buffer::from_shared(shared.clone()), 24);
+        assert!(m.bits.is_shared(), "the mask must start on shared storage");
+
+        m.set_range(3, 20, true);
+
+        for i in 0..3 {
+            assert!(!m.get(i), "leading bit {} should be clear", i);
+        }
+        for i in 3..20 {
+            assert!(m.get(i), "in-range bit {} should be set", i);
+        }
+        for i in 20..24 {
+            assert!(!m.get(i), "trailing bit {} should be clear", i);
+        }
+        assert_eq!(
+            shared.as_slice(),
+            &[0, 0, 0],
+            "the shared source keeps its own bytes"
+        );
+    }
+
+    #[test]
+    fn test_set_range_shared_bits_per_bit_path() {
+        use crate::structs::shared_buffer::SharedBuffer;
+
+        // A range inside one byte takes the per-bit path, which writes
+        // through `set_unchecked`.
+        let mut source = Vec64::<u8>::with_capacity(1);
+        source.resize(1, 0xFFu8);
+        let shared = SharedBuffer::from_vec64(source);
+        let mut m = Bitmask::new(Buffer::from_shared(shared.clone()), 8);
+        assert!(m.bits.is_shared(), "the mask must start on shared storage");
+
+        m.set_range(1, 4, false);
+
+        assert!(m.get(0));
+        assert!(!m.get(1));
+        assert!(!m.get(2));
+        assert!(!m.get(3));
+        assert!(m.get(4));
+        assert!(m.get(7));
+        assert_eq!(
+            shared.as_slice(),
+            &[0xFF],
+            "the shared source keeps its own bytes"
+        );
+    }
+
+    #[test]
+    fn test_set_shared_bits_are_copied_on_write() {
+        use crate::structs::shared_buffer::SharedBuffer;
+
+        let mut source = Vec64::<u8>::with_capacity(1);
+        source.resize(1, 0u8);
+        let shared = SharedBuffer::from_vec64(source);
+        let mut m = Bitmask::new(Buffer::from_shared(shared.clone()), 8);
+
+        m.set(5, true);
+
+        assert!(m.get(5));
+        assert!(!m.get(4));
+        assert_eq!(
+            shared.as_slice(),
+            &[0],
+            "the shared source keeps its own bytes"
+        );
     }
 
     #[test]
