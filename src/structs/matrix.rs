@@ -21,6 +21,7 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
+use crate::aliases::MatrixVT;
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::structs::buffer::Buffer;
@@ -47,8 +48,18 @@ use crate::{SharedBuffer, TableV};
 /// - `stride`: Physical elements per column in the buffer. Padded to 8-element
 ///   (64-byte) boundaries so every column starts SIMD-aligned. This is the
 ///   BLAS leading dimension (lda). Always `>= n_rows`.
-/// - `data`: Flat buffer in column-major order with stride padding.
+/// - `data`: Column-major buffer with stride padding, stored in an `Arc`.
+///   Access is provided through [`Matrix::as_slice`] and
+///   [`Matrix::as_mut_slice`].
 /// - `name`: Optional matrix name for diagnostics.
+///
+/// ### Sharing and mutation
+///
+/// Cloning shares the backing buffer through `Arc`. [`MatrixV`](crate::MatrixV)
+/// uses the same allocation for row windows without copying data.
+///
+/// Mutable access uses `Arc::make_mut`, copying the buffer only when the
+/// allocation is shared.
 ///
 /// ### Null handling
 /// - It is contiguous - nulls can be represented through `f64::NAN`
@@ -78,12 +89,19 @@ pub struct Matrix {
     pub n_cols: usize,
     /// Physical column stride in elements, padded so each column is 64-byte aligned.
     pub stride: usize,
-    /// Backing storage. `Buffer<f64>` carries either an owned `Vec64<f64>` or a
-    /// shared view into an existing allocation. The shared variant enables
-    /// zero-copy construction from upstream `TableV` arenas via
-    /// `TableV::try_as_matrix_zc` without sacrificing the contiguous column-major
-    /// stride layout that BLAS/LAPACK expects.
-    pub data: Buffer<f64>,
+    /// Backing storage for the column-major matrix buffer.
+    ///
+    /// The `Arc<Buffer<f64>>` contains either owned `Vec64<f64>` storage or a
+    /// shared view into an existing allocation. Shared storage supports zero-copy
+    /// construction from `TableV` arenas through [`TableV::try_as_matrix_zc`]
+    /// while preserving the stride required by BLAS and LAPACK.
+    ///
+    /// Clones share the same allocation. Mutable access uses `Arc::make_mut`, so
+    /// the buffer is copied only when the allocation has other references.
+    ///
+    /// Read access is provided by [`Matrix::as_slice`], and mutable access by
+    /// [`Matrix::as_mut_slice`].
+    pub(crate) data: Arc<Buffer<f64>>,
     pub name: Option<String>,
 }
 
@@ -104,7 +122,7 @@ impl Matrix {
         let len = stride * n_cols;
         let mut vec = Vec64::with_capacity(len);
         vec.resize(len, 0.0);
-        let data = Buffer::from_vec64(vec);
+        let data = Arc::new(Buffer::from_vec64(vec));
         Matrix {
             n_rows,
             n_cols,
@@ -133,7 +151,7 @@ impl Matrix {
             n_rows,
             n_cols,
             stride,
-            data: Buffer::from_vec64(data),
+            data: Arc::new(Buffer::from_vec64(data)),
             name,
         }
     }
@@ -159,7 +177,7 @@ impl Matrix {
                 n_rows,
                 n_cols,
                 stride,
-                data: Buffer::from_vec64(vec),
+                data: Arc::new(Buffer::from_vec64(vec)),
                 name,
             };
         }
@@ -176,7 +194,7 @@ impl Matrix {
             n_rows,
             n_cols,
             stride,
-            data: Buffer::from_vec64(vec),
+            data: Arc::new(Buffer::from_vec64(vec)),
             name,
         }
     }
@@ -244,7 +262,7 @@ impl Matrix {
             n_rows,
             n_cols,
             stride,
-            data: Buffer::from_vec64(vec),
+            data: Arc::new(Buffer::from_vec64(vec)),
             name: name.map(Into::into),
         })
     }
@@ -263,7 +281,7 @@ impl Matrix {
     pub fn set(&mut self, row: usize, col: usize, value: f64) {
         debug_assert!(row < self.n_rows, "Row out of bounds");
         debug_assert!(col < self.n_cols, "Col out of bounds");
-        self.data.as_mut_slice()[col * self.stride + row] = value;
+        Arc::make_mut(&mut self.data).as_mut_slice()[col * self.stride + row] = value;
     }
 
     /// Returns true if the matrix is empty.
@@ -288,7 +306,7 @@ impl Matrix {
     /// Triggers copy-on-write if the backing buffer is currently shared.
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [f64] {
-        self.data.as_mut_slice()
+        Arc::make_mut(&mut self.data).as_mut_slice()
     }
 
     /// Returns a view of the matrix as a slice of columns (logical rows only, no padding).
@@ -320,7 +338,7 @@ impl Matrix {
             self.data.len() >= total,
             "Matrix::columns_mut: data buffer shorter than stride * n_cols"
         );
-        let ptr = self.data.as_mut_slice().as_mut_ptr();
+        let ptr = Arc::make_mut(&mut self.data).as_mut_slice().as_mut_ptr();
         let mut result = Vec::with_capacity(n_cols);
 
         for col in 0..n_cols {
@@ -351,7 +369,7 @@ impl Matrix {
     pub fn col_mut(&mut self, col: usize) -> &mut [f64] {
         assert!(col < self.n_cols, "Col out of bounds");
         let start = col * self.stride;
-        &mut self.data.as_mut_slice()[start..start + self.n_rows]
+        &mut Arc::make_mut(&mut self.data).as_mut_slice()[start..start + self.n_rows]
     }
 
     /// Returns a single row as an owned Vec.
@@ -370,7 +388,7 @@ impl Matrix {
         let mut dst = Matrix::new(self.n_cols, self.n_rows, self.name.clone());
         let src = self.data.as_slice();
         let dst_stride = dst.stride;
-        let dst_slice = dst.data.as_mut_slice();
+        let dst_slice = Arc::make_mut(&mut dst.data).as_mut_slice();
         for j in 0..self.n_cols {
             for i in 0..self.n_rows {
                 dst_slice[i * dst_stride + j] = src[j * self.stride + i];
@@ -446,6 +464,16 @@ impl Matrix {
         (self.data.as_slice(), self.stride as i32)
     }
 
+    /// Returns the matrix as `(data, offset, length, stride)`.
+    ///
+    /// For a complete matrix, `offset` is zero and `length` is the row count.
+    /// [`MatrixV::as_tuple`](crate::MatrixV::as_tuple) uses the same representation
+    /// for a row window.
+    #[inline]
+    pub fn as_tuple(&self) -> MatrixVT<'_> {
+        (self.data.as_slice(), 0, self.n_rows, self.stride)
+    }
+
     /// Mutable counterpart to [`as_strided`]. Returns `(data, lda)` where
     /// `data` is a `&mut [f64]` view of the backing buffer (triggering
     /// copy-on-write if the buffer is currently shared). The leading
@@ -454,7 +482,7 @@ impl Matrix {
     #[inline]
     pub fn as_mut_strided(&mut self) -> (&mut [f64], i32) {
         let lda = self.stride as i32;
-        (self.data.as_mut_slice(), lda)
+        (Arc::make_mut(&mut self.data).as_mut_slice(), lda)
     }
 
     // ********************** Table conversion **********************
@@ -484,11 +512,12 @@ impl Matrix {
         let stride = self.stride;
         let name = self.name;
 
-        // Surface the backing SharedBuffer and its element-level base offset.
-        // Owned data is frozen into a new SharedBuffer; already-shared data
-        // reuses its owner so to_table stays zero-copy across repeat calls.
+        // Extract the backing `SharedBuffer` and element offset. Owned data is wrapped
+        // in a new `SharedBuffer`; shared data reuses the existing owner. `Arc::try_unwrap`
+        // copies only when the allocation has other references.
+        let buffer = Arc::try_unwrap(self.data).unwrap_or_else(|arc| (*arc).clone());
         // SAFETY: f64 has no drop logic or interior invariants.
-        let (shared, base_offset, _len) = unsafe { self.data.into_shared_parts() };
+        let (shared, base_offset, _len) = unsafe { buffer.into_shared_parts() };
 
         let mut cols = Vec::with_capacity(n_cols);
         for (i, field) in fields.into_iter().enumerate() {
@@ -640,7 +669,11 @@ impl TableV {
             });
         }
 
-        let data = Buffer::from_shared_column(base_owner.unwrap(), base_offset, total_elems);
+        let data = Arc::new(Buffer::from_shared_column(
+            base_owner.unwrap(),
+            base_offset,
+            total_elems,
+        ));
         let name = if self.name().is_empty() {
             None
         } else {
@@ -712,7 +745,7 @@ impl Concatenate for Matrix {
             n_rows: result_n_rows,
             n_cols: result_n_cols,
             stride: result_stride,
-            data: Buffer::from_vec64(result_vec),
+            data: Arc::new(Buffer::from_vec64(result_vec)),
             name: None,
         })
     }
@@ -791,7 +824,7 @@ impl From<Vec<FloatArray<f64>>> for Matrix {
             n_rows,
             n_cols,
             stride,
-            data: Buffer::from_vec64(vec),
+            data: Arc::new(Buffer::from_vec64(vec)),
             name: None,
         }
     }
@@ -827,7 +860,7 @@ impl From<&[FloatArray<f64>]> for Matrix {
             n_rows,
             n_cols,
             stride,
-            data: Buffer::from_vec64(vec),
+            data: Arc::new(Buffer::from_vec64(vec)),
             name: None,
         }
     }
@@ -882,7 +915,7 @@ impl TryFrom<&Table> for Matrix {
             n_rows,
             n_cols,
             stride,
-            data: Buffer::from_vec64(vec),
+            data: Arc::new(Buffer::from_vec64(vec)),
             name,
         })
     }
@@ -917,7 +950,7 @@ impl From<&[Vec<f64>]> for Matrix {
             n_rows,
             n_cols,
             stride,
-            data: Buffer::from_vec64(vec),
+            data: Arc::new(Buffer::from_vec64(vec)),
             name: None,
         }
     }
@@ -984,7 +1017,7 @@ impl TryFrom<&TableV> for Matrix {
             n_rows,
             n_cols,
             stride,
-            data: Buffer::from_vec64(vec),
+            data: Arc::new(Buffer::from_vec64(vec)),
             name,
         })
     }
@@ -1016,16 +1049,24 @@ impl<'a> IntoIterator for &'a mut Matrix {
     type IntoIter = std::slice::IterMut<'a, f64>;
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        self.data.as_mut_slice().iter_mut()
+        Arc::make_mut(&mut self.data).as_mut_slice().iter_mut()
     }
 }
 
 impl IntoIterator for Matrix {
     type Item = f64;
     type IntoIter = <Vec64<f64> as IntoIterator>::IntoIter;
+
+    /// Consumes the matrix and iterates over the complete backing buffer, including
+    /// stride padding.
+    ///
+    /// `Arc::try_unwrap` copies the buffer only when the allocation has other
+    /// references.
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        self.data.into_iter()
+        Arc::try_unwrap(self.data)
+            .unwrap_or_else(|arc| (*arc).clone())
+            .into_iter()
     }
 }
 
@@ -1323,6 +1364,60 @@ impl From<Matrix> for Table {
     /// position where the matrix carries no field names of its own.
     fn from(value: Matrix) -> Self {
         value.to_table_gen()
+    }
+}
+
+#[cfg(test)]
+mod buffer_sharing_tests {
+    use super::*;
+
+    #[test]
+    fn clone_shares_the_buffer() {
+        let a = mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let b = a.clone();
+        assert_eq!(
+            a.as_slice().as_ptr(),
+            b.as_slice().as_ptr(),
+            "cloning a matrix must share the buffer rather than copy it"
+        );
+    }
+
+    #[test]
+    fn writing_to_a_clone_copies_and_leaves_the_original() {
+        let a = mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let mut b = a.clone();
+        b.set(0, 0, 99.0);
+
+        assert_eq!(b.get(0, 0), 99.0);
+        assert_eq!(a.get(0, 0), 1.0, "the original must not see the write");
+        assert_ne!(a.as_slice().as_ptr(), b.as_slice().as_ptr());
+    }
+
+    #[test]
+    fn writing_to_a_sole_owner_stays_in_place() {
+        let mut a = mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let before = a.as_slice().as_ptr();
+        a.set(0, 0, 99.0);
+
+        assert_eq!(a.get(0, 0), 99.0);
+        assert_eq!(
+            a.as_slice().as_ptr(),
+            before,
+            "a sole owner must write in place rather than copy"
+        );
+    }
+
+    #[test]
+    fn as_tuple_describes_the_whole_matrix() {
+        let m = mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let (data, offset, len, stride) = m.as_tuple();
+
+        assert_eq!((offset, len, stride), (0, 3, 8));
+        assert_eq!(data.len() / stride, 2);
+        for j in 0..2 {
+            let start = j * stride + offset;
+            assert_eq!(&data[start..start + len], m.col(j));
+        }
     }
 }
 

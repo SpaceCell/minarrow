@@ -22,6 +22,8 @@ use super::impls::value_variant_name;
 use crate::Cube;
 #[cfg(feature = "matrix")]
 use crate::Matrix;
+#[cfg(all(feature = "matrix", feature = "views"))]
+use crate::MatrixV;
 #[cfg(feature = "ndarray")]
 use crate::NdArray;
 #[cfg(all(feature = "ndarray", feature = "views"))]
@@ -351,6 +353,35 @@ impl Value {
             _ => Err(MinarrowError::TypeError {
                 from: value_variant_name(self),
                 to: "Matrix",
+                message: None,
+            }),
+        }
+    }
+
+    /// Returns the inner `MatrixV` if this is a `Value::MatrixView`.
+    ///
+    /// Panics if the value is not a `MatrixView` variant.
+    #[cfg(all(feature = "matrix", feature = "views"))]
+    #[inline]
+    pub fn matv(&self) -> &MatrixV {
+        match self {
+            Value::MatrixView(mv) => mv,
+            _ => panic!(
+                "Expected Value::MatrixView, found {}",
+                value_variant_name(self)
+            ),
+        }
+    }
+
+    /// Returns the inner `MatrixV` if this is a `Value::MatrixView`, or an error otherwise.
+    #[cfg(all(feature = "matrix", feature = "views"))]
+    #[inline]
+    pub fn try_matv(&self) -> Result<&MatrixV, MinarrowError> {
+        match self {
+            Value::MatrixView(mv) => Ok(mv),
+            _ => Err(MinarrowError::TypeError {
+                from: value_variant_name(self),
+                to: "MatrixV",
                 message: None,
             }),
         }
@@ -908,6 +939,14 @@ impl From<Matrix> for Value {
     }
 }
 
+#[cfg(all(feature = "matrix", feature = "views"))]
+impl From<MatrixV> for Value {
+    #[inline]
+    fn from(v: MatrixV) -> Self {
+        Value::MatrixView(Arc::new(v))
+    }
+}
+
 #[cfg(feature = "ndarray")]
 impl From<NdArray<f64>> for Value {
     #[inline]
@@ -1085,6 +1124,8 @@ impl TryFrom<Value> for Array {
             Value::SuperTableView(_) => Array::try_from(Table::try_from(v)?),
             #[cfg(feature = "matrix")]
             Value::Matrix(_) => Array::try_from(Table::try_from(v)?),
+            #[cfg(all(feature = "matrix", feature = "views"))]
+            Value::MatrixView(_) => Array::try_from(Table::try_from(v)?),
             #[cfg(feature = "ndarray")]
             Value::NdArray(inner) => {
                 let nd = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
@@ -1269,6 +1310,8 @@ impl<'a> TryFrom<&'a Value> for BitmaskV<'a> {
             Value::SuperTableView(_) => Err(err(v)),
             #[cfg(feature = "matrix")]
             Value::Matrix(_) => Err(err(v)),
+            #[cfg(all(feature = "matrix", feature = "views"))]
+            Value::MatrixView(_) => Err(err(v)),
             #[cfg(feature = "ndarray")]
             Value::NdArray(_) => Err(err(v)),
             #[cfg(all(feature = "ndarray", feature = "views"))]
@@ -1365,6 +1408,9 @@ impl TryFrom<Value> for Table {
             Value::Matrix(inner) => Ok(Table::from(
                 Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
             )),
+            // MatrixView is materialised to a Matrix, then converted to Table.
+            #[cfg(all(feature = "matrix", feature = "views"))]
+            Value::MatrixView(inner) => Ok(Table::from(inner.to_matrix())),
             #[cfg(feature = "ndarray")]
             Value::NdArray(inner) => {
                 let nd = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
@@ -1570,7 +1616,27 @@ impl TryFrom<Value> for Matrix {
             Value::Matrix(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
+            #[cfg(all(feature = "matrix", feature = "views"))]
+            Value::MatrixView(inner) => Ok(inner.to_matrix()),
             other => Matrix::try_from(Table::try_from(other)?),
+        }
+    }
+}
+
+#[cfg(all(feature = "matrix", feature = "views"))]
+impl TryFrom<Value> for MatrixV {
+    type Error = MinarrowError;
+
+    /// Accepts any `Value` that resolves to a `Matrix`, viewed over its full
+    /// row extent. An incoming `MatrixView` passes through unchanged. Other
+    /// matrix-like types convert through `Matrix::try_from` first.
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::MatrixView(inner) => {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::Matrix(inner) => Ok(MatrixV::from(inner)),
+            other => Ok(MatrixV::from(Matrix::try_from(other)?)),
         }
     }
 }

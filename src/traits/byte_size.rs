@@ -658,6 +658,27 @@ impl ByteSize for Matrix {
     }
 }
 
+/// Estimate bytes for MatrixV based on the window's proportional share of
+/// the backing matrix. Calculates `(backing_bytes * window_rows) / total_rows`.
+#[cfg(all(feature = "matrix", feature = "views"))]
+use crate::MatrixV;
+
+#[cfg(all(feature = "matrix", feature = "views"))]
+impl ByteSize for MatrixV {
+    fn est_bytes(&self) -> usize {
+        let full_rows = self.matrix.n_rows;
+        if full_rows > 0 {
+            (self.matrix.est_bytes() * self.len()) / full_rows
+        } else {
+            0
+        }
+    }
+
+    fn logical_bytes(&self) -> usize {
+        unimplemented!("MatrixV has not yet implemented logical bytes.")
+    }
+}
+
 /// ByteSize for NdArray (when ndarray feature is enabled)
 #[cfg(feature = "ndarray")]
 use crate::structs::ndarray::NdArray;
@@ -886,6 +907,8 @@ impl ByteSize for Value {
             Value::FieldArray(fa) => fa.est_bytes(),
             #[cfg(feature = "matrix")]
             Value::Matrix(m) => m.est_bytes(),
+            #[cfg(all(feature = "matrix", feature = "views"))]
+            Value::MatrixView(mv) => mv.est_bytes(),
             #[cfg(feature = "ndarray")]
             Value::NdArray(nd) => nd.est_bytes(),
             #[cfg(all(feature = "ndarray", feature = "views"))]
@@ -961,6 +984,10 @@ impl ByteSize for Value {
             #[cfg(feature = "matrix")]
             Value::Matrix(_) => {
                 unimplemented!("Matrix does not define logical byte accounting")
+            }
+            #[cfg(all(feature = "matrix", feature = "views"))]
+            Value::MatrixView(_) => {
+                unimplemented!("MatrixV does not define logical byte accounting")
             }
             #[cfg(feature = "ndarray")]
             Value::NdArray(_) => {

@@ -199,6 +199,9 @@ pub mod structs {
         pub mod array_view;
         pub mod bitmask_view;
         #[cfg(feature = "views")]
+        #[cfg(feature = "matrix")]
+        pub mod matrix_view;
+        #[cfg(feature = "views")]
         #[cfg(feature = "ndarray")]
         pub mod ndarray_view;
 
@@ -273,6 +276,8 @@ pub use aliases::{
 
 #[cfg(feature = "datetime")]
 pub use aliases::DatetimeAVT;
+#[cfg(feature = "matrix")]
+pub use aliases::{MatrixVT, Stride};
 pub use enums::array::Array;
 pub use enums::collections::numeric_array::NumericArray;
 #[cfg(feature = "datetime")]
@@ -315,6 +320,8 @@ pub use structs::views::collections::numeric_array_view::NumericArrayV;
 pub use structs::views::collections::temporal_array_view::TemporalArrayV;
 #[cfg(feature = "views")]
 pub use structs::views::collections::text_array_view::TextArrayV;
+#[cfg(all(feature = "views", feature = "matrix"))]
+pub use structs::views::matrix_view::MatrixV;
 #[cfg(all(feature = "views", feature = "ndarray"))]
 pub use structs::views::ndarray_view::NdArrayV;
 

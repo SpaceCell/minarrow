@@ -517,6 +517,17 @@ pub fn broadcast_value(
            matrix::broadcast_array_matrix_add(l, r)
         }
 
+        // Materialises
+        #[cfg(all(feature = "matrix", feature = "views"))]
+        (Value::MatrixView(l), r) => {
+            broadcast_value(op, Value::Matrix(Arc::new(l.to_matrix())), r)
+        }
+
+        #[cfg(all(feature = "matrix", feature = "views"))]
+        (l, Value::MatrixView(r)) => {
+            broadcast_value(op, l, Value::Matrix(Arc::new(r.to_matrix())))
+        }
+
         // Matrix with other complex types - return specific error
         #[cfg(feature = "matrix")]
         (Value::Matrix(_), _) | (_, Value::Matrix(_)) => Err(MinarrowError::TypeError {
