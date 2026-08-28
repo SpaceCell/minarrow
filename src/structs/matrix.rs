@@ -849,6 +849,16 @@ impl TryFrom<&Table> for Matrix {
 
         let mut vec = Vec64::with_capacity(stride * n_cols);
         for (col_idx, fa) in table.cols.iter().enumerate() {
+            // A matrix holds contiguous f64 values with no null mask, so masked
+            // columns are rejected rather than having their data copied.
+            if fa.null_count() > 0 {
+                return Err(MinarrowError::NullError {
+                    message: Some(format!(
+                        "column {col_idx} carries nulls, and a Matrix holds contiguous f64 \
+                         values with no null mask"
+                    )),
+                });
+            }
             let numeric = fa.array.try_num().map_err(|_| MinarrowError::TypeError {
                 from: "non-numeric",
                 to: "Float64",
@@ -926,9 +936,10 @@ impl TryFrom<&TableV> for Matrix {
     type Error = MinarrowError;
 
     /// Materialise a `TableV` window into a column-major `Matrix`. Honours
-    /// `active_col_selection` and slices each column at the view's offset, so
-    /// only the windowed rows are copied. Columns must be `FloatArray<f64>`;
-    /// callers needing other numeric types should convert before constructing
+    /// `active_col_selection` and slices each column at the view's offset,
+    /// copying only the windowed rows. Columns must be `FloatArray<f64>` and
+    /// carry no nulls within the window, since the matrix holds no null mask.
+    /// Callers needing other numeric types should convert before constructing
     /// the view.
     fn try_from(view: &TableV) -> Result<Self, Self::Error> {
         let name = if view.name().is_empty() {
@@ -944,6 +955,14 @@ impl TryFrom<&TableV> for Matrix {
 
         let mut vec = Vec64::with_capacity(stride * n_cols);
         for &col_idx in &active {
+            if view.cols[col_idx].null_count() > 0 {
+                return Err(MinarrowError::NullError {
+                    message: Some(format!(
+                        "column {col_idx} carries nulls in the window, and a Matrix holds \
+                         contiguous f64 values with no null mask"
+                    )),
+                });
+            }
             let (array, offset, len) = view.cols[col_idx].as_tuple_ref();
             let fa = match array {
                 Array::NumericArray(NumericArray::Float64(a)) => a,
