@@ -136,7 +136,7 @@ pub fn bitmask_window_bytes(mask: &Bitmask, offset: usize, len: usize) -> &[u8] 
 pub fn bitmask_window_bytes_mut(mask: &mut Bitmask, offset: usize, len: usize) -> &mut [u8] {
     let start = offset / 8;
     let end = (offset + len + 7) / 8;
-    &mut mask.bits[start..end]
+    &mut mask.bits.as_mut_slice()[start..end]
 }
 
 /// Assemble one 64-bit word of the mask starting at `bit_start`, LSB
