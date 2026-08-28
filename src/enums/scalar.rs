@@ -1744,8 +1744,8 @@ impl_scalar_from!(UInt32: u32);
 #[cfg(feature = "scalar_type")]
 impl_scalar_from!(UInt64: u64);
 
-// The platform-width integers land on the 64-bit variants, which is
-// lossless on every supported target.
+// Platform-width integers map to 64-bit variants, which is lossless on
+// all supported targets.
 #[cfg(feature = "scalar_type")]
 impl From<usize> for Scalar {
     #[inline]

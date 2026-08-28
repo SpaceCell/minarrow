@@ -176,8 +176,10 @@ impl Value {
             #[cfg(all(feature = "chunked", feature = "views"))]
             Value::SuperTableView(stv) => stv.len,
 
+            // Matrices count their rows, the axis that `slice` operations
+            // window, matching the n-dimensional case below.
             #[cfg(feature = "matrix")]
-            Value::Matrix(m) => m.len(),
+            Value::Matrix(m) => m.n_rows,
 
             #[cfg(feature = "ndarray")]
             Value::NdArray(nd) => nd.shape()[0],
