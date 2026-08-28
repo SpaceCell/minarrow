@@ -709,6 +709,22 @@ impl From<bool> for Value {
     }
 }
 
+#[cfg(feature = "scalar_type")]
+impl From<usize> for Value {
+    #[inline]
+    fn from(v: usize) -> Self {
+        Value::Scalar(Scalar::from(v))
+    }
+}
+
+#[cfg(feature = "scalar_type")]
+impl From<isize> for Value {
+    #[inline]
+    fn from(v: isize) -> Self {
+        Value::Scalar(Scalar::from(v))
+    }
+}
+
 #[cfg(all(feature = "scalar_type", feature = "extended_numeric_types"))]
 impl From<i8> for Value {
     #[inline]

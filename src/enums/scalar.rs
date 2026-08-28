@@ -1744,6 +1744,24 @@ impl_scalar_from!(UInt32: u32);
 #[cfg(feature = "scalar_type")]
 impl_scalar_from!(UInt64: u64);
 
+// The platform-width integers land on the 64-bit variants, which is
+// lossless on every supported target.
+#[cfg(feature = "scalar_type")]
+impl From<usize> for Scalar {
+    #[inline]
+    fn from(v: usize) -> Self {
+        Scalar::UInt64(v as u64)
+    }
+}
+
+#[cfg(feature = "scalar_type")]
+impl From<isize> for Scalar {
+    #[inline]
+    fn from(v: isize) -> Self {
+        Scalar::Int64(v as i64)
+    }
+}
+
 // floats
 #[cfg(feature = "scalar_type")]
 impl_scalar_from!(Float32: f32);
