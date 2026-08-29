@@ -1543,8 +1543,15 @@ impl TryFrom<Value> for SuperTable {
 impl TryFrom<Value> for Cube {
     type Error = MinarrowError;
 
-    /// Takes the `Cube` carried by `Value::Cube`, unwrapping the recursive
-    /// `BoxValue` and `ArcValue` wrappers first.
+    /// Accepts any `Value` that resolves to a `Table`, which becomes a cube of
+    /// one, and any that carries several, which become the cube's third
+    /// dimension in the order they arrive.
+    ///
+    /// Widening past `Value::Cube` is what lets a cube-input function sit
+    /// anywhere in a chain: the value reaching it is a plain `Table` whenever
+    /// the step above produced one, and the caller should not have to lift it
+    /// by hand. Each table keeps its own name, which is the cube's resolver
+    /// key.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::Cube(inner) => Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone())),
@@ -1552,14 +1559,22 @@ impl TryFrom<Value> for Cube {
             Value::ArcValue(inner) => {
                 Cube::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
             }
-            other => Err(MinarrowError::TypeError {
-                from: value_variant_name(&other),
-                to: "Cube",
-                message: Some(format!(
-                    "Value::{} does not convert to Cube",
-                    value_variant_name(&other)
-                )),
-            }),
+            #[cfg(feature = "chunked")]
+            Value::SuperTable(inner) => Ok(Cube::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )),
+            #[cfg(all(feature = "chunked", feature = "views"))]
+            Value::SuperTableView(inner) => Ok(Cube::from(SuperTable::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            ))),
+            Value::VecValue(inner) => {
+                let values = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+                vecvalue_single_variant(&values, "Cube")?;
+                let tables: Result<Vec<Table>, _> =
+                    values.into_iter().map(Table::try_from).collect();
+                Ok(Cube::from(tables?))
+            }
+            other => Ok(Cube::from(Table::try_from(other)?)),
         }
     }
 }

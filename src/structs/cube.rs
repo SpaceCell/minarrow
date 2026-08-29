@@ -35,8 +35,9 @@
 //! ## Status
 //! Feature-gated and **WIP/unstable**. APIs may evolve.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Display, Formatter};
+use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -843,6 +844,117 @@ impl crate::traits::selection::ColumnSelection for Cube {
     }
 }
 
+// ************************************
+// Entry points into a Cube
+// ************************************
+//
+// A single table, a table collection, or a name-to-table map can be converted
+// to a cube with `.into()`. Each table name becomes its resolver key, preserving
+// the names used for the cube's third dimension.
+
+impl From<Table> for Cube {
+    /// Converts one table to a single-table cube.
+    ///
+    /// The table name is also used as the cube name and resolver key.
+    fn from(table: Table) -> Self {
+        let name = table.name.clone();
+        Cube::from_tables(vec![table], name, None)
+    }
+}
+
+impl From<Arc<Table>> for Cube {
+    /// Converts one shared table to a single-table cube.
+    ///
+    /// The table is cloned only if the `Arc` has other references.
+    fn from(table: Arc<Table>) -> Self {
+        Cube::from(Arc::try_unwrap(table).unwrap_or_else(|arc| (*arc).clone()))
+    }
+}
+
+#[cfg(feature = "views")]
+impl From<TableV> for Cube {
+    /// Materialises the table view and converts it to a single-table cube.
+    fn from(table: TableV) -> Self {
+        Cube::from(Table::from(table))
+    }
+}
+
+impl From<Vec<Table>> for Cube {
+    /// Converts tables to a cube in input order.
+    ///
+    /// Each table retains its name for resolver lookup. The cube receives a
+    /// generated name.
+    fn from(tables: Vec<Table>) -> Self {
+        let id = UNNAMED_COUNTER.fetch_add(1, Ordering::Relaxed);
+        Cube::from_tables(tables, format!("UnnamedCube{}", id), None)
+    }
+}
+
+impl From<Vec<Arc<Table>>> for Cube {
+    /// Converts shared tables to a cube in input order.
+    ///
+    /// Each table is cloned only if its `Arc` has other references.
+    fn from(tables: Vec<Arc<Table>>) -> Self {
+        let tables: Vec<Table> = tables
+            .into_iter()
+            .map(|t| Arc::try_unwrap(t).unwrap_or_else(|arc| (*arc).clone()))
+            .collect();
+        Cube::from(tables)
+    }
+}
+
+#[cfg(feature = "views")]
+impl From<Vec<TableV>> for Cube {
+    /// Materialises the table views and converts them to a cube in input order.
+    fn from(tables: Vec<TableV>) -> Self {
+        Cube::from(tables.into_iter().map(Table::from).collect::<Vec<Table>>())
+    }
+}
+
+#[cfg(feature = "chunked")]
+impl From<crate::SuperTable> for Cube {
+    /// Converts the batches of a chunked table to the cube's third dimension.
+    ///
+    /// Batch order and the chunked table name are preserved. Conversion through
+    /// `From<Cube> for SuperTable` and back preserves the same tables in the
+    /// same order.
+    fn from(table: crate::SuperTable) -> Self {
+        let name = table.name.clone();
+        let tables: Vec<Table> = table
+            .batches
+            .into_iter()
+            .map(|t| Arc::try_unwrap(t).unwrap_or_else(|arc| (*arc).clone()))
+            .collect();
+        Cube::from_tables(tables, name, None)
+    }
+}
+
+impl<S: Into<String> + Ord> From<BTreeMap<S, Table>> for Cube {
+    /// Converts a name-to-table map to a cube in key order.
+    ///
+    /// Each map key replaces the corresponding table name and becomes its
+    /// resolver key.
+    fn from(sheets: BTreeMap<S, Table>) -> Self {
+        let tables: Vec<Table> = sheets
+            .into_iter()
+            .map(|(key, mut table)| {
+                table.set_name(key.into());
+                table
+            })
+            .collect();
+        let id = UNNAMED_COUNTER.fetch_add(1, Ordering::Relaxed);
+        Cube::from_tables(tables, format!("UnnamedCube{}", id), None)
+    }
+}
+
+impl<S: Into<String> + Eq + Hash + Ord> From<HashMap<S, Table>> for Cube {
+    /// Converts a name-to-table map to a cube in sorted key order.
+    ///
+    /// Sorting provides deterministic ordering for the cube's third dimension.
+    fn from(sheets: HashMap<S, Table>) -> Self {
+        Cube::from(sheets.into_iter().collect::<BTreeMap<S, Table>>())
+    }
+}
 impl TryFrom<Cube> for Table {
     type Error = MinarrowError;
 
@@ -1191,4 +1303,72 @@ mod tests {
         assert_eq!(cube.tables[cube.resolve("1").unwrap()].n_rows, 2);
     }
 
+    /// A single table produces a single-table cube with the same name and resolver
+    /// key.
+    #[test]
+    fn from_one_table() {
+        let cube = Cube::from(build_test_table("prices", &[1, 2], &[true, false]));
+
+        assert_eq!(cube.n_tables(), 1);
+        assert_eq!(cube.name, "prices");
+        assert_eq!(cube.resolve("prices"), Some(0));
+    }
+
+    /// Vector conversion preserves input order and table names.
+    #[test]
+    fn from_vec_of_tables() {
+        let cube = Cube::from(vec![
+            build_test_table("a", &[1], &[true]),
+            build_test_table("b", &[2, 3], &[true, false]),
+        ]);
+
+        assert_eq!(cube.table_names(), vec!["a", "b"]);
+        assert_eq!(cube.n_rows(), vec![1, 2]);
+        assert_eq!(cube.resolve("b"), Some(1));
+    }
+
+    /// Map conversion uses sorted keys as table names and resolver keys.
+    #[test]
+    fn from_map_names_tables_by_key_in_key_order() {
+        let mut sheets = HashMap::new();
+        sheets.insert("Q2", build_test_table("ignored", &[3], &[true]));
+        sheets.insert("Q1", build_test_table("also_ignored", &[1, 2], &[true, false]));
+
+        let cube = Cube::from(sheets);
+
+        assert_eq!(cube.table_names(), vec!["Q1", "Q2"]);
+        assert_eq!(cube.n_rows(), vec![2, 1]);
+        assert_eq!(cube.resolve("Q2"), Some(1));
+    }
+
+    /// Conversion between `Cube` and `SuperTable` preserves the cube name, table
+    /// names, table order, and row counts.
+    #[cfg(feature = "chunked")]
+    #[test]
+    fn super_table_round_trips_through_cube() {
+        let original = Cube::from_tables(
+            vec![
+                build_test_table("a", &[1], &[true]),
+                build_test_table("b", &[2, 3], &[true, false]),
+            ],
+            "batches".to_string(),
+            None,
+        );
+
+        let round_tripped = Cube::from(crate::SuperTable::from(original.clone()));
+
+        assert_eq!(round_tripped.name, "batches");
+        assert_eq!(round_tripped.table_names(), original.table_names());
+        assert_eq!(round_tripped.n_rows(), original.n_rows());
+    }
+
+    /// A `Value` containing a `Table` converts to a single-table cube.
+    #[test]
+    fn value_holding_a_table_converts_to_a_cube() {
+        let value = crate::Value::from(build_test_table("sheet", &[1, 2], &[true, false]));
+        let cube = Cube::try_from(value).unwrap();
+
+        assert_eq!(cube.n_tables(), 1);
+        assert_eq!(cube.resolve("sheet"), Some(0));
+    }
 }
