@@ -1304,6 +1304,22 @@ impl From<crate::Scalar> for ArrayV {
     }
 }
 
+// Primitive numerics -> ArrayView for a one-element window.
+macro_rules! impl_numeric_to_array_view {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl From<$ty> for ArrayV {
+                #[inline]
+                fn from(v: $ty) -> Self {
+                    ArrayV::new(Array::from(v), 0, 1)
+                }
+            }
+        )*
+    };
+}
+
+impl_numeric_to_array_view!(i32, i64, u32, u64, f32, f64);
+
 // We do not implement `Index` as `ArrayView` cannot safely return
 // a reference to an element.
 

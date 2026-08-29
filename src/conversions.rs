@@ -1300,10 +1300,7 @@ impl TryFrom<Vec<Array>> for Array {
     type Error = MinarrowError;
 
 
-    /// Joins a sequence of arrays end to end.
-    ///
-    /// The pieces must share an element type, which the join itself
-    /// enforces. An empty sequence yields the default array.
+    /// Joins a sequence of arrays
     fn try_from(value: Vec<Array>) -> Result<Self, Self::Error> {
         let mut pieces = value.into_iter();
         let Some(mut joined) = pieces.next() else {
@@ -1321,7 +1318,7 @@ impl TryFrom<Array> for Scalar {
     type Error = MinarrowError;
 
     /// Reads a single-element array as that element.
-    /// 
+    ///
     /// Rejects lengths > 1.
     fn try_from(value: Array) -> Result<Self, Self::Error> {
         match value.len() {
@@ -1340,6 +1337,31 @@ impl TryFrom<Array> for Scalar {
         }
     }
 }
+
+// Primitive numerics -> Array for a one-element array.
+// This matches broadcasting pattern requirements.
+
+macro_rules! impl_numeric_to_array {
+    ($($ty:ty => $ctor:ident, $arr:ident);* $(;)?) => {
+        $(
+            impl From<$ty> for Array {
+                #[inline]
+                fn from(v: $ty) -> Self {
+                    Array::$ctor($arr::from_slice(&[v]))
+                }
+            }
+        )*
+    };
+}
+
+impl_numeric_to_array!(
+    i32 => from_int32, IntegerArray;
+    i64 => from_int64, IntegerArray;
+    u32 => from_uint32, IntegerArray;
+    u64 => from_uint64, IntegerArray;
+    f32 => from_float32, FloatArray;
+    f64 => from_float64, FloatArray;
+);
 
 #[cfg(feature = "scalar_type")]
 impl From<Scalar> for Array {
