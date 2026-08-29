@@ -986,7 +986,7 @@ impl NdArray<f64> {
                 n_rows,
                 n_cols,
                 stride: strides[1],
-                data: Arc::try_unwrap(self.data).unwrap_or_else(|arc| (*arc).clone()),
+                data: self.data,
                 name: self.name,
             });
         }
@@ -1881,7 +1881,7 @@ impl From<Matrix> for NdArray<f64> {
         let shape = [mat.n_rows, mat.n_cols];
         let strides = [1, mat.stride];
         NdArray {
-            data: Arc::new(mat.data),
+            data: mat.data,
             dims: NdDims::from_shape_and_strides(&shape, &strides),
             name: mat.name,
         }

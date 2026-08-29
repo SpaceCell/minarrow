@@ -147,6 +147,14 @@ pub type DictLength = usize;
 /// Useful when keying back into it downstream.
 pub type BytesLength = usize;
 
+/// Physical column stride in elements for a `Matrix`.
+///
+/// Columns are padded to 64-byte boundaries, so the stride may be greater than
+/// the row count. BLAS and LAPACK refer to this value as the leading dimension
+/// (`lda`).
+#[cfg(feature = "matrix")]
+pub type Stride = usize;
+
 // Top-level type
 
 /// Windowed ***V**iew **T**uple* for Array, when one isn't using the
@@ -172,6 +180,26 @@ pub type SuperNdArrayVT<'a, T> = (&'a SuperNdArray<T>, Offset, Length);
 /// axis-0 observation counts.
 #[cfg(feature = "xarray")]
 pub type XArrayVT<'a, T> = (&'a XArray<T>, Offset, Length);
+
+/// Windowed matrix view tuple over a column-major `f64` buffer:
+/// `(data, offset, length, stride)`.
+///
+/// - `data` is the complete backing buffer.
+/// - Column `j` begins at `data[j * stride]`.
+/// - The window covers rows `[offset, offset + length)` of each column.
+/// - For non-empty matrices, the column count is `data.len() / stride`.
+/// - [`Matrix::as_tuple`](crate::Matrix::as_tuple) and
+///   [`MatrixV::as_tuple`](crate::MatrixV::as_tuple) use this representation.
+///
+/// The tuple represents matrix storage without requiring a [`Matrix`](crate::Matrix)
+/// value. Matrix kernels can therefore operate on any compatible stride-aligned
+/// `f64` buffer.
+///
+/// For a matrix with no rows, `stride` is zero and `data` is empty. The column
+/// count cannot be derived from the tuple in that case and must be supplied
+/// separately.
+#[cfg(feature = "matrix")]
+pub type MatrixVT<'a> = (&'a [f64], Offset, Length, Stride);
 
 /// Subset per respective table within the cube
 ///

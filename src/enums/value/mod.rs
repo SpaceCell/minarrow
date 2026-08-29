@@ -36,6 +36,8 @@ mod conversions;
 use crate::Cube;
 #[cfg(feature = "matrix")]
 use crate::Matrix;
+#[cfg(all(feature = "matrix", feature = "views"))]
+use crate::MatrixV;
 #[cfg(feature = "ndarray")]
 use crate::NdArray;
 #[cfg(all(feature = "ndarray", feature = "views"))]
@@ -101,6 +103,8 @@ pub enum Value {
     SuperTableView(Arc<SuperTableV>),
     #[cfg(feature = "matrix")]
     Matrix(Arc<Matrix>),
+    #[cfg(all(feature = "matrix", feature = "views"))]
+    MatrixView(Arc<MatrixV>),
     #[cfg(feature = "ndarray")]
     NdArray(Arc<NdArray<f64>>),
     #[cfg(all(feature = "ndarray", feature = "views"))]
@@ -180,6 +184,9 @@ impl Value {
             // window, matching the n-dimensional case below.
             #[cfg(feature = "matrix")]
             Value::Matrix(m) => m.n_rows,
+
+            #[cfg(all(feature = "matrix", feature = "views"))]
+            Value::MatrixView(mv) => mv.len,
 
             #[cfg(feature = "ndarray")]
             Value::NdArray(nd) => nd.shape()[0],
@@ -264,7 +271,15 @@ impl Value {
             }
 
             #[cfg(feature = "matrix")]
-            Value::Matrix(_) => unimplemented!("Matrix slicing"),
+            Value::Matrix(m) => Value::MatrixView(Arc::new(MatrixV::from_arc_matrix(
+                m.clone(),
+                offset,
+                length,
+            ))),
+            #[cfg(all(feature = "matrix", feature = "views"))]
+            Value::MatrixView(mv) => {
+                Value::MatrixView(Arc::new(mv.from_self(offset, length)))
+            }
             #[cfg(feature = "ndarray")]
             Value::NdArray(nd) => {
                 assert!(
@@ -434,5 +449,117 @@ mod tests {
 
         let whole = value.slice(0, value.len());
         assert_eq!(whole.len(), 10);
+    }
+
+    #[cfg(all(feature = "matrix", feature = "views"))]
+    mod matrix_view_variant {
+        use std::sync::Arc;
+
+        use super::Value;
+        use crate::enums::shape_dim::ShapeDim;
+        use crate::traits::shape::Shape;
+        use crate::{Matrix, MatrixV, mat};
+
+        /// A 5-row, 2-column matrix encoding values `row + 10 * col`.
+        fn sample() -> Matrix {
+            mat![
+                [0.0, 1.0, 2.0, 3.0, 4.0],
+                [10.0, 11.0, 12.0, 13.0, 14.0]
+            ]
+        }
+
+        ///`len` reports row count on both matrix arms, matching the slice window axis. 
+        /// Element count would be 10 in this case.
+        #[test]
+        fn len_counts_rows_on_both_matrix_arms() {
+            let owned = Value::Matrix(Arc::new(sample()));
+            assert_eq!(owned.len(), 5);
+
+            let windowed = owned.slice(1, 3);
+            assert_eq!(windowed.len(), 3);
+        }
+
+        #[test]
+        fn slicing_a_matrix_shares_the_backing_allocation() {
+            let backing = Arc::new(sample());
+            let value = Value::Matrix(backing.clone());
+
+            let Value::MatrixView(view) = value.slice(1, 3) else {
+                panic!("Expected Value::MatrixView");
+            };
+            assert!(
+                Arc::ptr_eq(&backing, &view.matrix),
+                "slicing a Matrix must not copy its buffer"
+            );
+            assert_eq!(view.offset, 1);
+            assert_eq!(view.col(0), &[1.0, 2.0, 3.0]);
+        }
+
+        #[test]
+        fn slicing_a_matrix_view_rewindows_against_the_same_backing() {
+            let backing = Arc::new(sample());
+            let value = Value::Matrix(backing.clone()).slice(1, 4);
+
+            let Value::MatrixView(view) = value.slice(1, 2) else {
+                panic!("Expected Value::MatrixView");
+            };
+            assert!(Arc::ptr_eq(&backing, &view.matrix));
+            assert_eq!(view.offset, 2);
+            assert_eq!(view.col(1), &[12.0, 13.0]);
+        }
+
+        #[test]
+        fn shape_and_equality_read_the_window() {
+            let value = Value::Matrix(Arc::new(sample())).slice(1, 3);
+            assert_eq!(value.shape(), ShapeDim::Rank2 { rows: 3, cols: 2 });
+
+            let same = Value::Matrix(Arc::new(sample())).slice(1, 3);
+            assert_eq!(value, same);
+            assert_ne!(value, Value::Matrix(Arc::new(sample())).slice(0, 3));
+        }
+
+        #[test]
+        fn round_trips_through_from_and_try_from() {
+            let view = MatrixV::from_matrix(sample(), 1, 3);
+            let value = Value::from(view.clone());
+            assert_eq!(MatrixV::try_from(value).unwrap(), view);
+
+            // An owned matrix converts as a full-row window.
+            let whole = MatrixV::try_from(Value::Matrix(Arc::new(sample()))).unwrap();
+            assert_eq!(whole.n_rows(), 5);
+            assert!(whole.spans_backing());
+        }
+
+        #[test]
+        fn try_from_reports_a_type_mismatch() {
+            let tuple = Value::Tuple2(Arc::new((
+                Value::Matrix(Arc::new(sample())),
+                Value::Matrix(Arc::new(sample())),
+            )));
+            assert!(MatrixV::try_from(tuple).is_err());
+
+            let view = Value::Matrix(Arc::new(sample())).slice(1, 3);
+            assert!(view.try_matv().is_ok());
+            assert!(Value::Matrix(Arc::new(sample())).try_matv().is_err());
+        }
+
+        #[test]
+        fn converting_to_a_matrix_materialises_the_window() {
+            let value = Value::Matrix(Arc::new(sample())).slice(1, 3);
+            let materialised = Matrix::try_from(value).unwrap();
+            assert_eq!(materialised.n_rows, 3);
+            assert_eq!(materialised.col(0), &[1.0, 2.0, 3.0]);
+            assert_eq!(materialised.col(1), &[11.0, 12.0, 13.0]);
+        }
+
+        #[test]
+        fn converting_to_a_table_carries_the_windowed_rows() {
+            use crate::Table;
+
+            let value = Value::Matrix(Arc::new(sample())).slice(2, 2);
+            let table = Table::try_from(value).unwrap();
+            assert_eq!(table.n_rows, 2);
+            assert_eq!(table.n_cols(), 2);
+        }
     }
 }
