@@ -12,15 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Checked arithmetic kernels for decimal arrays.
+//! Arithmetic kernels for decimal arrays with overflow detection.
 //!
-//! Decimal arithmetic uses checked operations instead of wrapping, because
-//! silent overflow on exact-precision values (monetary, accounting) would
-//! produce silently incorrect results. An overflow returns `KernelError`
-//! rather than wrapping or panicking.
-//!
-//! Scale reconciliation (rescaling one operand to match the other) and
-//! result-precision computation are handled here so the caller passes raw
+//! All operations use checked arithmetic and return `KernelError::Overflow`
+//! when the result exceeds the integer width. Scale reconciliation and
+//! result-precision computation are handled here so the caller passes
 //! `DecimalArray` pairs and receives a correctly-typed `DecimalArray` result.
 
 use crate::enums::error::KernelError;
@@ -56,20 +52,19 @@ fn checked_pow10<T: Integer>(exp: u32) -> Option<T> {
 
 /// Element-wise checked binary arithmetic on two `DecimalArray<T>` operands.
 ///
-/// Handles scale reconciliation for add/subtract, scale computation for
-/// multiply/divide, and checked overflow detection for all operations.
+/// Reconciles scale for add/subtract, computes result scale for
+/// multiply/divide, and detects overflow across all operations.
 /// The merged null mask from both operands propagates through the result.
 ///
 /// ## Scale rules
-/// - Add/Subtract: operands are rescaled to the finer (larger) scale. Result
-///   scale is that finer scale and result precision is capped at the width
-///   maximum.
-/// - Multiply: result scale = s1 + s2, result precision = p1 + p2 (capped).
-/// - Divide: the numerator is scaled up by the result scale factor so integer
-///   division preserves the desired number of fractional digits. Result scale
-///   is max(s1, s2).
-/// - Negate (Subtract with implicit zero lhs) and Abs are not binary and are
-///   handled by separate unary functions.
+/// - Add/Subtract: operands are rescaled to the finer scale. Result
+///   precision is capped at the width maximum.
+/// - Multiply: result scale = s1 + s2, result precision = p1 + p2,
+///   capped at the width maximum.
+/// - Divide: the numerator is scaled up so integer division preserves
+///   the desired number of fractional digits. Result scale is max of
+///   the two input scales.
+/// - Negate and Abs are unary and handled by separate functions.
 pub fn decimal_binary<T: Integer + 'static>(
     lhs: &DecimalArray<T>,
     rhs: &DecimalArray<T>,
@@ -177,7 +172,7 @@ fn decimal_add_sub<T: Integer + 'static>(
 }
 
 /// Multiply two decimal arrays. Result scale = s1 + s2, result
-/// precision = p1 + p2 (capped at width maximum).
+/// precision = p1 + p2, capped at the width maximum.
 fn decimal_multiply<T: Integer + 'static>(
     lhs: &DecimalArray<T>,
     rhs: &DecimalArray<T>,
@@ -203,9 +198,8 @@ fn decimal_multiply<T: Integer + 'static>(
     Ok(DecimalArray::new(out, merged_mask, result_precision, result_scale))
 }
 
-/// Divide two decimal arrays. The numerator is scaled up by 10^result_scale
-/// so the integer division preserves fractional digits.
-/// Result scale = max(s1, s2).
+/// Divide two decimal arrays. The numerator is scaled up so integer division
+/// preserves fractional digits. Result scale = max of the two input scales.
 fn decimal_divide<T: Integer + 'static>(
     lhs: &DecimalArray<T>,
     rhs: &DecimalArray<T>,
@@ -305,7 +299,7 @@ fn decimal_remainder<T: Integer + 'static>(
 }
 
 /// Element-wise negate on a decimal array. Overflow is only possible when
-/// negating the minimum value of the backing integer (e.g., i32::MIN).
+/// negating the minimum value of the backing integer, for e.g. i32::MIN.
 pub fn decimal_negate<T: Integer + 'static>(
     arr: &DecimalArray<T>,
 ) -> Result<DecimalArray<T>, KernelError> {
@@ -355,8 +349,8 @@ pub fn decimal_abs<T: Integer + 'static>(
 /// Rescale a decimal array to a new scale, multiplying or dividing the raw
 /// values by 10^|new_scale - old_scale|.
 ///
-/// Scaling up (new_scale > old_scale) uses checked multiplication.
-/// Scaling down (new_scale < old_scale) truncates via integer division.
+/// Scaling up multiplies raw values by the power-of-ten difference using
+/// checked arithmetic. Scaling down divides and truncates.
 pub fn decimal_rescale<T: Integer + 'static>(
     arr: &DecimalArray<T>,
     new_scale: i8,
@@ -385,7 +379,7 @@ pub fn decimal_rescale<T: Integer + 'static>(
                 .ok_or_else(|| overflow_error("rescale up"))?;
         }
     } else {
-        // Scale down: divide by factor (truncating)
+        // Scale down: truncating division by factor
         for i in 0..len {
             if arr.is_null(i) {
                 out[i] = T::zero();
@@ -398,9 +392,9 @@ pub fn decimal_rescale<T: Integer + 'static>(
     Ok(DecimalArray::new(out, arr.null_mask.clone(), arr.precision, new_scale))
 }
 
-/// Element-wise comparison of two decimal arrays, returning a `Bitmask` of
-/// results. Operands with different scales are rescaled to the finer scale
-/// before comparing.
+/// Element-wise comparison of two decimal arrays, returning a `Bitmask`.
+/// Operands with different scales are rescaled to the finer scale before
+/// comparing.
 pub fn decimal_compare<T: Integer + 'static>(
     lhs: &DecimalArray<T>,
     rhs: &DecimalArray<T>,
@@ -576,11 +570,11 @@ mod tests {
 
     #[test]
     fn add_different_scale() {
-        // 100.0 (scale=1) + 10.00 (scale=2) = 110.00 (scale=2)
+        // 100.0 at scale=1 + 10.00 at scale=2 = 110.00 at scale=2
         let a = dec64(&[1000], 18, 1); // raw 1000, scale 1 => 100.0
         let b = dec64(&[1000], 18, 2); // raw 1000, scale 2 => 10.00
         let result = decimal_binary(&a, &b, Add).unwrap();
-        // lhs rescaled: 1000 * 10 = 10000 (at scale 2) => 100.00
+        // lhs rescaled: 1000 * 10 = 10000 at scale 2 => 100.00
         // 10000 + 1000 = 11000 at scale 2 => 110.00
         assert_eq!(result.data.as_slice(), &[11000]);
         assert_eq!(result.scale, 2);
@@ -591,7 +585,7 @@ mod tests {
         let a = dec32(&[1000], 9, 1); // 100.0
         let b = dec32(&[500], 9, 2);  // 5.00
         let result = decimal_binary(&a, &b, Subtract).unwrap();
-        // lhs rescaled: 1000 * 10 = 10000 (scale 2) => 100.00
+        // lhs rescaled: 1000 * 10 = 10000 at scale 2 => 100.00
         // 10000 - 500 = 9500 => 95.00
         assert_eq!(result.data.as_slice(), &[9500]);
         assert_eq!(result.scale, 2);
@@ -779,7 +773,7 @@ mod tests {
     fn compare_different_scale() {
         use crate::enums::operators::ComparisonOperator::*;
 
-        // 10.0 (scale=1) vs 10.00 (scale=2) should be equal
+        // 10.0 at scale=1 vs 10.00 at scale=2 should be equal
         let a = dec64(&[100], 18, 1);  // 10.0
         let b = dec64(&[1000], 18, 2); // 10.00
         let eq = decimal_compare(&a, &b, Equals).unwrap();

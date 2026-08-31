@@ -233,8 +233,7 @@ pub enum KernelError {
     /// Division by zero or similar mathematical errors.
     DivideByZero(String),
 
-    /// Arithmetic overflow that would silently corrupt results. Used by
-    /// decimal kernels where wrapping is not acceptable.
+    /// Arithmetic overflow detected during a kernel operation.
     Overflow(String),
 }
 

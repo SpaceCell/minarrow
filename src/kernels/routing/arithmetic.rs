@@ -193,7 +193,7 @@ pub fn scalar_arithmetic(
         #[cfg(feature = "large_string")]
         (Scalar::String64(l), Scalar::String32(r), Add) => Scalar::String64(format!("{}{}", l, r)),
 
-        // Decimal scalar operations (same width, same scale)
+        // Decimal scalar operations at matching width and scale
         #[cfg(feature = "decimal")]
         (Scalar::Decimal32(l, ls), Scalar::Decimal32(r, rs), Add) if ls == rs => {
             Scalar::Decimal32(l.checked_add(r).ok_or_else(|| MinarrowError::KernelError(
@@ -509,7 +509,7 @@ fn arithmetic_dispatch(
         }
 
         // -----------------------------------------------------------------
-        // Decimal width promotion (narrower widened to wider)
+        // Decimal width promotion, narrower widened to wider
         // -----------------------------------------------------------------
 
         #[cfg(feature = "decimal")]
@@ -570,7 +570,7 @@ fn arithmetic_dispatch(
         }
 
         // -----------------------------------------------------------------
-        // Integer + Decimal auto-promotion (integer promoted to decimal)
+        // Integer + Decimal auto-promotion, integer promoted to decimal
         // -----------------------------------------------------------------
 
         #[cfg(feature = "decimal")]
@@ -661,7 +661,7 @@ fn arithmetic_dispatch(
         }
 
         // -----------------------------------------------------------------
-        // Float + Decimal auto-promotion (decimal demoted to Float64)
+        // Float + Decimal auto-promotion, decimal demoted to Float64
         // -----------------------------------------------------------------
 
         #[cfg(feature = "decimal")]
@@ -745,7 +745,7 @@ fn arithmetic_dispatch(
             )))
         }
 
-        // Float32 + Decimal -> Float64 (promote both to f64)
+        // Float32 + Decimal -> Float64, both promoted to f64
         #[cfg(feature = "decimal")]
         (
             Array::NumericArray(NumericArray::Float32(l)),
@@ -848,37 +848,10 @@ fn arithmetic_dispatch(
 #[cfg(feature = "decimal")]
 mod decimal_dispatch_tests {
     use super::*;
-    use crate::{Array, DecimalArray, FloatArray, IntegerArray, MaskedArray, NumericArray};
-
-    fn arr_dec32(vals: &[i32], p: u8, s: i8) -> Array {
-        Array::NumericArray(NumericArray::Decimal32(
-            DecimalArray::<i32>::from_slice(vals, p, s).into(),
-        ))
-    }
-
-    fn arr_dec64(vals: &[i64], p: u8, s: i8) -> Array {
-        Array::NumericArray(NumericArray::Decimal64(
-            DecimalArray::<i64>::from_slice(vals, p, s).into(),
-        ))
-    }
-
-    fn arr_dec128(vals: &[i128], p: u8, s: i8) -> Array {
-        Array::NumericArray(NumericArray::Decimal128(
-            DecimalArray::<i128>::from_slice(vals, p, s).into(),
-        ))
-    }
-
-    fn arr_i32(vals: &[i32]) -> Array {
-        Array::from_int32(IntegerArray::from_slice(vals))
-    }
-
-    fn arr_i64(vals: &[i64]) -> Array {
-        Array::from_int64(IntegerArray::from_slice(vals))
-    }
-
-    fn arr_f64(vals: &[f64]) -> Array {
-        Array::from_float64(FloatArray::from_slice(vals))
-    }
+    use crate::{
+        arr_dec128, arr_dec32, arr_dec64, arr_f64, arr_i32, arr_i64, Array, DecimalArray,
+        MaskedArray, NumericArray,
+    };
 
     // -----------------------------------------------------------------------
     // Same-type decimal arithmetic through dispatch
@@ -888,8 +861,8 @@ mod decimal_dispatch_tests {
     fn dispatch_decimal32_add() {
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Add,
-            arr_dec32(&[100, 200, 300], 9, 2),
-            arr_dec32(&[10, 20, 30], 9, 2),
+            arr_dec32!(&[100, 200, 300], 9, 2),
+            arr_dec32!(&[10, 20, 30], 9, 2),
             None,
         )
         .unwrap();
@@ -907,8 +880,8 @@ mod decimal_dispatch_tests {
     fn dispatch_decimal64_subtract() {
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Subtract,
-            arr_dec64(&[5000, 3000], 18, 4),
-            arr_dec64(&[1000, 2000], 18, 4),
+            arr_dec64!(&[5000, 3000], 18, 4),
+            arr_dec64!(&[1000, 2000], 18, 4),
             None,
         )
         .unwrap();
@@ -926,8 +899,8 @@ mod decimal_dispatch_tests {
     fn dispatch_decimal128_multiply() {
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Multiply,
-            arr_dec128(&[1000i128], 38, 2),
-            arr_dec128(&[200i128], 38, 3),
+            arr_dec128!(&[1000i128], 38, 2),
+            arr_dec128!(&[200i128], 38, 3),
             None,
         )
         .unwrap();
@@ -947,11 +920,11 @@ mod decimal_dispatch_tests {
 
     #[test]
     fn dispatch_decimal_add_different_scale() {
-        // 10.0 (scale=1) + 1.00 (scale=2) = 11.00 (scale=2)
+        // 10.0 at scale=1 + 1.00 at scale=2 = 11.00 at scale=2
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Add,
-            arr_dec64(&[100], 18, 1),
-            arr_dec64(&[100], 18, 2),
+            arr_dec64!(&[100], 18, 1),
+            arr_dec64!(&[100], 18, 2),
             None,
         )
         .unwrap();
@@ -973,8 +946,8 @@ mod decimal_dispatch_tests {
     fn dispatch_decimal32_plus_decimal64_widens() {
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Add,
-            arr_dec32(&[100], 9, 2),
-            arr_dec64(&[200], 18, 2),
+            arr_dec32!(&[100], 9, 2),
+            arr_dec64!(&[200], 18, 2),
             None,
         )
         .unwrap();
@@ -992,8 +965,8 @@ mod decimal_dispatch_tests {
     fn dispatch_decimal64_plus_decimal128_widens() {
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Add,
-            arr_dec64(&[500], 18, 2),
-            arr_dec128(&[600i128], 38, 2),
+            arr_dec64!(&[500], 18, 2),
+            arr_dec128!(&[600i128], 38, 2),
             None,
         )
         .unwrap();
@@ -1012,13 +985,13 @@ mod decimal_dispatch_tests {
 
     #[test]
     fn dispatch_int32_plus_decimal32() {
-        // integer 5 + decimal 1.00 (raw=100, scale=2)
+        // integer 5 + decimal 1.00, raw=100 at scale=2
         // integer promoted: 5 * 100 = 500 at scale 2
         // 500 + 100 = 600 at scale 2 => 6.00
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Add,
-            arr_i32(&[5]),
-            arr_dec32(&[100], 9, 2),
+            arr_i32!(&[5]),
+            arr_dec32!(&[100], 9, 2),
             None,
         )
         .unwrap();
@@ -1034,13 +1007,13 @@ mod decimal_dispatch_tests {
 
     #[test]
     fn dispatch_decimal64_minus_int64() {
-        // decimal 10.00 (raw=1000, scale=2) - integer 3
+        // decimal 10.00, raw=1000 at scale=2, minus integer 3
         // integer promoted: 3 * 100 = 300 at scale 2
         // 1000 - 300 = 700 at scale 2 => 7.00
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Subtract,
-            arr_dec64(&[1000], 18, 2),
-            arr_i64(&[3]),
+            arr_dec64!(&[1000], 18, 2),
+            arr_i64!(&[3]),
             None,
         )
         .unwrap();
@@ -1060,11 +1033,11 @@ mod decimal_dispatch_tests {
 
     #[test]
     fn dispatch_float64_plus_decimal32() {
-        // 2.5 + 1.00 (raw=100, scale=2) = 3.5
+        // 2.5 + 1.00 raw=100 at scale=2 = 3.5
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Add,
-            arr_f64(&[2.5]),
-            arr_dec32(&[100], 9, 2),
+            arr_f64!(&[2.5]),
+            arr_dec32!(&[100], 9, 2),
             None,
         )
         .unwrap();
@@ -1079,11 +1052,11 @@ mod decimal_dispatch_tests {
 
     #[test]
     fn dispatch_decimal64_times_float64() {
-        // 10.00 (raw=1000, scale=2) * 2.0 = 20.0
+        // 10.00 raw=1000 at scale=2 * 2.0 = 20.0
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Multiply,
-            arr_dec64(&[1000], 18, 2),
-            arr_f64(&[2.0]),
+            arr_dec64!(&[1000], 18, 2),
+            arr_f64!(&[2.0]),
             None,
         )
         .unwrap();
@@ -1104,15 +1077,15 @@ mod decimal_dispatch_tests {
     fn dispatch_decimal_overflow_returns_error() {
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Add,
-            arr_dec32(&[i32::MAX], 9, 0),
-            arr_dec32(&[1], 9, 0),
+            arr_dec32!(&[i32::MAX], 9, 0),
+            arr_dec32!(&[1], 9, 0),
             None,
         );
         assert!(result.is_err(), "expected overflow error");
     }
 
     // -----------------------------------------------------------------------
-    // Broadcasting (length-1 decimal)
+    // Broadcasting with length-1 decimal
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1120,8 +1093,8 @@ mod decimal_dispatch_tests {
         // [1.00, 2.00, 3.00] + [0.50] => [1.50, 2.50, 3.50]
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Add,
-            arr_dec64(&[100, 200, 300], 18, 2),
-            arr_dec64(&[50], 18, 2),
+            arr_dec64!(&[100, 200, 300], 18, 2),
+            arr_dec64!(&[50], 18, 2),
             None,
         )
         .unwrap();
@@ -1143,8 +1116,8 @@ mod decimal_dispatch_tests {
     fn dispatch_decimal_divide() {
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Divide,
-            arr_dec64(&[10000], 18, 2), // 100.00
-            arr_dec64(&[400], 18, 2),   // 4.00
+            arr_dec64!(&[10000], 18, 2), // 100.00
+            arr_dec64!(&[400], 18, 2),   // 4.00
             None,
         )
         .unwrap();
@@ -1162,8 +1135,8 @@ mod decimal_dispatch_tests {
     fn dispatch_decimal_remainder() {
         let result = resolve_binary_arithmetic(
             ArithmeticOperator::Remainder,
-            arr_dec64(&[1000], 18, 2), // 10.00
-            arr_dec64(&[300], 18, 2),  // 3.00
+            arr_dec64!(&[1000], 18, 2), // 10.00
+            arr_dec64!(&[300], 18, 2),  // 3.00
             None,
         )
         .unwrap();
