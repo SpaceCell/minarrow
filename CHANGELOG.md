@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
+## 0.18.0 (Unreleased)
+
+### Added
+
+* **Decimal array support** behind the `decimal` feature flag.
+  * Added `DecimalArray<T>` for Decimal32, Decimal64, and Decimal128.
+  * Supports configurable precision and scale.
+  * Integrates with `NumericArray`, `Array`, `Scalar`, and `Value`, views and chunked arrays.
+  * FFI import/export, Arrow and Polars conversion.
+  * Arithmetic, comparisons, type conversion, and broadcasting.
+  * Scale-aware display formatting.
+  Note: All decimal-specific functionality is gated with `#[cfg(feature = "decimal")]`.
+* `MatrixV`, a row-window view over `Matrix`, including `Value` integration.
+* `Cube` conversion entry points for `Value` and `Vec<Table>`.
+* `Scalar::arrow_type()` for mapping scalar values to `ArrowType`.
+* `From<isize>` and `From<usize>` implementations for `Scalar` and `Value`.
+* One-element `From` implementations for primitive numeric types on `Array` and `ArrayV`.
+* `TryFrom<Vec<Value>>` for `Value`, with mixed-variant collections rejected.
+
+### Fixed
+
+* `Bitmask` shared storage is materialised before mutation to prevent writes through aliased storage.
+* `Matrix` behaviour for scalar and `Value` integration.
+* Null-mask propagation during broadcasting for all array types.
+
+### Changed
+* Updated the `vec64` dependency for compatibility with the nightly allocator API.
+
 ## 0.17.0 - 2026-08-15
 
 This release:
@@ -92,6 +120,20 @@ overflow wraps consistently with add/subtract/multiply.
   the `table_metadata` feature is enabled.
 
 # Minarrow-py / Minarrow-pyo3
+
+## 0.18.0 (Unreleased)
+
+### Added
+- Decimal array support in both packages:
+  - **pyo3**: Decimal32/64/128 export and import via the Arrow C Data
+    Interface PyCapsule protocol. All widths map to PyArrow `decimal128`
+    for interoperability. Zero-copy confirmed.
+  - **minarrow-py**: construction from `list[int]` via dtype strings
+    (`decimal128(P,S)`, `decimal64(P,S)`, `decimal32(P,S)`), element
+    access returning `decimal.Decimal`, scale-aware `repr`, and PyArrow
+    round-trips via `from_arrow()` / `to_arrow()`.
+- `.precision` and `.scale` properties on `Array` for all numeric types.
+- `decimal` feature flag (default-on) in both packages.
 
 ## 0.17.0 - 2026-08-15
 
