@@ -53,16 +53,18 @@ def test_decimal_with_nulls():
     assert a.null_count == 1
 
 
-# --- Properties on non-decimal arrays return None ---------------------------
+# --- Precision and scale on non-decimal types --------------------------------
 
 
-def test_precision_none_for_int():
+def test_precision_for_int64():
     a = mp.Array([1, 2, 3])
-    assert a.precision is None
+    assert a.precision == 19
+    assert a.scale == 0
 
 
-def test_scale_none_for_float():
+def test_precision_for_float64():
     a = mp.Array([1.0, 2.0])
+    assert a.precision == 15
     assert a.scale is None
 
 

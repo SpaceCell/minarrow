@@ -114,24 +114,50 @@ impl PyArrayInner {
         }
     }
 
-    /// The decimal precision, or `None` for non-decimal arrays.
-    #[cfg(feature = "decimal")]
-    pub fn precision(&self) -> Option<u8> {
+    /// Maximum number of significant decimal digits this array can represent.
+    pub fn precision(&self) -> u8 {
         match self.arrow_dtype() {
-            ArrowType::Decimal32(p, _)
-            | ArrowType::Decimal64(p, _)
-            | ArrowType::Decimal128(p, _) => Some(p),
-            _ => None,
+            ArrowType::Int32 => 10,
+            ArrowType::Int64 => 19,
+            ArrowType::UInt32 => 10,
+            ArrowType::UInt64 => 20,
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::Int8 => 3,
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::Int16 => 5,
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::UInt8 => 3,
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::UInt16 => 5,
+            ArrowType::Float32 => 7,
+            ArrowType::Float64 => 15,
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, _) => p,
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, _) => p,
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, _) => p,
+            _ => 0,
         }
     }
 
-    /// The decimal scale, or `None` for non-decimal arrays.
-    #[cfg(feature = "decimal")]
+    /// Number of digits after the decimal point. Zero for integer types.
+    /// Floats return `None` because scale varies per value. Non-numeric
+    /// types also return `None`.
     pub fn scale(&self) -> Option<i8> {
         match self.arrow_dtype() {
-            ArrowType::Decimal32(_, s)
-            | ArrowType::Decimal64(_, s)
-            | ArrowType::Decimal128(_, s) => Some(s),
+            ArrowType::Int32 | ArrowType::Int64
+            | ArrowType::UInt32 | ArrowType::UInt64 => Some(0),
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::Int8 | ArrowType::Int16
+            | ArrowType::UInt8 | ArrowType::UInt16 => Some(0),
+            ArrowType::Float32 | ArrowType::Float64 => None,
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(_, s) => Some(s),
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(_, s) => Some(s),
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(_, s) => Some(s),
             _ => None,
         }
     }
@@ -552,17 +578,13 @@ impl PyArray {
         self.0.arrow_type()
     }
 
-    /// The decimal precision (total significant digits), or `None` for
-    /// non-decimal arrays.
-    #[cfg(feature = "decimal")]
+    /// Maximum number of significant decimal digits this array can represent.
     #[getter]
-    fn precision(&self) -> Option<u8> {
+    fn precision(&self) -> u8 {
         self.0.precision()
     }
 
-    /// The decimal scale (digits after the decimal point), or `None` for
-    /// non-decimal arrays.
-    #[cfg(feature = "decimal")]
+    /// Decimal scale metadata, or `None` for non-decimal types.
     #[getter]
     fn scale(&self) -> Option<i8> {
         self.0.scale()
