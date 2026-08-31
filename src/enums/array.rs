@@ -4802,6 +4802,38 @@ macro_rules! arr_f64 {
     };
 }
 
+// ======== Decimal ========
+
+#[cfg(feature = "decimal")]
+#[macro_export]
+macro_rules! arr_dec32 {
+    (&[ $($x:expr),+ $(,)? ], $p:expr, $s:expr) => {{
+        $crate::Array::from_decimal32(
+            $crate::DecimalArray::<i32>::from_slice(&[$($x),+], $p, $s)
+        )
+    }};
+}
+
+#[cfg(feature = "decimal")]
+#[macro_export]
+macro_rules! arr_dec64 {
+    (&[ $($x:expr),+ $(,)? ], $p:expr, $s:expr) => {{
+        $crate::Array::from_decimal64(
+            $crate::DecimalArray::<i64>::from_slice(&[$($x),+], $p, $s)
+        )
+    }};
+}
+
+#[cfg(feature = "decimal")]
+#[macro_export]
+macro_rules! arr_dec128 {
+    (&[ $($x:expr),+ $(,)? ], $p:expr, $s:expr) => {{
+        $crate::Array::from_decimal128(
+            $crate::DecimalArray::<i128>::from_slice(&[$($x),+], $p, $s)
+        )
+    }};
+}
+
 // ======== Boolean ========
 
 #[macro_export]

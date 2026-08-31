@@ -232,6 +232,9 @@ pub enum KernelError {
 
     /// Division by zero or similar mathematical errors.
     DivideByZero(String),
+
+    /// Arithmetic overflow detected during a kernel operation.
+    Overflow(String),
 }
 
 impl fmt::Display for KernelError {
@@ -247,6 +250,7 @@ impl fmt::Display for KernelError {
             KernelError::Plan(msg) => write!(f, "Planning error: {}", msg),
             KernelError::OutOfBounds(msg) => write!(f, "Out of bounds: {}", msg),
             KernelError::DivideByZero(msg) => write!(f, "Divide by Zero error: {}", msg),
+            KernelError::Overflow(msg) => write!(f, "Arithmetic overflow: {}", msg),
         }
     }
 }

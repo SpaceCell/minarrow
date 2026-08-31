@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use crate::enums::error::KernelError;
+#[cfg(feature = "decimal")]
+use crate::DecimalArray;
 use crate::{
-    Array, ArrayV, Bitmask, BooleanArray, FloatArray, IntegerArray, MaskedArray, NumericArray,
+    Array, ArrayV, Bitmask, BooleanArray, FloatArray, IntegerArray, NumericArray,
     StringArray, TextArray, Vec64, vec64,
 };
 #[cfg(feature = "decimal")]
@@ -25,89 +27,58 @@ use crate::DecimalArray;
 pub fn broadcast_length_1_array(av: ArrayV, len: usize) -> Result<Array, KernelError> {
     debug_assert_eq!(av.len(), 1, "caller guarantees scalar input");
 
+    let null_mask = match av.array.null_mask() {
+        Some(m) if !m.get(0) => Some(Bitmask::new_set_all(len, false)),
+        _ => None,
+    };
+
     match av.array {
         Array::NumericArray(NumericArray::Int32(a)) => Ok(Array::from_int32(
-            IntegerArray::<i32>::from_vec64(vec64![a.data[0]; len], None),
+            IntegerArray::<i32>::from_vec64(vec64![a.data[0]; len], null_mask),
         )),
         Array::NumericArray(NumericArray::Int64(a)) => Ok(Array::from_int64(
-            IntegerArray::<i64>::from_vec64(vec64![a.data[0]; len], None),
+            IntegerArray::<i64>::from_vec64(vec64![a.data[0]; len], null_mask),
         )),
         Array::NumericArray(NumericArray::UInt32(a)) => Ok(Array::from_uint32(
-            IntegerArray::<u32>::from_vec64(vec64![a.data[0]; len], None),
+            IntegerArray::<u32>::from_vec64(vec64![a.data[0]; len], null_mask),
         )),
         Array::NumericArray(NumericArray::UInt64(a)) => Ok(Array::from_uint64(
-            IntegerArray::<u64>::from_vec64(vec64![a.data[0]; len], None),
+            IntegerArray::<u64>::from_vec64(vec64![a.data[0]; len], null_mask),
         )),
         Array::NumericArray(NumericArray::Float32(a)) => Ok(Array::from_float32(
-            FloatArray::<f32>::from_vec64(vec64![a.data[0]; len], None),
+            FloatArray::<f32>::from_vec64(vec64![a.data[0]; len], null_mask),
         )),
         Array::NumericArray(NumericArray::Float64(a)) => Ok(Array::from_float64(
-            FloatArray::<f64>::from_vec64(vec64![a.data[0]; len], None),
+            FloatArray::<f64>::from_vec64(vec64![a.data[0]; len], null_mask),
         )),
-        Array::BooleanArray(a) => match a.get(0) {
-            Some(v) => {
-                let bitmask = Bitmask::new_set_all(len, v);
-                Ok(Array::BooleanArray(BooleanArray::new(bitmask, None).into()))
-            }
-            None => Err(KernelError::UnsupportedType(
-                "broadcasting null boolean values not supported when no mask is supplied".into(),
-            )),
-        },
+        Array::BooleanArray(a) => {
+            let v = a.data.get(0);
+            let bitmask = Bitmask::new_set_all(len, v);
+            Ok(Array::BooleanArray(BooleanArray::new(bitmask, null_mask).into()))
+        }
         Array::TextArray(TextArray::String32(a)) => {
-            // Get the first string from the array, which should have exactly 1 string
             let s = a.get_str(av.offset).unwrap_or("");
             let strs: Vec64<&str> = std::iter::repeat(s).take(len).collect();
-            Ok(Array::from_string32(StringArray::from_vec64(strs, None)))
+            Ok(Array::from_string32(StringArray::from_vec64(strs, null_mask)))
         }
         #[cfg(feature = "large_string")]
         Array::TextArray(TextArray::String64(a)) => {
-            // Get the first string from the array, which should have exactly 1 string
             let s = a.get_str(av.offset).unwrap_or("");
             let strs: Vec64<&str> = std::iter::repeat(s).take(len).collect();
-            Ok(Array::from_string64(StringArray::from_vec64(strs, None)))
+            Ok(Array::from_string64(StringArray::from_vec64(strs, null_mask)))
         }
         #[cfg(feature = "decimal")]
-        Array::NumericArray(NumericArray::Decimal32(a)) => {
-            let null_mask = if a.is_null(0) {
-                Some(Bitmask::new_set_all(len, false))
-            } else {
-                None
-            };
-            Ok(Array::from_decimal32(DecimalArray::from_vec64(
-                vec64![a.data[0]; len],
-                null_mask,
-                a.precision,
-                a.scale,
-            )))
-        }
+        Array::NumericArray(NumericArray::Decimal32(a)) => Ok(Array::from_decimal32(
+            DecimalArray::from_vec64(vec64![a.data[0]; len], null_mask, a.precision, a.scale),
+        )),
         #[cfg(feature = "decimal")]
-        Array::NumericArray(NumericArray::Decimal64(a)) => {
-            let null_mask = if a.is_null(0) {
-                Some(Bitmask::new_set_all(len, false))
-            } else {
-                None
-            };
-            Ok(Array::from_decimal64(DecimalArray::from_vec64(
-                vec64![a.data[0]; len],
-                null_mask,
-                a.precision,
-                a.scale,
-            )))
-        }
+        Array::NumericArray(NumericArray::Decimal64(a)) => Ok(Array::from_decimal64(
+            DecimalArray::from_vec64(vec64![a.data[0]; len], null_mask, a.precision, a.scale),
+        )),
         #[cfg(feature = "decimal")]
-        Array::NumericArray(NumericArray::Decimal128(a)) => {
-            let null_mask = if a.is_null(0) {
-                Some(Bitmask::new_set_all(len, false))
-            } else {
-                None
-            };
-            Ok(Array::from_decimal128(DecimalArray::from_vec64(
-                vec64![a.data[0]; len],
-                null_mask,
-                a.precision,
-                a.scale,
-            )))
-        }
+        Array::NumericArray(NumericArray::Decimal128(a)) => Ok(Array::from_decimal128(
+            DecimalArray::from_vec64(vec64![a.data[0]; len], null_mask, a.precision, a.scale),
+        )),
         _ => {
             return Err(KernelError::UnsupportedType(
                 "broadcast not yet implemented for this array variant".into(),
