@@ -19,10 +19,8 @@ use crate::{
     Array, ArrayV, Bitmask, BooleanArray, FloatArray, IntegerArray, NumericArray,
     StringArray, TextArray, Vec64, vec64,
 };
-#[cfg(feature = "decimal")]
-use crate::DecimalArray;
 
-/// Repeat a length-1 `Array` to `len`.  
+/// Repeat a length-1 `Array` to `len`.
 /// Errors if the input length is *not* 1, or the variant is unsupported.  
 pub fn broadcast_length_1_array(av: ArrayV, len: usize) -> Result<Array, KernelError> {
     debug_assert_eq!(av.len(), 1, "caller guarantees scalar input");
