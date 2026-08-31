@@ -1103,3 +1103,72 @@ fn rt_polars_super_table_shared_categorical32() {
         assert_eq!(d0.values(), d1.values());
     }
 }
+
+// ── Decimal round-trips ─────────────────────────────────────────────────
+
+#[cfg(feature = "decimal")]
+#[test]
+fn rt_polars_decimal128() {
+    use minarrow::DecimalArray;
+
+    let arr = DecimalArray::<i128>::from_slice(&[12345, -67890, 0], 10, 2);
+    let a = Array::from_decimal128(arr.clone());
+    let f = Field::new("dec128", ArrowType::Decimal128(10, 2), false, None);
+    let fa = FieldArray::new(f, a);
+    let s = fa.to_polars();
+    let back = FieldArray::from_polars(&s);
+
+    // Polars maps decimal to its Decimal dtype, which round-trips as Decimal128
+    // with the same precision and scale.
+    assert_eq!(back.field.name, "dec128");
+    assert_eq!(back.field.dtype, ArrowType::Decimal128(10, 2));
+    assert_eq!(back.array, Array::from_decimal128(arr));
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn rt_polars_decimal128_with_nulls() {
+    use minarrow::{DecimalArray, MaskedArray as _};
+
+    let mut arr = DecimalArray::<i128>::with_capacity(4, true, 10, 2);
+    arr.push(12345);
+    arr.push_null();
+    arr.push(67890);
+    arr.push_null();
+    let a = Array::from_decimal128(arr.clone());
+    let f = Field::new("dec128_n", ArrowType::Decimal128(10, 2), false, None);
+    let fa = FieldArray::new(f, a);
+    let s = fa.to_polars();
+    let back = FieldArray::from_polars(&s);
+
+    assert_eq!(back.field.name, "dec128_n");
+    assert_eq!(back.field.dtype, ArrowType::Decimal128(10, 2));
+    assert_eq!(back.array, Array::from_decimal128(arr));
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn rt_polars_decimal128_bare_array() {
+    use minarrow::DecimalArray;
+
+    let arr = DecimalArray::<i128>::from_slice(&[100, 200, 300], 5, 1);
+    let a = Array::from_decimal128(arr.clone());
+    let s = a.to_polars("prices");
+    let back = Array::from_polars(&s);
+    assert_eq!(back, Array::from_decimal128(arr));
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn rt_polars_decimal128_empty() {
+    use minarrow::DecimalArray;
+
+    let arr = DecimalArray::<i128>::from_slice(&[], 10, 2);
+    let a = Array::from_decimal128(arr.clone());
+    let f = Field::new("dec128_empty", ArrowType::Decimal128(10, 2), false, None);
+    let fa = FieldArray::new(f, a);
+    let s = fa.to_polars();
+    let back = FieldArray::from_polars(&s);
+    assert_eq!(back.field.dtype, ArrowType::Decimal128(10, 2));
+    assert_eq!(back.array, Array::from_decimal128(arr));
+}
