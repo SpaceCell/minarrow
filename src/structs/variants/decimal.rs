@@ -866,6 +866,372 @@ impl From<DecimalArray<i64>> for DecimalArray<i128> {
 }
 
 // ---------------------------------------------------------------------------
+// Type conversions
+// ---------------------------------------------------------------------------
+
+impl<T: Integer> DecimalArray<T> {
+    /// Converts to `FloatArray<f64>` by dividing each raw value by `10^scale`.
+    ///
+    /// Null entries propagate as nulls in the output. The conversion is
+    /// inherently lossy for large i128 values whose magnitude exceeds the
+    /// 53-bit mantissa of f64.
+    pub fn to_float64_array(&self) -> crate::FloatArray<f64> {
+        let divisor = 10_f64.powi(self.scale as i32);
+        let data: Vec64<f64> = self
+            .data
+            .iter()
+            .map(|v| v.to_f64().unwrap() / divisor)
+            .collect();
+        crate::FloatArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+        }
+    }
+
+    /// Converts to `FloatArray<f32>` by dividing each raw value by `10^scale`.
+    ///
+    /// Null entries propagate as nulls in the output. Precision loss is
+    /// greater than `to_float64_array` due to the 23-bit mantissa of f32.
+    pub fn to_float32_array(&self) -> crate::FloatArray<f32> {
+        let divisor = 10_f32.powi(self.scale as i32);
+        let data: Vec64<f32> = self
+            .data
+            .iter()
+            .map(|v| v.to_f64().unwrap() as f32 / divisor)
+            .collect();
+        crate::FloatArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+        }
+    }
+
+    /// Converts to `IntegerArray<i64>` by dividing each raw value by
+    /// `10^scale` (truncating toward zero).
+    ///
+    /// Returns `MinarrowError::Overflow` if any scaled value falls outside
+    /// the i64 range. Null entries propagate as nulls in the output.
+    pub fn to_int64_array(&self) -> Result<crate::IntegerArray<i64>, crate::enums::error::MinarrowError> {
+        let divisor = 10_i128.pow(self.scale.max(0) as u32);
+        let mut data = Vec64::with_capacity(self.len());
+        for &raw in self.data.iter() {
+            let scaled = raw.to_i128().unwrap() / divisor;
+            let val = i64::try_from(scaled).map_err(|_| crate::enums::error::MinarrowError::Overflow {
+                value: scaled.to_string(),
+                target: "i64",
+            })?;
+            data.push(val);
+        }
+        Ok(crate::IntegerArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+        })
+    }
+
+    /// Converts to `IntegerArray<i32>` by dividing each raw value by
+    /// `10^scale` (truncating toward zero).
+    ///
+    /// Returns `MinarrowError::Overflow` if any scaled value falls outside
+    /// the i32 range. Null entries propagate as nulls in the output.
+    pub fn to_int32_array(&self) -> Result<crate::IntegerArray<i32>, crate::enums::error::MinarrowError> {
+        let divisor = 10_i128.pow(self.scale.max(0) as u32);
+        let mut data = Vec64::with_capacity(self.len());
+        for &raw in self.data.iter() {
+            let scaled = raw.to_i128().unwrap() / divisor;
+            let val = i32::try_from(scaled).map_err(|_| crate::enums::error::MinarrowError::Overflow {
+                value: scaled.to_string(),
+                target: "i32",
+            })?;
+            data.push(val);
+        }
+        Ok(crate::IntegerArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+        })
+    }
+
+    /// Converts to `IntegerArray<u64>` by dividing each raw value by
+    /// `10^scale` (truncating toward zero).
+    ///
+    /// Returns `MinarrowError::Overflow` if any scaled value is negative or
+    /// exceeds the u64 range. Null entries propagate as nulls in the output.
+    pub fn to_uint64_array(&self) -> Result<crate::IntegerArray<u64>, crate::enums::error::MinarrowError> {
+        let divisor = 10_i128.pow(self.scale.max(0) as u32);
+        let mut data = Vec64::with_capacity(self.len());
+        for &raw in self.data.iter() {
+            let scaled = raw.to_i128().unwrap() / divisor;
+            let val = u64::try_from(scaled).map_err(|_| crate::enums::error::MinarrowError::Overflow {
+                value: scaled.to_string(),
+                target: "u64",
+            })?;
+            data.push(val);
+        }
+        Ok(crate::IntegerArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+        })
+    }
+
+    /// Converts to `IntegerArray<u32>` by dividing each raw value by
+    /// `10^scale` (truncating toward zero).
+    ///
+    /// Returns `MinarrowError::Overflow` if any scaled value is negative or
+    /// exceeds the u32 range. Null entries propagate as nulls in the output.
+    pub fn to_uint32_array(&self) -> Result<crate::IntegerArray<u32>, crate::enums::error::MinarrowError> {
+        let divisor = 10_i128.pow(self.scale.max(0) as u32);
+        let mut data = Vec64::with_capacity(self.len());
+        for &raw in self.data.iter() {
+            let scaled = raw.to_i128().unwrap() / divisor;
+            let val = u32::try_from(scaled).map_err(|_| crate::enums::error::MinarrowError::Overflow {
+                value: scaled.to_string(),
+                target: "u32",
+            })?;
+            data.push(val);
+        }
+        Ok(crate::IntegerArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+        })
+    }
+
+    /// Constructs a `DecimalArray<T>` from an `IntegerArray` by multiplying
+    /// each value by `10^scale`.
+    ///
+    /// Returns `MinarrowError::Overflow` if any scaled value exceeds the
+    /// range of `T`. Null entries in the source propagate as nulls in the
+    /// output.
+    ///
+    /// ## Example
+    /// ```ignore
+    /// use minarrow::{DecimalArray, IntegerArray};
+    ///
+    /// let ints = IntegerArray::<i64>::from_slice(&[100, 200, 300]);
+    /// let dec = DecimalArray::<i64>::from_integer_array(&ints, 10, 2).unwrap();
+    /// // raw values are 10000, 20000, 30000 (each multiplied by 10^2)
+    /// ```
+    pub fn from_integer_array<I>(
+        src: &crate::IntegerArray<I>,
+        precision: u8,
+        scale: i8,
+    ) -> Result<Self, crate::enums::error::MinarrowError>
+    where
+        I: Integer,
+    {
+        use num_traits::NumCast;
+        let multiplier = 10_i128.pow(scale.max(0) as u32);
+        let mut data = Vec64::with_capacity(src.len());
+        for &raw in src.data.iter() {
+            let wide = raw.to_i128().unwrap();
+            let scaled = wide.checked_mul(multiplier).ok_or_else(|| {
+                crate::enums::error::MinarrowError::Overflow {
+                    value: wide.to_string(),
+                    target: "DecimalArray",
+                }
+            })?;
+            let val: T = NumCast::from(scaled).ok_or_else(|| {
+                crate::enums::error::MinarrowError::Overflow {
+                    value: scaled.to_string(),
+                    target: "DecimalArray",
+                }
+            })?;
+            data.push(val);
+        }
+        Ok(DecimalArray {
+            data: data.into(),
+            null_mask: src.null_mask.clone(),
+            precision,
+            scale,
+        })
+    }
+
+    /// Changes the scale of this array, adjusting raw values to preserve
+    /// the represented decimal quantity.
+    ///
+    /// When `new_scale > self.scale`, raw values are multiplied by
+    /// `10^(new_scale - old_scale)` to add fractional precision. When
+    /// `new_scale < self.scale`, raw values are divided by
+    /// `10^(old_scale - new_scale)`, truncating toward zero.
+    ///
+    /// Returns `MinarrowError::Overflow` if any multiplication overflows
+    /// the backing integer type. The null mask is preserved unchanged.
+    pub fn rescale(&self, new_scale: i8) -> Result<Self, crate::enums::error::MinarrowError> {
+        use num_traits::NumCast;
+        let diff = (new_scale as i32) - (self.scale as i32);
+        let mut data = Vec64::with_capacity(self.len());
+
+        if diff == 0 {
+            // No change needed, clone the data
+            return Ok(Self {
+                data: self.data.clone(),
+                null_mask: self.null_mask.clone(),
+                precision: self.precision,
+                scale: new_scale,
+            });
+        } else if diff > 0 {
+            // Scale up: multiply raw values
+            let factor = 10_i128.pow(diff as u32);
+            for &raw in self.data.iter() {
+                let wide = raw.to_i128().unwrap();
+                let scaled = wide.checked_mul(factor).ok_or_else(|| {
+                    crate::enums::error::MinarrowError::Overflow {
+                        value: wide.to_string(),
+                        target: "DecimalArray",
+                    }
+                })?;
+                let val: T = NumCast::from(scaled).ok_or_else(|| {
+                    crate::enums::error::MinarrowError::Overflow {
+                        value: scaled.to_string(),
+                        target: "DecimalArray",
+                    }
+                })?;
+                data.push(val);
+            }
+        } else {
+            // Scale down: divide raw values (truncating toward zero)
+            let factor = 10_i128.pow((-diff) as u32);
+            for &raw in self.data.iter() {
+                let wide = raw.to_i128().unwrap();
+                let scaled = wide / factor;
+                let val: T = NumCast::from(scaled).ok_or_else(|| {
+                    crate::enums::error::MinarrowError::Overflow {
+                        value: scaled.to_string(),
+                        target: "DecimalArray",
+                    }
+                })?;
+                data.push(val);
+            }
+        }
+
+        Ok(Self {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+            precision: self.precision,
+            scale: new_scale,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Width conversions - explicit methods
+// ---------------------------------------------------------------------------
+
+impl DecimalArray<i32> {
+    /// Widens to `DecimalArray<i64>` (lossless).
+    ///
+    /// Every i32 value fits in i64 without overflow. Precision, scale, and
+    /// the null mask propagate unchanged.
+    pub fn to_dec64(&self) -> DecimalArray<i64> {
+        let data: Vec64<i64> = self.data.iter().map(|&v| v as i64).collect();
+        DecimalArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+            precision: self.precision,
+            scale: self.scale,
+        }
+    }
+
+    /// Widens to `DecimalArray<i128>` (lossless).
+    ///
+    /// Every i32 value fits in i128 without overflow. Precision, scale, and
+    /// the null mask propagate unchanged.
+    pub fn to_dec128(&self) -> DecimalArray<i128> {
+        let data: Vec64<i128> = self.data.iter().map(|&v| v as i128).collect();
+        DecimalArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+            precision: self.precision,
+            scale: self.scale,
+        }
+    }
+}
+
+impl DecimalArray<i64> {
+    /// Widens to `DecimalArray<i128>` (lossless).
+    ///
+    /// Every i64 value fits in i128 without overflow. Precision, scale, and
+    /// the null mask propagate unchanged.
+    pub fn to_dec128(&self) -> DecimalArray<i128> {
+        let data: Vec64<i128> = self.data.iter().map(|&v| v as i128).collect();
+        DecimalArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+            precision: self.precision,
+            scale: self.scale,
+        }
+    }
+
+    /// Narrows to `DecimalArray<i32>`, returning an error if any value
+    /// exceeds the i32 range.
+    ///
+    /// Precision, scale, and the null mask propagate unchanged on success.
+    pub fn to_dec32(&self) -> Result<DecimalArray<i32>, crate::enums::error::MinarrowError> {
+        let mut data = Vec64::with_capacity(self.len());
+        for &v in self.data.iter() {
+            let narrow = i32::try_from(v).map_err(|_| {
+                crate::enums::error::MinarrowError::Overflow {
+                    value: v.to_string(),
+                    target: "DecimalArray<i32>",
+                }
+            })?;
+            data.push(narrow);
+        }
+        Ok(DecimalArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+            precision: self.precision,
+            scale: self.scale,
+        })
+    }
+}
+
+impl DecimalArray<i128> {
+    /// Narrows to `DecimalArray<i64>`, returning an error if any value
+    /// exceeds the i64 range.
+    ///
+    /// Precision, scale, and the null mask propagate unchanged on success.
+    pub fn to_dec64(&self) -> Result<DecimalArray<i64>, crate::enums::error::MinarrowError> {
+        let mut data = Vec64::with_capacity(self.len());
+        for &v in self.data.iter() {
+            let narrow = i64::try_from(v).map_err(|_| {
+                crate::enums::error::MinarrowError::Overflow {
+                    value: v.to_string(),
+                    target: "DecimalArray<i64>",
+                }
+            })?;
+            data.push(narrow);
+        }
+        Ok(DecimalArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+            precision: self.precision,
+            scale: self.scale,
+        })
+    }
+
+    /// Narrows to `DecimalArray<i32>`, returning an error if any value
+    /// exceeds the i32 range.
+    ///
+    /// Precision, scale, and the null mask propagate unchanged on success.
+    pub fn to_dec32(&self) -> Result<DecimalArray<i32>, crate::enums::error::MinarrowError> {
+        let mut data = Vec64::with_capacity(self.len());
+        for &v in self.data.iter() {
+            let narrow = i32::try_from(v).map_err(|_| {
+                crate::enums::error::MinarrowError::Overflow {
+                    value: v.to_string(),
+                    target: "DecimalArray<i32>",
+                }
+            })?;
+            data.push(narrow);
+        }
+        Ok(DecimalArray {
+            data: data.into(),
+            null_mask: self.null_mask.clone(),
+            precision: self.precision,
+            scale: self.scale,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Parallel iterators (feature-gated)
 // ---------------------------------------------------------------------------
 
@@ -1780,5 +2146,462 @@ mod tests {
             assert_eq!(result.get(3), Some(400));
             assert_eq!(result.null_count(), 2);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // to_float64_array
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_to_float64_array_basic() {
+        // raw=12345, scale=2 -> 123.45
+        let arr = DecimalArray::<i64>::from_slice(&[12345, -67890, 0], 10, 2);
+        let f64_arr = arr.to_float64_array();
+        assert_eq!(f64_arr.len(), 3);
+        assert!((f64_arr.data[0] - 123.45).abs() < 1e-10);
+        assert!((f64_arr.data[1] - (-678.90)).abs() < 1e-10);
+        assert!((f64_arr.data[2] - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_to_float64_array_zero_scale() {
+        let arr = DecimalArray::<i32>::from_slice(&[42, -7], 5, 0);
+        let f64_arr = arr.to_float64_array();
+        assert!((f64_arr.data[0] - 42.0).abs() < 1e-10);
+        assert!((f64_arr.data[1] - (-7.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_to_float64_array_preserves_nulls() {
+        let mut arr = DecimalArray::<i32>::with_capacity(3, true, 10, 2);
+        arr.push(12345);
+        arr.push_null();
+        arr.push(67890);
+        let f64_arr = arr.to_float64_array();
+        assert_eq!(f64_arr.len(), 3);
+        assert!(f64_arr.null_mask.is_some());
+        let mask = f64_arr.null_mask.as_ref().unwrap();
+        assert!(mask.get(0));
+        assert!(!mask.get(1));
+        assert!(mask.get(2));
+    }
+
+    #[test]
+    fn test_to_float64_array_i128() {
+        let arr = DecimalArray::<i128>::from_slice(&[123456789012345i128], 38, 6);
+        let f64_arr = arr.to_float64_array();
+        assert!((f64_arr.data[0] - 123456789.012345).abs() < 1e-4);
+    }
+
+    // -----------------------------------------------------------------------
+    // to_float32_array
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_to_float32_array_basic() {
+        let arr = DecimalArray::<i32>::from_slice(&[12345, -500], 10, 2);
+        let f32_arr = arr.to_float32_array();
+        assert_eq!(f32_arr.len(), 2);
+        assert!((f32_arr.data[0] - 123.45).abs() < 0.01);
+        assert!((f32_arr.data[1] - (-5.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_to_float32_array_preserves_nulls() {
+        let mut arr = DecimalArray::<i64>::with_capacity(2, true, 10, 2);
+        arr.push(100);
+        arr.push_null();
+        let f32_arr = arr.to_float32_array();
+        assert_eq!(f32_arr.len(), 2);
+        assert!(f32_arr.null_mask.is_some());
+        let mask = f32_arr.null_mask.as_ref().unwrap();
+        assert!(mask.get(0));
+        assert!(!mask.get(1));
+    }
+
+    // -----------------------------------------------------------------------
+    // to_int64_array
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_to_int64_array_basic() {
+        // raw=12345, scale=2 -> 12345/100 = 123 (truncating)
+        let arr = DecimalArray::<i64>::from_slice(&[12345, -67890, 0], 10, 2);
+        let i64_arr = arr.to_int64_array().unwrap();
+        assert_eq!(i64_arr.len(), 3);
+        assert_eq!(i64_arr.data[0], 123);
+        assert_eq!(i64_arr.data[1], -678);
+        assert_eq!(i64_arr.data[2], 0);
+    }
+
+    #[test]
+    fn test_to_int64_array_truncation() {
+        // raw=199, scale=2 -> 199/100 = 1 (truncated, not rounded)
+        let arr = DecimalArray::<i32>::from_slice(&[199, -199], 5, 2);
+        let i64_arr = arr.to_int64_array().unwrap();
+        assert_eq!(i64_arr.data[0], 1);
+        assert_eq!(i64_arr.data[1], -1);
+    }
+
+    #[test]
+    fn test_to_int64_array_zero_scale() {
+        let arr = DecimalArray::<i32>::from_slice(&[42, -7], 5, 0);
+        let i64_arr = arr.to_int64_array().unwrap();
+        assert_eq!(i64_arr.data[0], 42);
+        assert_eq!(i64_arr.data[1], -7);
+    }
+
+    #[test]
+    fn test_to_int64_array_preserves_nulls() {
+        let mut arr = DecimalArray::<i64>::with_capacity(3, true, 10, 2);
+        arr.push(12345);
+        arr.push_null();
+        arr.push(0);
+        let i64_arr = arr.to_int64_array().unwrap();
+        assert_eq!(i64_arr.len(), 3);
+        assert!(i64_arr.null_mask.is_some());
+        let mask = i64_arr.null_mask.as_ref().unwrap();
+        assert!(mask.get(0));
+        assert!(!mask.get(1));
+        assert!(mask.get(2));
+    }
+
+    #[test]
+    fn test_to_int64_array_i128_overflow() {
+        // i128 value too large for i64 after scaling
+        let arr = DecimalArray::<i128>::from_slice(
+            &[i128::MAX],
+            38,
+            0,
+        );
+        let result = arr.to_int64_array();
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // to_int32_array
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_to_int32_array_basic() {
+        let arr = DecimalArray::<i64>::from_slice(&[12345, -500], 10, 2);
+        let i32_arr = arr.to_int32_array().unwrap();
+        assert_eq!(i32_arr.data[0], 123);
+        assert_eq!(i32_arr.data[1], -5);
+    }
+
+    #[test]
+    fn test_to_int32_array_overflow() {
+        // raw=300000000000 / 100 = 3000000000, which exceeds i32::MAX
+        let arr = DecimalArray::<i64>::from_slice(&[300_000_000_000], 18, 2);
+        let result = arr.to_int32_array();
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // to_uint64_array
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_to_uint64_array_basic() {
+        let arr = DecimalArray::<i64>::from_slice(&[12345, 0], 10, 2);
+        let u64_arr = arr.to_uint64_array().unwrap();
+        assert_eq!(u64_arr.data[0], 123);
+        assert_eq!(u64_arr.data[1], 0);
+    }
+
+    #[test]
+    fn test_to_uint64_array_negative_error() {
+        let arr = DecimalArray::<i32>::from_slice(&[-100], 5, 0);
+        let result = arr.to_uint64_array();
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // to_uint32_array
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_to_uint32_array_basic() {
+        let arr = DecimalArray::<i32>::from_slice(&[50000, 0], 10, 2);
+        let u32_arr = arr.to_uint32_array().unwrap();
+        assert_eq!(u32_arr.data[0], 500);
+        assert_eq!(u32_arr.data[1], 0);
+    }
+
+    #[test]
+    fn test_to_uint32_array_negative_error() {
+        let arr = DecimalArray::<i64>::from_slice(&[-1], 10, 0);
+        let result = arr.to_uint32_array();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_to_uint32_array_overflow() {
+        // raw=500000000000 / 100 = 5000000000, which exceeds u32::MAX
+        let arr = DecimalArray::<i64>::from_slice(&[500_000_000_000], 18, 2);
+        let result = arr.to_uint32_array();
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // from_integer_array
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_from_integer_array_i64() {
+        let ints = crate::IntegerArray::<i64>::from_slice(&[100, 200, 300]);
+        let dec = DecimalArray::<i64>::from_integer_array(&ints, 10, 2).unwrap();
+        assert_eq!(dec.len(), 3);
+        assert_eq!(dec.precision, 10);
+        assert_eq!(dec.scale, 2);
+        // 100 * 100 = 10000
+        assert_eq!(dec.data[0], 10000);
+        assert_eq!(dec.data[1], 20000);
+        assert_eq!(dec.data[2], 30000);
+    }
+
+    #[test]
+    fn test_from_integer_array_i32_source() {
+        let ints = crate::IntegerArray::<i32>::from_slice(&[5, -10]);
+        let dec = DecimalArray::<i64>::from_integer_array(&ints, 10, 3).unwrap();
+        // 5 * 1000 = 5000, -10 * 1000 = -10000
+        assert_eq!(dec.data[0], 5000);
+        assert_eq!(dec.data[1], -10000);
+    }
+
+    #[test]
+    fn test_from_integer_array_preserves_nulls() {
+        let mut ints = crate::IntegerArray::<i32>::with_capacity(3, true);
+        ints.push(10);
+        ints.push_null();
+        ints.push(30);
+        let dec = DecimalArray::<i64>::from_integer_array(&ints, 10, 2).unwrap();
+        assert_eq!(dec.len(), 3);
+        assert!(dec.null_mask.is_some());
+        let mask = dec.null_mask.as_ref().unwrap();
+        assert!(mask.get(0));
+        assert!(!mask.get(1));
+        assert!(mask.get(2));
+    }
+
+    #[test]
+    fn test_from_integer_array_overflow() {
+        // i32::MAX * 10^9 overflows i32 range
+        let ints = crate::IntegerArray::<i32>::from_slice(&[i32::MAX]);
+        let result = DecimalArray::<i32>::from_integer_array(&ints, 10, 9);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_integer_array_zero_scale() {
+        let ints = crate::IntegerArray::<i64>::from_slice(&[42, -7]);
+        let dec = DecimalArray::<i64>::from_integer_array(&ints, 5, 0).unwrap();
+        assert_eq!(dec.data[0], 42);
+        assert_eq!(dec.data[1], -7);
+    }
+
+    // -----------------------------------------------------------------------
+    // rescale
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_rescale_up() {
+        // scale 2 -> 4: raw values multiply by 10^2 = 100
+        let arr = DecimalArray::<i64>::from_slice(&[12345, -500], 10, 2);
+        let rescaled = arr.rescale(4).unwrap();
+        assert_eq!(rescaled.scale, 4);
+        assert_eq!(rescaled.data[0], 1234500);
+        assert_eq!(rescaled.data[1], -50000);
+    }
+
+    #[test]
+    fn test_rescale_down() {
+        // scale 4 -> 2: raw values divide by 10^2 = 100
+        let arr = DecimalArray::<i64>::from_slice(&[1234500, -50099], 10, 4);
+        let rescaled = arr.rescale(2).unwrap();
+        assert_eq!(rescaled.scale, 2);
+        assert_eq!(rescaled.data[0], 12345);
+        // -50099 / 100 = -500 (truncating toward zero)
+        assert_eq!(rescaled.data[1], -500);
+    }
+
+    #[test]
+    fn test_rescale_no_change() {
+        let arr = DecimalArray::<i32>::from_slice(&[12345], 10, 2);
+        let rescaled = arr.rescale(2).unwrap();
+        assert_eq!(rescaled.scale, 2);
+        assert_eq!(rescaled.data[0], 12345);
+    }
+
+    #[test]
+    fn test_rescale_preserves_nulls() {
+        let mut arr = DecimalArray::<i64>::with_capacity(3, true, 10, 2);
+        arr.push(12345);
+        arr.push_null();
+        arr.push(0);
+        let rescaled = arr.rescale(4).unwrap();
+        assert_eq!(rescaled.len(), 3);
+        assert!(rescaled.null_mask.is_some());
+        let mask = rescaled.null_mask.as_ref().unwrap();
+        assert!(mask.get(0));
+        assert!(!mask.get(1));
+        assert!(mask.get(2));
+    }
+
+    #[test]
+    fn test_rescale_overflow() {
+        // i32::MAX with scale 0, rescale to scale 9 would overflow i32
+        let arr = DecimalArray::<i32>::from_slice(&[i32::MAX], 10, 0);
+        let result = arr.rescale(9);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rescale_preserves_precision() {
+        let arr = DecimalArray::<i64>::from_slice(&[100], 18, 2);
+        let rescaled = arr.rescale(5).unwrap();
+        assert_eq!(rescaled.precision, 18);
+    }
+
+    // -----------------------------------------------------------------------
+    // Width conversions - explicit methods
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_to_dec64_from_dec32() {
+        let arr = DecimalArray::<i32>::from_slice(&[12345, -67890], 9, 2);
+        let arr64 = arr.to_dec64();
+        assert_eq!(arr64.len(), 2);
+        assert_eq!(arr64.data[0], 12345i64);
+        assert_eq!(arr64.data[1], -67890i64);
+        assert_eq!(arr64.precision, 9);
+        assert_eq!(arr64.scale, 2);
+    }
+
+    #[test]
+    fn test_to_dec128_from_dec32() {
+        let arr = DecimalArray::<i32>::from_slice(&[42, -99], 9, 3);
+        let arr128 = arr.to_dec128();
+        assert_eq!(arr128.len(), 2);
+        assert_eq!(arr128.data[0], 42i128);
+        assert_eq!(arr128.data[1], -99i128);
+        assert_eq!(arr128.precision, 9);
+        assert_eq!(arr128.scale, 3);
+    }
+
+    #[test]
+    fn test_to_dec128_from_dec64() {
+        let arr = DecimalArray::<i64>::from_slice(&[999_999_999_999, -1], 18, 6);
+        let arr128 = arr.to_dec128();
+        assert_eq!(arr128.len(), 2);
+        assert_eq!(arr128.data[0], 999_999_999_999i128);
+        assert_eq!(arr128.data[1], -1i128);
+        assert_eq!(arr128.precision, 18);
+        assert_eq!(arr128.scale, 6);
+    }
+
+    #[test]
+    fn test_to_dec32_from_dec64_success() {
+        let arr = DecimalArray::<i64>::from_slice(&[12345, -67890], 9, 2);
+        let arr32 = arr.to_dec32().unwrap();
+        assert_eq!(arr32.len(), 2);
+        assert_eq!(arr32.data[0], 12345i32);
+        assert_eq!(arr32.data[1], -67890i32);
+        assert_eq!(arr32.precision, 9);
+        assert_eq!(arr32.scale, 2);
+    }
+
+    #[test]
+    fn test_to_dec32_from_dec64_overflow() {
+        let arr = DecimalArray::<i64>::from_slice(&[i64::MAX], 18, 0);
+        let result = arr.to_dec32();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_to_dec64_from_dec128_success() {
+        let arr = DecimalArray::<i128>::from_slice(&[12345i128, -67890], 38, 2);
+        let arr64 = arr.to_dec64().unwrap();
+        assert_eq!(arr64.len(), 2);
+        assert_eq!(arr64.data[0], 12345i64);
+        assert_eq!(arr64.data[1], -67890i64);
+    }
+
+    #[test]
+    fn test_to_dec64_from_dec128_overflow() {
+        let arr = DecimalArray::<i128>::from_slice(&[i128::MAX], 38, 0);
+        let result = arr.to_dec64();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_to_dec32_from_dec128_success() {
+        let arr = DecimalArray::<i128>::from_slice(&[100i128, -200], 38, 2);
+        let arr32 = arr.to_dec32().unwrap();
+        assert_eq!(arr32.len(), 2);
+        assert_eq!(arr32.data[0], 100i32);
+        assert_eq!(arr32.data[1], -200i32);
+    }
+
+    #[test]
+    fn test_to_dec32_from_dec128_overflow() {
+        let arr = DecimalArray::<i128>::from_slice(&[i128::MAX], 38, 0);
+        let result = arr.to_dec32();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_width_conversion_preserves_nulls() {
+        let mut arr = DecimalArray::<i32>::with_capacity(3, true, 9, 2);
+        arr.push(100);
+        arr.push_null();
+        arr.push(300);
+
+        // Widen to i64
+        let arr64 = arr.to_dec64();
+        assert_eq!(arr64.null_count(), 1);
+        assert_eq!(arr64.get(0), Some(100i64));
+        assert_eq!(arr64.get(1), None);
+        assert_eq!(arr64.get(2), Some(300i64));
+
+        // Narrow back to i32
+        let arr32 = arr64.to_dec32().unwrap();
+        assert_eq!(arr32.null_count(), 1);
+        assert_eq!(arr32.get(0), Some(100i32));
+        assert_eq!(arr32.get(1), None);
+        assert_eq!(arr32.get(2), Some(300i32));
+    }
+
+    // -----------------------------------------------------------------------
+    // Roundtrip: from_integer_array -> to_int_array
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_roundtrip_integer_to_decimal_to_integer() {
+        let ints = crate::IntegerArray::<i64>::from_slice(&[100, 200, -50]);
+        let dec = DecimalArray::<i64>::from_integer_array(&ints, 10, 2).unwrap();
+        let back = dec.to_int64_array().unwrap();
+        assert_eq!(back.data[0], 100);
+        assert_eq!(back.data[1], 200);
+        assert_eq!(back.data[2], -50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Empty arrays
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_conversions_on_empty_array() {
+        let arr = DecimalArray::<i32>::from_slice(&[], 10, 2);
+        assert_eq!(arr.to_float64_array().len(), 0);
+        assert_eq!(arr.to_float32_array().len(), 0);
+        assert_eq!(arr.to_int64_array().unwrap().len(), 0);
+        assert_eq!(arr.to_int32_array().unwrap().len(), 0);
+        assert_eq!(arr.to_uint64_array().unwrap().len(), 0);
+        assert_eq!(arr.to_uint32_array().unwrap().len(), 0);
+        assert_eq!(arr.rescale(5).unwrap().len(), 0);
+        assert_eq!(arr.to_dec64().len(), 0);
+        assert_eq!(arr.to_dec128().len(), 0);
     }
 }
