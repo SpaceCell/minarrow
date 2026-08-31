@@ -980,3 +980,57 @@ fn rt_arrow_super_table_shared_categorical32() {
     assert_eq!(d0.values(), &["a", "b", "c"]);
     assert_eq!(d1.values(), &["a", "b", "c"]);
 }
+
+// ── Decimal round-trips ─────────────────────────────────────────────────
+
+#[cfg(feature = "decimal")]
+#[test]
+fn rt_arrow_decimal128() {
+    use minarrow::DecimalArray;
+
+    let arr = DecimalArray::<i128>::from_slice(&[12345, -67890, 0], 10, 2);
+    let a = MArray::from_decimal128(arr);
+    let f = Field::new("dec128", ArrowType::Decimal128(10, 2), false, None);
+    let fa = FieldArray::new(f, a);
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn rt_arrow_decimal128_with_nulls() {
+    use minarrow::{DecimalArray, MaskedArray as _};
+
+    let mut arr = DecimalArray::<i128>::with_capacity(4, true, 10, 2);
+    arr.push(12345);
+    arr.push_null();
+    arr.push(67890);
+    arr.push_null();
+    let a = MArray::from_decimal128(arr);
+    let f = Field::new("dec128_n", ArrowType::Decimal128(10, 2), false, None);
+    let fa = FieldArray::new(f, a);
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn rt_arrow_decimal128_empty() {
+    use minarrow::DecimalArray;
+
+    let arr = DecimalArray::<i128>::from_slice(&[], 10, 2);
+    let a = MArray::from_decimal128(arr);
+    let f = Field::new("dec128_empty", ArrowType::Decimal128(10, 2), false, None);
+    let fa = FieldArray::new(f, a);
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn rt_arrow_decimal128_negative_scale() {
+    use minarrow::DecimalArray;
+
+    let arr = DecimalArray::<i128>::from_slice(&[1000, 2000], 10, -3);
+    let a = MArray::from_decimal128(arr);
+    let f = Field::new("dec128_neg", ArrowType::Decimal128(10, -3), false, None);
+    let fa = FieldArray::new(f, a);
+    round_trip_field_array(fa);
+}
