@@ -743,6 +743,12 @@ macro_rules! match_array {
                 NumericArray::UInt64(a)         => a.$method($($args),*),
                 NumericArray::Float32(a)        => a.$method($($args),*),
                 NumericArray::Float64(a)        => a.$method($($args),*),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a)      => a.$method($($args),*),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a)      => a.$method($($args),*),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a)     => a.$method($($args),*),
                 NumericArray::Null              => Default::default(),
             },
             Array::BooleanArray(a)                  => a.$method($($args),*),

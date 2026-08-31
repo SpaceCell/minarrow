@@ -41,6 +41,8 @@ use crate::ArrayV;
 use crate::ArrayVT;
 #[cfg(feature = "datetime")]
 use crate::DatetimeArray;
+#[cfg(feature = "decimal")]
+use crate::DecimalArray;
 #[cfg(feature = "chunked")]
 use crate::SuperArray;
 #[cfg(feature = "datetime")]
@@ -228,6 +230,24 @@ impl Array {
     #[cfg(feature = "datetime")]
     pub fn from_datetime_i64(arr: DatetimeArray<i64>) -> Self {
         Array::TemporalArray(TemporalArray::Datetime64(Arc::new(arr)))
+    }
+
+    /// Creates an Array enum with a Decimal32 array.
+    #[cfg(feature = "decimal")]
+    pub fn from_decimal32(arr: crate::DecimalArray<i32>) -> Self {
+        Array::NumericArray(NumericArray::Decimal32(Arc::new(arr)))
+    }
+
+    /// Creates an Array enum with a Decimal64 array.
+    #[cfg(feature = "decimal")]
+    pub fn from_decimal64(arr: crate::DecimalArray<i64>) -> Self {
+        Array::NumericArray(NumericArray::Decimal64(Arc::new(arr)))
+    }
+
+    /// Creates an Array enum with a Decimal128 array.
+    #[cfg(feature = "decimal")]
+    pub fn from_decimal128(arr: crate::DecimalArray<i128>) -> Self {
+        Array::NumericArray(NumericArray::Decimal128(Arc::new(arr)))
     }
 
     /// Creates an Array enum with a Boolean array.
@@ -870,6 +890,19 @@ impl Array {
                 NumericArray::Float64(a) => {
                     Arc::make_mut(a).push(value.try_f64().ok_or_else(unsupported)?)
                 }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => {
+                    Arc::make_mut(a).push(value.try_i32().ok_or_else(unsupported)?)
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => {
+                    Arc::make_mut(a).push(value.try_i64().ok_or_else(unsupported)?)
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => {
+                    let v = value.try_i64().ok_or_else(unsupported)?;
+                    Arc::make_mut(a).push(v as i128)
+                }
                 NumericArray::Null => return Err(unsupported()),
             },
             Array::BooleanArray(a) => {
@@ -944,6 +977,12 @@ impl Array {
                 NumericArray::UInt64(a) => Arc::make_mut(a).push_null(),
                 NumericArray::Float32(a) => Arc::make_mut(a).push_null(),
                 NumericArray::Float64(a) => Arc::make_mut(a).push_null(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => Arc::make_mut(a).push_null(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => Arc::make_mut(a).push_null(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => Arc::make_mut(a).push_null(),
                 NumericArray::Null => return Err(unsupported()),
             },
             Array::BooleanArray(a) => Arc::make_mut(a).push_null(),
@@ -1036,6 +1075,19 @@ impl Array {
                 }
                 NumericArray::Float64(a) => {
                     Arc::make_mut(a).set(idx, value.try_f64().ok_or_else(unsupported)?)
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => {
+                    Arc::make_mut(a).set(idx, value.try_i32().ok_or_else(unsupported)?)
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => {
+                    Arc::make_mut(a).set(idx, value.try_i64().ok_or_else(unsupported)?)
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => {
+                    let v = value.try_i64().ok_or_else(unsupported)?;
+                    Arc::make_mut(a).set(idx, v as i128)
                 }
                 NumericArray::Null => return Err(unsupported()),
             },
@@ -1219,6 +1271,33 @@ impl Array {
                         mask.set_range(range.start, range.end, true);
                     }
                 }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => {
+                    let v = value.try_i32().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => {
+                    let v = value.try_i64().ok_or_else(unsupported)?;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => {
+                    let v = value.try_i64().ok_or_else(unsupported)? as i128;
+                    let arr = Arc::make_mut(a);
+                    arr.data.as_mut_slice()[range.clone()].fill(v);
+                    if let Some(mask) = &mut arr.null_mask {
+                        mask.set_range(range.start, range.end, true);
+                    }
+                }
                 NumericArray::Null => return Err(unsupported()),
             },
             Array::BooleanArray(a) => {
@@ -1395,6 +1474,12 @@ impl Array {
         match_arm!(NumericArray, UInt64, IntegerArray<u64>);
         match_arm!(NumericArray, Float32, FloatArray<f32>);
         match_arm!(NumericArray, Float64, FloatArray<f64>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal32, DecimalArray<i32>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal64, DecimalArray<i64>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal128, DecimalArray<i128>);
 
         // TextArray
         match_arm!(TextArray, String32, StringArray<u32>);
@@ -1469,6 +1554,12 @@ impl Array {
         match_arm!(NumericArray, UInt64, IntegerArray<u64>);
         match_arm!(NumericArray, Float32, FloatArray<f32>);
         match_arm!(NumericArray, Float64, FloatArray<f64>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal32, DecimalArray<i32>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal64, DecimalArray<i64>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal128, DecimalArray<i128>);
 
         // TextArray
         match_arm!(TextArray, String32, StringArray<u32>);
@@ -1542,6 +1633,12 @@ impl Array {
         match_inner_type!(NumericArray, UInt64, IntegerArray<u64>);
         match_inner_type!(NumericArray, Float32, FloatArray<f32>);
         match_inner_type!(NumericArray, Float64, FloatArray<f64>);
+        #[cfg(feature = "decimal")]
+        match_inner_type!(NumericArray, Decimal32, DecimalArray<i32>);
+        #[cfg(feature = "decimal")]
+        match_inner_type!(NumericArray, Decimal64, DecimalArray<i64>);
+        #[cfg(feature = "decimal")]
+        match_inner_type!(NumericArray, Decimal128, DecimalArray<i128>);
 
         match_inner_type!(TextArray, String32, StringArray<u32>);
         #[cfg(feature = "large_string")]
@@ -1609,6 +1706,12 @@ impl Array {
         match_inner_type_mut!(NumericArray, UInt64, IntegerArray<u64>);
         match_inner_type_mut!(NumericArray, Float32, FloatArray<f32>);
         match_inner_type_mut!(NumericArray, Float64, FloatArray<f64>);
+        #[cfg(feature = "decimal")]
+        match_inner_type_mut!(NumericArray, Decimal32, DecimalArray<i32>);
+        #[cfg(feature = "decimal")]
+        match_inner_type_mut!(NumericArray, Decimal64, DecimalArray<i64>);
+        #[cfg(feature = "decimal")]
+        match_inner_type_mut!(NumericArray, Decimal128, DecimalArray<i128>);
 
         match_inner_type_mut!(TextArray, String32, StringArray<u32>);
         #[cfg(feature = "large_string")]
@@ -1685,6 +1788,21 @@ impl Array {
 
                 NumericArray::Float64(arr) => {
                     cast_slice::<f64, T>(arr.data(), offset, len).expect("cast failed")
+                }
+
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => {
+                    cast_slice::<i32, T>(arr.data(), offset, len).expect("cast failed")
+                }
+
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => {
+                    cast_slice::<i64, T>(arr.data(), offset, len).expect("cast failed")
+                }
+
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => {
+                    cast_slice::<i128, T>(arr.data(), offset, len).expect("cast failed")
                 }
 
                 NumericArray::Null => panic!("Null array has no data payload"),
@@ -1861,6 +1979,12 @@ impl Array {
                 NumericArray::UInt64(arr) => NumericArray::UInt64(arr.slice_clone(offset, len)),
                 NumericArray::Float32(arr) => NumericArray::Float32(arr.slice_clone(offset, len)),
                 NumericArray::Float64(arr) => NumericArray::Float64(arr.slice_clone(offset, len)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => NumericArray::Decimal32(arr.slice_clone(offset, len)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => NumericArray::Decimal64(arr.slice_clone(offset, len)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => NumericArray::Decimal128(arr.slice_clone(offset, len)),
                 NumericArray::Null => NumericArray::Null,
             }),
             Array::TextArray(inner) => Self::TextArray(match inner {
@@ -1921,6 +2045,12 @@ impl Array {
                 NumericArray::UInt64(_) => ArrowType::UInt64,
                 NumericArray::Float32(_) => ArrowType::Float32,
                 NumericArray::Float64(_) => ArrowType::Float64,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => a.arrow_type(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => a.arrow_type(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => a.arrow_type(),
                 NumericArray::Null => ArrowType::Null,
             },
             Array::TextArray(inner) => match inner {
@@ -2080,6 +2210,12 @@ impl Array {
                 NumericArray::UInt64(_) => true,
                 NumericArray::Float32(_) => false,
                 NumericArray::Float64(_) => false,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(_) => false,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(_) => false,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(_) => false,
                 NumericArray::Null => false,
             },
             Array::TextArray(_) => false,
@@ -2109,6 +2245,12 @@ impl Array {
                 NumericArray::UInt16(_) => false,
                 NumericArray::UInt32(_) => false,
                 NumericArray::UInt64(_) => false,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(_) => false,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(_) => false,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(_) => false,
                 NumericArray::Null => false,
             },
             Array::TextArray(_) => false,
@@ -2138,6 +2280,12 @@ impl Array {
                 NumericArray::UInt64(_) => true,
                 NumericArray::Float32(_) => true,
                 NumericArray::Float64(_) => true,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(_) => true,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(_) => true,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(_) => true,
                 NumericArray::Null => false,
             },
             Array::TextArray(_) => false,
@@ -2183,6 +2331,12 @@ impl Array {
                 NumericArray::UInt64(arr) => arr.null_mask.as_ref(),
                 NumericArray::Float32(arr) => arr.null_mask.as_ref(),
                 NumericArray::Float64(arr) => arr.null_mask.as_ref(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => arr.null_mask.as_ref(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => arr.null_mask.as_ref(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => arr.null_mask.as_ref(),
                 NumericArray::Null => None,
             },
             Array::BooleanArray(arr) => arr.null_mask.as_ref(),
@@ -2380,6 +2534,12 @@ impl Array {
                 NumericArray::UInt64(a) => Some(Scalar::UInt64(a.data[idx])),
                 NumericArray::Float32(a) => Some(Scalar::Float32(a.data[idx])),
                 NumericArray::Float64(a) => Some(Scalar::Float64(a.data[idx])),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => Some(Scalar::Decimal32(a.data[idx], a.scale)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => Some(Scalar::Decimal64(a.data[idx], a.scale)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => Some(Scalar::Decimal128(a.data[idx], a.scale)),
                 NumericArray::Null => Some(Scalar::Null),
             },
             Array::TextArray(text) => match text {
@@ -2525,6 +2685,27 @@ impl Array {
                 arr.null_mask = Some(mask);
                 Array::from_string32(arr)
             }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, s) => {
+                let arr = crate::DecimalArray::<i32>::new(
+                    Vec64::from_slice(&vec![0i32; n_rows]), Some(mask), *p, *s,
+                );
+                Array::NumericArray(NumericArray::Decimal32(Arc::new(arr)))
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, s) => {
+                let arr = crate::DecimalArray::<i64>::new(
+                    Vec64::from_slice(&vec![0i64; n_rows]), Some(mask), *p, *s,
+                );
+                Array::NumericArray(NumericArray::Decimal64(Arc::new(arr)))
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, s) => {
+                let arr = crate::DecimalArray::<i128>::new(
+                    Vec64::from_slice(&vec![0i128; n_rows]), Some(mask), *p, *s,
+                );
+                Array::NumericArray(NumericArray::Decimal128(Arc::new(arr)))
+            }
         }
     }
 
@@ -2608,6 +2789,24 @@ impl Array {
             ArrowType::Interval(_) => Array::TemporalArray(crate::TemporalArray::Datetime64(
                 Arc::new(crate::DatetimeArray::<i64>::default()),
             )),
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, s) => {
+                Array::NumericArray(NumericArray::Decimal32(Arc::new(
+                    crate::DecimalArray::<i32>::new(Vec64::new(), None, *p, *s),
+                )))
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, s) => {
+                Array::NumericArray(NumericArray::Decimal64(Arc::new(
+                    crate::DecimalArray::<i64>::new(Vec64::new(), None, *p, *s),
+                )))
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, s) => {
+                Array::NumericArray(NumericArray::Decimal128(Arc::new(
+                    crate::DecimalArray::<i128>::new(Vec64::new(), None, *p, *s),
+                )))
+            }
         }
     }
 
@@ -2939,6 +3138,75 @@ impl Array {
                     if has_nulls { Some(mask) } else { None },
                 ))
             }
+            #[cfg(feature = "decimal")]
+            Scalar::Decimal32(_, scale) => {
+                let scale = *scale;
+                let mut data = Vec64::<i32>::with_capacity(scalars.len());
+                let mut mask = Bitmask::new_set_all(scalars.len(), true);
+                for (i, s) in scalars.iter().enumerate() {
+                    match s {
+                        Scalar::Decimal32(v, _) => data.push(*v),
+                        Scalar::Null => {
+                            data.push(0);
+                            mask.set(i, false);
+                        }
+                        _ => data.push(s.i32()),
+                    }
+                }
+                let has_nulls = mask.count_zeros() > 0;
+                Array::from_decimal32(crate::DecimalArray::new(
+                    data,
+                    if has_nulls { Some(mask) } else { None },
+                    0,
+                    scale,
+                ))
+            }
+            #[cfg(feature = "decimal")]
+            Scalar::Decimal64(_, scale) => {
+                let scale = *scale;
+                let mut data = Vec64::<i64>::with_capacity(scalars.len());
+                let mut mask = Bitmask::new_set_all(scalars.len(), true);
+                for (i, s) in scalars.iter().enumerate() {
+                    match s {
+                        Scalar::Decimal64(v, _) => data.push(*v),
+                        Scalar::Null => {
+                            data.push(0);
+                            mask.set(i, false);
+                        }
+                        _ => data.push(s.i64()),
+                    }
+                }
+                let has_nulls = mask.count_zeros() > 0;
+                Array::from_decimal64(crate::DecimalArray::new(
+                    data,
+                    if has_nulls { Some(mask) } else { None },
+                    0,
+                    scale,
+                ))
+            }
+            #[cfg(feature = "decimal")]
+            Scalar::Decimal128(_, scale) => {
+                let scale = *scale;
+                let mut data = Vec64::<i128>::with_capacity(scalars.len());
+                let mut mask = Bitmask::new_set_all(scalars.len(), true);
+                for (i, s) in scalars.iter().enumerate() {
+                    match s {
+                        Scalar::Decimal128(v, _) => data.push(*v),
+                        Scalar::Null => {
+                            data.push(0);
+                            mask.set(i, false);
+                        }
+                        _ => data.push(s.i64() as i128),
+                    }
+                }
+                let has_nulls = mask.count_zeros() > 0;
+                Array::from_decimal128(crate::DecimalArray::new(
+                    data,
+                    if has_nulls { Some(mask) } else { None },
+                    0,
+                    scale,
+                ))
+            }
             Scalar::Null => Array::Null,
         }
     }
@@ -2977,6 +3245,12 @@ impl Array {
                 NumericArray::UInt16(a) => a.data[i].cmp(&a.data[j]),
                 NumericArray::Float32(a) => a.data[i].total_cmp(&a.data[j]),
                 NumericArray::Float64(a) => a.data[i].total_cmp(&a.data[j]),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => a.data[i].cmp(&a.data[j]),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => a.data[i].cmp(&a.data[j]),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => a.data[i].cmp(&a.data[j]),
                 NumericArray::Null => Ordering::Equal,
             },
             Array::BooleanArray(b) => b.data.get(i).cmp(&b.data.get(j)),
@@ -3067,6 +3341,18 @@ impl Array {
                 (NumericArray::Float64(x), NumericArray::Float64(y)) => {
                     let (a, b) = (x.data[idx], y.data[other_idx]);
                     if a.is_nan() { b.is_nan() } else { a == b }
+                }
+                #[cfg(feature = "decimal")]
+                (NumericArray::Decimal32(x), NumericArray::Decimal32(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                #[cfg(feature = "decimal")]
+                (NumericArray::Decimal64(x), NumericArray::Decimal64(y)) => {
+                    x.data[idx] == y.data[other_idx]
+                }
+                #[cfg(feature = "decimal")]
+                (NumericArray::Decimal128(x), NumericArray::Decimal128(y)) => {
+                    x.data[idx] == y.data[other_idx]
                 }
                 (NumericArray::Null, NumericArray::Null) => true,
                 _ => false,
@@ -3165,6 +3451,12 @@ impl Array {
                         if v.is_nan() { 0x7ff8_0000_0000_0000u64 } else { (v + 0.0).to_bits() };
                     bits.hash(state);
                 }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => a.data[idx].hash(state),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => a.data[idx].hash(state),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => a.data[idx].hash(state),
                 NumericArray::Null => 0xDEAD_BEEF_u64.hash(state),
             },
             Array::BooleanArray(b) => b.data.get(idx).hash(state),
@@ -3232,6 +3524,18 @@ impl Array {
                         Arc::make_mut(arr).set_null_mask(Some(mask));
                     }
                     NumericArray::UInt64(arr) => {
+                        Arc::make_mut(arr).set_null_mask(Some(mask));
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal32(arr) => {
+                        Arc::make_mut(arr).set_null_mask(Some(mask));
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal64(arr) => {
+                        Arc::make_mut(arr).set_null_mask(Some(mask));
+                    }
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal128(arr) => {
                         Arc::make_mut(arr).set_null_mask(Some(mask));
                     }
                     NumericArray::Null => {} // No-op for null arrays
@@ -3344,6 +3648,24 @@ impl Array {
                     a.len(),
                     std::mem::size_of::<f64>(),
                 ),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => (
+                    a.data.as_ptr() as *const u8,
+                    a.len(),
+                    std::mem::size_of::<i32>(),
+                ),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => (
+                    a.data.as_ptr() as *const u8,
+                    a.len(),
+                    std::mem::size_of::<i64>(),
+                ),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => (
+                    a.data.as_ptr() as *const u8,
+                    a.len(),
+                    std::mem::size_of::<i128>(),
+                ),
                 NumericArray::Null => (std::ptr::null(), 0, 0),
             },
             Array::BooleanArray(a) => (a.data.as_ptr() as *const u8, a.data.len(), 1),
@@ -3418,6 +3740,18 @@ impl Array {
                     a.null_mask.as_ref().map(|m| (m.as_ptr(), m.capacity()))
                 }
                 NumericArray::Float64(a) => {
+                    a.null_mask.as_ref().map(|m| (m.as_ptr(), m.capacity()))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => {
+                    a.null_mask.as_ref().map(|m| (m.as_ptr(), m.capacity()))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => {
+                    a.null_mask.as_ref().map(|m| (m.as_ptr(), m.capacity()))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => {
                     a.null_mask.as_ref().map(|m| (m.as_ptr(), m.capacity()))
                 }
                 NumericArray::Null => None,
@@ -3499,6 +3833,12 @@ impl Array {
                 NumericArray::UInt64(a) => a.null_count(),
                 NumericArray::Float32(a) => a.null_count(),
                 NumericArray::Float64(a) => a.null_count(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => a.null_count(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => a.null_count(),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => a.null_count(),
                 NumericArray::Null => 0,
             },
             Array::BooleanArray(a) => a.null_count(),
@@ -4460,6 +4800,38 @@ macro_rules! arr_f64 {
     () => {
         $crate::Array::from_float64($crate::FloatArray::<f64>::from_vec64(vec64![], None))
     };
+}
+
+// ======== Decimal ========
+
+#[cfg(feature = "decimal")]
+#[macro_export]
+macro_rules! arr_dec32 {
+    (&[ $($x:expr),+ $(,)? ], $p:expr, $s:expr) => {{
+        $crate::Array::from_decimal32(
+            $crate::DecimalArray::<i32>::from_slice(&[$($x),+], $p, $s)
+        )
+    }};
+}
+
+#[cfg(feature = "decimal")]
+#[macro_export]
+macro_rules! arr_dec64 {
+    (&[ $($x:expr),+ $(,)? ], $p:expr, $s:expr) => {{
+        $crate::Array::from_decimal64(
+            $crate::DecimalArray::<i64>::from_slice(&[$($x),+], $p, $s)
+        )
+    }};
+}
+
+#[cfg(feature = "decimal")]
+#[macro_export]
+macro_rules! arr_dec128 {
+    (&[ $($x:expr),+ $(,)? ], $p:expr, $s:expr) => {{
+        $crate::Array::from_decimal128(
+            $crate::DecimalArray::<i128>::from_slice(&[$($x),+], $p, $s)
+        )
+    }};
 }
 
 // ======== Boolean ========
@@ -6852,5 +7224,170 @@ mod arr_macro_extensions_tests {
         assert_eq!(arr.get::<FloatArray<f64>>(0), Some(1.0));
         assert_eq!(arr.get::<FloatArray<f64>>(1), None);
         assert_eq!(arr.get::<FloatArray<f64>>(3), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Decimal Array integration
+    // -----------------------------------------------------------------------
+
+    #[cfg(feature = "decimal")]
+    mod decimal_integration {
+        use super::*;
+        use crate::DecimalArray;
+        use std::sync::Arc;
+
+        #[test]
+        fn from_decimal_constructors() {
+            let d32 = DecimalArray::<i32>::from_slice(&[12345], 9, 2);
+            let arr = Array::from_decimal32(d32);
+            assert_eq!(arr.len(), 1);
+            assert_eq!(arr.arrow_type(), crate::ffi::arrow_dtype::ArrowType::Decimal32(9, 2));
+
+            let d64 = DecimalArray::<i64>::from_slice(&[99999], 18, 4);
+            let arr = Array::from_decimal64(d64);
+            assert_eq!(arr.len(), 1);
+
+            let d128 = DecimalArray::<i128>::from_slice(&[1000000], 38, 10);
+            let arr = Array::from_decimal128(d128);
+            assert_eq!(arr.len(), 1);
+        }
+
+        #[test]
+        fn from_impl_decimal_to_array() {
+            let d = DecimalArray::<i64>::from_slice(&[42], 18, 4);
+            let arr: Array = d.into();
+            assert_eq!(arr.len(), 1);
+            assert!(arr.is_numerical_array());
+        }
+
+        #[test]
+        fn from_arc_decimal_to_array() {
+            let d = Arc::new(DecimalArray::<i128>::from_slice(&[999], 38, 10));
+            let arr: Array = d.into();
+            assert_eq!(arr.len(), 1);
+        }
+
+        #[test]
+        fn decimal_through_num_accessor() {
+            let d = DecimalArray::<i64>::from_slice(&[12345, 67890], 18, 2);
+            let arr = Array::from_decimal64(d);
+            let num = arr.num();
+            let inner = num.dec64();
+            assert_eq!(inner.len(), 2);
+            assert_eq!(inner.get(0), Some(12345i64));
+        }
+
+        #[test]
+        fn decimal_try_dec128_widening_through_array() {
+            let d = DecimalArray::<i32>::from_slice(&[42], 9, 3);
+            let arr = Array::from_decimal32(d);
+            let num = arr.num();
+            let wide = num.try_dec128().unwrap();
+            assert_eq!(wide.get(0), Some(42i128));
+            assert_eq!(wide.scale, 3);
+        }
+
+        #[test]
+        fn decimal_null_mask_through_array() {
+            let mut d = DecimalArray::<i32>::with_capacity(2, true, 9, 2);
+            d.push(10);
+            d.push_null();
+            let arr = Array::from_decimal32(d);
+            assert!(arr.null_mask().is_some());
+            assert!(arr.has_nulls());
+        }
+
+        #[test]
+        fn decimal_len_and_delete_range() {
+            let d = DecimalArray::<i64>::from_slice(&[1, 2, 3, 4], 18, 0);
+            let mut arr = Array::from_decimal64(d);
+            assert_eq!(arr.len(), 4);
+            arr.delete_range(1, 3);
+            assert_eq!(arr.len(), 2);
+        }
+
+        #[test]
+        fn decimal_from_arrow_dtype() {
+            use crate::ffi::arrow_dtype::ArrowType;
+            let arr = Array::from_arrow_dtype(&ArrowType::Decimal64(18, 4));
+            assert_eq!(arr.len(), 0);
+            assert_eq!(arr.arrow_type(), ArrowType::Decimal64(18, 4));
+        }
+
+        #[test]
+        fn decimal_null_array() {
+            use crate::ffi::arrow_dtype::ArrowType;
+            let arr = Array::null_array(&ArrowType::Decimal128(38, 10), 5);
+            assert_eq!(arr.len(), 5);
+            assert!(arr.null_mask().is_some());
+        }
+
+        #[test]
+        fn field_array_round_trip() {
+            let d = DecimalArray::<i64>::from_slice(&[12345, 67890], 18, 2);
+            let arr = Array::from_decimal64(d);
+            let fa = arr.fa("amount");
+            assert_eq!(fa.field.name, "amount");
+            assert_eq!(fa.len(), 2);
+            assert_eq!(
+                fa.arrow_type(),
+                crate::ffi::arrow_dtype::ArrowType::Decimal64(18, 2)
+            );
+        }
+
+        #[cfg(feature = "scalar_type")]
+        #[test]
+        fn get_scalar_decimal() {
+            let d = DecimalArray::<i32>::from_slice(&[12345], 9, 2);
+            let arr = Array::from_decimal32(d);
+            let s = arr.get_scalar(0).unwrap();
+            match s {
+                crate::Scalar::Decimal32(v, scale) => {
+                    assert_eq!(v, 12345);
+                    assert_eq!(scale, 2);
+                }
+                _ => panic!("expected Scalar::Decimal32"),
+            }
+        }
+
+        #[cfg(feature = "scalar_type")]
+        #[test]
+        fn scalar_decimal_display() {
+            let s = crate::Scalar::Decimal64(12345, 2);
+            assert_eq!(format!("{}", s), "123.45");
+        }
+
+        #[cfg(feature = "scalar_type")]
+        #[test]
+        fn scalar_decimal_zero_scale() {
+            let s = crate::Scalar::Decimal128(42, 0);
+            assert_eq!(format!("{}", s), "42");
+        }
+
+        #[cfg(feature = "scalar_type")]
+        #[test]
+        fn scalar_decimal_negative_scale() {
+            let s = crate::Scalar::Decimal32(5, -2);
+            assert_eq!(format!("{}", s), "500");
+        }
+
+        #[cfg(feature = "hash")]
+        #[test]
+        fn decimal_value_eq_and_hash_agree() {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::Hasher;
+
+            let a = Array::from_decimal64(DecimalArray::<i64>::from_slice(&[100, 200], 18, 2));
+            let b = Array::from_decimal64(DecimalArray::<i64>::from_slice(&[100, 300], 18, 2));
+
+            assert!(a.value_eq(0, &b, 0));
+            assert!(!a.value_eq(1, &b, 1));
+
+            let mut h1 = DefaultHasher::new();
+            let mut h2 = DefaultHasher::new();
+            a.hash_element_at(0, &mut h1);
+            b.hash_element_at(0, &mut h2);
+            assert_eq!(h1.finish(), h2.finish());
+        }
     }
 }

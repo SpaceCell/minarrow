@@ -116,6 +116,13 @@ pub enum ArrowType {
     LargeString,
     Utf8View,
 
+    #[cfg(feature = "decimal")]
+    Decimal32(u8, i8),
+    #[cfg(feature = "decimal")]
+    Decimal64(u8, i8),
+    #[cfg(feature = "decimal")]
+    Decimal128(u8, i8),
+
     // Integer size for the categorical dictionary key,
     // and therefore how much storage space for each entry there is,
     // on top of the base string collection.
@@ -141,6 +148,10 @@ impl ArrowType {
             | ArrowType::UInt64
             | ArrowType::Float32
             | ArrowType::Float64 => "Numeric",
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(_, _)
+            | ArrowType::Decimal64(_, _)
+            | ArrowType::Decimal128(_, _) => "Numeric",
             #[cfg(feature = "datetime")]
             ArrowType::Date32
             | ArrowType::Date64
@@ -189,11 +200,14 @@ impl ArrowType {
 
         /// Promotion axis of a numeric type: family plus bit width.
         /// Numeric pairs promote on these two properties alone, so the
-        /// ten numeric types resolve through one set of rules.
+        /// standard numeric types resolve through one set of rules.
+        /// Decimal types carry precision and scale alongside their width.
         enum PromotionVariant {
             Signed(u32),
             Unsigned(u32),
             Float(u32),
+            #[cfg(feature = "decimal")]
+            Decimal(u32, u8, i8),
         }
         /// Classifies a type onto its promotion axis. Exhaustive over
         /// every `ArrowType` variant so a new variant does not compile
@@ -214,6 +228,12 @@ impl ArrowType {
                 ArrowType::UInt64 => Some(PromotionVariant::Unsigned(64)),
                 ArrowType::Float32 => Some(PromotionVariant::Float(32)),
                 ArrowType::Float64 => Some(PromotionVariant::Float(64)),
+                #[cfg(feature = "decimal")]
+                ArrowType::Decimal32(p, s) => Some(PromotionVariant::Decimal(32, *p, *s)),
+                #[cfg(feature = "decimal")]
+                ArrowType::Decimal64(p, s) => Some(PromotionVariant::Decimal(64, *p, *s)),
+                #[cfg(feature = "decimal")]
+                ArrowType::Decimal128(p, s) => Some(PromotionVariant::Decimal(128, *p, *s)),
                 ArrowType::Null | ArrowType::Boolean => None,
                 ArrowType::String | ArrowType::Utf8View | ArrowType::Dictionary(_) => None,
                 #[cfg(feature = "large_string")]
@@ -249,6 +269,14 @@ impl ArrowType {
                 _ => ArrowType::UInt64,
             }
         }
+        #[cfg(feature = "decimal")]
+        fn decimal(bits: u32, precision: u8, scale: i8) -> ArrowType {
+            match bits {
+                32 => ArrowType::Decimal32(precision, scale),
+                64 => ArrowType::Decimal64(precision, scale),
+                _ => ArrowType::Decimal128(precision, scale),
+            }
+        }
 
         if let (Some(a), Some(b)) = (promotion_variant(self), promotion_variant(other)) {
             use PromotionVariant::*;
@@ -273,6 +301,18 @@ impl ArrowType {
                 // at 64 bits where conversion validates the values.
                 (Signed(s), Unsigned(u)) | (Unsigned(u), Signed(s)) => {
                     signed(s.max((u * 2).min(64)))
+                }
+                // Demote to Float64 so the caller accepts the precision trade.
+                #[cfg(feature = "decimal")]
+                (Decimal(_, _, _), Float(_)) | (Float(_), Decimal(_, _, _)) => Float64,
+                // Promote the integer into the decimal's width and scale.
+                #[cfg(feature = "decimal")]
+                (Decimal(w, p, s), Signed(_) | Unsigned(_))
+                | (Signed(_) | Unsigned(_), Decimal(w, p, s)) => decimal(w, p, s),
+                // Widen to the broader width with the finer scale and max precision.
+                #[cfg(feature = "decimal")]
+                (Decimal(w1, p1, s1), Decimal(w2, p2, s2)) => {
+                    decimal(w1.max(w2), p1.max(p2), s1.max(s2))
                 }
             });
         }
@@ -358,12 +398,26 @@ impl ArrowType {
             | (_, Null | Boolean | String | Utf8View | Dictionary(_)) => None,
             #[cfg(feature = "large_string")]
             (LargeString, _) | (_, LargeString) => None,
-            #[cfg(feature = "extended_numeric_types")]
+            #[cfg(all(feature = "extended_numeric_types", feature = "decimal"))]
+            (
+                Int8 | Int16 | UInt8 | UInt16 | Int32 | Int64 | UInt32 | UInt64 | Float32 | Float64
+                | Decimal32(_, _) | Decimal64(_, _) | Decimal128(_, _),
+                Int8 | Int16 | UInt8 | UInt16 | Int32 | Int64 | UInt32 | UInt64 | Float32 | Float64
+                | Decimal32(_, _) | Decimal64(_, _) | Decimal128(_, _),
+            ) => unreachable!("numeric pairs resolve in the numeric rules above"),
+            #[cfg(all(feature = "extended_numeric_types", not(feature = "decimal")))]
             (
                 Int8 | Int16 | UInt8 | UInt16 | Int32 | Int64 | UInt32 | UInt64 | Float32 | Float64,
                 Int8 | Int16 | UInt8 | UInt16 | Int32 | Int64 | UInt32 | UInt64 | Float32 | Float64,
             ) => unreachable!("numeric pairs resolve in the numeric rules above"),
-            #[cfg(not(feature = "extended_numeric_types"))]
+            #[cfg(all(not(feature = "extended_numeric_types"), feature = "decimal"))]
+            (
+                Int32 | Int64 | UInt32 | UInt64 | Float32 | Float64
+                | Decimal32(_, _) | Decimal64(_, _) | Decimal128(_, _),
+                Int32 | Int64 | UInt32 | UInt64 | Float32 | Float64
+                | Decimal32(_, _) | Decimal64(_, _) | Decimal128(_, _),
+            ) => unreachable!("numeric pairs resolve in the numeric rules above"),
+            #[cfg(not(any(feature = "extended_numeric_types", feature = "decimal")))]
             (
                 Int32 | Int64 | UInt32 | UInt64 | Float32 | Float64,
                 Int32 | Int64 | UInt32 | UInt64 | Float32 | Float64,
@@ -542,6 +596,13 @@ impl Display for ArrowType {
 
             ArrowType::Float32 => f.write_str("Float32"),
             ArrowType::Float64 => f.write_str("Float64"),
+
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, s) => write!(f, "Decimal32({p}, {s})"),
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, s) => write!(f, "Decimal64({p}, {s})"),
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, s) => write!(f, "Decimal128({p}, {s})"),
 
             #[cfg(feature = "datetime")]
             ArrowType::Date32 => f.write_str("Date32"),
@@ -723,5 +784,130 @@ mod tests {
         assert_eq!(Null.upcast(&Null), None);
         assert_eq!(Boolean.upcast(&Boolean), None);
         assert_eq!(String.upcast(&String), None);
+    }
+
+    // ---- Decimal tests ----
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_display() {
+        assert_eq!(ArrowType::Decimal32(9, 2).to_string(), "Decimal32(9, 2)");
+        assert_eq!(ArrowType::Decimal64(18, 4).to_string(), "Decimal64(18, 4)");
+        assert_eq!(
+            ArrowType::Decimal128(38, 10).to_string(),
+            "Decimal128(38, 10)"
+        );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_negative_scale_display() {
+        assert_eq!(
+            ArrowType::Decimal128(10, -3).to_string(),
+            "Decimal128(10, -3)"
+        );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_category_label() {
+        assert_eq!(ArrowType::Decimal32(9, 2).minarrow_category_label(), "Numeric");
+        assert_eq!(ArrowType::Decimal64(18, 4).minarrow_category_label(), "Numeric");
+        assert_eq!(
+            ArrowType::Decimal128(38, 10).minarrow_category_label(),
+            "Numeric"
+        );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn upcast_decimal_identity() {
+        let d32 = ArrowType::Decimal32(9, 2);
+        let d64 = ArrowType::Decimal64(18, 4);
+        let d128 = ArrowType::Decimal128(38, 10);
+        assert_eq!(d32.upcast(&d32), Some(d32));
+        assert_eq!(d64.upcast(&d64), Some(d64));
+        assert_eq!(d128.upcast(&d128), Some(d128));
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn upcast_decimal_same_width_same_scale_max_precision() {
+        let a = ArrowType::Decimal128(20, 5);
+        let b = ArrowType::Decimal128(30, 5);
+        assert_eq!(a.upcast(&b), Some(ArrowType::Decimal128(30, 5)));
+        assert_eq!(b.upcast(&a), Some(ArrowType::Decimal128(30, 5)));
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn upcast_decimal_different_width() {
+        let d32 = ArrowType::Decimal32(9, 2);
+        let d64 = ArrowType::Decimal64(18, 4);
+        let d128 = ArrowType::Decimal128(38, 10);
+
+        // Wider width wins, finer scale preserved
+        let r = d32.upcast(&d64).unwrap();
+        assert_eq!(r, ArrowType::Decimal64(18, 4));
+
+        let r = d32.upcast(&d128).unwrap();
+        assert_eq!(r, ArrowType::Decimal128(38, 10));
+
+        let r = d64.upcast(&d128).unwrap();
+        assert_eq!(r, ArrowType::Decimal128(38, 10));
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn upcast_decimal_symmetry() {
+        let types = vec![
+            ArrowType::Decimal32(9, 2),
+            ArrowType::Decimal64(18, 4),
+            ArrowType::Decimal128(38, 10),
+        ];
+        for a in &types {
+            for b in &types {
+                assert_eq!(
+                    a.upcast(b),
+                    b.upcast(a),
+                    "decimal upcast symmetry for {a:?} x {b:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn upcast_decimal_x_integer() {
+        let d128 = ArrowType::Decimal128(38, 10);
+        assert_eq!(d128.upcast(&ArrowType::Int32), Some(d128.clone()));
+        assert_eq!(ArrowType::Int32.upcast(&d128), Some(d128.clone()));
+        assert_eq!(ArrowType::Int64.upcast(&d128), Some(d128.clone()));
+        assert_eq!(ArrowType::UInt64.upcast(&d128), Some(d128.clone()));
+
+        let d32 = ArrowType::Decimal32(9, 2);
+        assert_eq!(d32.upcast(&ArrowType::Int64), Some(d32.clone()));
+        assert_eq!(ArrowType::UInt32.upcast(&d32), Some(d32.clone()));
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn upcast_decimal_x_float() {
+        let d128 = ArrowType::Decimal128(38, 10);
+        assert_eq!(d128.upcast(&ArrowType::Float32), Some(ArrowType::Float64));
+        assert_eq!(d128.upcast(&ArrowType::Float64), Some(ArrowType::Float64));
+        assert_eq!(ArrowType::Float32.upcast(&d128), Some(ArrowType::Float64));
+        assert_eq!(ArrowType::Float64.upcast(&d128), Some(ArrowType::Float64));
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn upcast_decimal_x_non_numeric() {
+        let d128 = ArrowType::Decimal128(38, 10);
+        assert_eq!(d128.upcast(&ArrowType::Boolean), None);
+        assert_eq!(d128.upcast(&ArrowType::String), None);
+        assert_eq!(d128.upcast(&ArrowType::Null), None);
+        assert_eq!(ArrowType::Boolean.upcast(&d128), None);
+        assert_eq!(ArrowType::String.upcast(&d128), None);
     }
 }

@@ -22,6 +22,8 @@ use std::fmt::{self, Display, Formatter};
 use crate::{Array, Buffer, Float, NumericArray, TextArray};
 #[cfg(feature = "datetime")]
 use crate::{DatetimeArray, Integer, TemporalArray};
+#[cfg(feature = "decimal")]
+use crate::structs::variants::decimal::format_decimal_value;
 
 pub(crate) const MAX_PREVIEW: usize = 50;
 
@@ -70,6 +72,12 @@ pub(crate) fn value_to_string(arr: &Array, idx: usize) -> String {
             NumericArray::UInt16(a) => a.data[idx].to_string(),
             NumericArray::Float32(a) => format_float(a.data[idx] as f64),
             NumericArray::Float64(a) => format_float(a.data[idx]),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(a) => format_decimal_value(a.data[idx], a.scale),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => format_decimal_value(a.data[idx], a.scale),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => format_decimal_value(a.data[idx], a.scale),
             NumericArray::Null => "null".into(),
         },
         // ------------------------- boolean ------------------------------
@@ -429,4 +437,80 @@ fn parse_timezone_offset(tz: &str) -> Option<time::UtcOffset> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_value_to_string_decimal_positive_scale() {
+        use crate::DecimalArray;
+        let arr = Array::from_decimal64(DecimalArray::from_slice(&[12345i64, -67890], 10, 2));
+        assert_eq!(value_to_string(&arr, 0), "123.45");
+        assert_eq!(value_to_string(&arr, 1), "-678.90");
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_value_to_string_decimal_zero_scale() {
+        use crate::DecimalArray;
+        let arr = Array::from_decimal32(DecimalArray::from_slice(&[42i32, 100], 5, 0));
+        assert_eq!(value_to_string(&arr, 0), "42");
+        assert_eq!(value_to_string(&arr, 1), "100");
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_value_to_string_decimal_negative_scale() {
+        use crate::DecimalArray;
+        let arr = Array::from_decimal32(DecimalArray::from_slice(&[123i32], 10, -2));
+        assert_eq!(value_to_string(&arr, 0), "12300");
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_value_to_string_decimal_null() {
+        use crate::{Bitmask, DecimalArray};
+        let mut da = DecimalArray::from_slice(&[0i64, 100], 10, 2);
+        da.null_mask = Some(Bitmask::from_bools(&[false, true]));
+        let arr = Array::from_decimal64(da);
+        assert_eq!(value_to_string(&arr, 0), "null");
+        assert_eq!(value_to_string(&arr, 1), "1.00");
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_value_to_string_decimal128() {
+        use crate::DecimalArray;
+        let arr = Array::from_decimal128(DecimalArray::from_slice(&[999_999i128], 38, 4));
+        assert_eq!(value_to_string(&arr, 0), "99.9999");
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_table_display_with_decimal_column() {
+        use crate::{DecimalArray, FieldArray, Table};
+        use crate::ffi::arrow_dtype::ArrowType;
+        use crate::Field;
+
+        let decimal_arr = DecimalArray::<i64>::from_slice(&[12345, 67890, 100], 10, 2);
+        let arr = Array::from_decimal64(decimal_arr);
+        let field = Field::new(
+            "amount".to_string(),
+            ArrowType::Decimal128(10, 2),
+            false,
+            None,
+        );
+        let table = Table::build(
+            vec![FieldArray::new(field, arr)],
+            3,
+            "test".to_string(),
+        );
+        let display = format!("{}", table);
+        assert!(display.contains("123.45"), "display should contain 123.45, got: {}", display);
+        assert!(display.contains("678.90"), "display should contain 678.90, got: {}", display);
+        assert!(display.contains("1.00"), "display should contain 1.00, got: {}", display);
+    }
 }

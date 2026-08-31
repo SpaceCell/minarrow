@@ -46,6 +46,8 @@
 
 #[cfg(feature = "datetime")]
 use crate::DatetimeArray;
+#[cfg(feature = "decimal")]
+use crate::DecimalArray;
 #[cfg(all(feature = "cube", feature = "views"))]
 use crate::TableV;
 use crate::{
@@ -244,6 +246,10 @@ pub type IntegerAVT<'a, T> = (&'a IntegerArray<T>, Offset, Length);
 
 /// Logical windowed ***A**rray **V**iew **T**uple* over a primitive float array.
 pub type FloatAVT<'a, T> = (&'a FloatArray<T>, Offset, Length);
+
+/// Logical windowed ***A**rray **V**iew **T**uple* over a decimal array.
+#[cfg(feature = "decimal")]
+pub type DecimalAVT<'a, T> = (&'a DecimalArray<T>, Offset, Length);
 
 /// Logical windowed ***A**rray **V**iew **T**uple* over an `Array` and its `Field`: *((array, offset, len), field)*.
 ///

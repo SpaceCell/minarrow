@@ -238,6 +238,50 @@ print(f"  Output: {len(result)} elements, {result.num_chunks} chunks")
 assert chunked.to_pylist() == result.to_pylist(), "String ChunkedArray mismatch!"
 print("  ✓ PASSED")
 
+# Test 21: Decimal128 Array roundtrip
+print("\nTest 21: Decimal128 Array Roundtrip")
+print("-" * 40)
+import decimal
+arr = pa.array([decimal.Decimal("123.45"), decimal.Decimal("678.90"), None], type=pa.decimal128(10, 2))
+print(f"  Input:  {arr.to_pylist()}")
+result = ma.echo_array(arr)
+print(f"  Output: {result.to_pylist()}")
+assert arr.to_pylist() == result.to_pylist(), "Decimal128 array mismatch!"
+assert result.type == arr.type, f"Decimal128 type mismatch: expected {arr.type}, got {result.type}"
+print("  ✓ PASSED")
+
+# Test 22: Decimal128 Array roundtrip with high precision
+print("\nTest 22: Decimal128 High Precision Roundtrip")
+print("-" * 40)
+arr = pa.array(
+    [decimal.Decimal("12345678901234567890.1234567890"), None, decimal.Decimal("-9876543210.0987654321")],
+    type=pa.decimal128(38, 10),
+)
+print(f"  Input:  {arr.to_pylist()}")
+result = ma.echo_array(arr)
+print(f"  Output: {result.to_pylist()}")
+assert arr.to_pylist() == result.to_pylist(), "Decimal128 high precision array mismatch!"
+assert result.type == arr.type, f"Decimal128 type mismatch: expected {arr.type}, got {result.type}"
+print("  ✓ PASSED")
+
+# Test 23: Decimal128 in RecordBatch roundtrip
+print("\nTest 23: Decimal128 in RecordBatch Roundtrip")
+print("-" * 40)
+batch = pa.RecordBatch.from_pydict({
+    "id": pa.array([1, 2, 3], type=pa.int64()),
+    "price": pa.array(
+        [decimal.Decimal("19.99"), decimal.Decimal("29.99"), decimal.Decimal("39.99")],
+        type=pa.decimal128(10, 2),
+    ),
+})
+print(f"  Input:  {batch.num_rows} rows, {batch.num_columns} cols")
+result = ma.echo_batch(batch)
+print(f"  Output: {result.num_rows} rows, {result.num_columns} cols")
+assert batch.column("id").to_pylist() == result.column("id").to_pylist(), "ID column mismatch!"
+assert batch.column("price").to_pylist() == result.column("price").to_pylist(), "Price column mismatch!"
+assert result.schema.field("price").type == pa.decimal128(10, 2), "Decimal type not preserved in RecordBatch!"
+print("  ✓ PASSED")
+
 print("\n" + "=" * 50)
 print("All tests PASSED!")
 print("=" * 50)

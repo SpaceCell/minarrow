@@ -960,6 +960,192 @@ mod tests {
             panic!("Expected Categorical32 Array");
         }
     }
+
+    // Decimal Array Consolidation Tests
+
+    #[cfg(feature = "decimal")]
+    fn fa_decimal32(name: &str, vals: &[i32], precision: u8, scale: i8) -> FieldArray {
+        let arr = Array::from_decimal32(crate::DecimalArray::from_slice(vals, precision, scale));
+        let field = Field::new(
+            name,
+            ArrowType::Decimal32(precision, scale),
+            false,
+            None,
+        );
+        FieldArray::new(field, arr)
+    }
+
+    #[cfg(feature = "decimal")]
+    fn fa_decimal64(name: &str, vals: &[i64], precision: u8, scale: i8) -> FieldArray {
+        let arr = Array::from_decimal64(crate::DecimalArray::from_slice(vals, precision, scale));
+        let field = Field::new(
+            name,
+            ArrowType::Decimal64(precision, scale),
+            false,
+            None,
+        );
+        FieldArray::new(field, arr)
+    }
+
+    #[cfg(feature = "decimal")]
+    fn fa_decimal128(name: &str, vals: &[i128], precision: u8, scale: i8) -> FieldArray {
+        let arr = Array::from_decimal128(crate::DecimalArray::from_slice(vals, precision, scale));
+        let field = Field::new(
+            name,
+            ArrowType::Decimal128(precision, scale),
+            false,
+            None,
+        );
+        FieldArray::new(field, arr)
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_consolidate_decimal32_single_chunk() {
+        let fa1 = fa_decimal32("d", &[10, 20, 30, 40], 10, 2);
+        let ca = SuperArray::from_chunks(vec![fa1]);
+        let slice = ca.slice(0, 4);
+        let arr = slice.consolidate();
+
+        assert_eq!(arr.len(), 4);
+        if let Array::NumericArray(NumericArray::Decimal32(dec)) = arr {
+            assert_eq!(dec.data.as_slice(), &[10, 20, 30, 40]);
+            assert_eq!(dec.precision, 10);
+            assert_eq!(dec.scale, 2);
+        } else {
+            panic!("Expected Decimal32 Array");
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_consolidate_decimal32_multiple_chunks() {
+        let fa1 = fa_decimal32("d", &[10, 20], 10, 2);
+        let fa2 = fa_decimal32("d", &[30, 40, 50], 10, 2);
+        let ca = SuperArray::from_chunks(vec![fa1, fa2]);
+        let slice = ca.slice(0, 5);
+        let arr = slice.consolidate();
+
+        assert_eq!(arr.len(), 5);
+        if let Array::NumericArray(NumericArray::Decimal32(dec)) = arr {
+            assert_eq!(dec.data.as_slice(), &[10, 20, 30, 40, 50]);
+            assert_eq!(dec.precision, 10);
+            assert_eq!(dec.scale, 2);
+        } else {
+            panic!("Expected Decimal32 Array");
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_consolidate_decimal32_with_offset() {
+        let fa1 = fa_decimal32("d", &[100, 200, 300, 400, 500], 10, 2);
+        let ca = SuperArray::from_chunks(vec![fa1]);
+        let slice = ca.slice(1, 3); // [200, 300, 400]
+        let arr = slice.consolidate();
+
+        assert_eq!(arr.len(), 3);
+        if let Array::NumericArray(NumericArray::Decimal32(dec)) = arr {
+            assert_eq!(dec.data.as_slice(), &[200, 300, 400]);
+            assert_eq!(dec.precision, 10);
+            assert_eq!(dec.scale, 2);
+        } else {
+            panic!("Expected Decimal32 Array");
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_consolidate_decimal32_cross_chunk_slice() {
+        let fa1 = fa_decimal32("d", &[10, 20], 10, 2);
+        let fa2 = fa_decimal32("d", &[30, 40], 10, 2);
+        let ca = SuperArray::from_chunks(vec![fa1, fa2]);
+        let slice = ca.slice(1, 2); // [20, 30] spanning chunks
+        let arr = slice.consolidate();
+
+        assert_eq!(arr.len(), 2);
+        if let Array::NumericArray(NumericArray::Decimal32(dec)) = arr {
+            assert_eq!(dec.data.as_slice(), &[20, 30]);
+            assert_eq!(dec.precision, 10);
+            assert_eq!(dec.scale, 2);
+        } else {
+            panic!("Expected Decimal32 Array");
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_consolidate_decimal64_multiple_chunks() {
+        let fa1 = fa_decimal64("d", &[1000i64, 2000], 18, 4);
+        let fa2 = fa_decimal64("d", &[3000i64], 18, 4);
+        let ca = SuperArray::from_chunks(vec![fa1, fa2]);
+        let slice = ca.slice(0, 3);
+        let arr = slice.consolidate();
+
+        assert_eq!(arr.len(), 3);
+        if let Array::NumericArray(NumericArray::Decimal64(dec)) = arr {
+            assert_eq!(dec.data.as_slice(), &[1000i64, 2000, 3000]);
+            assert_eq!(dec.precision, 18);
+            assert_eq!(dec.scale, 4);
+        } else {
+            panic!("Expected Decimal64 Array");
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_consolidate_decimal128_with_offset() {
+        let fa1 = fa_decimal128("d", &[10i128, 20, 30, 40, 50], 38, 10);
+        let ca = SuperArray::from_chunks(vec![fa1]);
+        let slice = ca.slice(2, 2); // [30, 40]
+        let arr = slice.consolidate();
+
+        assert_eq!(arr.len(), 2);
+        if let Array::NumericArray(NumericArray::Decimal128(dec)) = arr {
+            assert_eq!(dec.data.as_slice(), &[30i128, 40]);
+            assert_eq!(dec.precision, 38);
+            assert_eq!(dec.scale, 10);
+        } else {
+            panic!("Expected Decimal128 Array");
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_consolidate_decimal_with_nulls() {
+        use crate::MaskedArray;
+
+        let mut dec_arr = crate::DecimalArray::<i32>::with_capacity(4, true, 10, 2);
+        dec_arr.push(10);
+        dec_arr.push_null();
+        dec_arr.push(30);
+        dec_arr.push(40);
+        let arr1 = Array::from_decimal32(dec_arr);
+        let field = Field::new("d", ArrowType::Decimal32(10, 2), true, None);
+        let fa1 = FieldArray::new(field.clone(), arr1);
+
+        let arr2 = Array::from_decimal32(
+            crate::DecimalArray::<i32>::from_slice(&[50, 60], 10, 2),
+        );
+        let fa2 = FieldArray::new(field.clone(), arr2);
+
+        let ca = SuperArray::from_chunks(vec![fa1, fa2]);
+        let slice = ca.slice(0, 6);
+        let result = slice.consolidate();
+
+        assert_eq!(result.len(), 6);
+        if let Array::NumericArray(NumericArray::Decimal32(dec)) = result {
+            assert_eq!(dec.get(0), Some(10));
+            assert_eq!(dec.get(1), None);
+            assert_eq!(dec.get(2), Some(30));
+            assert_eq!(dec.get(3), Some(40));
+            assert_eq!(dec.get(4), Some(50));
+            assert_eq!(dec.get(5), Some(60));
+            assert_eq!(dec.null_count(), 1);
+        } else {
+            panic!("Expected Decimal32 Array");
+        }
+    }
 }
 
 /// SuperArray -> SuperArrayV conversion

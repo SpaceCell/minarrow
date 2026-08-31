@@ -66,6 +66,8 @@ use crate::{
 };
 #[cfg(feature = "datetime")]
 use crate::{DatetimeArray, IntervalUnit, TemporalArray, TimeUnit};
+#[cfg(feature = "decimal")]
+use crate::DecimalArray;
 
 // Provides compatibility with the cross-platform `Apache Arrow` standard
 // via the `C Data Interface` specification:
@@ -265,6 +267,24 @@ unsafe extern "C" fn release_arrow_schema(s: *mut ArrowSchema) {
 
 /// Constructs the Arrow C FFI format string for the given ArrowType.
 pub fn fmt_c(dtype: ArrowType) -> CString {
+    #[cfg(feature = "decimal")]
+    match &dtype {
+        // Decimal128 is the Arrow default so the bitwidth suffix is omitted.
+        ArrowType::Decimal128(p, s) => {
+            let fmt = format!("d:{p},{s}");
+            return CString::new(fmt).expect("CString formatting failed: invalid bytes");
+        }
+        ArrowType::Decimal32(p, s) => {
+            let fmt = format!("d:{p},{s},32");
+            return CString::new(fmt).expect("CString formatting failed: invalid bytes");
+        }
+        ArrowType::Decimal64(p, s) => {
+            let fmt = format!("d:{p},{s},64");
+            return CString::new(fmt).expect("CString formatting failed: invalid bytes");
+        }
+        _ => {}
+    }
+
     #[cfg(feature = "datetime")]
     if let ArrowType::Timestamp(u, tz) = &dtype {
         let unit_str = match u {
@@ -347,6 +367,11 @@ pub fn fmt_c(dtype: ArrowType) -> CString {
             IntervalUnit::DaysTime => b"tiD",
             IntervalUnit::MonthDaysNs => b"tin",
         },
+
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal32(_, _) | ArrowType::Decimal64(_, _) | ArrowType::Decimal128(_, _) => {
+            unreachable!("decimal cases handled by the early return above")
+        }
 
         // ---- dictionary (categorical) ----
         ArrowType::Dictionary(idx) => match idx {
@@ -433,6 +458,38 @@ fn validate_temporal_field(array: &Array, dtype: &ArrowType) {
     }
 }
 
+fn validate_numeric_field(array: &Array, dtype: &ArrowType) {
+    #[cfg(feature = "decimal")]
+    {
+        use crate::enums::collections::numeric_array::NumericArray;
+        match (array, dtype) {
+            (Array::NumericArray(NumericArray::Decimal32(a)), ArrowType::Decimal32(p, s)) => {
+                assert!(
+                    a.precision == *p && a.scale == *s,
+                    "FFI export: Field=Decimal32(p={p},s={s}) does not match array (p={},s={})",
+                    a.precision, a.scale
+                );
+            }
+            (Array::NumericArray(NumericArray::Decimal64(a)), ArrowType::Decimal64(p, s)) => {
+                assert!(
+                    a.precision == *p && a.scale == *s,
+                    "FFI export: Field=Decimal64(p={p},s={s}) does not match array (p={},s={})",
+                    a.precision, a.scale
+                );
+            }
+            (Array::NumericArray(NumericArray::Decimal128(a)), ArrowType::Decimal128(p, s)) => {
+                assert!(
+                    a.precision == *p && a.scale == *s,
+                    "FFI export: Field=Decimal128(p={p},s={s}) does not match array (p={},s={})",
+                    a.precision, a.scale
+                );
+            }
+            _ => {}
+        }
+    }
+    let _ = (array, dtype);
+}
+
 /// Exports a Minarrow array to Arrow C Data Interface pointers.
 ///
 /// Equivalent to [`export_view_to_c`] with offset = 0 and length = `array.len()`.
@@ -462,6 +519,11 @@ pub fn export_view_to_c(
         let field_ty = &schema.fields[0].dtype;
         // Validate temporal logical type <-> physical unit before export.
         validate_temporal_field(&*array, field_ty);
+    }
+
+    {
+        let field_ty = &schema.fields[0].dtype;
+        validate_numeric_field(&*array, field_ty);
     }
 
     match &*array {
@@ -758,6 +820,8 @@ pub unsafe fn import_from_c(arr_ptr: *const ArrowArray, sch_ptr: *const ArrowSch
             };
             ArrowType::Timestamp(unit, tz)
         }
+        #[cfg(feature = "decimal")]
+        _ if fmt.starts_with(b"d:") => parse_decimal_format(fmt),
         o => panic!("unsupported format {:?}", o),
     };
 
@@ -863,6 +927,18 @@ pub unsafe fn import_from_c(arr_ptr: *const ArrowArray, sch_ptr: *const ArrowSch
             ArrowType::Interval(_u) => {
                 panic!("FFI import_from_c: Arrow Interval types are not yet supported");
             }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, s) => unsafe {
+                import_decimal::<i32>(arr, None, p, s, Array::from_decimal32)
+            },
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, s) => unsafe {
+                import_decimal::<i64>(arr, None, p, s, Array::from_decimal64)
+            },
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, s) => unsafe {
+                import_decimal::<i128>(arr, None, p, s, Array::from_decimal128)
+            },
             ArrowType::Null => {
                 panic!("FFI import_from_c: Arrow Null arrays types are not yet supported")
             }
@@ -1007,6 +1083,18 @@ pub unsafe fn import_from_c_owned(
             ArrowType::Interval(_u) => {
                 panic!("FFI import_from_c_owned: Arrow Interval types are not yet supported");
             }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, s) => {
+                import_decimal::<i32>(arr, Some(arr_box), p, s, Array::from_decimal32)
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, s) => {
+                import_decimal::<i64>(arr, Some(arr_box), p, s, Array::from_decimal64)
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, s) => {
+                import_decimal::<i128>(arr, Some(arr_box), p, s, Array::from_decimal128)
+            }
             ArrowType::Null => {
                 panic!("FFI import_from_c_owned: Arrow Null arrays types are not yet supported")
             }
@@ -1132,6 +1220,18 @@ unsafe fn import_array_zero_copy(
             #[cfg(feature = "datetime")]
             ArrowType::Interval(_u) => {
                 panic!("import_array_zero_copy: Interval types are not yet supported");
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, s) => {
+                import_decimal::<i32>(arr, Some(arr_box), p, s, Array::from_decimal32)
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, s) => {
+                import_decimal::<i64>(arr, Some(arr_box), p, s, Array::from_decimal64)
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, s) => {
+                import_decimal::<i128>(arr, Some(arr_box), p, s, Array::from_decimal128)
             }
             ArrowType::Null => {
                 panic!("import_array_zero_copy: Null array types are not yet supported");
@@ -1831,6 +1931,64 @@ unsafe fn import_datetime<T: Integer>(
     } else {
         panic!("Unsupported DatetimeArray type (expected i32 or i64)");
     }
+}
+
+/// Imports a decimal array from Arrow C format.
+///
+/// The backing integer type `T` (i32, i64, or i128) determines the element
+/// width. Precision and scale come from the parsed format string and are
+/// stored on the resulting `DecimalArray`.
+///
+/// # Arguments
+/// * `arr` - Reference to the ArrowArray containing the data
+/// * `ownership` - If `Some(box)`, takes ownership and does zero-copy via ForeignBuffer.
+///                 If `None`, copies the data.
+/// * `precision` - total significant digits
+/// * `scale` - digits after the decimal point
+/// * `tag` - constructor function to wrap the array
+///
+/// # Safety
+/// `arr` must contain valid buffers of expected length and type.
+#[cfg(feature = "decimal")]
+unsafe fn import_decimal<T: Integer>(
+    arr: &ArrowArray,
+    ownership: Option<Box<ArrowArray>>,
+    precision: u8,
+    scale: i8,
+    tag: fn(DecimalArray<T>) -> Array,
+) -> Arc<Array> {
+    let len = arr.length as usize;
+    let offset = arr.offset as usize;
+    let buffers = unsafe { slice::from_raw_parts(arr.buffers, 2) };
+    let data_ptr = unsafe { (buffers[1] as *const T).add(offset) };
+    let data_len_bytes = len * std::mem::size_of::<T>();
+
+    // Null mask is always copied to honour the bit-level offset.
+    let null_mask = if !buffers[0].is_null() {
+        Some(unsafe { import_null_mask_offset(buffers[0], offset, len) })
+    } else {
+        None
+    };
+
+    // For empty arrays, create an empty buffer rather than reading from the foreign pointer.
+    let buffer: Buffer<T> = if len == 0 {
+        Buffer::default()
+    } else if let Some(arr_box) = ownership {
+        // Zero-copy: wrap foreign buffer
+        let foreign = ForeignBuffer {
+            ptr: data_ptr as *const u8,
+            len: data_len_bytes,
+            array: Some(arr_box),
+        };
+        let shared = SharedBuffer::from_owner(foreign);
+        Buffer::from_shared(shared)
+    } else {
+        let data = unsafe { slice::from_raw_parts(data_ptr, len) };
+        Vec64::from(data).into()
+    };
+
+    let dec_arr = DecimalArray::<T>::new(buffer, null_mask, precision, scale);
+    Arc::new(tag(dec_arr))
 }
 
 /// Verifies that all buffer pointers are 64-byte aligned.
@@ -3408,6 +3566,38 @@ unsafe fn field_from_c_schema(schema: &ArrowSchema) -> crate::Field {
     crate::Field::new(name, dtype, nullable, metadata)
 }
 
+/// Parses an Arrow C decimal format string (`d:P,S` or `d:P,S,N`) into an ArrowType.
+///
+/// Two-component form (`d:P,S`) is Decimal128 per the Arrow spec where 128
+/// is the default bitwidth. Three-component form (`d:P,S,N`) selects the
+/// bitwidth from N. Accepts `d:P,S,128` as equivalent to `d:P,S`.
+#[cfg(feature = "decimal")]
+fn parse_decimal_format(fmt: &[u8]) -> ArrowType {
+    let s = std::str::from_utf8(&fmt[2..]).unwrap_or_else(|_| {
+        panic!(
+            "FFI parse_decimal_format: non-UTF8 decimal format {:?}",
+            fmt
+        )
+    });
+    let parts: Vec<&str> = s.split(',').collect();
+    let precision: u8 = parts[0].parse().unwrap_or_else(|_| {
+        panic!("FFI parse_decimal_format: invalid precision in {:?}", s)
+    });
+    let scale: i8 = parts[1].parse().unwrap_or_else(|_| {
+        panic!("FFI parse_decimal_format: invalid scale in {:?}", s)
+    });
+    match parts.len() {
+        2 => ArrowType::Decimal128(precision, scale),
+        3 => match parts[2] {
+            "32" => ArrowType::Decimal32(precision, scale),
+            "64" => ArrowType::Decimal64(precision, scale),
+            "128" => ArrowType::Decimal128(precision, scale),
+            w => panic!("FFI parse_decimal_format: unsupported decimal bitwidth {w}"),
+        },
+        _ => panic!("FFI parse_decimal_format: malformed decimal format {:?}", s),
+    }
+}
+
 /// Parses an Arrow C format string into an ArrowType.
 /// Shared between import_from_c, import_from_c_owned, and stream import.
 fn parse_arrow_format(fmt: &[u8]) -> ArrowType {
@@ -3459,6 +3649,10 @@ fn parse_arrow_format(fmt: &[u8]) -> ArrowType {
         #[cfg(feature = "datetime")]
         b"tin" => ArrowType::Interval(crate::IntervalUnit::MonthDaysNs),
         b"+s" => ArrowType::Null, // struct marker (handled at stream level)
+        #[cfg(feature = "decimal")]
+        _ if fmt.starts_with(b"d:") => {
+            parse_decimal_format(fmt)
+        }
         #[cfg(feature = "datetime")]
         _ if fmt.starts_with(b"tss")
             || fmt.starts_with(b"tsm")
@@ -4643,6 +4837,210 @@ mod tests {
 
             ((*arr_ptr).release.unwrap())(arr_ptr);
             ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_fmt_c_roundtrip() {
+        use super::{fmt_c, parse_arrow_format};
+
+        // Decimal128 emits d:P,S (no bitwidth suffix)
+        let d128 = ArrowType::Decimal128(38, 10);
+        let cstr = fmt_c(d128.clone());
+        assert_eq!(cstr.to_str().unwrap(), "d:38,10");
+        let parsed = parse_arrow_format(cstr.as_bytes());
+        assert_eq!(parsed, d128);
+
+        // Decimal64 emits d:P,S,64
+        let d64 = ArrowType::Decimal64(18, 4);
+        let cstr = fmt_c(d64.clone());
+        assert_eq!(cstr.to_str().unwrap(), "d:18,4,64");
+        let parsed = parse_arrow_format(cstr.as_bytes());
+        assert_eq!(parsed, d64);
+
+        // Decimal32 emits d:P,S,32
+        let d32 = ArrowType::Decimal32(9, 2);
+        let cstr = fmt_c(d32.clone());
+        assert_eq!(cstr.to_str().unwrap(), "d:9,2,32");
+        let parsed = parse_arrow_format(cstr.as_bytes());
+        assert_eq!(parsed, d32);
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_parse_128_explicit_bitwidth() {
+        use super::parse_arrow_format;
+
+        // d:P,S,128 is an alias for Decimal128
+        let parsed = parse_arrow_format(b"d:38,10,128");
+        assert_eq!(parsed, ArrowType::Decimal128(38, 10));
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_negative_scale_roundtrip() {
+        use super::{fmt_c, parse_arrow_format};
+
+        let d = ArrowType::Decimal128(10, -3);
+        let cstr = fmt_c(d.clone());
+        assert_eq!(cstr.to_str().unwrap(), "d:10,-3");
+        let parsed = parse_arrow_format(cstr.as_bytes());
+        assert_eq!(parsed, d);
+    }
+
+    // ── Decimal C Data Interface round-trip tests ────────────────────────
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal128_export_import_roundtrip() {
+        use super::import_from_c;
+        use crate::DecimalArray;
+
+        let arr = DecimalArray::<i128>::from_slice(&[12345, -67890, 0], 10, 2);
+        let array = Arc::new(Array::from_decimal128(arr));
+        let schema = schema_for("dec128", ArrowType::Decimal128(10, 2), false);
+
+        let (arr_ptr, sch_ptr) = export_to_c(array.clone(), schema);
+
+        unsafe {
+            assert_eq!((*arr_ptr).length, 3);
+            let fmt = std::ffi::CStr::from_ptr((*sch_ptr).format).to_bytes();
+            assert_eq!(fmt, b"d:10,2");
+
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            assert_eq!(*imported, *array);
+
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal64_export_import_roundtrip() {
+        use super::import_from_c;
+        use crate::DecimalArray;
+
+        let arr = DecimalArray::<i64>::from_slice(&[999, -1, 42], 18, 4);
+        let array = Arc::new(Array::from_decimal64(arr));
+        let schema = schema_for("dec64", ArrowType::Decimal64(18, 4), false);
+
+        let (arr_ptr, sch_ptr) = export_to_c(array.clone(), schema);
+
+        unsafe {
+            assert_eq!((*arr_ptr).length, 3);
+            let fmt = std::ffi::CStr::from_ptr((*sch_ptr).format).to_bytes();
+            assert_eq!(fmt, b"d:18,4,64");
+
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            assert_eq!(*imported, *array);
+
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal32_export_import_roundtrip() {
+        use super::import_from_c;
+        use crate::DecimalArray;
+
+        let arr = DecimalArray::<i32>::from_slice(&[100, 200, -300], 9, 2);
+        let array = Arc::new(Array::from_decimal32(arr));
+        let schema = schema_for("dec32", ArrowType::Decimal32(9, 2), false);
+
+        let (arr_ptr, sch_ptr) = export_to_c(array.clone(), schema);
+
+        unsafe {
+            assert_eq!((*arr_ptr).length, 3);
+            let fmt = std::ffi::CStr::from_ptr((*sch_ptr).format).to_bytes();
+            assert_eq!(fmt, b"d:9,2,32");
+
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            assert_eq!(*imported, *array);
+
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal128_owned_roundtrip() {
+        use super::import_from_c_owned;
+        use crate::DecimalArray;
+
+        let arr = DecimalArray::<i128>::from_slice(&[12345, -67890], 10, 2);
+        let array = Arc::new(Array::from_decimal128(arr));
+        let schema = schema_for("dec128", ArrowType::Decimal128(10, 2), false);
+
+        let (arr_ptr, sch_ptr) = export_to_c(array.clone(), schema);
+
+        unsafe {
+            let arr_box = Box::from_raw(arr_ptr);
+            let sch_box = Box::from_raw(sch_ptr);
+            let (imported, field) = import_from_c_owned(arr_box, sch_box);
+            assert_eq!(*imported, *array);
+            assert_eq!(field.dtype, ArrowType::Decimal128(10, 2));
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_with_nulls_roundtrip() {
+        use super::import_from_c_owned;
+        use crate::{DecimalArray, MaskedArray as _};
+
+        let mut arr = DecimalArray::<i128>::with_capacity(4, true, 10, 2);
+        arr.push(12345);
+        arr.push_null();
+        arr.push(67890);
+        arr.push_null();
+
+        let array = Arc::new(Array::from_decimal128(arr));
+        let schema = schema_for("dec128_nulls", ArrowType::Decimal128(10, 2), true);
+
+        let (arr_ptr, sch_ptr) = export_to_c(array.clone(), schema);
+
+        unsafe {
+            let arr_box = Box::from_raw(arr_ptr);
+            let sch_box = Box::from_raw(sch_ptr);
+            let (imported, field) = import_from_c_owned(arr_box, sch_box);
+            assert_eq!(*imported, *array);
+            assert_eq!(field.dtype, ArrowType::Decimal128(10, 2));
+        }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_record_batch_stream_roundtrip() {
+        use super::{export_record_batch_stream, import_record_batch_stream};
+        use crate::DecimalArray;
+
+        let field = Field::new("amount", ArrowType::Decimal128(10, 2), false, None);
+        let arr = DecimalArray::<i128>::from_slice(&[12345, 67890], 10, 2);
+        let array = Arc::new(Array::from_decimal128(arr));
+        let col_schema = Schema {
+            fields: vec![field.clone()],
+            metadata: Default::default(),
+        };
+
+        let batches = vec![vec![(array.clone(), col_schema)]];
+        let fields = vec![field];
+
+        let stream = export_record_batch_stream(batches, fields);
+        let stream_ptr = Box::into_raw(stream);
+
+        unsafe {
+            let result = import_record_batch_stream(stream_ptr);
+            assert_eq!(result.len(), 1);
+            let batch = &result[0];
+            assert_eq!(batch.len(), 1);
+            let (imported, imported_field) = &batch[0];
+            assert_eq!(**imported, *array);
+            assert_eq!(imported_field.dtype, ArrowType::Decimal128(10, 2));
         }
     }
 }

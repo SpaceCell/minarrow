@@ -42,6 +42,8 @@
 //! - `len` reflects the **logical** number of elements in the view.
 
 use std::fmt::{self, Debug, Display, Formatter};
+#[cfg(feature = "decimal")]
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 use crate::enums::error::MinarrowError;
@@ -386,6 +388,12 @@ impl ArrayV {
                 NumericArray::UInt8(a) => cast_slice!(a),
                 #[cfg(feature = "extended_numeric_types")]
                 NumericArray::UInt16(a) => cast_slice!(a),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => cast_slice!(a),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => cast_slice!(a),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => cast_slice!(a),
                 NumericArray::Null => {
                     Err(KernelError::UnsupportedType("null numeric array".into()))
                 }
@@ -535,6 +543,27 @@ impl ArrayV {
                 NumericArray::UInt16(arr) => {
                     let (d, m) = gather_idx_prim!(self, arr, indices, u16);
                     Array::from_uint16(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, i32);
+                    Array::NumericArray(NumericArray::Decimal32(Arc::new(
+                        crate::DecimalArray::new(d, m, arr.precision, arr.scale),
+                    )))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, i64);
+                    Array::NumericArray(NumericArray::Decimal64(Arc::new(
+                        crate::DecimalArray::new(d, m, arr.precision, arr.scale),
+                    )))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => {
+                    let (d, m) = gather_idx_prim!(self, arr, indices, i128);
+                    Array::NumericArray(NumericArray::Decimal128(Arc::new(
+                        crate::DecimalArray::new(d, m, arr.precision, arr.scale),
+                    )))
                 }
                 NumericArray::Null => Array::Null,
             },
@@ -745,6 +774,27 @@ impl ArrayV {
                 NumericArray::UInt16(arr) => {
                     let (d, m) = gather_pad_prim!(self, arr, indices, pad, u16);
                     Array::from_uint16(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, i32);
+                    Array::NumericArray(NumericArray::Decimal32(Arc::new(
+                        crate::DecimalArray::new(d, m, arr.precision, arr.scale),
+                    )))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, i64);
+                    Array::NumericArray(NumericArray::Decimal64(Arc::new(
+                        crate::DecimalArray::new(d, m, arr.precision, arr.scale),
+                    )))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => {
+                    let (d, m) = gather_pad_prim!(self, arr, indices, pad, i128);
+                    Array::NumericArray(NumericArray::Decimal128(Arc::new(
+                        crate::DecimalArray::new(d, m, arr.precision, arr.scale),
+                    )))
                 }
                 NumericArray::Null => Array::Null,
             },
@@ -1015,6 +1065,27 @@ impl ArrayV {
                 NumericArray::UInt16(arr) => {
                     let (d, m) = gather_mask_prim!(self, arr, mask, kept, u16);
                     Array::from_uint16(IntegerArray::new(d, m))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, i32);
+                    Array::NumericArray(NumericArray::Decimal32(Arc::new(
+                        crate::DecimalArray::new(d, m, arr.precision, arr.scale),
+                    )))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, i64);
+                    Array::NumericArray(NumericArray::Decimal64(Arc::new(
+                        crate::DecimalArray::new(d, m, arr.precision, arr.scale),
+                    )))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => {
+                    let (d, m) = gather_mask_prim!(self, arr, mask, kept, i128);
+                    Array::NumericArray(NumericArray::Decimal128(Arc::new(
+                        crate::DecimalArray::new(d, m, arr.precision, arr.scale),
+                    )))
                 }
                 NumericArray::Null => Array::Null,
             },
@@ -1643,5 +1714,124 @@ mod tests {
         // An all-false mask yields a typed empty array.
         let empty = view.gather_mask(&Bitmask::new_set_all(4, false));
         assert_eq!(empty.len(), 0);
+    }
+
+    // Decimal ArrayV Tests
+
+    #[cfg(feature = "decimal")]
+    mod decimal_view_tests {
+        use super::*;
+        use crate::{DecimalArray, MaskedArray, NumericArray};
+
+        #[test]
+        fn decimal32_view_windowing_and_slice() {
+            let arr = DecimalArray::<i32>::from_slice(&[10, 20, 30, 40, 50], 10, 2);
+            let array = Array::from_decimal32(arr);
+            let view = ArrayV::new(array, 1, 3);
+
+            assert_eq!(view.len(), 3);
+            assert_eq!(view.offset, 1);
+            assert_eq!(view.get::<DecimalArray<i32>>(0), Some(20));
+            assert_eq!(view.get::<DecimalArray<i32>>(1), Some(30));
+            assert_eq!(view.get::<DecimalArray<i32>>(2), Some(40));
+            assert_eq!(view.get::<DecimalArray<i32>>(3), None);
+
+            let sub = view.slice(1, 1);
+            assert_eq!(sub.len(), 1);
+            assert_eq!(sub.get::<DecimalArray<i32>>(0), Some(30));
+        }
+
+        #[test]
+        fn decimal64_view_null_count() {
+            let mut arr = DecimalArray::<i64>::with_capacity(4, true, 18, 4);
+            arr.push(100);
+            arr.push_null();
+            arr.push(300);
+            arr.push(400);
+
+            let array = Array::from_decimal64(arr);
+            let view = ArrayV::new(array, 0, 4);
+            assert_eq!(view.null_count(), 1);
+
+            let sub = view.slice(0, 1);
+            assert_eq!(sub.null_count(), 0);
+
+            let sub_with_null = view.slice(1, 1);
+            assert_eq!(sub_with_null.null_count(), 1);
+        }
+
+        #[test]
+        fn decimal128_view_to_array_preserves_metadata() {
+            let arr = DecimalArray::<i128>::from_slice(&[100, 200, 300], 38, 10);
+            let array = Array::from_decimal128(arr);
+            let view = ArrayV::new(array, 1, 2);
+            let materialised = view.to_array();
+
+            if let Array::NumericArray(NumericArray::Decimal128(dec)) = materialised {
+                assert_eq!(dec.len(), 2);
+                assert_eq!(dec.precision, 38);
+                assert_eq!(dec.scale, 10);
+                assert_eq!(dec.get(0), Some(200i128));
+                assert_eq!(dec.get(1), Some(300i128));
+            } else {
+                panic!("Expected Decimal128 Array");
+            }
+        }
+
+        #[test]
+        fn decimal_view_from_array_spans_backing() {
+            let arr = DecimalArray::<i32>::from_slice(&[10, 20], 10, 2);
+            let array = Array::from_decimal32(arr);
+            let view = ArrayV::from(array);
+            assert!(view.spans_backing());
+            assert_eq!(view.len(), 2);
+        }
+
+        #[cfg(feature = "select")]
+        #[test]
+        fn decimal_gather_indices() {
+            let arr = DecimalArray::<i32>::from_slice(&[10, 20, 30, 40, 50], 10, 2);
+            let array = Array::from_decimal32(arr);
+            let view = ArrayV::new(array, 0, 5);
+
+            let gathered = view.gather_indices(&[4, 2, 0]);
+            if let Array::NumericArray(NumericArray::Decimal32(dec)) = gathered {
+                assert_eq!(dec.data.as_slice(), &[50, 30, 10]);
+                assert_eq!(dec.precision, 10);
+                assert_eq!(dec.scale, 2);
+            } else {
+                panic!("Expected Decimal32 Array");
+            }
+        }
+
+        #[cfg(feature = "select")]
+        #[test]
+        fn decimal_gather_mask_with_nulls() {
+            let mut arr = DecimalArray::<i64>::with_capacity(4, true, 18, 4);
+            arr.push(10);
+            arr.push_null();
+            arr.push(30);
+            arr.push(40);
+
+            let array = Array::from_decimal64(arr);
+            let view = ArrayV::new(array, 0, 4);
+
+            let mut mask = Bitmask::new_set_all(4, false);
+            mask.set(0, true);
+            mask.set(1, true);
+            mask.set(3, true);
+
+            let result = view.gather_mask(&mask);
+            if let Array::NumericArray(NumericArray::Decimal64(dec)) = result {
+                assert_eq!(dec.len(), 3);
+                assert_eq!(dec.get(0), Some(10));
+                assert_eq!(dec.get(1), None);
+                assert_eq!(dec.get(2), Some(40));
+                assert_eq!(dec.precision, 18);
+                assert_eq!(dec.scale, 4);
+            } else {
+                panic!("Expected Decimal64 Array");
+            }
+        }
     }
 }

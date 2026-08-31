@@ -200,6 +200,20 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
             }};
         }
 
+        #[cfg(feature = "decimal")]
+        macro_rules! gather_decimal {
+            ($variant:ident, $T:ty) => {{
+                let views: Vec<crate::aliases::DecimalAVT<'a, $T>> = self
+                    .iter()
+                    .map(|(arr, off, len)| match arr {
+                        Array::NumericArray(NumericArray::$variant(a)) => (a.as_ref(), *off, *len),
+                        _ => panic!("inconsistent NumericArray variants in chunk vector"),
+                    })
+                    .collect();
+                Array::NumericArray(NumericArray::$variant(Arc::new(views.consolidate())))
+            }};
+        }
+
         match self[0].0 {
             Array::NumericArray(NumericArray::Int32(_)) => gather_numeric!(Int32, i32),
             Array::NumericArray(NumericArray::Int64(_)) => gather_numeric!(Int64, i64),
@@ -215,6 +229,18 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
             Array::NumericArray(NumericArray::UInt8(_)) => gather_numeric!(UInt8, u8),
             #[cfg(feature = "extended_numeric_types")]
             Array::NumericArray(NumericArray::UInt16(_)) => gather_numeric!(UInt16, u16),
+            #[cfg(feature = "decimal")]
+            Array::NumericArray(NumericArray::Decimal32(_)) => {
+                gather_decimal!(Decimal32, i32)
+            }
+            #[cfg(feature = "decimal")]
+            Array::NumericArray(NumericArray::Decimal64(_)) => {
+                gather_decimal!(Decimal64, i64)
+            }
+            #[cfg(feature = "decimal")]
+            Array::NumericArray(NumericArray::Decimal128(_)) => {
+                gather_decimal!(Decimal128, i128)
+            }
             Array::NumericArray(NumericArray::Null) => Array::Null,
 
             Array::TextArray(TextArray::String32(_)) => gather_string!(String32, u32),

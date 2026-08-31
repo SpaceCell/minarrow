@@ -797,6 +797,28 @@ impl AAMaker {
                 )))
             }
 
+            #[cfg(feature = "decimal")]
+            (ArrowType::Decimal32(p, s), AAMaker::Primitive { data, mask }) => {
+                let m = mask.map(|r| r.to_bitmask(shared, n_rows));
+                Array::NumericArray(NumericArray::Decimal32(Arc::new(
+                    crate::DecimalArray::new(data.to_buffer::<i32>(shared), m, *p, *s),
+                )))
+            }
+            #[cfg(feature = "decimal")]
+            (ArrowType::Decimal64(p, s), AAMaker::Primitive { data, mask }) => {
+                let m = mask.map(|r| r.to_bitmask(shared, n_rows));
+                Array::NumericArray(NumericArray::Decimal64(Arc::new(
+                    crate::DecimalArray::new(data.to_buffer::<i64>(shared), m, *p, *s),
+                )))
+            }
+            #[cfg(feature = "decimal")]
+            (ArrowType::Decimal128(p, s), AAMaker::Primitive { data, mask }) => {
+                let m = mask.map(|r| r.to_bitmask(shared, n_rows));
+                Array::NumericArray(NumericArray::Decimal128(Arc::new(
+                    crate::DecimalArray::new(data.to_buffer::<i128>(shared), m, *p, *s),
+                )))
+            }
+
             (ArrowType::Null, _) => Array::Null,
             _ => unreachable!("Mismatched ArrowType and AAMaker variant"),
         }
@@ -841,6 +863,12 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                 NumericArray::UInt8(_) => 1,
                 #[cfg(feature = "extended_numeric_types")]
                 NumericArray::UInt16(_) => 2,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(_) => 4,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(_) => 8,
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(_) => 16,
                 NumericArray::Null => 0,
             };
             total_bytes += align64(n_rows * elem);
@@ -950,6 +978,12 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                 NumericArray::UInt8(_) => write_numeric!(UInt8, u8),
                 #[cfg(feature = "extended_numeric_types")]
                 NumericArray::UInt16(_) => write_numeric!(UInt16, u16),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(_) => write_numeric!(Decimal32, i32),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(_) => write_numeric!(Decimal64, i64),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(_) => write_numeric!(Decimal128, i128),
                 NumericArray::Null => AAMaker::Primitive {
                     data: ArenaRegion::EMPTY,
                     mask: None,
@@ -1233,6 +1267,12 @@ pub(crate) fn consolidate_tables_arena(
                     NumericArray::UInt8(_) => 1,
                     #[cfg(feature = "extended_numeric_types")]
                     NumericArray::UInt16(_) => 2,
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal32(_) => 4,
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal64(_) => 8,
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal128(_) => 16,
                     NumericArray::Null => 0,
                 };
                 total_bytes += align64(n_rows * elem);
@@ -1354,6 +1394,12 @@ pub(crate) fn consolidate_tables_arena(
                     NumericArray::UInt8(_) => write_numeric!(UInt8, u8),
                     #[cfg(feature = "extended_numeric_types")]
                     NumericArray::UInt16(_) => write_numeric!(UInt16, u16),
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal32(_) => write_numeric!(Decimal32, i32),
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal64(_) => write_numeric!(Decimal64, i64),
+                    #[cfg(feature = "decimal")]
+                    NumericArray::Decimal128(_) => write_numeric!(Decimal128, i128),
                     NumericArray::Null => AAMaker::Primitive {
                         data: ArenaRegion::EMPTY,
                         mask: None,

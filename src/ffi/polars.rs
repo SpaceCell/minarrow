@@ -256,6 +256,11 @@ fn arrow_type_to_polars_dtype(dtype: &ArrowType) -> polars_arrow::datatypes::Arr
             crate::IntervalUnit::MonthDaysNs => polars_arrow::datatypes::IntervalUnit::MonthDayNano,
         }),
 
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal32(p, s) | ArrowType::Decimal64(p, s) | ArrowType::Decimal128(p, s) => {
+            polars_arrow::datatypes::ArrowDataType::Decimal(*p as usize, *s as usize)
+        }
+
         ArrowType::Dictionary(idx) => {
             let key: polars_arrow::datatypes::IntegerType = match idx {
                 #[cfg(feature = "default_categorical_8")]

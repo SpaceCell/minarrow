@@ -114,6 +114,54 @@ impl PyArrayInner {
         }
     }
 
+    /// Maximum number of significant decimal digits this array can represent.
+    pub fn precision(&self) -> u8 {
+        match self.arrow_dtype() {
+            ArrowType::Int32 => 10,
+            ArrowType::Int64 => 19,
+            ArrowType::UInt32 => 10,
+            ArrowType::UInt64 => 20,
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::Int8 => 3,
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::Int16 => 5,
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::UInt8 => 3,
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::UInt16 => 5,
+            ArrowType::Float32 => 7,
+            ArrowType::Float64 => 15,
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, _) => p,
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, _) => p,
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, _) => p,
+            _ => 0,
+        }
+    }
+
+    /// Number of digits after the decimal point. Zero for integer types,
+    /// `None` for floats because scale varies per value, and `None` for
+    /// non-numeric types.
+    pub fn scale(&self) -> Option<i8> {
+        match self.arrow_dtype() {
+            ArrowType::Int32 | ArrowType::Int64
+            | ArrowType::UInt32 | ArrowType::UInt64 => Some(0),
+            #[cfg(feature = "extended_numeric_types")]
+            ArrowType::Int8 | ArrowType::Int16
+            | ArrowType::UInt8 | ArrowType::UInt16 => Some(0),
+            ArrowType::Float32 | ArrowType::Float64 => None,
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(_, s) => Some(s),
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(_, s) => Some(s),
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(_, s) => Some(s),
+            _ => None,
+        }
+    }
+
     /// Whether this array is a windowed view of a larger buffer.
     pub fn is_view(&self) -> bool {
         match self {
@@ -528,6 +576,18 @@ impl PyArray {
     #[getter]
     fn arrow_type(&self) -> PyArrowType {
         self.0.arrow_type()
+    }
+
+    /// Maximum number of significant decimal digits this array can represent.
+    #[getter]
+    fn precision(&self) -> u8 {
+        self.0.precision()
+    }
+
+    /// Decimal scale metadata, or `None` for non-decimal types.
+    #[getter]
+    fn scale(&self) -> Option<i8> {
+        self.0.scale()
     }
 
     fn __len__(&self) -> usize {
