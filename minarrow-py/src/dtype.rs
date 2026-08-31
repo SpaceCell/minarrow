@@ -63,6 +63,7 @@ impl TypeClass {
 pub enum DType {
     Integer,
     Float,
+    Decimal,
     String,
     Categorical,
     Datetime,
@@ -76,6 +77,7 @@ impl DType {
         match self {
             DType::Integer => "Integer",
             DType::Float => "Float",
+            DType::Decimal => "Decimal",
             DType::String => "String",
             DType::Categorical => "Categorical",
             DType::Datetime => "Datetime",
@@ -99,7 +101,7 @@ impl DType {
     #[getter]
     pub fn group(&self) -> TypeClass {
         match self {
-            DType::Integer | DType::Float => TypeClass::Numeric,
+            DType::Integer | DType::Float | DType::Decimal => TypeClass::Numeric,
             DType::String | DType::Categorical => TypeClass::Text,
             DType::Datetime => TypeClass::Temporal,
             DType::Boolean => TypeClass::Boolean,
@@ -109,7 +111,7 @@ impl DType {
 
     #[getter]
     fn is_numeric(&self) -> bool {
-        matches!(self, DType::Integer | DType::Float)
+        matches!(self, DType::Integer | DType::Float | DType::Decimal)
     }
 
     #[getter]
@@ -133,6 +135,8 @@ pub fn dtype_from_arrow(at: &ArrowType) -> DType {
         #[cfg(feature = "extended_numeric_types")]
         Int8 | Int16 | UInt8 | UInt16 => DType::Integer,
         Float32 | Float64 => DType::Float,
+        #[cfg(feature = "decimal")]
+        Decimal32(_, _) | Decimal64(_, _) | Decimal128(_, _) => DType::Decimal,
         String | Utf8View => DType::String,
         #[cfg(feature = "large_string")]
         LargeString => DType::String,
@@ -157,6 +161,12 @@ pub fn width_from_arrow(at: &ArrowType) -> u32 {
         Int16 | UInt16 => 16,
         Int32 | UInt32 | Float32 => 32,
         Int64 | UInt64 | Float64 => 64,
+        #[cfg(feature = "decimal")]
+        Decimal32(_, _) => 32,
+        #[cfg(feature = "decimal")]
+        Decimal64(_, _) => 64,
+        #[cfg(feature = "decimal")]
+        Decimal128(_, _) => 128,
         String | Utf8View => 32,
         #[cfg(feature = "large_string")]
         LargeString => 64,

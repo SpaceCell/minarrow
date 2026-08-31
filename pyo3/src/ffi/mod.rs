@@ -97,6 +97,19 @@
 //! | `IntegerArray<u8>` | `NumericArray::UInt8` | `C` | `pa.UInt8Array` |
 //! | `IntegerArray<u16>` | `NumericArray::UInt16` | `S` | `pa.UInt16Array` |
 //!
+//! ### Decimal types (feature `decimal`)
+//!
+//! | MinArrow inner type | `Array` enum path | Arrow format | PyArrow type |
+//! |---------------------|-------------------|--------------|--------------|
+//! | `DecimalArray<i32>` | `NumericArray::Decimal32` | `d:P,S,32` | `pa.Decimal128Array` |
+//! | `DecimalArray<i64>` | `NumericArray::Decimal64` | `d:P,S,64` | `pa.Decimal128Array` |
+//! | `DecimalArray<i128>` | `NumericArray::Decimal128` | `d:P,S` | `pa.Decimal128Array` |
+//!
+//! Decimal32 and Decimal64 map to PyArrow's `Decimal128Array` because PyArrow only
+//! supports 128-bit decimal. The underlying Arrow C Data Interface format string
+//! carries the true bit width, so a Decimal32 or Decimal64 array imported back into
+//! MinArrow retains its original width.
+//!
 //! ### Boolean
 //!
 //! | MinArrow inner type | `Array` enum path | Arrow format | PyArrow type |

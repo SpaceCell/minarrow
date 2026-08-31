@@ -114,6 +114,28 @@ impl PyArrayInner {
         }
     }
 
+    /// The decimal precision, or `None` for non-decimal arrays.
+    #[cfg(feature = "decimal")]
+    pub fn precision(&self) -> Option<u8> {
+        match self.arrow_dtype() {
+            ArrowType::Decimal32(p, _)
+            | ArrowType::Decimal64(p, _)
+            | ArrowType::Decimal128(p, _) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// The decimal scale, or `None` for non-decimal arrays.
+    #[cfg(feature = "decimal")]
+    pub fn scale(&self) -> Option<i8> {
+        match self.arrow_dtype() {
+            ArrowType::Decimal32(_, s)
+            | ArrowType::Decimal64(_, s)
+            | ArrowType::Decimal128(_, s) => Some(s),
+            _ => None,
+        }
+    }
+
     /// Whether this array is a windowed view of a larger buffer.
     pub fn is_view(&self) -> bool {
         match self {
@@ -528,6 +550,22 @@ impl PyArray {
     #[getter]
     fn arrow_type(&self) -> PyArrowType {
         self.0.arrow_type()
+    }
+
+    /// The decimal precision (total significant digits), or `None` for
+    /// non-decimal arrays.
+    #[cfg(feature = "decimal")]
+    #[getter]
+    fn precision(&self) -> Option<u8> {
+        self.0.precision()
+    }
+
+    /// The decimal scale (digits after the decimal point), or `None` for
+    /// non-decimal arrays.
+    #[cfg(feature = "decimal")]
+    #[getter]
+    fn scale(&self) -> Option<i8> {
+        self.0.scale()
     }
 
     fn __len__(&self) -> usize {

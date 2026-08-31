@@ -180,6 +180,12 @@ pub enum PyArrowType {
     Timestamp { unit: PyTimeUnit, tz: Option<String> },
     #[cfg(feature = "datetime")]
     Interval { unit: PyIntervalUnit },
+    #[cfg(feature = "decimal")]
+    Decimal32 { precision: u8, scale: i8 },
+    #[cfg(feature = "decimal")]
+    Decimal64 { precision: u8, scale: i8 },
+    #[cfg(feature = "decimal")]
+    Decimal128 { precision: u8, scale: i8 },
     String(),
     #[cfg(feature = "large_string")]
     LargeString(),
@@ -233,6 +239,12 @@ impl From<ArrowType> for PyArrowType {
             ArrowType::Timestamp(unit, tz) => PyArrowType::Timestamp { unit: unit.into(), tz },
             #[cfg(feature = "datetime")]
             ArrowType::Interval(unit) => PyArrowType::Interval { unit: unit.into() },
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(p, s) => PyArrowType::Decimal32 { precision: p, scale: s },
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal64(p, s) => PyArrowType::Decimal64 { precision: p, scale: s },
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal128(p, s) => PyArrowType::Decimal128 { precision: p, scale: s },
             ArrowType::String => PyArrowType::String(),
             #[cfg(feature = "large_string")]
             ArrowType::LargeString => PyArrowType::LargeString(),
@@ -285,6 +297,12 @@ impl From<PyArrowType> for ArrowType {
             PyArrowType::Timestamp { unit, tz } => ArrowType::Timestamp(unit.into(), tz),
             #[cfg(feature = "datetime")]
             PyArrowType::Interval { unit } => ArrowType::Interval(unit.into()),
+            #[cfg(feature = "decimal")]
+            PyArrowType::Decimal32 { precision, scale } => ArrowType::Decimal32(precision, scale),
+            #[cfg(feature = "decimal")]
+            PyArrowType::Decimal64 { precision, scale } => ArrowType::Decimal64(precision, scale),
+            #[cfg(feature = "decimal")]
+            PyArrowType::Decimal128 { precision, scale } => ArrowType::Decimal128(precision, scale),
             PyArrowType::String() => ArrowType::String,
             #[cfg(feature = "large_string")]
             PyArrowType::LargeString() => ArrowType::LargeString,
