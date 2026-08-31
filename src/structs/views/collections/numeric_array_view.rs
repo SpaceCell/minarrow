@@ -155,6 +155,12 @@ impl NumericArrayV {
             NumericArray::UInt64(arr) => arr.get(phys_idx).map(|v| v as f64),
             NumericArray::Float32(arr) => arr.get(phys_idx).map(|v| v as f64),
             NumericArray::Float64(arr) => arr.get(phys_idx),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arr) => arr.get(phys_idx).map(|v| v as f64),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arr) => arr.get(phys_idx).map(|v| v as f64),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arr) => arr.get(phys_idx).map(|v| v as f64),
             NumericArray::Null => None,
             #[cfg(feature = "extended_numeric_types")]
             NumericArray::Int8(arr) => arr.get(phys_idx).map(|v| v as f64),
@@ -181,6 +187,12 @@ impl NumericArrayV {
             NumericArray::UInt64(arr) => unsafe { arr.get_unchecked(phys_idx) }.map(|v| v as f64),
             NumericArray::Float32(arr) => unsafe { arr.get_unchecked(phys_idx) }.map(|v| v as f64),
             NumericArray::Float64(arr) => unsafe { arr.get_unchecked(phys_idx) },
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arr) => unsafe { arr.get_unchecked(phys_idx) }.map(|v| v as f64),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arr) => unsafe { arr.get_unchecked(phys_idx) }.map(|v| v as f64),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arr) => unsafe { arr.get_unchecked(phys_idx) }.map(|v| v as f64),
             NumericArray::Null => None,
             #[cfg(feature = "extended_numeric_types")]
             NumericArray::Int8(arr) => unsafe { arr.get_unchecked(phys_idx) }.map(|v| v as f64),
@@ -439,6 +451,12 @@ impl Display for NumericArrayV {
             NumericArray::UInt64(_) => "UInt64",
             NumericArray::Float32(_) => "Float32",
             NumericArray::Float64(_) => "Float64",
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(_) => "Decimal32",
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(_) => "Decimal64",
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(_) => "Decimal128",
             NumericArray::Null => "Null",
         };
 

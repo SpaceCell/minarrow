@@ -70,6 +70,12 @@ pub(crate) fn value_to_string(arr: &Array, idx: usize) -> String {
             NumericArray::UInt16(a) => a.data[idx].to_string(),
             NumericArray::Float32(a) => format_float(a.data[idx] as f64),
             NumericArray::Float64(a) => format_float(a.data[idx]),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(a) => format!("{}", a),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => format!("{}", a),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => format!("{}", a),
             NumericArray::Null => "null".into(),
         },
         // ------------------------- boolean ------------------------------

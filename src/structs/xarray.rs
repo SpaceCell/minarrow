@@ -827,6 +827,15 @@ impl Axis {
                     value.try_f64().and_then(|t| a.data.iter().position(|&v| v as f64 == t)),
                 NumericArray::Float64(a) =>
                     value.try_f64().and_then(|t| a.data.iter().position(|&v| v == t)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) =>
+                    value.try_i32().and_then(|t| a.data.iter().position(|&v| v == t)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) =>
+                    value.try_i64().and_then(|t| a.data.iter().position(|&v| v == t)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) =>
+                    value.try_i64().and_then(|t| a.data.iter().position(|&v| v == t as i128)),
                 NumericArray::Null => None,
             },
             #[cfg(feature = "datetime")]
@@ -934,6 +943,18 @@ impl Axis {
                 NumericArray::Float64(a) => if let (Some(lo), Some(hi)) = (low.try_f64(), high.try_f64()) {
                     coord_window!(a.data, lo, hi, f64, start, end, count);
                 },
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
+                    coord_window!(a.data, lo, hi, i64, start, end, count);
+                },
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
+                    coord_window!(a.data, lo, hi, i64, start, end, count);
+                },
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => if let (Some(lo), Some(hi)) = (low.try_i64(), high.try_i64()) {
+                    coord_window!(a.data, lo, hi, i64, start, end, count);
+                },
                 NumericArray::Null => {}
             },
             #[cfg(feature = "datetime")]
@@ -1018,6 +1039,15 @@ impl Axis {
                     value.try_f64().and_then(|t| coord_nearest!(a.data, |v| (v as f64 - t).abs())),
                 NumericArray::Float64(a) =>
                     value.try_f64().and_then(|t| coord_nearest!(a.data, |v| (v - t).abs())),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) =>
+                    value.try_i64().and_then(|t| coord_nearest!(a.data, |v| (v as i64).abs_diff(t))),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) =>
+                    value.try_i64().and_then(|t| coord_nearest!(a.data, |v| v.abs_diff(t))),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) =>
+                    value.try_i64().and_then(|t| coord_nearest!(a.data, |v| (v as i64).abs_diff(t))),
                 NumericArray::Null => None,
             },
             #[cfg(feature = "datetime")]
