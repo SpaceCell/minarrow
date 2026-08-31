@@ -55,6 +55,9 @@ pub trait Integer:
 
 impl_usize_conversions!(u8, u16, u32, u64, i8, i16, i32, i64);
 
+#[cfg(feature = "decimal")]
+impl_usize_conversions!(i128);
+
 /// Trait for types valid as numerical.
 ///
 /// Useful when specifying `my_fn::<T: Numeric>() {}`.
@@ -71,6 +74,8 @@ impl Numeric for u8 {}
 impl Numeric for u16 {}
 impl Numeric for u32 {}
 impl Numeric for u64 {}
+#[cfg(feature = "decimal")]
+impl Numeric for i128 {}
 
 /// Trait for types valid as primitive, i.e.., floats, integers, and booleans.
 ///
@@ -87,3 +92,5 @@ impl Primitive for u16 {}
 impl Primitive for u32 {}
 impl Primitive for u64 {}
 impl Primitive for bool {}
+#[cfg(feature = "decimal")]
+impl Primitive for i128 {}
