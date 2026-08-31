@@ -29,7 +29,7 @@ pyo3 = { version = "0.29" }
 thiserror = "2"
 
 [features]
-default = ["datetime", "extended_numeric_types"]
+default = ["datetime", "extended_numeric_types", "decimal"]
 extension-module = ["pyo3/extension-module"]
 datetime = ["minarrow/datetime"]
 extended_numeric_types = ["minarrow/extended_numeric_types"]
@@ -39,6 +39,7 @@ default_categorical_8 = ["minarrow/default_categorical_8"]
 # Enables 8, 16 and 64 byte categorical bit widths. When combined with default_categorical_8,
 # the extra one added is the 32 byte (making the other feature unused).
 extended_categorical = ["minarrow/extended_categorical"]
+decimal = ["minarrow/decimal"]
 table_metadata = ["minarrow/table_metadata"]
 # N-dimensional tensor bridging with DLPack capsule interchange.
 ndarray = ["minarrow/ndarray", "minarrow/dlpack", "minarrow/views", "minarrow/select"]

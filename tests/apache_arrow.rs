@@ -985,6 +985,30 @@ fn rt_arrow_super_table_shared_categorical32() {
 
 #[cfg(feature = "decimal")]
 #[test]
+fn rt_arrow_decimal32() {
+    use minarrow::DecimalArray;
+
+    let arr = DecimalArray::<i32>::from_slice(&[12345, -6789, 0], 9, 2);
+    let a = MArray::from_decimal32(arr);
+    let f = Field::new("dec32", ArrowType::Decimal32(9, 2), false, None);
+    let fa = FieldArray::new(f, a);
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn rt_arrow_decimal64() {
+    use minarrow::DecimalArray;
+
+    let arr = DecimalArray::<i64>::from_slice(&[12345, -67890, 0], 18, 4);
+    let a = MArray::from_decimal64(arr);
+    let f = Field::new("dec64", ArrowType::Decimal64(18, 4), false, None);
+    let fa = FieldArray::new(f, a);
+    round_trip_field_array(fa);
+}
+
+#[cfg(feature = "decimal")]
+#[test]
 fn rt_arrow_decimal128() {
     use minarrow::DecimalArray;
 

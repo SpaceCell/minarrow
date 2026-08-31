@@ -129,6 +129,21 @@ fn arrow_type_to_pyarrow<'py>(
             pa.call_method0("null")
         }
 
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal128(p, s) => pa.call_method1("decimal128", (*p, *s)),
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal32(p, s) => {
+            // PyArrow has no Decimal32 type so map to Decimal128 with the same
+            // precision and scale.
+            pa.call_method1("decimal128", (*p, *s))
+        }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal64(p, s) => {
+            // PyArrow has no Decimal64 type so map to Decimal128 with the same
+            // precision and scale.
+            pa.call_method1("decimal128", (*p, *s))
+        }
+
         ArrowType::Dictionary(key_type) => {
             let index_ty = pa.call_method0(key_type.arrow_index_name())?;
             let value_ty = pa.call_method0("utf8")?;

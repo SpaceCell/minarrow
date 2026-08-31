@@ -21,6 +21,8 @@ use minarrow::arr_str64_opt;
 use minarrow::{arr_i8_opt, arr_i16_opt, arr_u8_opt, arr_u16_opt};
 use minarrow::enums::array::extract_option_values64;
 use minarrow::enums::time_units::TimeUnit;
+#[cfg(feature = "decimal")]
+use minarrow::DecimalArray;
 use minarrow::{
     arr_bool_opt, arr_f32_opt, arr_f64_opt, arr_i32_opt, arr_i64_opt, arr_str32_opt, arr_u32_opt,
     arr_u64_opt, Array, ArrayV, Bitmask, CategoricalArray, DatetimeArray, Scalar, Vec64,
@@ -164,6 +166,30 @@ pub fn build_array_typed(data: &Bound<'_, PyAny>, dtype: &ArrowType) -> PyResult
             build_temporal!(i64, from_datetime_i64, *unit)
         }
         ArrowType::Timestamp(unit, _) => build_temporal!(i64, from_datetime_i64, *unit),
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal32(p, s) => {
+            let (values, null_mask) =
+                extract_option_values64(read_sequence::<Option<i32>>(data)?);
+            Ok(Array::from_decimal32(DecimalArray::<i32>::from_vec64(
+                values, null_mask, *p, *s,
+            )))
+        }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal64(p, s) => {
+            let (values, null_mask) =
+                extract_option_values64(read_sequence::<Option<i64>>(data)?);
+            Ok(Array::from_decimal64(DecimalArray::<i64>::from_vec64(
+                values, null_mask, *p, *s,
+            )))
+        }
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal128(p, s) => {
+            let (values, null_mask) =
+                extract_option_values64(read_sequence::<Option<i128>>(data)?);
+            Ok(Array::from_decimal128(DecimalArray::<i128>::from_vec64(
+                values, null_mask, *p, *s,
+            )))
+        }
         other => Err(PyValueError::new_err(format!(
             "dtype {} cannot be built from a Python sequence; use from_arrow instead",
             other
@@ -272,7 +298,61 @@ pub fn parse_dtype(name: &str) -> PyResult<ArrowType> {
                 ));
             }
         }
+        #[cfg(feature = "decimal")]
+        s if s.starts_with("decimal128") || s.starts_with("decimal64") || s.starts_with("decimal32") || s.starts_with("decimal") => {
+            return parse_decimal_dtype(s);
+        }
         other => return Err(PyValueError::new_err(format!("unknown dtype '{other}'"))),
+    })
+}
+
+/// Parse a decimal dtype string such as `"decimal128(38,10)"` or `"decimal(10,2)"`.
+///
+/// Accepted forms:
+/// - `decimal128(P,S)` - Decimal128 with precision P and scale S.
+/// - `decimal64(P,S)` - Decimal64.
+/// - `decimal32(P,S)` - Decimal32.
+/// - `decimal(P,S)` - alias for Decimal128.
+#[cfg(feature = "decimal")]
+fn parse_decimal_dtype(s: &str) -> PyResult<ArrowType> {
+    // Determine the width prefix and the remainder after it
+    let (width, rest) = if s.starts_with("decimal128") {
+        (128u32, &s["decimal128".len()..])
+    } else if s.starts_with("decimal64") {
+        (64, &s["decimal64".len()..])
+    } else if s.starts_with("decimal32") {
+        (32, &s["decimal32".len()..])
+    } else if s.starts_with("decimal") {
+        (128, &s["decimal".len()..])
+    } else {
+        return Err(PyValueError::new_err(format!("unknown dtype '{s}'")));
+    };
+
+    // Expect (P,S) after the prefix
+    let rest = rest.trim();
+    if !rest.starts_with('(') || !rest.ends_with(')') {
+        return Err(PyValueError::new_err(format!(
+            "decimal dtype must include precision and scale as 'decimal128(P,S)', got '{s}'"
+        )));
+    }
+    let inner = &rest[1..rest.len() - 1];
+    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    if parts.len() != 2 {
+        return Err(PyValueError::new_err(format!(
+            "decimal dtype must have two parameters (precision, scale), got '{s}'"
+        )));
+    }
+    let precision: u8 = parts[0].parse().map_err(|_| {
+        PyValueError::new_err(format!("invalid decimal precision in '{s}'"))
+    })?;
+    let scale: i8 = parts[1].parse().map_err(|_| {
+        PyValueError::new_err(format!("invalid decimal scale in '{s}'"))
+    })?;
+
+    Ok(match width {
+        32 => ArrowType::Decimal32(precision, scale),
+        64 => ArrowType::Decimal64(precision, scale),
+        _ => ArrowType::Decimal128(precision, scale),
     })
 }
 
@@ -442,6 +522,49 @@ pub fn resolve_index(i: isize, len: usize) -> PyResult<usize> {
     Ok(resolved as usize)
 }
 
+/// Convert a decimal scalar to a Python `decimal.Decimal` value.
+///
+/// Reconstructs the human-readable decimal string from the raw unscaled integer
+/// and scale, then passes it to `decimal.Decimal()` for exact conversion.
+#[cfg(feature = "decimal")]
+fn decimal_scalar_to_py(py: Python<'_>, raw: i128, scale: i8) -> PyResult<Py<PyAny>> {
+    let formatted = format_decimal_string(raw, scale);
+    let decimal_mod = py.import("decimal")?;
+    let result = decimal_mod.call_method1("Decimal", (formatted,))?;
+    Ok(result.unbind())
+}
+
+/// Format a decimal value as a string for `decimal.Decimal` construction.
+#[cfg(feature = "decimal")]
+fn format_decimal_string(raw: i128, scale: i8) -> String {
+    let raw_str = format!("{}", raw);
+    if scale == 0 {
+        return raw_str;
+    }
+    if scale < 0 {
+        let zeros = (-scale) as usize;
+        return format!("{}{}", raw_str, "0".repeat(zeros));
+    }
+    let scale_usize = scale as usize;
+    let (is_negative, digits) = if raw_str.starts_with('-') {
+        (true, &raw_str[1..])
+    } else {
+        (false, raw_str.as_str())
+    };
+    let padded = if digits.len() <= scale_usize {
+        format!("{:0>width$}", digits, width = scale_usize + 1)
+    } else {
+        digits.to_string()
+    };
+    let split_pos = padded.len() - scale_usize;
+    let (int_part, frac_part) = padded.split_at(split_pos);
+    if is_negative {
+        format!("-{}.{}", int_part, frac_part)
+    } else {
+        format!("{}.{}", int_part, frac_part)
+    }
+}
+
 /// Coerce a minarrow `Scalar` to its Python-native value. `Null` becomes `None`.
 ///
 /// Temporal values surface as their raw integer. Faithful
@@ -468,6 +591,12 @@ pub fn scalar_to_py(py: Python<'_>, scalar: Scalar) -> PyResult<Py<PyAny>> {
         Scalar::String32(v) => v.into_py_any(py),
         #[cfg(feature = "large_string")]
         Scalar::String64(v) => v.into_py_any(py),
+        #[cfg(feature = "decimal")]
+        Scalar::Decimal32(v, scale) => decimal_scalar_to_py(py, v as i128, scale),
+        #[cfg(feature = "decimal")]
+        Scalar::Decimal64(v, scale) => decimal_scalar_to_py(py, v as i128, scale),
+        #[cfg(feature = "decimal")]
+        Scalar::Decimal128(v, scale) => decimal_scalar_to_py(py, v, scale),
         #[cfg(feature = "datetime")]
         Scalar::Datetime32(v) => v.into_py_any(py),
         #[cfg(feature = "datetime")]
@@ -502,6 +631,12 @@ pub fn scalar_repr(scalar: &Scalar) -> String {
         Scalar::String32(v) => format!("\"{}\"", v),
         #[cfg(feature = "large_string")]
         Scalar::String64(v) => format!("\"{}\"", v),
+        #[cfg(feature = "decimal")]
+        Scalar::Decimal32(v, s) => format_decimal_string(*v as i128, *s),
+        #[cfg(feature = "decimal")]
+        Scalar::Decimal64(v, s) => format_decimal_string(*v as i128, *s),
+        #[cfg(feature = "decimal")]
+        Scalar::Decimal128(v, s) => format_decimal_string(*v, *s),
         #[cfg(feature = "datetime")]
         Scalar::Datetime32(v) => v.to_string(),
         #[cfg(feature = "datetime")]
