@@ -34,6 +34,8 @@ use crate::{Bitmask, FloatArray, IntegerArray, MaskedArray, Vec64};
 use crate::{BooleanArray, StringArray};
 #[cfg(feature = "decimal")]
 use crate::DecimalArray;
+#[cfg(feature = "decimal")]
+use crate::structs::variants::decimal::format_decimal_value;
 use crate::{
     enums::{error::MinarrowError, shape_dim::ShapeDim},
     traits::{concatenate::Concatenate, shape::Shape},
@@ -103,6 +105,87 @@ pub enum NumericArray {
     Decimal128(Arc<DecimalArray<i128>>),
     #[default]
     Null, // Default Marker for mem::take
+}
+
+// Decimal-to-integer conversion: divides raw value by 10^scale (truncating),
+// then converts to the target integer type via TryFrom.
+#[cfg(feature = "decimal")]
+macro_rules! decimal_to_integer {
+    ($arc:expr, $target:ty) => {{
+        use num_traits::ToPrimitive;
+        let scale_divisor = 10i128.pow($arc.scale.max(0) as u32);
+        let data: Result<Vec64<$target>, _> = $arc
+            .data
+            .as_slice()
+            .iter()
+            .map(|v| {
+                let scaled = v.to_i128().unwrap() / scale_divisor;
+                <$target as TryFrom<i128>>::try_from(scaled).map_err(|_| {
+                    MinarrowError::TypeError {
+                        from: "DecimalArray",
+                        to: stringify!(IntegerArray<$target>),
+                        message: Some(format!(
+                            "overflow converting {scaled} to {}",
+                            stringify!($target)
+                        )),
+                    }
+                })
+            })
+            .collect();
+        Ok(Arc::new(IntegerArray::new(data?, $arc.null_mask.clone())))
+    }};
+}
+
+// Decimal-to-float conversion: raw as f_type / 10^scale.
+#[cfg(feature = "decimal")]
+macro_rules! decimal_to_float {
+    ($arc:expr, f32) => {{
+        use num_traits::ToPrimitive;
+        let scale_factor = 10f32.powi($arc.scale as i32);
+        let data: Vec64<f32> = $arc
+            .data
+            .as_slice()
+            .iter()
+            .map(|v| v.to_f64().unwrap() as f32 / scale_factor)
+            .collect();
+        Ok(Arc::new(FloatArray::new(data, $arc.null_mask.clone())))
+    }};
+    ($arc:expr, f64) => {{
+        use num_traits::ToPrimitive;
+        let scale_factor = 10f64.powi($arc.scale as i32);
+        let data: Vec64<f64> = $arc
+            .data
+            .as_slice()
+            .iter()
+            .map(|v| v.to_f64().unwrap() / scale_factor)
+            .collect();
+        Ok(Arc::new(FloatArray::new(data, $arc.null_mask.clone())))
+    }};
+}
+
+// Decimal-to-bool conversion: non-zero raw values are true.
+#[cfg(feature = "decimal")]
+macro_rules! decimal_to_bool {
+    ($arc:expr) => {{
+        let mut data = Bitmask::with_capacity($arc.data.len());
+        for (i, v) in $arc.data.as_slice().iter().enumerate() {
+            data.set(i, !num_traits::Zero::is_zero(v));
+        }
+        Ok(Arc::new(BooleanArray::new(data, $arc.null_mask.clone())))
+    }};
+}
+
+// Decimal-to-string conversion: scale-aware formatting per element.
+#[cfg(feature = "decimal")]
+macro_rules! decimal_to_str {
+    ($arc:expr) => {{
+        let mut arr = StringArray::<u32>::with_capacity($arc.len(), $arc.len() * 8, false);
+        for v in $arc.data.as_slice() {
+            arr.push(format_decimal_value(*v, $arc.scale));
+        }
+        arr.null_mask = $arc.null_mask.clone();
+        Ok(Arc::new(arr))
+    }};
 }
 
 impl NumericArray {
@@ -579,13 +662,11 @@ impl NumericArray {
             NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<i32>::try_from(&**a)?)),
             NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<i32>::try_from(&**a)?)),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
-                Err(MinarrowError::TypeError {
-                    from: "DecimalArray",
-                    to: "IntegerArray<i32>",
-                    message: Some("decimal-to-integer conversion requires explicit .to_int32_array()".to_string()),
-                })
-            }
+            NumericArray::Decimal32(a) => decimal_to_integer!(a, i32),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => decimal_to_integer!(a, i32),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => decimal_to_integer!(a, i32),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -619,13 +700,11 @@ impl NumericArray {
             NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<i64>::try_from(&**a)?)),
             NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<i64>::try_from(&**a)?)),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
-                Err(MinarrowError::TypeError {
-                    from: "DecimalArray",
-                    to: "IntegerArray<i64>",
-                    message: Some("decimal-to-integer conversion requires explicit .to_int64_array()".to_string()),
-                })
-            }
+            NumericArray::Decimal32(a) => decimal_to_integer!(a, i64),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => decimal_to_integer!(a, i64),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => decimal_to_integer!(a, i64),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -659,13 +738,11 @@ impl NumericArray {
             NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<u32>::try_from(&**a)?)),
             NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<u32>::try_from(&**a)?)),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
-                Err(MinarrowError::TypeError {
-                    from: "DecimalArray",
-                    to: "IntegerArray<u32>",
-                    message: Some("decimal-to-integer conversion requires explicit .to_uint32_array()".to_string()),
-                })
-            }
+            NumericArray::Decimal32(a) => decimal_to_integer!(a, u32),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => decimal_to_integer!(a, u32),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => decimal_to_integer!(a, u32),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -699,13 +776,11 @@ impl NumericArray {
             NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<u64>::try_from(&**a)?)),
             NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<u64>::try_from(&**a)?)),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
-                Err(MinarrowError::TypeError {
-                    from: "DecimalArray",
-                    to: "IntegerArray<u64>",
-                    message: Some("decimal-to-integer conversion requires explicit .to_uint64_array()".to_string()),
-                })
-            }
+            NumericArray::Decimal32(a) => decimal_to_integer!(a, u64),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => decimal_to_integer!(a, u64),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => decimal_to_integer!(a, u64),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -739,13 +814,11 @@ impl NumericArray {
             NumericArray::Float32(a) => Ok(a.clone()),
             NumericArray::Float64(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
-                Err(MinarrowError::TypeError {
-                    from: "DecimalArray",
-                    to: "FloatArray<f32>",
-                    message: Some("decimal-to-float conversion requires explicit .to_float32_array()".to_string()),
-                })
-            }
+            NumericArray::Decimal32(a) => decimal_to_float!(a, f32),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => decimal_to_float!(a, f32),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => decimal_to_float!(a, f32),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -776,6 +849,36 @@ impl NumericArray {
                 }
             };
         }
+        #[cfg(feature = "decimal")]
+        macro_rules! decimal_cow_f64 {
+            ($arc:expr) => {{
+                use num_traits::ToPrimitive;
+                let scale_factor = 10f64.powi($arc.scale as i32);
+                match Arc::try_unwrap($arc) {
+                    Ok(owned) => {
+                        let data: Vec64<f64> = owned
+                            .data
+                            .as_slice()
+                            .iter()
+                            .map(|v| v.to_f64().unwrap() / scale_factor)
+                            .collect();
+                        NumericArray::Float64(Arc::new(FloatArray::new(data, owned.null_mask)))
+                    }
+                    Err(shared) => {
+                        let data: Vec64<f64> = shared
+                            .data
+                            .as_slice()
+                            .iter()
+                            .map(|v| v.to_f64().unwrap() / scale_factor)
+                            .collect();
+                        NumericArray::Float64(Arc::new(FloatArray::new(
+                            data,
+                            shared.null_mask.clone(),
+                        )))
+                    }
+                }
+            }};
+        }
 
         match self {
             NumericArray::Float64(_) => self,
@@ -793,11 +896,11 @@ impl NumericArray {
             #[cfg(feature = "extended_numeric_types")]
             NumericArray::UInt16(arc) => cast_arc!(arc),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal32(arc) => cast_arc!(arc),
+            NumericArray::Decimal32(arc) => decimal_cow_f64!(arc),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal64(arc) => cast_arc!(arc),
+            NumericArray::Decimal64(arc) => decimal_cow_f64!(arc),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal128(arc) => cast_arc!(arc),
+            NumericArray::Decimal128(arc) => decimal_cow_f64!(arc),
             NumericArray::Null => {
                 NumericArray::Float64(Arc::new(FloatArray::new(Vec64::new(), None)))
             }
@@ -833,13 +936,11 @@ impl NumericArray {
             NumericArray::Float32(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
             NumericArray::Float64(a) => Ok(a.clone()),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
-                Err(MinarrowError::TypeError {
-                    from: "DecimalArray",
-                    to: "FloatArray<f64>",
-                    message: Some("decimal-to-float conversion requires explicit .to_float64_array()".to_string()),
-                })
-            }
+            NumericArray::Decimal32(a) => decimal_to_float!(a, f64),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => decimal_to_float!(a, f64),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => decimal_to_float!(a, f64),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -873,13 +974,11 @@ impl NumericArray {
             NumericArray::Float32(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
             NumericArray::Float64(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
-                Err(MinarrowError::TypeError {
-                    from: "DecimalArray",
-                    to: "BooleanArray<u8>",
-                    message: Some("decimal-to-boolean conversion is not supported".to_string()),
-                })
-            }
+            NumericArray::Decimal32(a) => decimal_to_bool!(a),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => decimal_to_bool!(a),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => decimal_to_bool!(a),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -913,13 +1012,11 @@ impl NumericArray {
             NumericArray::Float32(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
             NumericArray::Float64(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
             #[cfg(feature = "decimal")]
-            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
-                Err(MinarrowError::TypeError {
-                    from: "DecimalArray",
-                    to: "StringArray<u32>",
-                    message: Some("decimal-to-string conversion is not yet supported".to_string()),
-                })
-            }
+            NumericArray::Decimal32(a) => decimal_to_str!(a),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => decimal_to_str!(a),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => decimal_to_str!(a),
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }

@@ -667,7 +667,7 @@ impl_arc_masked_array!(
 /// inserts the decimal point `scale` digits from the right, padding with leading
 /// zeros if the value has fewer digits than scale. When scale is negative,
 /// appends `|scale|` trailing zeros.
-fn format_decimal_value<T: Integer + Display>(raw: T, scale: i8) -> String {
+pub(crate) fn format_decimal_value<T: Integer + Display>(raw: T, scale: i8) -> String {
     let raw_str = format!("{}", raw);
 
     if scale == 0 {
