@@ -93,10 +93,11 @@ extended_categorical = ["default_categorical_8"]
 extended_numeric_types = []
 
 # Adds Decimal32, Decimal64, and Decimal128 array types for exact numeric
-# values (monetary, accounting, high-precision columns). All three widths
-# are gated together. Without decimal-specific arithmetic kernels the arrays
-# are fully functional for import, export, grouping, sorting, filtering,
-# and explicit conversion to float.
+# values (for e.g., monetary, accounting, high-precision columns). DecimalArray<T>
+# stores unscaled integers with precision and scale metadata for
+# scale-aware formatting and lossless round-trip through Arrow FFI.
+# Also gates `impl Integer for i128` and the associated Numeric/Primitive
+# impls that i128 requires.
 decimal = []
 
 # Adds a cube object for stacking tables on an extra axis
