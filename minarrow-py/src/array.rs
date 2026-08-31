@@ -141,9 +141,9 @@ impl PyArrayInner {
         }
     }
 
-    /// Number of digits after the decimal point. Zero for integer types.
-    /// Floats return `None` because scale varies per value. Non-numeric
-    /// types also return `None`.
+    /// Number of digits after the decimal point. Zero for integer types,
+    /// `None` for floats because scale varies per value, and `None` for
+    /// non-numeric types.
     pub fn scale(&self) -> Option<i8> {
         match self.arrow_dtype() {
             ArrowType::Int32 | ArrowType::Int64

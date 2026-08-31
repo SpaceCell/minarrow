@@ -797,6 +797,28 @@ impl AAMaker {
                 )))
             }
 
+            #[cfg(feature = "decimal")]
+            (ArrowType::Decimal32(p, s), AAMaker::Primitive { data, mask }) => {
+                let m = mask.map(|r| r.to_bitmask(shared, n_rows));
+                Array::NumericArray(NumericArray::Decimal32(Arc::new(
+                    crate::DecimalArray::new(data.to_buffer::<i32>(shared), m, *p, *s),
+                )))
+            }
+            #[cfg(feature = "decimal")]
+            (ArrowType::Decimal64(p, s), AAMaker::Primitive { data, mask }) => {
+                let m = mask.map(|r| r.to_bitmask(shared, n_rows));
+                Array::NumericArray(NumericArray::Decimal64(Arc::new(
+                    crate::DecimalArray::new(data.to_buffer::<i64>(shared), m, *p, *s),
+                )))
+            }
+            #[cfg(feature = "decimal")]
+            (ArrowType::Decimal128(p, s), AAMaker::Primitive { data, mask }) => {
+                let m = mask.map(|r| r.to_bitmask(shared, n_rows));
+                Array::NumericArray(NumericArray::Decimal128(Arc::new(
+                    crate::DecimalArray::new(data.to_buffer::<i128>(shared), m, *p, *s),
+                )))
+            }
+
             (ArrowType::Null, _) => Array::Null,
             _ => unreachable!("Mismatched ArrowType and AAMaker variant"),
         }
