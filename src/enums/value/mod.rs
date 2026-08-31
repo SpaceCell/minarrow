@@ -562,4 +562,55 @@ mod tests {
             assert_eq!(table.n_cols(), 2);
         }
     }
+
+    /// Decimal arrays flow through Value::Array and Value::ArrayView
+    /// correctly. The Value enum wraps Arc<Array>, so decimal support is
+    /// inherited from the Array and NumericArray enums.
+    #[cfg(feature = "decimal")]
+    mod decimal_value_tests {
+        use super::*;
+
+        fn decimal_array(n: usize) -> Array {
+            let vals: Vec<i32> = (0..n as i32).map(|i| i * 100).collect();
+            Array::from_decimal32(crate::DecimalArray::from_slice(&vals, 10, 2))
+        }
+
+        #[test]
+        fn decimal_len_counts_correctly() {
+            let value = Value::Array(Arc::new(decimal_array(5)));
+            assert_eq!(value.len(), 5);
+        }
+
+        #[cfg(feature = "views")]
+        #[test]
+        fn decimal_slice_returns_array_view() {
+            let value = Value::Array(Arc::new(decimal_array(10)));
+            let sliced = value.slice(3, 4);
+
+            if let Value::ArrayView(av) = &sliced {
+                assert_eq!(av.len(), 4);
+                assert_eq!(av.offset, 3);
+            } else {
+                panic!("Expected Value::ArrayView");
+            }
+            assert_eq!(sliced.len(), 4);
+        }
+
+        #[cfg(feature = "views")]
+        #[test]
+        fn decimal_view_re_slices() {
+            let value = Value::Array(Arc::new(decimal_array(10)));
+            let view = value.slice(2, 6);
+            let sub = view.slice(1, 3);
+            assert_eq!(sub.len(), 3);
+        }
+
+        #[test]
+        fn decimal_round_trips_through_value() {
+            let arr = decimal_array(3);
+            let value = Value::Array(Arc::new(arr.clone()));
+            let extracted = Array::try_from(value).unwrap();
+            assert_eq!(extracted, arr);
+        }
+    }
 }

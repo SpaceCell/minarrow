@@ -775,6 +775,69 @@ impl<T: Integer> Concatenate for DecimalArray<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Consolidate - merges view windows into a contiguous DecimalArray
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "chunked")]
+impl<'a, T: Integer> crate::traits::consolidate::Consolidate
+    for Vec<crate::aliases::DecimalAVT<'a, T>>
+{
+    type Output = DecimalArray<T>;
+
+    /// Consolidate a vector of `(DecimalArray<T>, offset, len)` view tuples
+    /// into one contiguous `DecimalArray<T>`. Reads each window from the
+    /// source buffer with no intermediate copy. Precision and scale are
+    /// taken from the first chunk and validated against all subsequent chunks.
+    fn consolidate(self) -> DecimalArray<T> {
+        use crate::traits::masked_array::MaskedArray;
+
+        assert!(
+            !self.is_empty(),
+            "consolidate() called on empty Vec<DecimalAVT>"
+        );
+
+        let (first, _, _) = &self[0];
+        let precision = first.precision;
+        let scale = first.scale;
+
+        let total_len: usize = self.iter().map(|(_, _, len)| *len).sum();
+        let has_nulls = self.iter().any(|(arr, _, _)| arr.null_mask.is_some());
+
+        let mut result = DecimalArray::<T>::with_capacity(total_len, false, precision, scale);
+        let mut result_mask: Option<Bitmask> = if has_nulls {
+            Some(Bitmask::new_set_all(0, false))
+        } else {
+            None
+        };
+
+        for (arr, offset, len) in &self {
+            debug_assert_eq!(
+                arr.precision, precision,
+                "DecimalArray consolidate: precision mismatch across chunks"
+            );
+            debug_assert_eq!(
+                arr.scale, scale,
+                "DecimalArray consolidate: scale mismatch across chunks"
+            );
+            let data: &[T] = &arr.data[*offset..*offset + *len];
+            result.data.extend_from_slice(data);
+
+            if let Some(ref mut mask) = result_mask {
+                match arr.null_mask() {
+                    Some(src) => mask.extend_from_bitmask_range(src, *offset, *len),
+                    None => mask.push_bits(true, *len),
+                }
+            }
+        }
+
+        if let Some(mask) = result_mask {
+            result.set_null_mask(Some(mask));
+        }
+        result
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Widening conversions (lossless)
 // ---------------------------------------------------------------------------
 
@@ -1616,5 +1679,106 @@ mod tests {
         arc_arr.push(40);
         assert_eq!(arc_arr.len(), 4);
         assert_eq!(arc_arr.get(3), Some(40));
+    }
+
+    // -----------------------------------------------------------------------
+    // Consolidate view tuples
+    // -----------------------------------------------------------------------
+
+    #[cfg(feature = "chunked")]
+    mod consolidate_tests {
+        use super::*;
+        use crate::traits::consolidate::Consolidate;
+
+        #[test]
+        fn consolidate_single_full_window() {
+            let arr = DecimalArray::<i32>::from_slice(&[10, 20, 30], 10, 2);
+            let views = vec![(&arr, 0, 3)];
+            let result = views.consolidate();
+            assert_eq!(result.len(), 3);
+            assert_eq!(result.precision, 10);
+            assert_eq!(result.scale, 2);
+            assert_eq!(result.get(0), Some(10));
+            assert_eq!(result.get(1), Some(20));
+            assert_eq!(result.get(2), Some(30));
+        }
+
+        #[test]
+        fn consolidate_windowed_offset() {
+            let arr = DecimalArray::<i64>::from_slice(&[100, 200, 300, 400, 500], 18, 4);
+            let views = vec![(&arr, 1, 3)];
+            let result = views.consolidate();
+            assert_eq!(result.len(), 3);
+            assert_eq!(result.precision, 18);
+            assert_eq!(result.scale, 4);
+            assert_eq!(result.get(0), Some(200));
+            assert_eq!(result.get(1), Some(300));
+            assert_eq!(result.get(2), Some(400));
+        }
+
+        #[test]
+        fn consolidate_multiple_windows() {
+            let arr1 = DecimalArray::<i32>::from_slice(&[10, 20, 30], 10, 2);
+            let arr2 = DecimalArray::<i32>::from_slice(&[40, 50], 10, 2);
+            let views = vec![(&arr1, 0, 3), (&arr2, 0, 2)];
+            let result = views.consolidate();
+            assert_eq!(result.len(), 5);
+            assert_eq!(result.precision, 10);
+            assert_eq!(result.scale, 2);
+            assert_eq!(result.get(0), Some(10));
+            assert_eq!(result.get(4), Some(50));
+        }
+
+        #[test]
+        fn consolidate_with_null_mask_propagation() {
+            let mut arr1 = DecimalArray::<i32>::with_capacity(3, true, 10, 2);
+            arr1.push(10);
+            arr1.push_null();
+            arr1.push(30);
+
+            let arr2 = DecimalArray::<i32>::from_slice(&[40, 50], 10, 2);
+
+            let views = vec![(&arr1, 0, 3), (&arr2, 0, 2)];
+            let result = views.consolidate();
+            assert_eq!(result.len(), 5);
+            assert_eq!(result.get(0), Some(10));
+            assert_eq!(result.get(1), None);
+            assert_eq!(result.get(2), Some(30));
+            assert_eq!(result.get(3), Some(40));
+            assert_eq!(result.get(4), Some(50));
+            assert_eq!(result.null_count(), 1);
+        }
+
+        #[test]
+        fn consolidate_decimal128() {
+            let arr = DecimalArray::<i128>::from_slice(&[100, 200, 300], 38, 10);
+            let views = vec![(&arr, 1, 2)];
+            let result = views.consolidate();
+            assert_eq!(result.len(), 2);
+            assert_eq!(result.precision, 38);
+            assert_eq!(result.scale, 10);
+            assert_eq!(result.get(0), Some(200i128));
+            assert_eq!(result.get(1), Some(300i128));
+        }
+
+        #[test]
+        fn consolidate_cross_chunk_with_nulls_in_both() {
+            let mut arr1 = DecimalArray::<i64>::with_capacity(2, true, 18, 6);
+            arr1.push(100);
+            arr1.push_null();
+
+            let mut arr2 = DecimalArray::<i64>::with_capacity(2, true, 18, 6);
+            arr2.push_null();
+            arr2.push(400);
+
+            let views = vec![(&arr1, 0, 2), (&arr2, 0, 2)];
+            let result = views.consolidate();
+            assert_eq!(result.len(), 4);
+            assert_eq!(result.get(0), Some(100));
+            assert_eq!(result.get(1), None);
+            assert_eq!(result.get(2), None);
+            assert_eq!(result.get(3), Some(400));
+            assert_eq!(result.null_count(), 2);
+        }
     }
 }
