@@ -458,33 +458,36 @@ fn validate_temporal_field(array: &Array, dtype: &ArrowType) {
     }
 }
 
-#[cfg(feature = "decimal")]
-fn validate_decimal_field(array: &Array, dtype: &ArrowType) {
-    use crate::enums::collections::numeric_array::NumericArray;
-    match (array, dtype) {
-        (Array::NumericArray(NumericArray::Decimal32(a)), ArrowType::Decimal32(p, s)) => {
-            assert!(
-                a.precision == *p && a.scale == *s,
-                "FFI export: Field=Decimal32(p={p},s={s}) does not match array (p={},s={})",
-                a.precision, a.scale
-            );
+fn validate_numeric_field(array: &Array, dtype: &ArrowType) {
+    #[cfg(feature = "decimal")]
+    {
+        use crate::enums::collections::numeric_array::NumericArray;
+        match (array, dtype) {
+            (Array::NumericArray(NumericArray::Decimal32(a)), ArrowType::Decimal32(p, s)) => {
+                assert!(
+                    a.precision == *p && a.scale == *s,
+                    "FFI export: Field=Decimal32(p={p},s={s}) does not match array (p={},s={})",
+                    a.precision, a.scale
+                );
+            }
+            (Array::NumericArray(NumericArray::Decimal64(a)), ArrowType::Decimal64(p, s)) => {
+                assert!(
+                    a.precision == *p && a.scale == *s,
+                    "FFI export: Field=Decimal64(p={p},s={s}) does not match array (p={},s={})",
+                    a.precision, a.scale
+                );
+            }
+            (Array::NumericArray(NumericArray::Decimal128(a)), ArrowType::Decimal128(p, s)) => {
+                assert!(
+                    a.precision == *p && a.scale == *s,
+                    "FFI export: Field=Decimal128(p={p},s={s}) does not match array (p={},s={})",
+                    a.precision, a.scale
+                );
+            }
+            _ => {}
         }
-        (Array::NumericArray(NumericArray::Decimal64(a)), ArrowType::Decimal64(p, s)) => {
-            assert!(
-                a.precision == *p && a.scale == *s,
-                "FFI export: Field=Decimal64(p={p},s={s}) does not match array (p={},s={})",
-                a.precision, a.scale
-            );
-        }
-        (Array::NumericArray(NumericArray::Decimal128(a)), ArrowType::Decimal128(p, s)) => {
-            assert!(
-                a.precision == *p && a.scale == *s,
-                "FFI export: Field=Decimal128(p={p},s={s}) does not match array (p={},s={})",
-                a.precision, a.scale
-            );
-        }
-        _ => {}
     }
+    let _ = (array, dtype);
 }
 
 /// Exports a Minarrow array to Arrow C Data Interface pointers.
@@ -518,10 +521,9 @@ pub fn export_view_to_c(
         validate_temporal_field(&*array, field_ty);
     }
 
-    #[cfg(feature = "decimal")]
     {
         let field_ty = &schema.fields[0].dtype;
-        validate_decimal_field(&*array, field_ty);
+        validate_numeric_field(&*array, field_ty);
     }
 
     match &*array {
@@ -1961,14 +1963,14 @@ unsafe fn import_decimal<T: Integer>(
     let data_ptr = unsafe { (buffers[1] as *const T).add(offset) };
     let data_len_bytes = len * std::mem::size_of::<T>();
 
-    // Null mask is always copied (small overhead). Honours bit-level offset.
+    // Null mask is always copied to honour the bit-level offset.
     let null_mask = if !buffers[0].is_null() {
         Some(unsafe { import_null_mask_offset(buffers[0], offset, len) })
     } else {
         None
     };
 
-    // For empty arrays, create an empty buffer to avoid sentinel pointers.
+    // For empty arrays, create an empty buffer rather than reading from the foreign pointer.
     let buffer: Buffer<T> = if len == 0 {
         Buffer::default()
     } else if let Some(arr_box) = ownership {
