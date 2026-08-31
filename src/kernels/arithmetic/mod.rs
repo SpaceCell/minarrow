@@ -31,6 +31,8 @@
 //! which is app-specific.**.
 
 pub mod dispatch;
+#[cfg(feature = "decimal")]
+pub mod decimal;
 #[cfg(feature = "simd")]
 pub mod simd;
 pub mod std;

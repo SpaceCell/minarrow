@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use crate::enums::error::KernelError;
+#[cfg(feature = "decimal")]
+use crate::DecimalArray;
 use crate::{
     Array, ArrayV, Bitmask, BooleanArray, FloatArray, IntegerArray, MaskedArray, NumericArray,
     StringArray, TextArray, Vec64, vec64,
@@ -63,6 +65,27 @@ pub fn broadcast_length_1_array(av: ArrayV, len: usize) -> Result<Array, KernelE
             let s = a.get_str(av.offset).unwrap_or("");
             let strs: Vec64<&str> = std::iter::repeat(s).take(len).collect();
             Ok(Array::from_string64(StringArray::from_vec64(strs, None)))
+        }
+        #[cfg(feature = "decimal")]
+        Array::NumericArray(NumericArray::Decimal32(a)) => {
+            let val = a.data[0];
+            Ok(Array::NumericArray(NumericArray::Decimal32(
+                DecimalArray::from_vec64(vec64![val; len], None, a.precision, a.scale).into(),
+            )))
+        }
+        #[cfg(feature = "decimal")]
+        Array::NumericArray(NumericArray::Decimal64(a)) => {
+            let val = a.data[0];
+            Ok(Array::NumericArray(NumericArray::Decimal64(
+                DecimalArray::from_vec64(vec64![val; len], None, a.precision, a.scale).into(),
+            )))
+        }
+        #[cfg(feature = "decimal")]
+        Array::NumericArray(NumericArray::Decimal128(a)) => {
+            let val = a.data[0];
+            Ok(Array::NumericArray(NumericArray::Decimal128(
+                DecimalArray::from_vec64(vec64![val; len], None, a.precision, a.scale).into(),
+            )))
         }
         _ => {
             return Err(KernelError::UnsupportedType(
