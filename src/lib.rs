@@ -174,6 +174,8 @@ pub mod structs {
         pub mod categorical;
         #[cfg(feature = "datetime")]
         pub mod datetime;
+        #[cfg(feature = "decimal")]
+        pub mod decimal;
         pub mod float;
         pub mod integer;
         pub mod string;
@@ -349,6 +351,8 @@ pub use structs::variants::categorical::CategoricalArray;
 pub use structs::variants::datetime::DatetimeArray;
 #[cfg(feature = "datetime")]
 pub use structs::variants::datetime::parse::{parse_iso8601_utc, parse_iso8601_utc_ns};
+#[cfg(feature = "decimal")]
+pub use structs::variants::decimal::DecimalArray;
 pub use structs::variants::float::FloatArray;
 pub use structs::variants::integer::IntegerArray;
 pub use structs::variants::string::StringArray;
