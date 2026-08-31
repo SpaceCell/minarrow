@@ -1838,4 +1838,92 @@ mod tests {
             _ => panic!("expected U32 dispatch"),
         }
     }
+
+    #[cfg(feature = "decimal")]
+    mod decimal_super_array_tests {
+        use super::*;
+        use crate::ffi::arrow_dtype::ArrowType;
+
+        fn decimal_array(vals: &[i32], precision: u8, scale: i8) -> Array {
+            Array::from_decimal32(crate::DecimalArray::from_slice(vals, precision, scale))
+        }
+
+        fn decimal_fa(name: &str, vals: &[i32], precision: u8, scale: i8) -> FieldArray {
+            let arr = decimal_array(vals, precision, scale);
+            let field = Field::new(name, ArrowType::Decimal32(precision, scale), false, None);
+            FieldArray::new(field, arr)
+        }
+
+        #[test]
+        fn push_and_type_validation() {
+            let mut sa = SuperArray::new();
+            sa.push(decimal_array(&[10, 20, 30], 10, 2));
+            assert_eq!(sa.n_chunks(), 1);
+            assert_eq!(sa.len(), 3);
+            sa.push(decimal_array(&[40, 50], 10, 2));
+            assert_eq!(sa.n_chunks(), 2);
+            assert_eq!(sa.len(), 5);
+        }
+
+        #[test]
+        #[should_panic(expected = "Chunk ArrowType mismatch")]
+        fn push_mismatched_scale_panics() {
+            let mut sa = SuperArray::new();
+            sa.push(decimal_array(&[10], 10, 2));
+            sa.push(decimal_array(&[20], 10, 3)); // different scale
+        }
+
+        #[test]
+        fn consolidate_decimal_chunks() {
+            let fa1 = decimal_fa("d", &[10, 20], 10, 2);
+            let fa2 = decimal_fa("d", &[30, 40, 50], 10, 2);
+            let sa = SuperArray::from_chunks(vec![fa1, fa2]);
+
+            let result = sa.consolidate();
+            assert_eq!(result.len(), 5);
+            if let Array::NumericArray(NumericArray::Decimal32(dec)) = result {
+                assert_eq!(dec.data.as_slice(), &[10, 20, 30, 40, 50]);
+                assert_eq!(dec.precision, 10);
+                assert_eq!(dec.scale, 2);
+            } else {
+                panic!("Expected Decimal32 Array");
+            }
+        }
+
+        #[cfg(feature = "views")]
+        #[test]
+        fn slice_and_consolidate() {
+            let fa1 = decimal_fa("d", &[10, 20, 30], 10, 2);
+            let fa2 = decimal_fa("d", &[40, 50], 10, 2);
+            let sa = SuperArray::from_chunks(vec![fa1, fa2]);
+            let view = sa.slice(2, 3); // [30, 40, 50]
+            let result = view.consolidate();
+
+            assert_eq!(result.len(), 3);
+            if let Array::NumericArray(NumericArray::Decimal32(dec)) = result {
+                assert_eq!(dec.data.as_slice(), &[30, 40, 50]);
+                assert_eq!(dec.precision, 10);
+                assert_eq!(dec.scale, 2);
+            } else {
+                panic!("Expected Decimal32 Array");
+            }
+        }
+
+        #[test]
+        fn concat_super_arrays() {
+            let sa1 = SuperArray::from_arrays(vec![decimal_array(&[10, 20], 10, 2)]);
+            let sa2 = SuperArray::from_arrays(vec![decimal_array(&[30], 10, 2)]);
+            let result = sa1.concat(sa2).unwrap();
+            assert_eq!(result.n_chunks(), 2);
+            assert_eq!(result.len(), 3);
+        }
+
+        #[test]
+        fn concat_mismatched_type_errors() {
+            let sa1 = SuperArray::from_arrays(vec![decimal_array(&[10], 10, 2)]);
+            let sa2 = SuperArray::from_arrays(vec![int_array(&[20])]);
+            let result = sa1.concat(sa2);
+            assert!(result.is_err());
+        }
+    }
 }

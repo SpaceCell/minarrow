@@ -713,4 +713,113 @@ mod tests {
             _ => panic!("expected Int32 variant"),
         }
     }
+
+    // Decimal NumericArrayV Tests
+
+    #[cfg(feature = "decimal")]
+    mod decimal_view_tests {
+        use super::*;
+        use crate::DecimalArray;
+
+        #[test]
+        fn decimal32_view_get_f64() {
+            let arr = DecimalArray::<i32>::from_slice(&[10, 20, 30, 40, 50], 10, 2);
+            let numeric = NumericArray::Decimal32(Arc::new(arr));
+            let view = NumericArrayV::new(numeric, 1, 3);
+
+            assert_eq!(view.len(), 3);
+            assert_eq!(view.get_f64(0), Some(20.0));
+            assert_eq!(view.get_f64(1), Some(30.0));
+            assert_eq!(view.get_f64(2), Some(40.0));
+            assert_eq!(view.get_f64(3), None);
+        }
+
+        #[test]
+        fn decimal64_view_slice() {
+            let arr = DecimalArray::<i64>::from_slice(&[100, 200, 300, 400], 18, 4);
+            let numeric = NumericArray::Decimal64(Arc::new(arr));
+            let view = NumericArrayV::new(numeric, 0, 4);
+            let sub = view.slice(1, 2);
+
+            assert_eq!(sub.len(), 2);
+            assert_eq!(sub.get_f64(0), Some(200.0));
+            assert_eq!(sub.get_f64(1), Some(300.0));
+        }
+
+        #[test]
+        fn decimal128_view_null_count() {
+            let mut arr = DecimalArray::<i128>::with_capacity(4, true, 38, 10);
+            arr.push(10);
+            arr.push_null();
+            arr.push(30);
+            arr.push(40);
+
+            let numeric = NumericArray::Decimal128(Arc::new(arr));
+            let view = NumericArrayV::new(numeric, 0, 4);
+            assert_eq!(view.null_count(), 1);
+            assert!(view.has_nulls());
+
+            let no_null_view = view.slice(2, 2);
+            assert_eq!(no_null_view.null_count(), 0);
+            assert!(!no_null_view.has_nulls());
+        }
+
+        #[test]
+        fn decimal_view_to_numeric_array_preserves_metadata() {
+            let arr = DecimalArray::<i32>::from_slice(&[100, 200, 300, 400], 10, 2);
+            let numeric = NumericArray::Decimal32(Arc::new(arr));
+            let view = NumericArrayV::new(numeric, 1, 2);
+            let materialised = view.to_numeric_array();
+
+            if let NumericArray::Decimal32(dec) = materialised {
+                assert_eq!(dec.len(), 2);
+                assert_eq!(dec.precision, 10);
+                assert_eq!(dec.scale, 2);
+                assert_eq!(dec.get(0), Some(200));
+                assert_eq!(dec.get(1), Some(300));
+            } else {
+                panic!("Expected Decimal32 variant");
+            }
+        }
+
+        #[test]
+        fn decimal_view_from_numeric_array() {
+            let arr = DecimalArray::<i64>::from_slice(&[10, 20], 18, 6);
+            let numeric = NumericArray::Decimal64(Arc::new(arr));
+            let view = NumericArrayV::from(numeric);
+            assert_eq!(view.len(), 2);
+            assert_eq!(view.offset, 0);
+            assert_eq!(view.get_f64(0), Some(10.0));
+            assert_eq!(view.get_f64(1), Some(20.0));
+        }
+
+        #[test]
+        fn decimal_view_from_array_v() {
+            let arr = DecimalArray::<i32>::from_slice(&[10, 20, 30, 40], 10, 2);
+            let array = crate::Array::from_decimal32(arr);
+            let array_v = crate::ArrayV::new(array, 1, 2);
+            let numeric_v = NumericArrayV::from(array_v);
+
+            assert_eq!(numeric_v.len(), 2);
+            assert_eq!(numeric_v.offset, 1);
+            assert_eq!(numeric_v.get_f64(0), Some(20.0));
+            assert_eq!(numeric_v.get_f64(1), Some(30.0));
+        }
+
+        #[test]
+        fn decimal_view_null_mask_view() {
+            let mut arr = DecimalArray::<i32>::with_capacity(3, true, 10, 2);
+            arr.push(10);
+            arr.push_null();
+            arr.push(30);
+
+            let numeric = NumericArray::Decimal32(Arc::new(arr));
+            let view = NumericArrayV::new(numeric, 0, 3);
+            let mask = view.null_mask_view().expect("should have null mask");
+            assert_eq!(mask.len(), 3);
+            assert!(mask.get(0));
+            assert!(!mask.get(1));
+            assert!(mask.get(2));
+        }
+    }
 }
