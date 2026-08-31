@@ -2525,6 +2525,10 @@ impl Array {
                 arr.null_mask = Some(mask);
                 Array::from_string32(arr)
             }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(_, _) | ArrowType::Decimal64(_, _) | ArrowType::Decimal128(_, _) => {
+                panic!("null_array: DecimalArray is not yet available")
+            }
         }
     }
 
@@ -2608,6 +2612,10 @@ impl Array {
             ArrowType::Interval(_) => Array::TemporalArray(crate::TemporalArray::Datetime64(
                 Arc::new(crate::DatetimeArray::<i64>::default()),
             )),
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(_, _) | ArrowType::Decimal64(_, _) | ArrowType::Decimal128(_, _) => {
+                panic!("from_arrow_dtype: DecimalArray is not yet available")
+            }
         }
     }
 

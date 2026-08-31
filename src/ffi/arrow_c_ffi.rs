@@ -265,6 +265,24 @@ unsafe extern "C" fn release_arrow_schema(s: *mut ArrowSchema) {
 
 /// Constructs the Arrow C FFI format string for the given ArrowType.
 pub fn fmt_c(dtype: ArrowType) -> CString {
+    #[cfg(feature = "decimal")]
+    match &dtype {
+        // Decimal128 is the Arrow default so the bitwidth suffix is omitted.
+        ArrowType::Decimal128(p, s) => {
+            let fmt = format!("d:{p},{s}");
+            return CString::new(fmt).expect("CString formatting failed: invalid bytes");
+        }
+        ArrowType::Decimal32(p, s) => {
+            let fmt = format!("d:{p},{s},32");
+            return CString::new(fmt).expect("CString formatting failed: invalid bytes");
+        }
+        ArrowType::Decimal64(p, s) => {
+            let fmt = format!("d:{p},{s},64");
+            return CString::new(fmt).expect("CString formatting failed: invalid bytes");
+        }
+        _ => {}
+    }
+
     #[cfg(feature = "datetime")]
     if let ArrowType::Timestamp(u, tz) = &dtype {
         let unit_str = match u {
@@ -347,6 +365,11 @@ pub fn fmt_c(dtype: ArrowType) -> CString {
             IntervalUnit::DaysTime => b"tiD",
             IntervalUnit::MonthDaysNs => b"tin",
         },
+
+        #[cfg(feature = "decimal")]
+        ArrowType::Decimal32(_, _) | ArrowType::Decimal64(_, _) | ArrowType::Decimal128(_, _) => {
+            unreachable!("decimal cases handled by the early return above")
+        }
 
         // ---- dictionary (categorical) ----
         ArrowType::Dictionary(idx) => match idx {
@@ -863,6 +886,10 @@ pub unsafe fn import_from_c(arr_ptr: *const ArrowArray, sch_ptr: *const ArrowSch
             ArrowType::Interval(_u) => {
                 panic!("FFI import_from_c: Arrow Interval types are not yet supported");
             }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(_, _) | ArrowType::Decimal64(_, _) | ArrowType::Decimal128(_, _) => {
+                panic!("FFI import_from_c: Decimal array import is not yet implemented")
+            }
             ArrowType::Null => {
                 panic!("FFI import_from_c: Arrow Null arrays types are not yet supported")
             }
@@ -1007,6 +1034,10 @@ pub unsafe fn import_from_c_owned(
             ArrowType::Interval(_u) => {
                 panic!("FFI import_from_c_owned: Arrow Interval types are not yet supported");
             }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(_, _) | ArrowType::Decimal64(_, _) | ArrowType::Decimal128(_, _) => {
+                panic!("FFI import_from_c_owned: Decimal array import is not yet implemented")
+            }
             ArrowType::Null => {
                 panic!("FFI import_from_c_owned: Arrow Null arrays types are not yet supported")
             }
@@ -1132,6 +1163,10 @@ unsafe fn import_array_zero_copy(
             #[cfg(feature = "datetime")]
             ArrowType::Interval(_u) => {
                 panic!("import_array_zero_copy: Interval types are not yet supported");
+            }
+            #[cfg(feature = "decimal")]
+            ArrowType::Decimal32(_, _) | ArrowType::Decimal64(_, _) | ArrowType::Decimal128(_, _) => {
+                panic!("import_array_zero_copy: Decimal array import is not yet implemented")
             }
             ArrowType::Null => {
                 panic!("import_array_zero_copy: Null array types are not yet supported");
@@ -3408,6 +3443,38 @@ unsafe fn field_from_c_schema(schema: &ArrowSchema) -> crate::Field {
     crate::Field::new(name, dtype, nullable, metadata)
 }
 
+/// Parses an Arrow C decimal format string (`d:P,S` or `d:P,S,N`) into an ArrowType.
+///
+/// Two-component form (`d:P,S`) is Decimal128 per the Arrow spec where 128
+/// is the default bitwidth. Three-component form (`d:P,S,N`) selects the
+/// bitwidth from N. Accepts `d:P,S,128` as equivalent to `d:P,S`.
+#[cfg(feature = "decimal")]
+fn parse_decimal_format(fmt: &[u8]) -> ArrowType {
+    let s = std::str::from_utf8(&fmt[2..]).unwrap_or_else(|_| {
+        panic!(
+            "FFI parse_decimal_format: non-UTF8 decimal format {:?}",
+            fmt
+        )
+    });
+    let parts: Vec<&str> = s.split(',').collect();
+    let precision: u8 = parts[0].parse().unwrap_or_else(|_| {
+        panic!("FFI parse_decimal_format: invalid precision in {:?}", s)
+    });
+    let scale: i8 = parts[1].parse().unwrap_or_else(|_| {
+        panic!("FFI parse_decimal_format: invalid scale in {:?}", s)
+    });
+    match parts.len() {
+        2 => ArrowType::Decimal128(precision, scale),
+        3 => match parts[2] {
+            "32" => ArrowType::Decimal32(precision, scale),
+            "64" => ArrowType::Decimal64(precision, scale),
+            "128" => ArrowType::Decimal128(precision, scale),
+            w => panic!("FFI parse_decimal_format: unsupported decimal bitwidth {w}"),
+        },
+        _ => panic!("FFI parse_decimal_format: malformed decimal format {:?}", s),
+    }
+}
+
 /// Parses an Arrow C format string into an ArrowType.
 /// Shared between import_from_c, import_from_c_owned, and stream import.
 fn parse_arrow_format(fmt: &[u8]) -> ArrowType {
@@ -3459,6 +3526,10 @@ fn parse_arrow_format(fmt: &[u8]) -> ArrowType {
         #[cfg(feature = "datetime")]
         b"tin" => ArrowType::Interval(crate::IntervalUnit::MonthDaysNs),
         b"+s" => ArrowType::Null, // struct marker (handled at stream level)
+        #[cfg(feature = "decimal")]
+        _ if fmt.starts_with(b"d:") => {
+            parse_decimal_format(fmt)
+        }
         #[cfg(feature = "datetime")]
         _ if fmt.starts_with(b"tss")
             || fmt.starts_with(b"tsm")
@@ -4644,5 +4715,54 @@ mod tests {
             ((*arr_ptr).release.unwrap())(arr_ptr);
             ((*sch_ptr).release.unwrap())(sch_ptr);
         }
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_fmt_c_roundtrip() {
+        use super::{fmt_c, parse_arrow_format};
+
+        // Decimal128 emits d:P,S (no bitwidth suffix)
+        let d128 = ArrowType::Decimal128(38, 10);
+        let cstr = fmt_c(d128.clone());
+        assert_eq!(cstr.to_str().unwrap(), "d:38,10");
+        let parsed = parse_arrow_format(cstr.as_bytes());
+        assert_eq!(parsed, d128);
+
+        // Decimal64 emits d:P,S,64
+        let d64 = ArrowType::Decimal64(18, 4);
+        let cstr = fmt_c(d64.clone());
+        assert_eq!(cstr.to_str().unwrap(), "d:18,4,64");
+        let parsed = parse_arrow_format(cstr.as_bytes());
+        assert_eq!(parsed, d64);
+
+        // Decimal32 emits d:P,S,32
+        let d32 = ArrowType::Decimal32(9, 2);
+        let cstr = fmt_c(d32.clone());
+        assert_eq!(cstr.to_str().unwrap(), "d:9,2,32");
+        let parsed = parse_arrow_format(cstr.as_bytes());
+        assert_eq!(parsed, d32);
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_parse_128_explicit_bitwidth() {
+        use super::parse_arrow_format;
+
+        // d:P,S,128 is an alias for Decimal128
+        let parsed = parse_arrow_format(b"d:38,10,128");
+        assert_eq!(parsed, ArrowType::Decimal128(38, 10));
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_negative_scale_roundtrip() {
+        use super::{fmt_c, parse_arrow_format};
+
+        let d = ArrowType::Decimal128(10, -3);
+        let cstr = fmt_c(d.clone());
+        assert_eq!(cstr.to_str().unwrap(), "d:10,-3");
+        let parsed = parse_arrow_format(cstr.as_bytes());
+        assert_eq!(parsed, d);
     }
 }
