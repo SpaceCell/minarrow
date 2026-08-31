@@ -41,6 +41,8 @@ use crate::ArrayV;
 use crate::ArrayVT;
 #[cfg(feature = "datetime")]
 use crate::DatetimeArray;
+#[cfg(feature = "decimal")]
+use crate::DecimalArray;
 #[cfg(feature = "chunked")]
 use crate::SuperArray;
 #[cfg(feature = "datetime")]
@@ -1472,6 +1474,12 @@ impl Array {
         match_arm!(NumericArray, UInt64, IntegerArray<u64>);
         match_arm!(NumericArray, Float32, FloatArray<f32>);
         match_arm!(NumericArray, Float64, FloatArray<f64>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal32, DecimalArray<i32>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal64, DecimalArray<i64>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal128, DecimalArray<i128>);
 
         // TextArray
         match_arm!(TextArray, String32, StringArray<u32>);
@@ -1546,6 +1554,12 @@ impl Array {
         match_arm!(NumericArray, UInt64, IntegerArray<u64>);
         match_arm!(NumericArray, Float32, FloatArray<f32>);
         match_arm!(NumericArray, Float64, FloatArray<f64>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal32, DecimalArray<i32>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal64, DecimalArray<i64>);
+        #[cfg(feature = "decimal")]
+        match_arm!(NumericArray, Decimal128, DecimalArray<i128>);
 
         // TextArray
         match_arm!(TextArray, String32, StringArray<u32>);
@@ -1619,6 +1633,12 @@ impl Array {
         match_inner_type!(NumericArray, UInt64, IntegerArray<u64>);
         match_inner_type!(NumericArray, Float32, FloatArray<f32>);
         match_inner_type!(NumericArray, Float64, FloatArray<f64>);
+        #[cfg(feature = "decimal")]
+        match_inner_type!(NumericArray, Decimal32, DecimalArray<i32>);
+        #[cfg(feature = "decimal")]
+        match_inner_type!(NumericArray, Decimal64, DecimalArray<i64>);
+        #[cfg(feature = "decimal")]
+        match_inner_type!(NumericArray, Decimal128, DecimalArray<i128>);
 
         match_inner_type!(TextArray, String32, StringArray<u32>);
         #[cfg(feature = "large_string")]
@@ -1686,6 +1706,12 @@ impl Array {
         match_inner_type_mut!(NumericArray, UInt64, IntegerArray<u64>);
         match_inner_type_mut!(NumericArray, Float32, FloatArray<f32>);
         match_inner_type_mut!(NumericArray, Float64, FloatArray<f64>);
+        #[cfg(feature = "decimal")]
+        match_inner_type_mut!(NumericArray, Decimal32, DecimalArray<i32>);
+        #[cfg(feature = "decimal")]
+        match_inner_type_mut!(NumericArray, Decimal64, DecimalArray<i64>);
+        #[cfg(feature = "decimal")]
+        match_inner_type_mut!(NumericArray, Decimal128, DecimalArray<i128>);
 
         match_inner_type_mut!(TextArray, String32, StringArray<u32>);
         #[cfg(feature = "large_string")]
