@@ -172,6 +172,18 @@ pub fn broadcast_array_to_scalar(
         Scalar::Datetime64(val) => {
             Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], None))
         }
+        #[cfg(feature = "decimal")]
+        Scalar::Decimal32(val, s) => {
+            Array::from_decimal32(crate::DecimalArray::from_slice(&[*val], 0, *s))
+        }
+        #[cfg(feature = "decimal")]
+        Scalar::Decimal64(val, s) => {
+            Array::from_decimal64(crate::DecimalArray::from_slice(&[*val], 0, *s))
+        }
+        #[cfg(feature = "decimal")]
+        Scalar::Decimal128(val, s) => {
+            Array::from_decimal128(crate::DecimalArray::from_slice(&[*val], 0, *s))
+        }
         Scalar::Null => Array::Null,
         #[cfg(feature = "datetime")]
         Scalar::Interval => {

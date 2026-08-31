@@ -1167,6 +1167,50 @@ impl View for FloatArray<f64> {
     type BufferT = f64;
 }
 
+// --------- DecimalArray Variants ---------
+
+#[cfg(feature = "decimal")]
+impl From<crate::DecimalArray<i32>> for Array {
+    fn from(a: crate::DecimalArray<i32>) -> Self {
+        Array::NumericArray(NumericArray::Decimal32(Arc::new(a)))
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<crate::DecimalArray<i64>> for Array {
+    fn from(a: crate::DecimalArray<i64>) -> Self {
+        Array::NumericArray(NumericArray::Decimal64(Arc::new(a)))
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<crate::DecimalArray<i128>> for Array {
+    fn from(a: crate::DecimalArray<i128>) -> Self {
+        Array::NumericArray(NumericArray::Decimal128(Arc::new(a)))
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<Arc<crate::DecimalArray<i32>>> for Array {
+    fn from(a: Arc<crate::DecimalArray<i32>>) -> Self {
+        Array::NumericArray(NumericArray::Decimal32(a))
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<Arc<crate::DecimalArray<i64>>> for Array {
+    fn from(a: Arc<crate::DecimalArray<i64>>) -> Self {
+        Array::NumericArray(NumericArray::Decimal64(a))
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<Arc<crate::DecimalArray<i128>>> for Array {
+    fn from(a: Arc<crate::DecimalArray<i128>>) -> Self {
+        Array::NumericArray(NumericArray::Decimal128(a))
+    }
+}
+
 // --------- TemporalArray Variants ---------
 
 #[cfg(feature = "datetime")]
@@ -1393,6 +1437,18 @@ impl From<Scalar> for Array {
             Datetime64(v) => Array::from_datetime_i64(DatetimeArray::from_slice(&[v], None)),
             #[cfg(feature = "datetime")]
             Interval => Array::from_int32(IntegerArray::from_slice(&[0i32])),
+            #[cfg(feature = "decimal")]
+            Decimal32(v, s) => Array::from_decimal32(
+                crate::DecimalArray::from_slice(&[v], 0, s),
+            ),
+            #[cfg(feature = "decimal")]
+            Decimal64(v, s) => Array::from_decimal64(
+                crate::DecimalArray::from_slice(&[v], 0, s),
+            ),
+            #[cfg(feature = "decimal")]
+            Decimal128(v, s) => Array::from_decimal128(
+                crate::DecimalArray::from_slice(&[v], 0, s),
+            ),
         }
     }
 }

@@ -144,6 +144,18 @@ impl Field {
                 NumericArray::Float64(a) => {
                     Field::new(name, ArrowType::Float64, a.is_nullable(), Some(metadata))
                 }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(a) => {
+                    Field::new(name, a.arrow_type(), a.is_nullable(), Some(metadata))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(a) => {
+                    Field::new(name, a.arrow_type(), a.is_nullable(), Some(metadata))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(a) => {
+                    Field::new(name, a.arrow_type(), a.is_nullable(), Some(metadata))
+                }
                 NumericArray::Null => Field::new(name, ArrowType::Null, false, Some(metadata)),
             },
             Array::BooleanArray(a) => {

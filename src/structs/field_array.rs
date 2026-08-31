@@ -493,6 +493,12 @@ pub fn create_field_for_array(
             NumericArray::UInt64(_) => ArrowType::UInt64,
             NumericArray::Float32(_) => ArrowType::Float32,
             NumericArray::Float64(_) => ArrowType::Float64,
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(a) => a.arrow_type(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => a.arrow_type(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => a.arrow_type(),
             NumericArray::Null => ArrowType::Null,
         },
         Array::TextArray(text_arr) => match text_arr {

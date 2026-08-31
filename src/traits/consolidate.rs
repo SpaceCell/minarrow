@@ -215,6 +215,18 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
             Array::NumericArray(NumericArray::UInt8(_)) => gather_numeric!(UInt8, u8),
             #[cfg(feature = "extended_numeric_types")]
             Array::NumericArray(NumericArray::UInt16(_)) => gather_numeric!(UInt16, u16),
+            #[cfg(feature = "decimal")]
+            Array::NumericArray(NumericArray::Decimal32(_)) => {
+                panic!("Consolidate is not yet implemented for DecimalArray")
+            }
+            #[cfg(feature = "decimal")]
+            Array::NumericArray(NumericArray::Decimal64(_)) => {
+                panic!("Consolidate is not yet implemented for DecimalArray")
+            }
+            #[cfg(feature = "decimal")]
+            Array::NumericArray(NumericArray::Decimal128(_)) => {
+                panic!("Consolidate is not yet implemented for DecimalArray")
+            }
             Array::NumericArray(NumericArray::Null) => Array::Null,
 
             Array::TextArray(TextArray::String32(_)) => gather_string!(String32, u32),

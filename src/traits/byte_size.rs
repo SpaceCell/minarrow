@@ -168,6 +168,22 @@ impl<T> ByteSize for FloatArray<T> {
     }
 }
 
+/// ByteSize for DecimalArray<T>
+#[cfg(feature = "decimal")]
+impl<T> ByteSize for crate::DecimalArray<T> {
+    #[inline]
+    fn est_bytes(&self) -> usize {
+        let data_bytes = self.data.est_bytes();
+        let mask_bytes = self.null_mask.as_ref().map_or(0, |m| m.est_bytes());
+        data_bytes + mask_bytes
+    }
+
+    #[inline]
+    fn logical_bytes(&self) -> usize {
+        self.data.logical_bytes() + self.null_mask.as_ref().map_or(0, |m| m.logical_bytes())
+    }
+}
+
 /// ByteSize for StringArray<T>
 impl<T> ByteSize for StringArray<T> {
     #[inline]
@@ -274,6 +290,12 @@ impl ByteSize for NumericArray {
             NumericArray::UInt64(arr) => arr.est_bytes(),
             NumericArray::Float32(arr) => arr.est_bytes(),
             NumericArray::Float64(arr) => arr.est_bytes(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arr) => arr.est_bytes(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arr) => arr.est_bytes(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arr) => arr.est_bytes(),
             NumericArray::Null => 0,
         }
     }
@@ -294,6 +316,12 @@ impl ByteSize for NumericArray {
             NumericArray::UInt64(arr) => arr.logical_bytes(),
             NumericArray::Float32(arr) => arr.logical_bytes(),
             NumericArray::Float64(arr) => arr.logical_bytes(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arr) => arr.logical_bytes(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arr) => arr.logical_bytes(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arr) => arr.logical_bytes(),
             NumericArray::Null => 0,
         }
     }
@@ -518,6 +546,21 @@ impl ByteSize for ArrayV {
                 }
                 NumericArray::Float64(arr) => {
                     len * size_of::<f64>()
+                        + arr.null_mask.as_ref().map_or(0, |_| (len + 7) / 8)
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => {
+                    len * size_of::<i32>()
+                        + arr.null_mask.as_ref().map_or(0, |_| (len + 7) / 8)
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => {
+                    len * size_of::<i64>()
+                        + arr.null_mask.as_ref().map_or(0, |_| (len + 7) / 8)
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => {
+                    len * size_of::<i128>()
                         + arr.null_mask.as_ref().map_or(0, |_| (len + 7) / 8)
                 }
                 NumericArray::Null => 0,
@@ -879,6 +922,12 @@ impl ByteSize for Scalar {
             // The variant carries no value
             #[cfg(feature = "datetime")]
             Scalar::Interval => 0,
+            #[cfg(feature = "decimal")]
+            Scalar::Decimal32(_, _) => size_of::<i32>(),
+            #[cfg(feature = "decimal")]
+            Scalar::Decimal64(_, _) => size_of::<i64>(),
+            #[cfg(feature = "decimal")]
+            Scalar::Decimal128(_, _) => size_of::<i128>(),
         }
     }
 }

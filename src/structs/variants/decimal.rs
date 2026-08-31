@@ -62,7 +62,8 @@ use crate::traits::concatenate::Concatenate;
 use crate::traits::print::MAX_PREVIEW;
 use crate::traits::shape::Shape;
 use crate::traits::type_unions::Integer;
-use crate::{Bitmask, Buffer, Length, MaskedArray, Offset, impl_array_ref_deref};
+use crate::ffi::arrow_dtype::ArrowType;
+use crate::{Bitmask, Buffer, Length, MaskedArray, Offset, impl_arc_masked_array, impl_array_ref_deref};
 use vec64::Vec64;
 
 /// # DecimalArray
@@ -199,11 +200,21 @@ impl<T: Integer> DecimalArray<T> {
         Self::from_vec64(data.into(), None, precision, scale)
     }
 
-    // TODO(TSK376): Add `arrow_type(&self) -> ArrowType` method once
-    // ArrowType::Decimal32/64/128(u8, i8) variants are available.
-    // Implementation: match TypeId::of::<T>() returning the variant for
-    // i32 -> Decimal32, i64 -> Decimal64, i128 -> Decimal128, each
-    // carrying (self.precision, self.scale).
+    /// Returns the `ArrowType` for this decimal array, determined by the
+    /// backing integer width (i32, i64, or i128).
+    pub fn arrow_type(&self) -> ArrowType {
+        use std::any::TypeId;
+        let tid = TypeId::of::<T>();
+        if tid == TypeId::of::<i32>() {
+            ArrowType::Decimal32(self.precision, self.scale)
+        } else if tid == TypeId::of::<i64>() {
+            ArrowType::Decimal64(self.precision, self.scale)
+        } else if tid == TypeId::of::<i128>() {
+            ArrowType::Decimal128(self.precision, self.scale)
+        } else {
+            panic!("DecimalArray::arrow_type: unsupported backing type")
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +645,16 @@ impl<T: Integer> MaskedArray for DecimalArray<T> {
 // ---------------------------------------------------------------------------
 
 impl_array_ref_deref!(DecimalArray<T>);
+impl_arc_masked_array!(
+    Inner = DecimalArray<T>,
+    T = T,
+    Container = Buffer<T>,
+    LogicalType = T,
+    CopyType = T,
+    BufferT = T,
+    Variant = NumericArray,
+    Bound = Integer,
+);
 
 // ---------------------------------------------------------------------------
 // Display - scale-aware formatting
@@ -750,6 +771,34 @@ impl<T: Integer> Concatenate for DecimalArray<T> {
         self.precision = self.precision.max(other.precision);
         self.append_array(&other);
         Ok(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Widening conversions (lossless)
+// ---------------------------------------------------------------------------
+
+impl From<DecimalArray<i32>> for DecimalArray<i64> {
+    fn from(src: DecimalArray<i32>) -> Self {
+        let data: Vec64<i64> = src.data.iter().map(|&v| v as i64).collect();
+        DecimalArray {
+            data: data.into(),
+            null_mask: src.null_mask,
+            precision: src.precision,
+            scale: src.scale,
+        }
+    }
+}
+
+impl From<DecimalArray<i64>> for DecimalArray<i128> {
+    fn from(src: DecimalArray<i64>) -> Self {
+        let data: Vec64<i128> = src.data.iter().map(|&v| v as i128).collect();
+        DecimalArray {
+            data: data.into(),
+            null_mask: src.null_mask,
+            precision: src.precision,
+            scale: src.scale,
+        }
     }
 }
 
@@ -1484,5 +1533,88 @@ mod tests {
         let arr2 = DecimalArray::<i32>::from_slice(&[20, 30], 10, 2);
         let result = arr1.append_range(&arr2, 1, 5);
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // arrow_type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_arrow_type_decimal32() {
+        use crate::ffi::arrow_dtype::ArrowType;
+        let arr = DecimalArray::<i32>::from_slice(&[1], 9, 2);
+        assert_eq!(arr.arrow_type(), ArrowType::Decimal32(9, 2));
+    }
+
+    #[test]
+    fn test_arrow_type_decimal64() {
+        use crate::ffi::arrow_dtype::ArrowType;
+        let arr = DecimalArray::<i64>::from_slice(&[1], 18, 4);
+        assert_eq!(arr.arrow_type(), ArrowType::Decimal64(18, 4));
+    }
+
+    #[test]
+    fn test_arrow_type_decimal128() {
+        use crate::ffi::arrow_dtype::ArrowType;
+        let arr = DecimalArray::<i128>::from_slice(&[1], 38, 10);
+        assert_eq!(arr.arrow_type(), ArrowType::Decimal128(38, 10));
+    }
+
+    // -----------------------------------------------------------------------
+    // Widening From impls
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_widen_decimal32_to_decimal64() {
+        let arr32 = DecimalArray::<i32>::from_slice(&[12345, -67890], 9, 2);
+        let arr64 = DecimalArray::<i64>::from(arr32);
+        assert_eq!(arr64.len(), 2);
+        assert_eq!(arr64.get(0), Some(12345i64));
+        assert_eq!(arr64.get(1), Some(-67890i64));
+        assert_eq!(arr64.precision, 9);
+        assert_eq!(arr64.scale, 2);
+    }
+
+    #[test]
+    fn test_widen_decimal64_to_decimal128() {
+        let arr64 = DecimalArray::<i64>::from_slice(&[999999999999, -1], 18, 6);
+        let arr128 = DecimalArray::<i128>::from(arr64);
+        assert_eq!(arr128.len(), 2);
+        assert_eq!(arr128.get(0), Some(999999999999i128));
+        assert_eq!(arr128.get(1), Some(-1i128));
+        assert_eq!(arr128.precision, 18);
+        assert_eq!(arr128.scale, 6);
+    }
+
+    #[test]
+    fn test_widen_preserves_null_mask() {
+        let mut arr32 = DecimalArray::<i32>::with_capacity(3, true, 9, 2);
+        arr32.push(100);
+        arr32.push_null();
+        arr32.push(300);
+        let arr64 = DecimalArray::<i64>::from(arr32);
+        assert_eq!(arr64.len(), 3);
+        assert_eq!(arr64.get(0), Some(100i64));
+        assert_eq!(arr64.get(1), None);
+        assert_eq!(arr64.get(2), Some(300i64));
+        assert_eq!(arr64.null_count(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Arc<DecimalArray> MaskedArray delegation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_arc_masked_array_delegation() {
+        let mut arc_arr = std::sync::Arc::new(
+            DecimalArray::<i32>::from_slice(&[10, 20, 30], 9, 2),
+        );
+        assert_eq!(arc_arr.len(), 3);
+        assert_eq!(arc_arr.get(0), Some(10));
+
+        // Copy-on-write push
+        arc_arr.push(40);
+        assert_eq!(arc_arr.len(), 4);
+        assert_eq!(arc_arr.get(3), Some(40));
     }
 }

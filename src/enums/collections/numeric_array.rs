@@ -32,6 +32,8 @@ use std::{
 
 use crate::{Bitmask, FloatArray, IntegerArray, MaskedArray, Vec64};
 use crate::{BooleanArray, StringArray};
+#[cfg(feature = "decimal")]
+use crate::DecimalArray;
 use crate::{
     enums::{error::MinarrowError, shape_dim::ShapeDim},
     traits::{concatenate::Concatenate, shape::Shape},
@@ -93,6 +95,12 @@ pub enum NumericArray {
     UInt64(Arc<IntegerArray<u64>>),
     Float32(Arc<FloatArray<f32>>),
     Float64(Arc<FloatArray<f64>>),
+    #[cfg(feature = "decimal")]
+    Decimal32(Arc<DecimalArray<i32>>),
+    #[cfg(feature = "decimal")]
+    Decimal64(Arc<DecimalArray<i64>>),
+    #[cfg(feature = "decimal")]
+    Decimal128(Arc<DecimalArray<i128>>),
     #[default]
     Null, // Default Marker for mem::take
 }
@@ -116,6 +124,12 @@ impl NumericArray {
             NumericArray::UInt64(arr) => arr.len(),
             NumericArray::Float32(arr) => arr.len(),
             NumericArray::Float64(arr) => arr.len(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arr) => arr.len(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arr) => arr.len(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arr) => arr.len(),
             NumericArray::Null => 0,
         }
     }
@@ -141,6 +155,12 @@ impl NumericArray {
             NumericArray::UInt64(arr) => arr.delete_range(start, end),
             NumericArray::Float32(arr) => arr.delete_range(start, end),
             NumericArray::Float64(arr) => arr.delete_range(start, end),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arr) => arr.delete_range(start, end),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arr) => arr.delete_range(start, end),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arr) => arr.delete_range(start, end),
             NumericArray::Null => {
                 assert!(
                     start == 0 && end == 0,
@@ -168,6 +188,12 @@ impl NumericArray {
             NumericArray::UInt64(arr) => arr.null_mask.as_ref(),
             NumericArray::Float32(arr) => arr.null_mask.as_ref(),
             NumericArray::Float64(arr) => arr.null_mask.as_ref(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arr) => arr.null_mask.as_ref(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arr) => arr.null_mask.as_ref(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arr) => arr.null_mask.as_ref(),
             NumericArray::Null => None,
         }
     }
@@ -193,6 +219,12 @@ impl NumericArray {
             NumericArray::UInt64(arr) => arr.has_nulls(),
             NumericArray::Float32(arr) => arr.has_nulls(),
             NumericArray::Float64(arr) => arr.has_nulls(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arr) => arr.has_nulls(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arr) => arr.has_nulls(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arr) => arr.has_nulls(),
             NumericArray::Null => false,
         }
     }
@@ -228,6 +260,19 @@ impl NumericArray {
                 Arc::make_mut(a).append_array(b)
             }
             (NumericArray::Float64(a), NumericArray::Float64(b)) => {
+                Arc::make_mut(a).append_array(b)
+            }
+
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal32(a), NumericArray::Decimal32(b)) => {
+                Arc::make_mut(a).append_array(b)
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal64(a), NumericArray::Decimal64(b)) => {
+                Arc::make_mut(a).append_array(b)
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal128(a), NumericArray::Decimal128(b)) => {
                 Arc::make_mut(a).append_array(b)
             }
 
@@ -275,6 +320,18 @@ impl NumericArray {
                 Arc::make_mut(a).append_range(b, offset, len)
             }
             (NumericArray::Float64(a), NumericArray::Float64(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal32(a), NumericArray::Decimal32(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal64(a), NumericArray::Decimal64(b)) => {
+                Arc::make_mut(a).append_range(b, offset, len)
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal128(a), NumericArray::Decimal128(b)) => {
                 Arc::make_mut(a).append_range(b, offset, len)
             }
             (NumericArray::Null, NumericArray::Null) => Ok(()),
@@ -330,6 +387,19 @@ impl NumericArray {
                 Arc::make_mut(a).insert_rows(index, b)
             }
             (NumericArray::Float64(a), NumericArray::Float64(b)) => {
+                Arc::make_mut(a).insert_rows(index, b)
+            }
+
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal32(a), NumericArray::Decimal32(b)) => {
+                Arc::make_mut(a).insert_rows(index, b)
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal64(a), NumericArray::Decimal64(b)) => {
+                Arc::make_mut(a).insert_rows(index, b)
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal128(a), NumericArray::Decimal128(b)) => {
                 Arc::make_mut(a).insert_rows(index, b)
             }
 
@@ -444,6 +514,36 @@ impl NumericArray {
                     NumericArray::Float64(Arc::new(right)),
                 ))
             }
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(a) => {
+                let (left, right) = Arc::try_unwrap(a)
+                    .unwrap_or_else(|arc| (*arc).clone())
+                    .split(index)?;
+                Ok((
+                    NumericArray::Decimal32(Arc::new(left)),
+                    NumericArray::Decimal32(Arc::new(right)),
+                ))
+            }
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => {
+                let (left, right) = Arc::try_unwrap(a)
+                    .unwrap_or_else(|arc| (*arc).clone())
+                    .split(index)?;
+                Ok((
+                    NumericArray::Decimal64(Arc::new(left)),
+                    NumericArray::Decimal64(Arc::new(right)),
+                ))
+            }
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => {
+                let (left, right) = Arc::try_unwrap(a)
+                    .unwrap_or_else(|arc| (*arc).clone())
+                    .split(index)?;
+                Ok((
+                    NumericArray::Decimal128(Arc::new(left)),
+                    NumericArray::Decimal128(Arc::new(right)),
+                ))
+            }
             NumericArray::Null => Err(MinarrowError::IndexError(
                 "Cannot split Null array".to_string(),
             )),
@@ -478,6 +578,14 @@ impl NumericArray {
             NumericArray::UInt64(a) => Ok(Arc::new(IntegerArray::<i32>::try_from(&**a)?)),
             NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<i32>::try_from(&**a)?)),
             NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<i32>::try_from(&**a)?)),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
+                Err(MinarrowError::TypeError {
+                    from: "DecimalArray",
+                    to: "IntegerArray<i32>",
+                    message: Some("decimal-to-integer conversion requires explicit .to_int32_array()".to_string()),
+                })
+            }
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -510,6 +618,14 @@ impl NumericArray {
             NumericArray::UInt64(a) => Ok(Arc::new(IntegerArray::<i64>::try_from(&**a)?)),
             NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<i64>::try_from(&**a)?)),
             NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<i64>::try_from(&**a)?)),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
+                Err(MinarrowError::TypeError {
+                    from: "DecimalArray",
+                    to: "IntegerArray<i64>",
+                    message: Some("decimal-to-integer conversion requires explicit .to_int64_array()".to_string()),
+                })
+            }
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -542,6 +658,14 @@ impl NumericArray {
             NumericArray::UInt64(a) => Ok(Arc::new(IntegerArray::<u32>::try_from(&**a)?)),
             NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<u32>::try_from(&**a)?)),
             NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<u32>::try_from(&**a)?)),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
+                Err(MinarrowError::TypeError {
+                    from: "DecimalArray",
+                    to: "IntegerArray<u32>",
+                    message: Some("decimal-to-integer conversion requires explicit .to_uint32_array()".to_string()),
+                })
+            }
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -574,6 +698,14 @@ impl NumericArray {
             NumericArray::UInt64(a) => Ok(a.clone()),
             NumericArray::Float32(a) => Ok(Arc::new(IntegerArray::<u64>::try_from(&**a)?)),
             NumericArray::Float64(a) => Ok(Arc::new(IntegerArray::<u64>::try_from(&**a)?)),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
+                Err(MinarrowError::TypeError {
+                    from: "DecimalArray",
+                    to: "IntegerArray<u64>",
+                    message: Some("decimal-to-integer conversion requires explicit .to_uint64_array()".to_string()),
+                })
+            }
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -606,6 +738,14 @@ impl NumericArray {
             NumericArray::UInt64(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
             NumericArray::Float32(a) => Ok(a.clone()),
             NumericArray::Float64(a) => Ok(Arc::new(FloatArray::<f32>::from(&**a))),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
+                Err(MinarrowError::TypeError {
+                    from: "DecimalArray",
+                    to: "FloatArray<f32>",
+                    message: Some("decimal-to-float conversion requires explicit .to_float32_array()".to_string()),
+                })
+            }
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -652,6 +792,12 @@ impl NumericArray {
             NumericArray::UInt8(arc) => cast_arc!(arc),
             #[cfg(feature = "extended_numeric_types")]
             NumericArray::UInt16(arc) => cast_arc!(arc),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arc) => cast_arc!(arc),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arc) => cast_arc!(arc),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arc) => cast_arc!(arc),
             NumericArray::Null => {
                 NumericArray::Float64(Arc::new(FloatArray::new(Vec64::new(), None)))
             }
@@ -686,6 +832,14 @@ impl NumericArray {
             NumericArray::UInt64(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
             NumericArray::Float32(a) => Ok(Arc::new(FloatArray::<f64>::from(&**a))),
             NumericArray::Float64(a) => Ok(a.clone()),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
+                Err(MinarrowError::TypeError {
+                    from: "DecimalArray",
+                    to: "FloatArray<f64>",
+                    message: Some("decimal-to-float conversion requires explicit .to_float64_array()".to_string()),
+                })
+            }
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -718,6 +872,14 @@ impl NumericArray {
             NumericArray::UInt64(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
             NumericArray::Float32(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
             NumericArray::Float64(a) => Ok(Arc::new(BooleanArray::<u8>::from(&**a))),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
+                Err(MinarrowError::TypeError {
+                    from: "DecimalArray",
+                    to: "BooleanArray<u8>",
+                    message: Some("decimal-to-boolean conversion is not supported".to_string()),
+                })
+            }
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
         }
     }
@@ -750,7 +912,97 @@ impl NumericArray {
             NumericArray::UInt64(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
             NumericArray::Float32(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
             NumericArray::Float64(a) => Ok(Arc::new(StringArray::<u32>::from(&**a))),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(_) | NumericArray::Decimal64(_) | NumericArray::Decimal128(_) => {
+                Err(MinarrowError::TypeError {
+                    from: "DecimalArray",
+                    to: "StringArray<u32>",
+                    message: Some("decimal-to-string conversion is not yet supported".to_string()),
+                })
+            }
             NumericArray::Null => Err(MinarrowError::NullError { message: None }),
+        }
+    }
+
+    /// Returns the inner array as `Arc<DecimalArray<i32>>`.
+    ///
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[cfg(feature = "decimal")]
+    #[inline]
+    pub fn dec32(&self) -> Arc<DecimalArray<i32>> {
+        self.try_dec32().unwrap()
+    }
+
+    /// Retrieve a DecimalArray<i32> from this NumericArray.
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    /// Decimal64 and Decimal128 variants cannot be narrowed to Decimal32.
+    #[cfg(feature = "decimal")]
+    pub fn try_dec32(&self) -> Result<Arc<DecimalArray<i32>>, MinarrowError> {
+        match self {
+            NumericArray::Decimal32(a) => Ok(a.clone()),
+            _ => Err(MinarrowError::TypeError {
+                from: "NumericArray",
+                to: "DecimalArray<i32>",
+                message: Some("variant is not Decimal32".to_string()),
+            }),
+        }
+    }
+
+    /// Returns the inner array as `Arc<DecimalArray<i64>>`.
+    ///
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[cfg(feature = "decimal")]
+    #[inline]
+    pub fn dec64(&self) -> Arc<DecimalArray<i64>> {
+        self.try_dec64().unwrap()
+    }
+
+    /// Retrieve a DecimalArray<i64> from this NumericArray.
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    /// A Decimal32 variant is widened to DecimalArray<i64> losslessly.
+    /// Decimal128 cannot be narrowed to Decimal64.
+    #[cfg(feature = "decimal")]
+    pub fn try_dec64(&self) -> Result<Arc<DecimalArray<i64>>, MinarrowError> {
+        match self {
+            NumericArray::Decimal64(a) => Ok(a.clone()),
+            NumericArray::Decimal32(a) => Ok(Arc::new(DecimalArray::<i64>::from((**a).clone()))),
+            _ => Err(MinarrowError::TypeError {
+                from: "NumericArray",
+                to: "DecimalArray<i64>",
+                message: Some("variant is not Decimal32 or Decimal64".to_string()),
+            }),
+        }
+    }
+
+    /// Returns the inner array as `Arc<DecimalArray<i128>>`.
+    ///
+    /// - Panics on failure. Consider the try variant for a safe alternative.
+    #[cfg(feature = "decimal")]
+    #[inline]
+    pub fn dec128(&self) -> Arc<DecimalArray<i128>> {
+        self.try_dec128().unwrap()
+    }
+
+    /// Retrieve a DecimalArray<i128> from this NumericArray.
+    ///
+    /// The matching variant returns as a shared handle without copying data.
+    /// Decimal32 and Decimal64 variants are widened to DecimalArray<i128> losslessly.
+    #[cfg(feature = "decimal")]
+    pub fn try_dec128(&self) -> Result<Arc<DecimalArray<i128>>, MinarrowError> {
+        match self {
+            NumericArray::Decimal128(a) => Ok(a.clone()),
+            NumericArray::Decimal64(a) => Ok(Arc::new(DecimalArray::<i128>::from((**a).clone()))),
+            NumericArray::Decimal32(a) => {
+                let intermediate = DecimalArray::<i64>::from((**a).clone());
+                Ok(Arc::new(DecimalArray::<i128>::from(intermediate)))
+            }
+            _ => Err(MinarrowError::TypeError {
+                from: "NumericArray",
+                to: "DecimalArray<i128>",
+                message: Some("variant is not a decimal type".to_string()),
+            }),
         }
     }
 }
@@ -775,6 +1027,18 @@ impl Display for NumericArray {
             }
             NumericArray::Float64(arr) => {
                 write_numeric_array_with_header(f, "Float64", arr.as_ref())
+            }
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arr) => {
+                write_numeric_array_with_header(f, "Decimal32", arr.as_ref())
+            }
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arr) => {
+                write_numeric_array_with_header(f, "Decimal64", arr.as_ref())
+            }
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arr) => {
+                write_numeric_array_with_header(f, "Decimal128", arr.as_ref())
             }
             NumericArray::Null => writeln!(f, "NullNumericArray [0 values]"),
         }
@@ -861,6 +1125,24 @@ impl Concatenate for NumericArray {
                 let b = Arc::try_unwrap(b).unwrap_or_else(|arc| (*arc).clone());
                 Ok(NumericArray::Float64(Arc::new(a.concat(b)?)))
             }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal32(a), NumericArray::Decimal32(b)) => {
+                let a = Arc::try_unwrap(a).unwrap_or_else(|arc| (*arc).clone());
+                let b = Arc::try_unwrap(b).unwrap_or_else(|arc| (*arc).clone());
+                Ok(NumericArray::Decimal32(Arc::new(a.concat(b)?)))
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal64(a), NumericArray::Decimal64(b)) => {
+                let a = Arc::try_unwrap(a).unwrap_or_else(|arc| (*arc).clone());
+                let b = Arc::try_unwrap(b).unwrap_or_else(|arc| (*arc).clone());
+                Ok(NumericArray::Decimal64(Arc::new(a.concat(b)?)))
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal128(a), NumericArray::Decimal128(b)) => {
+                let a = Arc::try_unwrap(a).unwrap_or_else(|arc| (*arc).clone());
+                let b = Arc::try_unwrap(b).unwrap_or_else(|arc| (*arc).clone());
+                Ok(NumericArray::Decimal128(Arc::new(a.concat(b)?)))
+            }
             (NumericArray::Null, NumericArray::Null) => Ok(NumericArray::Null),
             (lhs, rhs) => Err(MinarrowError::IncompatibleTypeError {
                 from: "NumericArray",
@@ -892,6 +1174,223 @@ fn variant_name(arr: &NumericArray) -> &'static str {
         NumericArray::UInt64(_) => "UInt64",
         NumericArray::Float32(_) => "Float32",
         NumericArray::Float64(_) => "Float64",
+        #[cfg(feature = "decimal")]
+        NumericArray::Decimal32(_) => "Decimal32",
+        #[cfg(feature = "decimal")]
+        NumericArray::Decimal64(_) => "Decimal64",
+        #[cfg(feature = "decimal")]
+        NumericArray::Decimal128(_) => "Decimal128",
         NumericArray::Null => "Null",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// From impls - DecimalArray -> NumericArray
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "decimal")]
+impl From<DecimalArray<i32>> for NumericArray {
+    fn from(arr: DecimalArray<i32>) -> Self {
+        NumericArray::Decimal32(Arc::new(arr))
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<DecimalArray<i64>> for NumericArray {
+    fn from(arr: DecimalArray<i64>) -> Self {
+        NumericArray::Decimal64(Arc::new(arr))
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<DecimalArray<i128>> for NumericArray {
+    fn from(arr: DecimalArray<i128>) -> Self {
+        NumericArray::Decimal128(Arc::new(arr))
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<Arc<DecimalArray<i32>>> for NumericArray {
+    fn from(arr: Arc<DecimalArray<i32>>) -> Self {
+        NumericArray::Decimal32(arr)
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<Arc<DecimalArray<i64>>> for NumericArray {
+    fn from(arr: Arc<DecimalArray<i64>>) -> Self {
+        NumericArray::Decimal64(arr)
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<Arc<DecimalArray<i128>>> for NumericArray {
+    fn from(arr: Arc<DecimalArray<i128>>) -> Self {
+        NumericArray::Decimal128(arr)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[cfg(feature = "decimal")]
+mod decimal_tests {
+    use super::*;
+    use crate::{DecimalArray, MaskedArray};
+
+    #[test]
+    fn from_decimal_array_into_numeric() {
+        let dec = DecimalArray::<i32>::from_slice(&[12345, 67890], 9, 2);
+        let num = NumericArray::from(dec);
+        assert_eq!(num.len(), 2);
+        match &num {
+            NumericArray::Decimal32(a) => {
+                assert_eq!(a.get(0), Some(12345));
+                assert_eq!(a.precision, 9);
+                assert_eq!(a.scale, 2);
+            }
+            _ => panic!("expected Decimal32"),
+        }
+    }
+
+    #[test]
+    fn from_arc_decimal_array_into_numeric() {
+        let dec = Arc::new(DecimalArray::<i64>::from_slice(&[100, 200], 18, 4));
+        let num = NumericArray::from(dec);
+        assert_eq!(num.len(), 2);
+        match &num {
+            NumericArray::Decimal64(a) => assert_eq!(a.scale, 4),
+            _ => panic!("expected Decimal64"),
+        }
+    }
+
+    #[test]
+    fn accessor_dec32() {
+        let dec = DecimalArray::<i32>::from_slice(&[42], 9, 2);
+        let num = NumericArray::from(dec);
+        let inner = num.dec32();
+        assert_eq!(inner.get(0), Some(42));
+    }
+
+    #[test]
+    fn accessor_dec64() {
+        let dec = DecimalArray::<i64>::from_slice(&[99], 18, 4);
+        let num = NumericArray::from(dec);
+        let inner = num.dec64();
+        assert_eq!(inner.get(0), Some(99));
+    }
+
+    #[test]
+    fn accessor_dec128() {
+        let dec = DecimalArray::<i128>::from_slice(&[1000], 38, 10);
+        let num = NumericArray::from(dec);
+        let inner = num.dec128();
+        assert_eq!(inner.get(0), Some(1000));
+    }
+
+    #[test]
+    fn try_dec128_widens_from_decimal64() {
+        let dec = DecimalArray::<i64>::from_slice(&[500], 18, 4);
+        let num = NumericArray::from(dec);
+        let widened = num.try_dec128().unwrap();
+        assert_eq!(widened.get(0), Some(500i128));
+        assert_eq!(widened.scale, 4);
+    }
+
+    #[test]
+    fn try_dec128_widens_from_decimal32() {
+        let dec = DecimalArray::<i32>::from_slice(&[42], 9, 2);
+        let num = NumericArray::from(dec);
+        let widened = num.try_dec128().unwrap();
+        assert_eq!(widened.get(0), Some(42i128));
+        assert_eq!(widened.scale, 2);
+    }
+
+    #[test]
+    fn try_dec64_widens_from_decimal32() {
+        let dec = DecimalArray::<i32>::from_slice(&[7], 9, 3);
+        let num = NumericArray::from(dec);
+        let widened = num.try_dec64().unwrap();
+        assert_eq!(widened.get(0), Some(7i64));
+        assert_eq!(widened.scale, 3);
+    }
+
+    #[test]
+    fn try_dec32_on_non_decimal_returns_error() {
+        let num = NumericArray::Int32(Arc::new(crate::IntegerArray::<i32>::from_slice(&[1])));
+        assert!(num.try_dec32().is_err());
+    }
+
+    #[test]
+    fn decimal_len_and_is_empty() {
+        let dec = DecimalArray::<i32>::from_slice(&[1, 2, 3], 9, 2);
+        let num = NumericArray::from(dec);
+        assert_eq!(num.len(), 3);
+
+        let empty = DecimalArray::<i64>::from_slice(&[], 18, 0);
+        let num_empty = NumericArray::from(empty);
+        assert_eq!(num_empty.len(), 0);
+    }
+
+    #[test]
+    fn decimal_null_mask() {
+        let mut dec = DecimalArray::<i32>::with_capacity(3, true, 9, 2);
+        dec.push(10);
+        dec.push_null();
+        dec.push(30);
+        let num = NumericArray::from(dec);
+        assert!(num.null_mask().is_some());
+        assert!(num.has_nulls());
+    }
+
+    #[test]
+    fn decimal_delete_range() {
+        let dec = DecimalArray::<i32>::from_slice(&[10, 20, 30, 40], 9, 2);
+        let mut num = NumericArray::from(dec);
+        num.delete_range(1, 3);
+        assert_eq!(num.len(), 2);
+        let inner = num.dec32();
+        assert_eq!(inner.get(0), Some(10));
+        assert_eq!(inner.get(1), Some(40));
+    }
+
+    #[test]
+    fn decimal_append_array() {
+        let a = DecimalArray::<i64>::from_slice(&[10, 20], 18, 4);
+        let b = DecimalArray::<i64>::from_slice(&[30, 40], 18, 4);
+        let mut num_a = NumericArray::from(a);
+        let num_b = NumericArray::from(b);
+        num_a.append_array(&num_b);
+        assert_eq!(num_a.len(), 4);
+    }
+
+    #[test]
+    fn decimal_split() {
+        let dec = DecimalArray::<i128>::from_slice(&[100, 200, 300, 400], 38, 10);
+        let num = NumericArray::from(dec);
+        let (left, right) = num.split(2).unwrap();
+        assert_eq!(left.len(), 2);
+        assert_eq!(right.len(), 2);
+        assert_eq!(left.dec128().get(0), Some(100i128));
+        assert_eq!(right.dec128().get(0), Some(300i128));
+    }
+
+    #[test]
+    fn decimal_concat() {
+        use crate::traits::concatenate::Concatenate;
+        let a = NumericArray::from(DecimalArray::<i32>::from_slice(&[1, 2], 9, 2));
+        let b = NumericArray::from(DecimalArray::<i32>::from_slice(&[3, 4], 9, 2));
+        let result = a.concat(b).unwrap();
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn decimal_display() {
+        let dec = DecimalArray::<i32>::from_slice(&[12345], 9, 2);
+        let num = NumericArray::from(dec);
+        let display = format!("{}", num);
+        assert!(display.contains("Decimal32"), "got: {display}");
     }
 }
