@@ -122,6 +122,12 @@ value_type = []
 # over multiple inner objects of the same type, for memory-mapped streaming etc.
 chunked = []
 
+# Relaxes the assumption that SuperArray batch types must be homogenous,
+# allowing separately typed batches to form part of the one Vec<Array>.
+# Useful for dynamic workloads, but breaks from the official Arrow spec meaning
+# these will not convert over FFI unless first coerced.
+allow_mixed_array_batches = ["chunked"]
+
 # Int64-based string
 large_string = []
 

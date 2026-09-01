@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `From<isize>` and `From<usize>` implementations for `Scalar` and `Value`.
 * One-element `From` implementations for primitive numeric types on `Array` and `ArrayV`.
 * `TryFrom<Vec<Value>>` for `Value`, with mixed-variant collections rejected.
+* **Mixed-type SuperArray chunks** behind the `allow_mixed_array_batches` feature flag.
+  * Relaxes the `ArrowType` homogeneity checks on the `SuperArray` constructors
+    and push methods so that separately typed chunks can be stored in one column.
+  * Added `SuperArray::check_type_uniformity()`, gated to the same feature,
+    reporting whether all chunks have the same `ArrowType`.
+  Note: with the feature off, behaviour is unchanged.
 
 ### Fixed
 

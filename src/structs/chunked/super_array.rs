@@ -28,6 +28,15 @@
 //! - Use `from_arrays()` when you don't need field metadata (e.g., Dam consolidation)
 //! - Use `from_arrays_with_field()` when field metadata is required
 //!
+//! ## Chunk Type Homogeneity (`allow_mixed_array_batches` feature)
+//! The constructors and push methods enforce a single `ArrowType` across all
+//! chunks. The `allow_mixed_array_batches` feature relaxes those checks so
+//! that separately typed chunks can be stored in one column, which suits
+//! dynamic workloads where uniform typing is not guaranteed.
+//! When the feature is on, `check_type_uniformity()` reports whether all
+//! chunks have the same `ArrowType`, so callers that require uniformity
+//! (e.g. consolidation, rechunking, FFI export) can verify before proceeding.
+//!
 //! ## Apache Arrow / Polars bridges (`cast_arrow` / `cast_polars` features)
 //! - `to_apache_arrow()` exports each chunk as an arrow-rs `ArrayRef`.
 //! - `to_polars()` builds a polars `Series` whose internal chunks mirror the SuperArray.
@@ -149,8 +158,10 @@ impl SuperArray {
     /// Use this for streaming consolidation patterns where field metadata is not needed.
     ///
     /// # Panics
-    /// Panics if chunks have mismatched types.
+    /// Panics if chunks have mismatched types, unless the
+    /// `allow_mixed_array_batches` feature is on.
     pub fn from_arrays(chunks: Vec<Array>) -> Self {
+        #[cfg(not(feature = "allow_mixed_array_batches"))]
         if chunks.len() > 1 {
             let dtype = chunks[0].arrow_type();
             for (i, chunk) in chunks.iter().enumerate().skip(1) {
@@ -181,10 +192,12 @@ impl SuperArray {
     /// The field metadata applies to all chunks (they represent the same logical column).
     ///
     /// # Panics
-    /// Panics if chunks have mismatched types or don't match the field type.
+    /// Panics if chunks have mismatched types or do not match the field type,
+    /// unless the `allow_mixed_array_batches` feature is on.
     pub fn from_arrays_with_field(chunks: Vec<Array>, field: impl Into<Arc<Field>>) -> Self {
         let field = field.into();
 
+        #[cfg(not(feature = "allow_mixed_array_batches"))]
         for (i, chunk) in chunks.iter().enumerate() {
             assert_eq!(
                 chunk.arrow_type(),
@@ -211,7 +224,9 @@ impl SuperArray {
     /// Constructs a SuperArray from raw `Array` chunks with null counts.
     ///
     /// # Panics
-    /// Panics if chunks have mismatched types or null_counts length doesn't match chunks length.
+    /// Panics if null_counts length does not match chunks length. Also panics
+    /// on mismatched chunk types, unless the `allow_mixed_array_batches`
+    /// feature is on.
     pub fn from_arrays_nc(chunks: Vec<Array>, null_counts: Vec<usize>) -> Self {
         assert_eq!(
             chunks.len(),
@@ -221,6 +236,7 @@ impl SuperArray {
             chunks.len()
         );
 
+        #[cfg(not(feature = "allow_mixed_array_batches"))]
         if chunks.len() > 1 {
             let dtype = chunks[0].arrow_type();
             for (i, chunk) in chunks.iter().enumerate().skip(1) {
@@ -252,7 +268,9 @@ impl SuperArray {
     /// Extracts field metadata and null counts from the chunks.
     ///
     /// # Panics
-    /// Panics if chunks is empty or metadata/type/nullable mismatch is found.
+    /// Panics if chunks is empty or a metadata/nullable mismatch exists. Also
+    /// panics on a type mismatch, unless the `allow_mixed_array_batches`
+    /// feature is on.
     pub fn from_field_array_chunks(chunks: Vec<FieldArray>) -> Self {
         assert!(
             !chunks.is_empty(),
@@ -262,6 +280,7 @@ impl SuperArray {
         let field = chunks[0].field.clone();
 
         for (i, fa) in chunks.iter().enumerate().skip(1) {
+            #[cfg(not(feature = "allow_mixed_array_batches"))]
             assert_eq!(
                 fa.field.dtype, field.dtype,
                 "Chunk {i} ArrowType mismatch (expected {:?}, got {:?})",
@@ -304,8 +323,9 @@ impl SuperArray {
     /// Materialises a `SuperArray` from an existing slice of `ArrayView` tuples,
     /// using the provided field metadata (applied to all slices).
     ///
-    /// Panics if the slice list is empty, or if any slice's type or nullability
-    /// does not match the provided field.
+    /// Panics if the slice list is empty, or if any slice's nullability does not
+    /// match the provided field. Also panics on a type mismatch, unless the
+    /// `allow_mixed_array_batches` feature is on.
     #[cfg(feature = "views")]
     pub fn from_slices(slices: &[ArrayV], field: Arc<Field>) -> Self {
         assert!(!slices.is_empty(), "from_slices requires non-empty slice");
@@ -313,6 +333,7 @@ impl SuperArray {
         let mut arrays = Vec::with_capacity(slices.len());
         let mut null_counts = Vec::with_capacity(slices.len());
         for (i, view) in slices.iter().enumerate() {
+            #[cfg(not(feature = "allow_mixed_array_batches"))]
             assert_eq!(
                 view.array.arrow_type(),
                 field.dtype,
@@ -474,8 +495,10 @@ impl SuperArray {
     /// `push_with_null_count()` to avoid recomputation.
     ///
     /// # Panics
-    /// Panics if the chunk type doesn't match existing chunks or field.
+    /// Panics if the chunk type does not match existing chunks or field,
+    /// unless the `allow_mixed_array_batches` feature is on.
     pub fn push(&mut self, chunk: Array) {
+        #[cfg(not(feature = "allow_mixed_array_batches"))]
         if let Some(first) = self.chunks.first() {
             assert_eq!(
                 chunk.arrow_type(),
@@ -503,7 +526,12 @@ impl SuperArray {
     /// Appends a raw array chunk with its null count.
     ///
     /// When the null count is already known this is slightly faster than `push`
+    ///
+    /// # Panics
+    /// Panics if the chunk type does not match existing chunks or field,
+    /// unless the `allow_mixed_array_batches` feature is on.
     pub fn push_with_null_count(&mut self, chunk: Array, null_count: usize) {
+        #[cfg(not(feature = "allow_mixed_array_batches"))]
         if let Some(first) = self.chunks.first() {
             assert_eq!(
                 chunk.arrow_type(),
@@ -534,21 +562,27 @@ impl SuperArray {
     /// If this SuperArray has no field metadata yet, it will be set from the chunk.
     ///
     /// # Panics
-    /// If the chunk does not match the expected type, nullability, or field name.
+    /// Panics if the chunk does not match the expected nullability or field
+    /// name. Also panics on a type mismatch, unless the
+    /// `allow_mixed_array_batches` feature is on.
     pub fn push_field_array(&mut self, chunk: FieldArray) {
         if let Some(ref field) = self.field {
+            #[cfg(not(feature = "allow_mixed_array_batches"))]
             assert_eq!(chunk.field.dtype, field.dtype, "Chunk ArrowType mismatch");
             assert_eq!(
                 chunk.field.nullable, field.nullable,
                 "Chunk nullability mismatch"
             );
             assert_eq!(chunk.field.name, field.name, "Chunk field name mismatch");
-        } else if !self.chunks.is_empty() {
-            assert_eq!(
-                chunk.array.arrow_type(),
-                self.chunks[0].arrow_type(),
-                "Chunk ArrowType mismatch"
-            );
+        } else {
+            #[cfg(not(feature = "allow_mixed_array_batches"))]
+            if !self.chunks.is_empty() {
+                assert_eq!(
+                    chunk.array.arrow_type(),
+                    self.chunks[0].arrow_type(),
+                    "Chunk ArrowType mismatch"
+                );
+            }
         }
 
         // Set field from first push if not already set
@@ -957,6 +991,24 @@ impl SuperArray {
     #[inline]
     pub fn chunks(&self) -> &[Array] {
         &self.chunks
+    }
+
+    /// Reports whether all chunks have the same `ArrowType`.
+    ///
+    /// The `allow_mixed_array_batches` feature relaxes the homogeneity checks
+    /// at construction and on push, so separately typed chunks can be stored
+    /// in one column. Callers that require a uniform type (e.g. consolidation,
+    /// rechunking, FFI export) can check this method before proceeding.
+    ///
+    /// Returns `true` for an empty SuperArray.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    pub fn check_type_uniformity(&self) -> bool {
+        let mut chunks = self.chunks.iter();
+        let Some(first) = chunks.next() else {
+            return true;
+        };
+        let dtype = first.arrow_type();
+        chunks.all(|chunk| chunk.arrow_type() == dtype)
     }
 
     /// Borrow the column's `CategoryManagerT`, or `None` if the column
@@ -1491,6 +1543,7 @@ mod tests {
         assert_eq!(ca.len(), 5);
     }
 
+    #[cfg(not(feature = "allow_mixed_array_batches"))]
     #[test]
     #[should_panic(expected = "Chunk ArrowType mismatch")]
     fn test_type_mismatch() {
@@ -1501,6 +1554,72 @@ mod tests {
             null_mask: None,
         });
         ca.push(wrong);
+    }
+
+    /// Without `allow_mixed_array_batches`, `from_arrays` rejects a chunk list
+    /// whose types differ.
+    #[cfg(not(feature = "allow_mixed_array_batches"))]
+    #[test]
+    #[should_panic(expected = "Chunk 1 ArrowType mismatch")]
+    fn test_from_arrays_mixed_types_panic() {
+        use crate::{arr_f64, arr_u64};
+
+        let _ = SuperArray::from_arrays(vec![arr_u64![1u64, 2, 3], arr_f64![4.0, 5.0]]);
+    }
+
+    /// With `allow_mixed_array_batches`, `from_arrays` accepts chunks of
+    /// separate types and the logical length is still the sum of the chunk
+    /// lengths.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_from_arrays_mixed_types() {
+        use crate::{arr_f64, arr_str32, arr_u64};
+
+        let sa = SuperArray::from_arrays(vec![
+            arr_u64![1u64, 2, 3],
+            arr_str32!["a", "b"],
+            arr_f64![4.0, 5.0, 6.0, 7.0],
+        ]);
+
+        assert_eq!(sa.n_chunks(), 3);
+        assert_eq!(sa.len(), 9);
+        assert_eq!(sa.chunks[0].arrow_type(), ArrowType::UInt64);
+        assert_eq!(sa.chunks[1].arrow_type(), ArrowType::String);
+        assert_eq!(sa.chunks[2].arrow_type(), ArrowType::Float64);
+    }
+
+    /// With `allow_mixed_array_batches`, `push` accepts a chunk whose type
+    /// differs from the chunks already held.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_push_mixed_types() {
+        use crate::arr_f64;
+
+        let mut sa = SuperArray::new();
+        sa.push(int_array(&[1, 2, 3]));
+        sa.push(arr_f64![4.0, 5.0]);
+
+        assert_eq!(sa.n_chunks(), 2);
+        assert_eq!(sa.len(), 5);
+    }
+
+    /// `check_type_uniformity` returns `true` for uniform chunks and
+    /// empty SuperArrays, and `false` when chunk types differ.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_check_type_uniformity() {
+        use crate::arr_f64;
+
+        assert!(SuperArray::new().check_type_uniformity());
+
+        let uniform = SuperArray::from_arrays(vec![int_array(&[1, 2]), int_array(&[3])]);
+        assert!(uniform.check_type_uniformity());
+
+        let single = SuperArray::from_arrays(vec![int_array(&[1, 2])]);
+        assert!(single.check_type_uniformity());
+
+        let mixed = SuperArray::from_arrays(vec![int_array(&[1, 2]), arr_f64![3.0, 4.0]]);
+        assert!(!mixed.check_type_uniformity());
     }
 
     #[test]
@@ -1865,6 +1984,7 @@ mod tests {
             assert_eq!(sa.len(), 5);
         }
 
+        #[cfg(not(feature = "allow_mixed_array_batches"))]
         #[test]
         #[should_panic(expected = "Chunk ArrowType mismatch")]
         fn push_mismatched_scale_panics() {
