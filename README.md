@@ -235,7 +235,7 @@ See `minarrow-pyo3/examples`
 
 ## Feature Flags
 
-Default features: `views`, `chunked`, `large_string`, `simd`, `select`.
+Default features: `views`, `chunked`, `large_string`, `simd`, `select`, `log`.
 
 | Feature | Description |
 |---------|-------------|
@@ -244,6 +244,7 @@ Default features: `views`, `chunked`, `large_string`, `simd`, `select`.
 | `large_string` | String arrays with 64-bit offsets |
 | `simd` | SIMD kernels for Bitmask and arithmetic |
 | `select` | Pandas-esque `.c()` / `.r()` selection |
+| `log` | Warning output via the `log` crate |
 
 Interop:
 
@@ -290,6 +291,7 @@ Extras:
 | `hash` | Hash and Eq for `Scalar` |
 | `size` | Byte size estimation |
 | `table_metadata` | Schema-level metadata map on `Table` |
+| `allow_mixed_array_batches` | Separately typed batches within one `SuperArray` |
 
 See [Cargo.toml](Cargo.toml) for the full list with detailed notes on each.
 

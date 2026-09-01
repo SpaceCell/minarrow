@@ -2838,7 +2838,9 @@ unsafe extern "C" fn rb_producer_stream_release(stream: *mut ArrowArrayStream) {
 
 /// Creates an ArrowArrayStream that yields arrays (one per chunk).
 ///
-/// Used for SuperArray ("ChunkedArray") exchange.
+/// Used for SuperArray ("ChunkedArray") exchange. Every chunk must match
+/// `field`'s dtype, because the stream advertises one schema and consumers
+/// read each chunk's buffers against it.
 ///
 /// # Arguments
 /// * `chunks` - the arrays to yield
@@ -2846,7 +2848,25 @@ unsafe extern "C" fn rb_producer_stream_release(stream: *mut ArrowArrayStream) {
 ///
 /// # Returns
 /// A heap-allocated ArrowArrayStream.
+///
+/// # Panics
+/// With the `allow_mixed_array_batches` feature on, panics when a chunk's
+/// `ArrowType` differs from `field.dtype`. Callers holding mixed batches
+/// check `SuperArray::check_type_uniformity()` and coerce to one type
+/// before exporting.
 pub fn export_array_stream(chunks: Vec<Arc<Array>>, field: crate::Field) -> Box<ArrowArrayStream> {
+    #[cfg(feature = "allow_mixed_array_batches")]
+    for (i, chunk) in chunks.iter().enumerate() {
+        assert_eq!(
+            chunk.arrow_type(),
+            field.dtype,
+            "export_array_stream: chunk {i} ArrowType does not match the stream \
+             schema. Mixed-type batches cannot cross the FFI boundary: check \
+             `SuperArray::check_type_uniformity()` and coerce to one type \
+             before exporting."
+        );
+    }
+
     let holder = Box::new(ArrayStreamHolder {
         field,
         chunks,
@@ -2965,12 +2985,32 @@ impl HasLastError for ArrayViewStreamHolder {
 ///
 /// Used to export a windowed [`crate::SuperArrayV`] or any sequence of
 /// `ArrayV` chunks without materialising them. Each slice's `(offset, len)`
-/// is conveyed at the Arrow C layer.
+/// is conveyed at the Arrow C layer. Every slice must match `field`'s
+/// dtype, because the stream advertises one schema and consumers read each
+/// slice's buffers against it.
+///
+/// # Panics
+/// With the `allow_mixed_array_batches` feature on, panics when a slice's
+/// `ArrowType` differs from `field.dtype`. Callers holding mixed batches
+/// check `SuperArray::check_type_uniformity()` and coerce to one type
+/// before exporting.
 #[cfg(feature = "views")]
 pub fn export_array_view_stream(
     slices: Vec<crate::ArrayV>,
     field: crate::Field,
 ) -> Box<ArrowArrayStream> {
+    #[cfg(feature = "allow_mixed_array_batches")]
+    for (i, slice) in slices.iter().enumerate() {
+        assert_eq!(
+            slice.array.arrow_type(),
+            field.dtype,
+            "export_array_view_stream: slice {i} ArrowType does not match the \
+             stream schema. Mixed-type batches cannot cross the FFI boundary: \
+             check `SuperArray::check_type_uniformity()` and coerce to one \
+             type before exporting."
+        );
+    }
+
     let holder = Box::new(ArrayViewStreamHolder {
         field,
         slices,
@@ -4590,6 +4630,56 @@ mod tests {
         let inner1 = arrays[1].num().i32();
         assert_eq!(inner0.data.as_slice(), &[4, 5]);
         assert_eq!(inner1.data.as_slice(), &[10, 20]);
+    }
+
+    #[cfg(all(feature = "views", feature = "allow_mixed_array_batches"))]
+    #[test]
+    #[should_panic(expected = "Mixed-type batches cannot cross the FFI boundary")]
+    fn test_export_array_view_stream_mixed_types_panics() {
+        use super::export_super_array_view_stream;
+        use crate::{ArrayV, SuperArrayV};
+
+        let mut ints = IntegerArray::<i32>::default();
+        for v in [1, 2, 3] {
+            ints.push(v);
+        }
+        let mut floats = FloatArray::<f64>::default();
+        for v in [1.0, 2.0, 3.0] {
+            floats.push(v);
+        }
+        let v1 = ArrayV::new(Array::from_int32(ints), 0, 3);
+        let v2 = ArrayV::new(Array::from_float64(floats), 0, 3);
+        let field = Arc::new(Field::new("x", ArrowType::Int32, false, None));
+        let super_view = SuperArrayV {
+            slices: vec![v1, v2],
+            len: 6,
+            field,
+        };
+
+        let _ = export_super_array_view_stream(&super_view);
+    }
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    #[should_panic(expected = "Mixed-type batches cannot cross the FFI boundary")]
+    fn test_export_array_stream_mixed_types_panics() {
+        use super::export_array_stream;
+
+        let mut ints = IntegerArray::<i32>::default();
+        for v in [1, 2, 3] {
+            ints.push(v);
+        }
+        let mut floats = FloatArray::<f64>::default();
+        for v in [1.0, 2.0, 3.0] {
+            floats.push(v);
+        }
+        let chunks = vec![
+            Arc::new(Array::from_int32(ints)),
+            Arc::new(Array::from_float64(floats)),
+        ];
+        let field = Field::new("x", ArrowType::Int32, false, None);
+
+        let _ = export_array_stream(chunks, field);
     }
 
     #[cfg(all(feature = "views", feature = "chunked"))]

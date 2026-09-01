@@ -99,6 +99,19 @@ impl SuperArrayV {
         self.slices.iter()
     }
 
+    /// Reports whether every slice's `ArrowType` matches this view's field.
+    ///
+    /// The fields on this struct are public, so a view can be assembled by
+    /// hand. This method verifies that the `field` describes every slice, for
+    /// callers that require uniformity (e.g. consolidation, FFI export)
+    /// before proceeding. Returns `true` for an empty view.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    pub fn check_type_uniformity(&self) -> bool {
+        self.slices
+            .iter()
+            .all(|slice| slice.array.arrow_type() == self.field.dtype)
+    }
+
     /// Returns a sub-window of this chunked array view over `[offset .. offset+len)`.
     ///
     /// Produces a new `ChunkedArrayView` with updated slice metadata.
@@ -332,6 +345,52 @@ mod tests {
         let arr = Array::from_int32(crate::IntegerArray::<i32>::from_slice(vals));
         let field = Field::new(name, ArrowType::Int32, false, None);
         FieldArray::new(field, arr)
+    }
+
+    /// A mixed field-free SuperArray cannot become a view: the conversion
+    /// synthesises a field from the first chunk and that field must describe
+    /// every chunk.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    #[should_panic(expected = "cannot become a view")]
+    fn test_mixed_super_array_to_view_panics() {
+        use crate::{arr_f64, arr_u64, SuperArray};
+
+        let sa = SuperArray::from_arrays(vec![arr_u64![1u64, 2, 3], arr_f64![4.0, 5.0]]);
+        let _ = SuperArrayV::from(sa);
+    }
+
+    /// `check_type_uniformity` reports whether every slice matches the
+    /// view's field, and returns `true` for an empty view.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_view_check_type_uniformity() {
+        use crate::{arr_f64, arr_u64};
+
+        let field = Arc::new(Field::new("x", ArrowType::UInt64, false, None));
+        let empty = SuperArrayV {
+            slices: Vec::new(),
+            len: 0,
+            field: field.clone(),
+        };
+        assert!(empty.check_type_uniformity());
+
+        let uniform = SuperArrayV {
+            slices: vec![ArrayV::new(arr_u64![1u64, 2], 0, 2)],
+            len: 2,
+            field: field.clone(),
+        };
+        assert!(uniform.check_type_uniformity());
+
+        let mixed = SuperArrayV {
+            slices: vec![
+                ArrayV::new(arr_u64![1u64, 2], 0, 2),
+                ArrayV::new(arr_f64![3.0, 4.0], 0, 2),
+            ],
+            len: 4,
+            field,
+        };
+        assert!(!mixed.check_type_uniformity());
     }
 
     #[test]
@@ -1153,10 +1212,23 @@ impl From<SuperArray> for SuperArrayV {
     fn from(super_array: SuperArray) -> Self {
         let len = super_array.len();
 
-        // Get field from SuperArray or synthesise from first chunk
+        // Get field from SuperArray or synthesise from first chunk. A
+        // SuperArrayV field describes every chunk, so a mixed field-free
+        // SuperArray cannot become a view.
         let field = if let Some(f) = super_array.field.clone() {
             f
         } else if let Some(chunk) = super_array.chunks.first() {
+            #[cfg(feature = "allow_mixed_array_batches")]
+            for (i, sibling) in super_array.chunks.iter().enumerate().skip(1) {
+                assert_eq!(
+                    sibling.arrow_type(),
+                    chunk.arrow_type(),
+                    "Chunk {i} ArrowType mismatch: a SuperArrayV field describes \
+                     every chunk, so a mixed SuperArray cannot become a view. \
+                     Check `SuperArray::check_type_uniformity()` and coerce to \
+                     one type first."
+                );
+            }
             Arc::new(Field::new(
                 "data",
                 chunk.arrow_type(),
