@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fallible `try_from_arrays_with_field`, `try_from_field_array_chunks`,
   `try_from_slices`, and `try_push_field_array` on `SuperArray`, returning
   `Result` where the existing forms panic.
-* Support for **Mixed-type SuperArray chunks** behind the `allow_mixed_array_batches` feature flag. This feature is intended for transient works. Therefore, it:
+* Support for **Mixed-type SuperArray chunks** behind the `allow_mixed_array_batches` feature flag. This feature is intended for transient workloads. Therefore, it:
   * Relaxes the `ArrowType` homogeneity checks on the `SuperArray` constructors
     and push methods so that separately typed chunks can be stored in one column.
   * Adds `SuperArray::check_type_uniformity()`, gated to the same feature,
