@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `From<isize>` and `From<usize>` implementations for `Scalar` and `Value`.
 * One-element `From` implementations for primitive numeric types on `Array` and `ArrayV`.
 * `TryFrom<Vec<Value>>` for `Value`, with mixed-variant collections rejected.
+* Fallible `try_from_arrays_with_field`, `try_from_field_array_chunks`,
+  `try_from_slices`, and `try_push_field_array` on `SuperArray`, returning
+  `Result` where the existing forms panic.
+* Support for **Mixed-type SuperArray chunks** behind the `allow_mixed_array_batches` feature flag. This feature is intended for transient works. Therefore, it:
+  * Relaxes the `ArrowType` homogeneity checks on the `SuperArray` constructors
+    and push methods so that separately typed chunks can be stored in one column.
+  * Adds `SuperArray::check_type_uniformity()`, gated to the same feature,
+    reporting whether all chunks have the same `ArrowType`.
+  * Ensures that a `Field`, when present, still guarantees that describes every chunk. Attaching a field to non-uniform chunks is rejected. Hence, it is not possible to create
+  a `SuperTable` with mixed `SuperArray`s either, as that would be contractually incorrect. 
+* With the feature off, behaviour is unchanged. 
 
 ### Fixed
 
