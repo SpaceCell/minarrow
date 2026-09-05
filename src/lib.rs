@@ -334,7 +334,7 @@ pub use structs::column::{Column, column};
 #[cfg(feature = "cube")]
 pub use structs::cube::Cube;
 #[cfg(feature = "shared_dict")]
-pub use structs::dictionary::Dictionary;
+pub use structs::dictionary::{CategoryManagerT, Dictionary};
 pub use structs::field::Field;
 pub use structs::field_array::{FieldArray, field_array};
 #[cfg(feature = "matrix")]
