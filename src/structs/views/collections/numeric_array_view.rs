@@ -52,7 +52,9 @@ use crate::structs::views::bitmask_view::BitmaskV;
 use crate::traits::concatenate::Concatenate;
 use crate::traits::print::MAX_PREVIEW;
 use crate::traits::shape::Shape;
+use crate::traits::type_unions::Numeric;
 use crate::{Array, ArrayV, FieldArray, MaskedArray, NumericArray};
+use num_traits::NumCast;
 
 /// # NumericArrayView
 ///
@@ -170,6 +172,44 @@ impl NumericArrayV {
             NumericArray::UInt8(arr) => arr.get(phys_idx).map(|v| v as f64),
             #[cfg(feature = "extended_numeric_types")]
             NumericArray::UInt16(arr) => arr.get(phys_idx).map(|v| v as f64),
+        }
+    }
+
+    /// Returns the value at logical index `i` converted to `T`, or `None` if
+    /// out of bounds, null, or not representable in `T`.
+    ///
+    /// Generalises [`get_f64`](Self::get_f64) through `NumCast`, so one
+    /// accessor reads any numeric width into the caller's chosen type. A
+    /// value the conversion cannot represent, such as a negative integer
+    /// read as `u32` or a large float read as `i32`, returns `None`.
+    #[inline]
+    pub fn get_num<T: Numeric>(&self, i: usize) -> Option<T> {
+        if i >= self.len {
+            return None;
+        }
+        let phys_idx = self.offset + i;
+        match &self.array {
+            NumericArray::Int32(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            NumericArray::Int64(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            NumericArray::UInt32(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            NumericArray::UInt64(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            NumericArray::Float32(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            NumericArray::Float64(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            NumericArray::Null => None,
+            #[cfg(feature = "extended_numeric_types")]
+            NumericArray::Int8(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            #[cfg(feature = "extended_numeric_types")]
+            NumericArray::Int16(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            #[cfg(feature = "extended_numeric_types")]
+            NumericArray::UInt8(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            #[cfg(feature = "extended_numeric_types")]
+            NumericArray::UInt16(arr) => arr.get(phys_idx).and_then(NumCast::from),
         }
     }
 
@@ -490,6 +530,28 @@ mod tests {
 
     use super::*;
     use crate::{Array, Bitmask, FloatArray, IntegerArray, NumericArray, vec64};
+
+    /// `get_num` converts each width through `NumCast` within the window and
+    /// reports nulls and unrepresentable values as `None`.
+    #[test]
+    fn get_num_converts_within_window() {
+        let mut arr = IntegerArray::<i64>::from_slice(&[-1, 2, 3]);
+        let mut mask = Bitmask::new_set_all(3, true);
+        mask.set(2, false);
+        arr.null_mask = Some(mask);
+        let view = NumericArrayV::new(NumericArray::Int64(Arc::new(arr)), 1, 2);
+        assert_eq!(view.get_num::<u32>(0), Some(2));
+        assert_eq!(view.get_num::<f64>(1), None, "null reads as None");
+        assert_eq!(view.get_num::<i64>(2), None, "out of window");
+
+        let whole = NumericArrayV::new(
+            NumericArray::Int64(Arc::new(IntegerArray::<i64>::from_slice(&[-1]))),
+            0,
+            1,
+        );
+        assert_eq!(whole.get_num::<u32>(0), None, "a negative value does not convert to u32");
+        assert_eq!(whole.get_num::<i32>(0), Some(-1));
+    }
 
     #[test]
     fn guarantee_f64_windows_the_null_mask_with_the_slice() {

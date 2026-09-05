@@ -53,7 +53,11 @@ use crate::traits::print::MAX_PREVIEW;
 #[cfg(feature = "select")]
 use crate::traits::selection::{DataSelector, RowSelection};
 use crate::traits::shape::Shape;
-use crate::{Array, Bitmask, BitmaskV, FieldArray, MaskedArray, TextArray};
+use crate::traits::type_unions::Numeric;
+#[cfg(feature = "datetime")]
+use crate::TemporalArray;
+use crate::{Array, Bitmask, BitmaskV, FieldArray, MaskedArray, NumericArray, TextArray};
+use num_traits::NumCast;
 
 /// Keeps a stride of gathered loads in flight so their memory latency
 /// overlaps rather than serialising, since gather indices land anywhere
@@ -236,6 +240,105 @@ impl ArrayV {
             Array::TextArray(TextArray::Categorical32(arr)) => arr.get_str(self.offset + i),
             #[cfg(feature = "extended_categorical")]
             Array::TextArray(TextArray::Categorical64(arr)) => arr.get_str(self.offset + i),
+            _ => None,
+        }
+    }
+
+    /// Returns the numeric value at logical index `i` converted to `T`, or
+    /// `None` if out of bounds, null, or not representable in `T`.
+    ///
+    /// One accessor for every column whose storage is a number. A numeric
+    /// column converts its element through `NumCast`, as
+    /// [`NumericArrayV::get_num`](crate::NumericArrayV::get_num) does. A
+    /// categorical column returns its dictionary code rather than the label,
+    /// so a per-row loop compares codes without a dictionary lookup. A
+    /// datetime column returns its stored integer in the column's unit. Text
+    /// and boolean columns return `None`.
+    #[inline]
+    pub fn get_num<T: Numeric>(&self, i: usize) -> Option<T> {
+        if i >= self.len {
+            return None;
+        }
+        let phys_idx = self.offset + i;
+        match &self.array {
+            Array::NumericArray(inner) => match inner {
+                NumericArray::Int32(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                NumericArray::Int64(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                NumericArray::UInt32(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                NumericArray::UInt64(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                NumericArray::Float32(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                NumericArray::Float64(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                NumericArray::Null => None,
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(arr) => arr.get(phys_idx).and_then(NumCast::from),
+            },
+            Array::TextArray(inner) => match inner {
+                #[cfg(feature = "default_categorical_8")]
+                TextArray::Categorical8(arr) => (!arr.is_null(phys_idx)).then(|| arr.data[phys_idx]).and_then(NumCast::from),
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical16(arr) => (!arr.is_null(phys_idx)).then(|| arr.data[phys_idx]).and_then(NumCast::from),
+                #[cfg(any(
+                    not(feature = "default_categorical_8"),
+                    feature = "extended_categorical"
+                ))]
+                TextArray::Categorical32(arr) => (!arr.is_null(phys_idx)).then(|| arr.data[phys_idx]).and_then(NumCast::from),
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical64(arr) => (!arr.is_null(phys_idx)).then(|| arr.data[phys_idx]).and_then(NumCast::from),
+                _ => None,
+            },
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(inner) => match inner {
+                TemporalArray::Datetime32(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                TemporalArray::Datetime64(arr) => arr.get(phys_idx).and_then(NumCast::from),
+                TemporalArray::Null => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Returns the numeric value at logical index `i` as `f64`, or `None` if
+    /// out of bounds, null, or not a numeric, categorical or datetime column.
+    ///
+    /// Shortcut for `get_num::<f64>`, covering the common case of numeric
+    /// arithmetic across columns of mixed width.
+    #[inline]
+    pub fn get_f64(&self, i: usize) -> Option<f64> {
+        self.get_num::<f64>(i)
+    }
+
+    /// Returns the value at logical index `i` as `i64`, or `None` if out of
+    /// bounds, null, or not representable as `i64`.
+    ///
+    /// The accessor for datetime columns, whose stored integer is returned in
+    /// the column's unit, so a `Timestamp(ns)` column reads its nanosecond
+    /// value intact rather than through `f64`. Integer columns read through
+    /// the same path.
+    #[inline]
+    pub fn get_i64(&self, i: usize) -> Option<i64> {
+        self.get_num::<i64>(i)
+    }
+
+    /// Returns the boolean value at logical index `i`, or `None` if out of
+    /// bounds, null, or not a boolean column.
+    #[inline]
+    pub fn get_bool(&self, i: usize) -> Option<bool> {
+        if i >= self.len {
+            return None;
+        }
+        match &self.array {
+            Array::BooleanArray(arr) => arr.get(self.offset + i),
             _ => None,
         }
     }
@@ -1491,7 +1594,72 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::{Array, Bitmask, IntegerArray, NumericArray, vec64};
+    use crate::{Array, Bitmask, BooleanArray, CategoricalArray, FloatArray, IntegerArray, NumericArray, vec64};
+    #[cfg(feature = "datetime")]
+    use crate::DatetimeArray;
+
+    /// `get_num` reads every numeric width through `NumCast`, honours the
+    /// window offset, and reports a null or an out-of-range conversion as
+    /// `None`.
+    #[test]
+    fn test_array_view_get_num_numeric_widths() {
+        let mut i64s = IntegerArray::<i64>::from_slice(&[-5, 7, 1_700_000_000_000_000_000]);
+        let mut mask = Bitmask::new_set_all(3, true);
+        mask.set(1, false);
+        i64s.null_mask = Some(mask);
+        let view = ArrayV::new(Array::from_int64(i64s), 1, 2);
+        assert_eq!(view.get_num::<i64>(0), None, "null reads as None");
+        assert_eq!(view.get_num::<i64>(1), Some(1_700_000_000_000_000_000));
+        assert_eq!(view.get_num::<i64>(2), None, "out of window");
+
+        let u32s = ArrayV::from(Array::from_uint32(IntegerArray::<u32>::from_slice(&[3, 4])));
+        assert_eq!(u32s.get_num::<f64>(1), Some(4.0));
+        assert_eq!(u32s.get_f64(0), Some(3.0));
+
+        let f64s = ArrayV::from(Array::from_float64(FloatArray::<f64>::from_slice(&[2.5, -1.0])));
+        assert_eq!(f64s.get_num::<f64>(0), Some(2.5));
+        assert_eq!(f64s.get_num::<u32>(1), None, "a negative value does not convert to u32");
+        assert_eq!(f64s.get_i64(1), Some(-1));
+    }
+
+    /// `get_num` on a categorical column returns the dictionary code, and
+    /// `get_str` remains the label path.
+    #[cfg(feature = "default_categorical_8")]
+    #[test]
+    fn test_array_view_get_num_categorical_code() {
+        let cat = CategoricalArray::<u8>::from_values(["B", "A", "B", "N"]);
+        let view = ArrayV::from(Array::from_categorical8(cat));
+        assert_eq!(view.get_num::<u8>(0), Some(0));
+        assert_eq!(view.get_num::<u8>(1), Some(1));
+        assert_eq!(view.get_num::<i64>(2), Some(0));
+        assert_eq!(view.get_num::<u8>(3), Some(2));
+        assert_eq!(view.get_str(3), Some("N"));
+    }
+
+    /// `get_i64` on a datetime column returns the stored integer in the
+    /// column's unit, unchanged through `f64`.
+    #[cfg(feature = "datetime")]
+    #[test]
+    fn test_array_view_get_i64_datetime() {
+        let ns = 1_700_000_000_123_456_789_i64;
+        let dt = DatetimeArray::<i64>::from_slice(&[ns, ns + 1], Some(crate::TimeUnit::Nanoseconds));
+        let view = ArrayV::from(Array::TemporalArray(TemporalArray::Datetime64(Arc::new(dt))));
+        assert_eq!(view.get_i64(0), Some(ns));
+        assert_eq!(view.get_num::<i64>(1), Some(ns + 1));
+    }
+
+    /// `get_bool` reads a boolean column and returns `None` for any other
+    /// column type.
+    #[test]
+    fn test_array_view_get_bool() {
+        let bools = ArrayV::from(Array::from_bool(BooleanArray::from_slice(&[true, false, true])));
+        assert_eq!(bools.get_bool(1), Some(false));
+        assert_eq!(bools.get_bool(2), Some(true));
+        assert_eq!(bools.get_bool(3), None);
+        let ints = ArrayV::from(Array::from_int32(IntegerArray::<i32>::from_slice(&[1])));
+        assert_eq!(ints.get_bool(0), None);
+        assert_eq!(bools.get_num::<i64>(0), None, "a boolean column has no numeric read");
+    }
 
     #[test]
     fn test_array_view_basic_indexing_and_slice() {
