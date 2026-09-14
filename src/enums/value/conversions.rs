@@ -1827,6 +1827,12 @@ impl From<(Value, Value, Value, Value, Value, Value)> for Value {
     }
 }
 
+impl From<Arc<Value>> for Value {
+    fn from(arc: Arc<Value>) -> Self {
+        Value::ArcValue(arc)
+    }
+}
+
 // TryFrom for recursive containers
 impl TryFrom<Value> for Vec<Value> {
     type Error = MinarrowError;
