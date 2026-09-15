@@ -66,6 +66,9 @@ use std::{any::Any, sync::Arc};
 pub trait CustomValue: Any + Send + Sync + std::fmt::Debug {
     /// Downcasts the type as `Any`
     fn as_any(&self) -> &dyn Any;
+    /// Downcasts the type as mutable `Any`, for updating a custom value in
+    /// place through `Arc::get_mut` when the `Arc` is uniquely held.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
     /// Returns a deep clone of the object.
     ///
     /// Additionally, the `Value` enum automatically derives `Clone`, which is a
@@ -86,6 +89,10 @@ where
     T: Any + Send + Sync + Clone + PartialEq + std::fmt::Debug,
 {
     fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
