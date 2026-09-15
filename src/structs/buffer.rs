@@ -296,6 +296,17 @@ impl<T> Buffer<T> {
     /// buffers that all share the same contiguous allocation.
     #[inline]
     pub fn from_shared_column(owner: SharedBuffer, offset: usize, len: usize) -> Self {
+        let byte_len = owner.len();
+        let elem_size = std::mem::size_of::<T>();
+        assert!(
+            elem_size > 0
+                && offset
+                    .checked_add(len)
+                    .and_then(|end| end.checked_mul(elem_size))
+                    .map_or(false, |byte_end| byte_end <= byte_len),
+            "from_shared_column: offset {} + len {} (x{}B) exceeds allocation of {} bytes",
+            offset, len, elem_size, byte_len
+        );
         Self {
             storage: Storage::Shared { owner, offset, len },
         }
