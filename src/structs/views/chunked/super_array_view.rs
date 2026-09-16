@@ -119,6 +119,7 @@ impl SuperArrayV {
     pub fn slice(&self, mut offset: usize, mut len: usize) -> Self {
         assert!(offset + len <= self.len, "slice out of bounds");
 
+        let requested_len = len;
         let mut slices = Vec::new();
         for array_view in &self.slices {
             let base_len = array_view.len();
@@ -144,7 +145,7 @@ impl SuperArrayV {
 
         Self {
             slices,
-            len: self.len,
+            len: requested_len,
             field: self.field.clone(),
         }
     }
@@ -435,13 +436,45 @@ mod tests {
         let fa2 = fa("x", &[4, 5, 6, 7]);
         let ca = SuperArray::from_chunks(Vec::from(vec![fa1.clone(), fa2.clone()]));
         let slice = ca.slice(1, 5); // [2,3,4,5,6]
+        assert_eq!(slice.len, 5);
         let sub = slice.slice(1, 3); // [3,4,5]
+        assert_eq!(sub.len, 3);
         let arr = sub.consolidate();
         if let Array::NumericArray(NumericArray::Int32(ints)) = arr {
             assert_eq!(ints.data.as_slice(), &[3, 4, 5]);
         } else {
             panic!("unexpected type");
         }
+    }
+
+    #[test]
+    fn test_slice_len_matches_requested() {
+        let fa1 = fa("a", &[10, 20, 30]);
+        let fa2 = fa("a", &[40, 50]);
+        let fa3 = fa("a", &[60, 70, 80, 90]);
+        let ca = SuperArray::from_chunks(Vec::from(vec![
+            fa1.clone(),
+            fa2.clone(),
+            fa3.clone(),
+        ]));
+        let full = ca.slice(0, 9);
+        assert_eq!(full.len, 9);
+
+        // Window within a single chunk.
+        let s1 = full.slice(0, 2);
+        assert_eq!(s1.len, 2);
+
+        // Window spanning two chunks.
+        let s2 = full.slice(2, 3); // [30, 40, 50]
+        assert_eq!(s2.len, 3);
+
+        // Window from the middle of one chunk to the middle of a later chunk.
+        let s3 = full.slice(4, 4); // [50, 60, 70, 80]
+        assert_eq!(s3.len, 4);
+
+        // Nested slice: the inner len is independent of the outer len.
+        let s4 = s3.slice(1, 2); // [60, 70]
+        assert_eq!(s4.len, 2);
     }
 
     #[test]
