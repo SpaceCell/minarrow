@@ -1058,6 +1058,12 @@ macro_rules! unary_str_transform {
         #[doc = $doc]
         pub fn $fn_name<T: Integer>(input: StringAVT<T>) -> Result<StringArray<T>, KernelError> {
             let (arr, offset, len) = input;
+            if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+                return Err(KernelError::OutOfBounds(format!(
+                    "offset {} + len {} exceeds array length {}",
+                    offset, len, arr.len()
+                )));
+            }
 
             let mask_opt = arr.null_mask.as_ref().map(|orig| {
                 let mut m = Bitmask::new_set_all(len, true);
@@ -1111,6 +1117,12 @@ macro_rules! unary_dict_transform {
             input: CategoricalAVT<T>,
         ) -> Result<CategoricalArray<T>, KernelError> {
             let (arr, offset, len) = input;
+            if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+                return Err(KernelError::OutOfBounds(format!(
+                    "offset {} + len {} exceeds array length {}",
+                    offset, len, arr.len()
+                )));
+            }
 
             let mask_opt = arr.null_mask.as_ref().map(|orig| {
                 let mut m = Bitmask::new_set_all(len, true);
@@ -1326,6 +1338,12 @@ pub fn find_str<T: Integer>(
     needle: &str,
 ) -> Result<IntegerArray<i32>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
 
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
@@ -1365,6 +1383,12 @@ pub fn find_dict<T: Integer>(
     needle: &str,
 ) -> Result<IntegerArray<i32>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
 
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
@@ -1404,6 +1428,12 @@ pub fn count_match_str<T: Integer>(
     needle: &str,
 ) -> Result<IntegerArray<i32>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
 
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
@@ -1443,6 +1473,12 @@ pub fn count_match_dict<T: Integer>(
     needle: &str,
 ) -> Result<IntegerArray<i32>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
 
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
@@ -1486,6 +1522,12 @@ pub fn substring_str<T: Integer>(
     opt_len: Option<usize>,
 ) -> Result<StringArray<T>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
         for i in 0..len {
@@ -1537,6 +1579,12 @@ pub fn substring_dict<T: Integer>(
     opt_len: Option<usize>,
 ) -> Result<CategoricalArray<T>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
         for i in 0..len {
@@ -1608,6 +1656,12 @@ pub fn replace_str<T: Integer>(
     to: &str,
 ) -> Result<StringArray<T>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
         for i in 0..len {
@@ -1655,6 +1709,12 @@ pub fn replace_dict<T: Integer>(
     to: &str,
 ) -> Result<CategoricalArray<T>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
         for i in 0..len {
@@ -1721,6 +1781,12 @@ pub fn repeat_str<T: Integer>(
     n: usize,
 ) -> Result<StringArray<T>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
         for i in 0..len {
@@ -1769,6 +1835,12 @@ pub fn repeat_dict<T: Integer>(
     n: usize,
 ) -> Result<CategoricalArray<T>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
         for i in 0..len {
@@ -1820,6 +1892,12 @@ pub fn pad_str<T: Integer>(
     side: PadSide,
 ) -> Result<StringArray<T>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
         for i in 0..len {
@@ -1901,6 +1979,12 @@ pub fn pad_dict<T: Integer>(
     side: PadSide,
 ) -> Result<CategoricalArray<T>, KernelError> {
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
         for i in 0..len {
@@ -1987,6 +2071,11 @@ pub fn pad_dict<T: Integer>(
 /// Returns `None` if all elements are null.
 pub fn join_str<T: Integer>(input: StringAVT<T>, delimiter: &str) -> Option<String> {
     let (arr, offset, len) = input;
+    assert!(
+        offset.checked_add(len).map_or(false, |end| end <= arr.len()),
+        "offset {} + len {} exceeds array length {}",
+        offset, len, arr.len()
+    );
     let mut parts: Vec<&str> = Vec::with_capacity(len);
     for i in offset..offset + len {
         let valid = arr
@@ -2008,6 +2097,11 @@ pub fn join_str<T: Integer>(input: StringAVT<T>, delimiter: &str) -> Option<Stri
 /// Returns `None` if all elements are null.
 pub fn join_dict<T: Integer>(input: CategoricalAVT<T>, delimiter: &str) -> Option<String> {
     let (arr, offset, len) = input;
+    assert!(
+        offset.checked_add(len).map_or(false, |end| end <= arr.len()),
+        "offset {} + len {} exceeds array length {}",
+        offset, len, arr.len()
+    );
     let mut parts: Vec<&str> = Vec::with_capacity(len);
     for i in offset..offset + len {
         let valid = arr
@@ -2037,6 +2131,12 @@ pub fn regex_replace_str<T: Integer>(
     let re = Regex::new(pattern)
         .map_err(|_| KernelError::InvalidArguments("Invalid regex pattern".to_string()))?;
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
         for i in 0..len {
@@ -2087,6 +2187,12 @@ pub fn regex_replace_dict<T: Integer>(
     let re = Regex::new(pattern)
         .map_err(|_| KernelError::InvalidArguments("Invalid regex pattern".to_string()))?;
     let (arr, offset, len) = input;
+    if offset.checked_add(len).map_or(true, |end| end > arr.len()) {
+        return Err(KernelError::OutOfBounds(format!(
+            "offset {} + len {} exceeds array length {}",
+            offset, len, arr.len()
+        )));
+    }
     let mask_opt = arr.null_mask.as_ref().map(|orig| {
         let mut m = Bitmask::new_set_all(len, true);
         for i in 0..len {
