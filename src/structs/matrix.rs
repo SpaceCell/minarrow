@@ -120,8 +120,9 @@ impl Matrix {
     pub fn new(n_rows: usize, n_cols: usize, name: Option<impl Into<String>>) -> Self {
         let stride = aligned_stride(n_rows);
         let len = stride * n_cols;
-        let mut vec = Vec64::with_capacity(len);
-        vec.resize(len, 0.0);
+        // SAFETY: Zero bits are a valid `f64`, and the allocator's zeroed path hands
+        // back untouched zero pages
+        let vec = unsafe { Vec64::zeroed(len) };
         let data = Arc::new(Buffer::from_vec64(vec));
         Matrix {
             n_rows,
