@@ -2810,6 +2810,103 @@ impl Array {
         }
     }
 
+    /// Checks whether this array's dtype matches the target Field, and
+    /// converts it when possible using the existing cast methods.
+    ///
+    /// The function exists to support the `allow_mixed_array_batches`
+    /// mode which relaxes uniform `SuperArray` typing restrictions.
+    /// When this method is ran, it coerces to the target `Field` type.
+    ///
+    /// ## Conversion rules
+    ///
+    /// | Input | Result |
+    /// |---|---|
+    /// | Matching dtype | Original array, without copying |
+    /// | Different numeric width | Corresponding `NumericArray::try_i32`, `try_i64`, `try_u32`, `try_u64`, `try_f32`, or `try_f64` conversion |
+    /// | Datetime32 to Datetime64 | `TemporalArray::try_dt64` |
+    /// | Datetime64 to Datetime32 | `TemporalArray::try_dt32` |
+    /// | String32 to String64 (`LargeString`) | `From<&StringArray<u32>> for StringArray<u64>` |
+    /// | Unsupported conversion | All-null array with the target dtype and source length, created through `Array::null_array` |
+    /// | Empty input | Zero-row array with the target field dtype |
+    #[cfg(feature = "allow_mixed_array_batches")]
+    pub fn check_unify_batch_dtype(array: Array, field: &crate::Field) -> Array {
+        use crate::ffi::arrow_dtype::ArrowType;
+
+        let len = array.len();
+
+        // Empty array: zero-row array of the Field dtype.
+        if len == 0 {
+            return Array::from_arrow_dtype(&field.dtype);
+        }
+
+        // Dtype already matches: pass through with no copy.
+        if array.arrow_type() == field.dtype {
+            return array;
+        }
+
+        let converted = match (&array, &field.dtype) {
+            // Numeric array at another numeric width.
+            (Array::NumericArray(num), ArrowType::Int32) => {
+                num.try_i32().ok().map(|a| Array::NumericArray(NumericArray::Int32(a)))
+            }
+            (Array::NumericArray(num), ArrowType::Int64) => {
+                num.try_i64().ok().map(|a| Array::NumericArray(NumericArray::Int64(a)))
+            }
+            (Array::NumericArray(num), ArrowType::UInt32) => {
+                num.try_u32().ok().map(|a| Array::NumericArray(NumericArray::UInt32(a)))
+            }
+            (Array::NumericArray(num), ArrowType::UInt64) => {
+                num.try_u64().ok().map(|a| Array::NumericArray(NumericArray::UInt64(a)))
+            }
+            (Array::NumericArray(num), ArrowType::Float32) => {
+                num.try_f32().ok().map(|a| Array::NumericArray(NumericArray::Float32(a)))
+            }
+            (Array::NumericArray(num), ArrowType::Float64) => {
+                num.try_f64().ok().map(|a| Array::NumericArray(NumericArray::Float64(a)))
+            }
+
+            // Datetime32 under a Datetime64 Field.
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(temp), target)
+                if matches!(
+                    target,
+                    ArrowType::Date64
+                        | ArrowType::Time64(_)
+                        | ArrowType::Duration64(_)
+                        | ArrowType::Timestamp(_, _)
+                ) =>
+            {
+                temp.try_dt64()
+                    .ok()
+                    .map(|a| Array::TemporalArray(crate::TemporalArray::Datetime64(a)))
+            }
+
+            // Datetime64 under a Datetime32 Field.
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(temp), target)
+                if matches!(
+                    target,
+                    ArrowType::Date32 | ArrowType::Time32(_) | ArrowType::Duration32(_)
+                ) =>
+            {
+                temp.try_dt32()
+                    .ok()
+                    .map(|a| Array::TemporalArray(crate::TemporalArray::Datetime32(a)))
+            }
+
+            // String32 under a String64 (LargeString) Field.
+            #[cfg(feature = "large_string")]
+            (Array::TextArray(crate::TextArray::String32(s32)), ArrowType::LargeString) => {
+                let widened = crate::StringArray::<u64>::from(&**s32);
+                Some(Array::TextArray(crate::TextArray::String64(Arc::new(widened))))
+            }
+
+            _ => None,
+        };
+
+        converted.unwrap_or_else(|| Array::null_array(&field.dtype, len))
+    }
+
     /// Build an array from a slice of Scalars.
     ///
     /// All scalars must be the same type. The type is inferred from the first

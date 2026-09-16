@@ -49,11 +49,14 @@ use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
 use crate::{
-    Array, ArrayV, ArrayVT, Field, SuperArray,
+    Array, ArrayV, ArrayVT, BooleanArray, BooleanArrayV, Field, NumericArray, NumericArrayV,
+    StringArray, SuperArray, TextArray, TextArrayV,
     enums::error::MinarrowError,
     enums::shape_dim::ShapeDim,
     traits::{concatenate::Concatenate, consolidate::Consolidate, shape::Shape},
 };
+#[cfg(feature = "datetime")]
+use crate::{TemporalArray, TemporalArrayV};
 
 /// # SuperArrayView
 ///
@@ -110,6 +113,56 @@ impl SuperArrayV {
         self.slices
             .iter()
             .all(|slice| slice.array.arrow_type() == self.field.dtype)
+    }
+
+    /// Converts each batch to the dtype declared by this view's `Field` using
+    /// `Array::check_unify_batch_dtype`.
+    ///
+    /// ## Behaviour
+    ///
+    /// - Uses the view's field dtype as the conversion target.
+    /// - Reuses matching batches without copying.
+    /// - Returns a `SuperArrayV` with a consistent dtype across all batches.
+    /// - Merges categorical dictionaries after converting each batch.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    pub fn resolve_batches(self) -> SuperArrayV {
+        if self.slices.is_empty() {
+            return self;
+        }
+
+        // Fast path: all slices already match the Field dtype.
+        if self.check_type_uniformity() {
+            return self;
+        }
+
+        let field = self.field.clone();
+        let mut arrays: Vec<Array> = self
+            .slices
+            .into_iter()
+            .map(|slice| Array::check_unify_batch_dtype(slice.to_array(), &field))
+            .collect();
+
+        let len = arrays.iter().map(|a| a.len()).sum();
+
+        // Categorical columns: merge dictionaries across all resolved
+        // batches so codes are mutually meaningful.
+        #[cfg(feature = "shared_dict")]
+        {
+            use crate::ffi::arrow_dtype::ArrowType;
+            if matches!(field.dtype, ArrowType::Dictionary(_)) {
+                let mut mgr: Option<crate::structs::dictionary::CategoryManagerT> = None;
+                crate::structs::dictionary::CategoryManagerT::add_remap_cats(
+                    &mut mgr,
+                    arrays.iter_mut(),
+                );
+            }
+        }
+
+        SuperArrayV {
+            slices: arrays.into_iter().map(ArrayV::from).collect(),
+            len,
+            field,
+        }
     }
 
     /// Returns a sub-window of this chunked array view over `[offset .. offset+len)`.
@@ -225,7 +278,7 @@ impl Consolidate for SuperArrayV {
     /// 3. Otherwise: directly extends from source data slices (single copy per element).
     fn consolidate(self) -> Array {
         if self.slices.is_empty() {
-            panic!("consolidate() called on empty SuperArrayV");
+            return Array::from_arrow_dtype(&self.field.dtype);
         }
 
         // Single slice optimisation
@@ -314,6 +367,72 @@ impl From<SuperArrayV> for SuperArray {
     fn from(value: SuperArrayV) -> Self {
         let chunks: Vec<Array> = value.chunks().map(|slice| slice.to_array()).collect();
         SuperArray::from_arrays_with_field(chunks, value.field)
+    }
+}
+
+/// Consolidates all slices into a single contiguous `ArrayV`.
+impl From<SuperArrayV> for ArrayV {
+    fn from(view: SuperArrayV) -> Self {
+        #[cfg(feature = "allow_mixed_array_batches")]
+        let view = view.resolve_batches();
+        ArrayV::from(view.consolidate())
+    }
+}
+
+/// Consolidates and extracts the numeric family. Non-numeric arrays
+/// produce `NumericArray::Null`.
+impl From<SuperArrayV> for NumericArrayV {
+    fn from(view: SuperArrayV) -> Self {
+        let arr_v: ArrayV = view.into();
+        match arr_v.array {
+            Array::NumericArray(_) => NumericArrayV::from(arr_v),
+            _ => NumericArrayV::from(ArrayV::from(
+                Array::NumericArray(NumericArray::Null),
+            )),
+        }
+    }
+}
+
+/// Consolidates and extracts the text family. Non-text arrays produce
+/// a zero-row `String32`.
+impl From<SuperArrayV> for TextArrayV {
+    fn from(view: SuperArrayV) -> Self {
+        let arr_v: ArrayV = view.into();
+        match arr_v.array {
+            Array::TextArray(_) => TextArrayV::from(arr_v),
+            _ => TextArrayV::from(ArrayV::from(Array::TextArray(
+                TextArray::String32(Arc::new(StringArray::<u32>::default())),
+            ))),
+        }
+    }
+}
+
+/// Consolidates and extracts the temporal family. Non-temporal arrays
+/// produce `TemporalArray::Null`.
+#[cfg(feature = "datetime")]
+impl From<SuperArrayV> for TemporalArrayV {
+    fn from(view: SuperArrayV) -> Self {
+        let arr_v: ArrayV = view.into();
+        match arr_v.array {
+            Array::TemporalArray(_) => TemporalArrayV::from(arr_v),
+            _ => TemporalArrayV::from(ArrayV::from(Array::TemporalArray(
+                TemporalArray::Null,
+            ))),
+        }
+    }
+}
+
+/// Consolidates and extracts the boolean family. Non-boolean arrays
+/// produce a zero-row `BooleanArray`.
+impl From<SuperArrayV> for BooleanArrayV {
+    fn from(view: SuperArrayV) -> Self {
+        let arr_v: ArrayV = view.into();
+        match arr_v.array {
+            Array::BooleanArray(_) => BooleanArrayV::from(arr_v),
+            _ => BooleanArrayV::from(ArrayV::from(Array::BooleanArray(Arc::new(
+                BooleanArray::default(),
+            )))),
+        }
     }
 }
 
@@ -1237,6 +1356,298 @@ mod tests {
         } else {
             panic!("Expected Decimal32 Array");
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Empty-view consolidation fix
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_empty_view_consolidates_to_zero_row_array() {
+        let f = Arc::new(Field::new("col", ArrowType::Int32, false, None));
+        let empty = SuperArrayV {
+            slices: Vec::new(),
+            len: 0,
+            field: f,
+        };
+        let result = empty.consolidate();
+        assert_eq!(result.len(), 0);
+        assert_eq!(result.arrow_type(), ArrowType::Int32);
+    }
+
+    #[test]
+    fn test_empty_view_consolidates_to_zero_row_float64() {
+        let f = Arc::new(Field::new("x", ArrowType::Float64, false, None));
+        let empty = SuperArrayV {
+            slices: Vec::new(),
+            len: 0,
+            field: f,
+        };
+        let result = empty.consolidate();
+        assert_eq!(result.len(), 0);
+        assert_eq!(result.arrow_type(), ArrowType::Float64);
+    }
+
+    // ---------------------------------------------------------------
+    // check_unify_batch_dtype tests
+    // ---------------------------------------------------------------
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_check_unify_batch_dtype_pass_through_on_matching_type() {
+        let arr = Array::from_int32(crate::IntegerArray::<i32>::from_slice(&[1, 2, 3]));
+        let field = Field::new("x", ArrowType::Int32, false, None);
+
+        let result = Array::check_unify_batch_dtype(arr, &field);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.arrow_type(), ArrowType::Int32);
+    }
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_check_unify_batch_dtype_numeric_i32_to_f64() {
+        let arr = Array::from_int32(crate::IntegerArray::<i32>::from_slice(&[1, 2, 3]));
+        let field = Field::new("x", ArrowType::Float64, false, None);
+
+        let result = Array::check_unify_batch_dtype(arr, &field);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.arrow_type(), ArrowType::Float64);
+        if let Array::NumericArray(NumericArray::Float64(f)) = &result {
+            assert_eq!(f.data.as_slice(), &[1.0, 2.0, 3.0]);
+        } else {
+            panic!("expected Float64");
+        }
+    }
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_check_unify_batch_dtype_numeric_f64_to_i64() {
+        let arr = Array::from_float64(crate::FloatArray::<f64>::from_slice(&[10.0, 20.0]));
+        let field = Field::new("x", ArrowType::Int64, false, None);
+
+        let result = Array::check_unify_batch_dtype(arr, &field);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.arrow_type(), ArrowType::Int64);
+    }
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_check_unify_batch_dtype_incompatible_becomes_null() {
+        use crate::MaskedArray;
+
+        let arr = Array::from_string32(crate::StringArray::<u32>::from_slice(&["a", "b"]));
+        let field = Field::new("x", ArrowType::Int32, false, None);
+
+        let result = Array::check_unify_batch_dtype(arr, &field);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.arrow_type(), ArrowType::Int32);
+
+        // Every element should be null.
+        if let Array::NumericArray(NumericArray::Int32(ints)) = &result {
+            assert_eq!(ints.null_count(), 2);
+        } else {
+            panic!("expected Int32");
+        }
+    }
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_check_unify_batch_dtype_empty_batch() {
+        let arr = Array::from_int32(crate::IntegerArray::<i32>::from_slice(&[]));
+        let field = Field::new("x", ArrowType::Float64, false, None);
+
+        let result = Array::check_unify_batch_dtype(arr, &field);
+        assert_eq!(result.len(), 0);
+        assert_eq!(result.arrow_type(), ArrowType::Float64);
+    }
+
+    #[cfg(all(feature = "allow_mixed_array_batches", feature = "large_string"))]
+    #[test]
+    fn test_check_unify_batch_dtype_string32_to_string64() {
+        let arr = Array::from_string32(crate::StringArray::<u32>::from_slice(&["hello", "world"]));
+        let field = Field::new("x", ArrowType::LargeString, false, None);
+
+        let result = Array::check_unify_batch_dtype(arr, &field);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.arrow_type(), ArrowType::LargeString);
+    }
+
+    // ---------------------------------------------------------------
+    // resolve_batches tests
+    // ---------------------------------------------------------------
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_resolve_batches_uniform_pass_through() {
+        let field = Arc::new(Field::new("x", ArrowType::Int32, false, None));
+        let view = SuperArrayV {
+            slices: vec![
+                ArrayV::from(Array::from_int32(
+                    crate::IntegerArray::<i32>::from_slice(&[1, 2]),
+                )),
+                ArrayV::from(Array::from_int32(
+                    crate::IntegerArray::<i32>::from_slice(&[3]),
+                )),
+            ],
+            len: 3,
+            field,
+        };
+
+        let resolved = view.resolve_batches();
+        assert_eq!(resolved.len, 3);
+        assert_eq!(resolved.slices.len(), 2);
+    }
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_resolve_batches_numeric_straggler() {
+        use crate::traits::consolidate::Consolidate;
+
+        let field = Arc::new(Field::new("x", ArrowType::Float64, false, None));
+        let view = SuperArrayV {
+            slices: vec![
+                ArrayV::from(Array::from_float64(
+                    crate::FloatArray::<f64>::from_slice(&[1.0, 2.0]),
+                )),
+                ArrayV::from(Array::from_int32(
+                    crate::IntegerArray::<i32>::from_slice(&[3, 4]),
+                )),
+                ArrayV::from(Array::from_float64(
+                    crate::FloatArray::<f64>::from_slice(&[5.0]),
+                )),
+            ],
+            len: 5,
+            field,
+        };
+
+        let resolved = view.resolve_batches();
+        assert_eq!(resolved.len, 5);
+        assert!(resolved.check_type_uniformity());
+
+        // Consolidate and verify values.
+        let arr = resolved.consolidate();
+        assert_eq!(arr.len(), 5);
+        if let Array::NumericArray(NumericArray::Float64(f)) = arr {
+            assert_eq!(f.data.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        } else {
+            panic!("expected Float64");
+        }
+    }
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_resolve_batches_text_straggler_becomes_null() {
+        use crate::MaskedArray;
+
+        let field = Arc::new(Field::new("x", ArrowType::Float64, false, None));
+        let view = SuperArrayV {
+            slices: vec![
+                ArrayV::from(Array::from_float64(
+                    crate::FloatArray::<f64>::from_slice(&[1.0, 2.0]),
+                )),
+                ArrayV::from(Array::from_string32(
+                    crate::StringArray::<u32>::from_slice(&["a"]),
+                )),
+            ],
+            len: 3,
+            field,
+        };
+
+        let resolved = view.resolve_batches();
+        assert_eq!(resolved.len, 3);
+        assert!(resolved.check_type_uniformity());
+
+        // The text batch should be all-null.
+        let null_slice = &resolved.slices[1];
+        assert_eq!(null_slice.len(), 1);
+        if let Array::NumericArray(NumericArray::Float64(f)) = &null_slice.array {
+            assert_eq!(f.null_count(), 1);
+        } else {
+            panic!("expected Float64 null batch");
+        }
+    }
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_resolve_batches_empty_view() {
+        let field = Arc::new(Field::new("x", ArrowType::Int32, false, None));
+        let empty = SuperArrayV {
+            slices: Vec::new(),
+            len: 0,
+            field,
+        };
+        let resolved = empty.resolve_batches();
+        assert!(resolved.slices.is_empty());
+        assert_eq!(resolved.len, 0);
+    }
+
+    // ---------------------------------------------------------------
+    // From<SuperArrayV> for ArrayV
+    // ---------------------------------------------------------------
+
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_from_super_array_view_for_array_view() {
+        let field = Arc::new(Field::new("x", ArrowType::Float64, false, None));
+        let view = SuperArrayV {
+            slices: vec![
+                ArrayV::from(Array::from_float64(
+                    crate::FloatArray::<f64>::from_slice(&[1.0, 2.0]),
+                )),
+                ArrayV::from(Array::from_int32(
+                    crate::IntegerArray::<i32>::from_slice(&[3]),
+                )),
+            ],
+            len: 3,
+            field,
+        };
+
+        let arr_v: ArrayV = view.into();
+        assert_eq!(arr_v.len(), 3);
+        assert_eq!(arr_v.array.arrow_type(), ArrowType::Float64);
+    }
+
+    #[test]
+    fn test_from_super_array_view_for_numeric_array_view() {
+        let field = Arc::new(Field::new("x", ArrowType::Float64, false, None));
+        let view = SuperArrayV {
+            slices: vec![ArrayV::from(Array::from_float64(
+                crate::FloatArray::<f64>::from_slice(&[1.0, 2.0]),
+            ))],
+            len: 2,
+            field,
+        };
+
+        let num_v: crate::NumericArrayV = view.into();
+        assert_eq!(num_v.len(), 2);
+    }
+
+    #[test]
+    fn test_from_super_array_view_for_boolean_array_view() {
+        let field = Arc::new(Field::new("x", ArrowType::Boolean, false, None));
+        let view = SuperArrayV {
+            slices: vec![ArrayV::from(Array::BooleanArray(Arc::new(
+                crate::BooleanArray::from_slice(&[true, false]),
+            )))],
+            len: 2,
+            field,
+        };
+
+        let bool_v: crate::BooleanArrayV = view.into();
+        assert_eq!(bool_v.len(), 2);
+    }
+
+    #[test]
+    fn test_from_super_array_view_empty_to_array_view() {
+        let field = Arc::new(Field::new("x", ArrowType::Int32, false, None));
+        let empty = SuperArrayV {
+            slices: Vec::new(),
+            len: 0,
+            field,
+        };
+        let arr_v: ArrayV = empty.into();
+        assert_eq!(arr_v.len(), 0);
+        assert_eq!(arr_v.array.arrow_type(), ArrowType::Int32);
     }
 }
 

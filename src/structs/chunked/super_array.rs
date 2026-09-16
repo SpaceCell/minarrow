@@ -45,11 +45,11 @@
 //! Field-based constructors and `push_field_array` also provide `try_*`
 //! variants that return `Result` when runtime data may not match the required
 //! type.
-//! 
+//!
 //! Mixed cases cannot be used in `SuperTable` and are rejected at the boundary
 //! as it would violate contractual `Field`-based guarantees. Hence, these are
-//! intended for transient workloads only. 
-//! 
+//! intended for transient workloads only.
+//!
 //! ## Apache Arrow / Polars bridges (`cast_arrow` / `cast_polars` features)
 //! - `to_apache_arrow()` exports each chunk as an arrow-rs `ArrayRef`.
 //! - `to_polars()` builds a polars `Series` whose internal chunks mirror the SuperArray.
@@ -258,7 +258,7 @@ impl SuperArray {
     /// Constructs a SuperArray from raw `Array` chunks with null counts.
     ///
     /// # Panics
-    /// 1. If null_counts length does not match chunks length. 
+    /// 1. If null_counts length does not match chunks length.
     /// 2. On mismatched chunk types, unless the `allow_mixed_array_batches`feature is on.
     pub fn from_arrays_nc(chunks: Vec<Array>, null_counts: Vec<usize>) -> Self {
         assert_eq!(
@@ -1139,6 +1139,70 @@ impl SuperArray {
         chunks.all(|chunk| chunk.arrow_type() == dtype)
     }
 
+    /// Resolves every chunk to the container's target dtype.
+    ///
+    /// ## Behaviour
+    /// - The target dtype is the Field when present, otherwise the type of
+    ///   the first batch.
+    /// - The result ends up with a Field that describes every chunk.
+    /// - For a field-free SuperArray, a Field is constructed from the first chunk's type.
+    /// - Chunks that already match the target pass through without penalty.
+    /// - The conversion per chunk delegates to `Array::check_unify_batch_dtype`.
+    /// - Categorical dictionaries are merged across the resolved chunks
+    ///   via `rebuild_category_manager` when the `shared_dict` feature is on.
+    #[cfg(all(feature = "allow_mixed_array_batches", feature = "views"))]
+    pub fn resolve_batches(self) -> SuperArray {
+        if self.chunks.is_empty() {
+            return self;
+        }
+
+        // Target dtype is the Field when present, otherwise the first chunk.
+        let field = match self.field.clone() {
+            Some(f) => f,
+            None => {
+                let first = &self.chunks[0];
+                Arc::new(Field::new(
+                    "data",
+                    first.arrow_type(),
+                    first.is_nullable(),
+                    None,
+                ))
+            }
+        };
+
+        // Fast path - all chunks already match the target.
+        if self
+            .chunks
+            .iter()
+            .all(|chunk| chunk.arrow_type() == field.dtype)
+        {
+            let mut sa = self;
+            if sa.field.is_none() {
+                sa.field = Some(field);
+            }
+            return sa;
+        }
+
+        // Convert each chunk through check_unify_batch_dtype.
+        let chunks: Vec<Array> = self
+            .chunks
+            .into_iter()
+            .map(|chunk| Array::check_unify_batch_dtype(chunk, &field))
+            .collect();
+
+        #[cfg_attr(not(feature = "shared_dict"), allow(unused_mut))]
+        let mut sa = SuperArray {
+            chunks,
+            field: Some(field),
+            null_counts: None,
+            #[cfg(feature = "shared_dict")]
+            category_manager: None,
+        };
+        #[cfg(feature = "shared_dict")]
+        sa.rebuild_category_manager();
+        sa
+    }
+
     /// Borrow the column's `CategoryManagerT`, or `None` if the column
     /// is not categorical or no chunks have been pushed yet.
     ///
@@ -1247,6 +1311,19 @@ impl FromIterator<Array> for SuperArray {
     fn from_iter<T: IntoIterator<Item = Array>>(iter: T) -> Self {
         let chunks: Vec<Array> = iter.into_iter().collect();
         Self::from_arrays(chunks)
+    }
+}
+
+/// Consolidates all chunks into a single contiguous `ArrayV`.
+///
+/// Empty SuperArrays produce a zero-row array of the Field dtype
+/// when a Field is present, or `Array::Null` otherwise.
+#[cfg(feature = "views")]
+impl From<SuperArray> for ArrayV {
+    fn from(sa: SuperArray) -> Self {
+        #[cfg(feature = "allow_mixed_array_batches")]
+        let sa = sa.resolve_batches();
+        ArrayV::from(sa.consolidate())
     }
 }
 
@@ -1731,8 +1808,9 @@ mod tests {
         assert_eq!(sa.len(), 5);
     }
 
-    /// A `Field`-carrying constructor rejects mixed chunks with the feature
-    /// on: a present field always describes every chunk.
+    /// - `Field` holding constructor rejects mixed chunks with the feature
+    /// on. 
+    /// - Presents field instance describes every chunk.
     #[cfg(feature = "allow_mixed_array_batches")]
     #[test]
     #[should_panic(expected = "ArrowType mismatch")]
@@ -1746,7 +1824,7 @@ mod tests {
         );
     }
 
-    /// A push onto a `Field`-carrying SuperArray rejects a mismatched chunk
+    /// A push onto a `Field`-holding SuperArray rejects a mismatched chunk
     /// with the feature on.
     #[cfg(feature = "allow_mixed_array_batches")]
     #[test]

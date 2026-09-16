@@ -255,6 +255,15 @@ impl From<SuperTable> for SuperTableV {
     }
 }
 
+/// Consolidates all view slices into a single `TableV`.
+///
+/// Empty views produce an empty `TableV` via `Table::default`.
+impl From<SuperTableV> for TableV {
+    fn from(view: SuperTableV) -> Self {
+        TableV::from(view.consolidate())
+    }
+}
+
 impl Display for SuperTableV {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         writeln!(
