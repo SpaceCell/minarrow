@@ -1199,6 +1199,16 @@ impl From<SuperTableV> for SuperTable {
     }
 }
 
+/// Consolidates all batches into a single `TableV`.
+///
+/// Empty SuperTables produce an empty `TableV` via `Table::default`.
+#[cfg(feature = "views")]
+impl From<SuperTable> for TableV {
+    fn from(st: SuperTable) -> Self {
+        TableV::from(st.consolidate())
+    }
+}
+
 /// Ergonomic constructor for a [`SuperTable`] from named table batches.
 ///
 /// Each batch argument may be a `Table` or `Arc<Table>`; both flow
