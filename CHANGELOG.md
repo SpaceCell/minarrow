@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
+## 0.18.2 Minor Enhancements Release
+
+## Added
+
+* From<Arc<Value>> for `Value` and `as_any_mut` for `CustomValue`
+* Multi-type validators `resolve_batches` and `confirm_batch_dtype` for `SuperArray` when the `allow_mixed_array_batches` is on.
+
+## Optimisations
+* Improved zero init for `Matrix` supporting fast initialisation.
+
+## Bugfixes
+* Fixed `SuperArrayV::slice` returning the parent array length instead of the windowed slice portion.
+
+## Security Enhancements
+* Added Validation of `offset+len` bounds in string kernels and `Buffer::from_shared_column`. *Thank you `ksj1230` for the PR.*
+
 ## 0.18.1 - 2026-09-10 HotFix
 - This is a hot-fix release, as Decimal required a small change to ensure that precision is correctly self-describing on `Scalar`.
 - It additionally includes:
