@@ -92,6 +92,27 @@ pub enum TextArray {
 }
 
 impl TextArray {
+    /// Returns the variant name as a short string, for example "String32" or "Categorical8".
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            TextArray::String32(_) => "String32",
+            #[cfg(feature = "large_string")]
+            TextArray::String64(_) => "String64",
+            #[cfg(feature = "default_categorical_8")]
+            TextArray::Categorical8(_) => "Categorical8",
+            #[cfg(feature = "extended_categorical")]
+            TextArray::Categorical16(_) => "Categorical16",
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            TextArray::Categorical32(_) => "Categorical32",
+            #[cfg(feature = "extended_categorical")]
+            TextArray::Categorical64(_) => "Categorical64",
+            TextArray::Null => "Null",
+        }
+    }
+
     /// Returns the logical length of the text array.
     #[inline]
     pub fn len(&self) -> usize {
@@ -711,31 +732,11 @@ impl Concatenate for TextArray {
                 to: "TextArray",
                 message: Some(format!(
                     "Cannot concatenate mismatched TextArray variants: {:?} and {:?}",
-                    text_variant_name(&lhs),
-                    text_variant_name(&rhs)
+                    lhs.variant_name(),
+                    rhs.variant_name()
                 )),
             }),
         }
     }
 }
 
-/// Helper function to get the variant name for error messages
-fn text_variant_name(arr: &TextArray) -> &'static str {
-    match arr {
-        TextArray::String32(_) => "String32",
-        #[cfg(feature = "large_string")]
-        TextArray::String64(_) => "String64",
-        #[cfg(feature = "default_categorical_8")]
-        TextArray::Categorical8(_) => "Categorical8",
-        #[cfg(feature = "extended_categorical")]
-        TextArray::Categorical16(_) => "Categorical16",
-        #[cfg(any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        ))]
-        TextArray::Categorical32(_) => "Categorical32",
-        #[cfg(feature = "extended_categorical")]
-        TextArray::Categorical64(_) => "Categorical64",
-        TextArray::Null => "Null",
-    }
-}

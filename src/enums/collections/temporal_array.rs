@@ -92,6 +92,15 @@ pub enum TemporalArray {
 }
 
 impl TemporalArray {
+    /// Returns the variant name as a short string, for example "Datetime64".
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            TemporalArray::Datetime32(_) => "Datetime32",
+            TemporalArray::Datetime64(_) => "Datetime64",
+            TemporalArray::Null => "Null",
+        }
+    }
+
     /// Returns the logical length of the temporal array.
     #[inline]
     pub fn len(&self) -> usize {
@@ -225,8 +234,8 @@ impl TemporalArray {
                 to: "TemporalArray",
                 message: Some(format!(
                     "Cannot insert {} into {}: incompatible types",
-                    temporal_variant_name(rhs),
-                    temporal_variant_name(lhs)
+                    rhs.variant_name(),
+                    lhs.variant_name()
                 )),
             }),
         }
@@ -327,8 +336,8 @@ impl Concatenate for TemporalArray {
                 to: "TemporalArray",
                 message: Some(format!(
                     "Cannot concatenate mismatched TemporalArray variants: {:?} and {:?}",
-                    temporal_variant_name(&lhs),
-                    temporal_variant_name(&rhs)
+                    lhs.variant_name(),
+                    rhs.variant_name()
                 )),
             }),
         }
@@ -669,15 +678,6 @@ impl DatetimeOps for TemporalArray {
             ))),
             TemporalArray::Null => Err(MinarrowError::NullError { message: None }),
         }
-    }
-}
-
-/// Helper function to get the variant name for error messages
-fn temporal_variant_name(arr: &TemporalArray) -> &'static str {
-    match arr {
-        TemporalArray::Datetime32(_) => "Datetime32",
-        TemporalArray::Datetime64(_) => "Datetime64",
-        TemporalArray::Null => "Null",
     }
 }
 
