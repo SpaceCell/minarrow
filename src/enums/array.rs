@@ -2030,52 +2030,10 @@ impl Array {
     /// Arrow physical type for this array.
     pub fn arrow_type(&self) -> ArrowType {
         match self {
-            Array::NumericArray(inner) => match inner {
-                #[cfg(feature = "extended_numeric_types")]
-                NumericArray::Int8(_) => ArrowType::Int8,
-                #[cfg(feature = "extended_numeric_types")]
-                NumericArray::Int16(_) => ArrowType::Int16,
-                NumericArray::Int32(_) => ArrowType::Int32,
-                NumericArray::Int64(_) => ArrowType::Int64,
-                #[cfg(feature = "extended_numeric_types")]
-                NumericArray::UInt8(_) => ArrowType::UInt8,
-                #[cfg(feature = "extended_numeric_types")]
-                NumericArray::UInt16(_) => ArrowType::UInt16,
-                NumericArray::UInt32(_) => ArrowType::UInt32,
-                NumericArray::UInt64(_) => ArrowType::UInt64,
-                NumericArray::Float32(_) => ArrowType::Float32,
-                NumericArray::Float64(_) => ArrowType::Float64,
-                #[cfg(feature = "decimal")]
-                NumericArray::Decimal32(a) => a.arrow_type(),
-                #[cfg(feature = "decimal")]
-                NumericArray::Decimal64(a) => a.arrow_type(),
-                #[cfg(feature = "decimal")]
-                NumericArray::Decimal128(a) => a.arrow_type(),
-                NumericArray::Null => ArrowType::Null,
-            },
-            Array::TextArray(inner) => match inner {
-                TextArray::String32(_) => ArrowType::String,
-                #[cfg(feature = "large_string")]
-                TextArray::String64(_) => ArrowType::LargeString,
-                #[cfg(feature = "default_categorical_8")]
-                TextArray::Categorical8(_) => ArrowType::Dictionary(CategoricalIndexType::UInt8),
-                #[cfg(feature = "extended_categorical")]
-                TextArray::Categorical16(_) => ArrowType::Dictionary(CategoricalIndexType::UInt16),
-                #[cfg(any(
-                    not(feature = "default_categorical_8"),
-                    feature = "extended_categorical"
-                ))]
-                TextArray::Categorical32(_) => ArrowType::Dictionary(CategoricalIndexType::UInt32),
-                #[cfg(feature = "extended_categorical")]
-                TextArray::Categorical64(_) => ArrowType::Dictionary(CategoricalIndexType::UInt64),
-                TextArray::Null => ArrowType::Null,
-            },
+            Array::NumericArray(inner) => inner.arrow_type(),
+            Array::TextArray(inner) => inner.arrow_type(),
             #[cfg(feature = "datetime")]
-            Array::TemporalArray(inner) => match inner {
-                TemporalArray::Datetime32(_) => ArrowType::Date32,
-                TemporalArray::Datetime64(_) => ArrowType::Date64,
-                TemporalArray::Null => ArrowType::Null,
-            },
+            Array::TemporalArray(inner) => inner.arrow_type(),
             Array::BooleanArray(_) => ArrowType::Boolean,
             Array::Null => ArrowType::Null,
         }

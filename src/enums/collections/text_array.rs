@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
+use crate::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::{Bitmask, CategoricalArray, MaskedArray, StringArray};
 
@@ -92,6 +93,27 @@ pub enum TextArray {
 }
 
 impl TextArray {
+    /// Returns the Arrow physical type for this text array.
+    pub fn arrow_type(&self) -> ArrowType {
+        match self {
+            TextArray::String32(_) => ArrowType::String,
+            #[cfg(feature = "large_string")]
+            TextArray::String64(_) => ArrowType::LargeString,
+            #[cfg(feature = "default_categorical_8")]
+            TextArray::Categorical8(_) => ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            #[cfg(feature = "extended_categorical")]
+            TextArray::Categorical16(_) => ArrowType::Dictionary(CategoricalIndexType::UInt16),
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            TextArray::Categorical32(_) => ArrowType::Dictionary(CategoricalIndexType::UInt32),
+            #[cfg(feature = "extended_categorical")]
+            TextArray::Categorical64(_) => ArrowType::Dictionary(CategoricalIndexType::UInt64),
+            TextArray::Null => ArrowType::Null,
+        }
+    }
+
     /// Returns the logical length of the text array.
     #[inline]
     pub fn len(&self) -> usize {
@@ -711,31 +733,11 @@ impl Concatenate for TextArray {
                 to: "TextArray",
                 message: Some(format!(
                     "Cannot concatenate mismatched TextArray variants: {:?} and {:?}",
-                    text_variant_name(&lhs),
-                    text_variant_name(&rhs)
+                    lhs.arrow_type(),
+                    rhs.arrow_type()
                 )),
             }),
         }
     }
 }
 
-/// Helper function to get the variant name for error messages
-fn text_variant_name(arr: &TextArray) -> &'static str {
-    match arr {
-        TextArray::String32(_) => "String32",
-        #[cfg(feature = "large_string")]
-        TextArray::String64(_) => "String64",
-        #[cfg(feature = "default_categorical_8")]
-        TextArray::Categorical8(_) => "Categorical8",
-        #[cfg(feature = "extended_categorical")]
-        TextArray::Categorical16(_) => "Categorical16",
-        #[cfg(any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        ))]
-        TextArray::Categorical32(_) => "Categorical32",
-        #[cfg(feature = "extended_categorical")]
-        TextArray::Categorical64(_) => "Categorical64",
-        TextArray::Null => "Null",
-    }
-}
