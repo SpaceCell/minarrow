@@ -30,6 +30,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::ffi::arrow_dtype::ArrowType;
 use crate::{Bitmask, DatetimeArray, MaskedArray, TimeUnit};
 use crate::{
     enums::{error::MinarrowError, shape_dim::ShapeDim},
@@ -92,6 +93,15 @@ pub enum TemporalArray {
 }
 
 impl TemporalArray {
+    /// Returns the Arrow physical type for this temporal array.
+    pub fn arrow_type(&self) -> ArrowType {
+        match self {
+            TemporalArray::Datetime32(_) => ArrowType::Date32,
+            TemporalArray::Datetime64(_) => ArrowType::Date64,
+            TemporalArray::Null => ArrowType::Null,
+        }
+    }
+
     /// Returns the logical length of the temporal array.
     #[inline]
     pub fn len(&self) -> usize {
@@ -225,8 +235,8 @@ impl TemporalArray {
                 to: "TemporalArray",
                 message: Some(format!(
                     "Cannot insert {} into {}: incompatible types",
-                    temporal_variant_name(rhs),
-                    temporal_variant_name(lhs)
+                    rhs.arrow_type(),
+                    lhs.arrow_type()
                 )),
             }),
         }
@@ -327,8 +337,8 @@ impl Concatenate for TemporalArray {
                 to: "TemporalArray",
                 message: Some(format!(
                     "Cannot concatenate mismatched TemporalArray variants: {:?} and {:?}",
-                    temporal_variant_name(&lhs),
-                    temporal_variant_name(&rhs)
+                    lhs.arrow_type(),
+                    rhs.arrow_type()
                 )),
             }),
         }
@@ -669,15 +679,6 @@ impl DatetimeOps for TemporalArray {
             ))),
             TemporalArray::Null => Err(MinarrowError::NullError { message: None }),
         }
-    }
-}
-
-/// Helper function to get the variant name for error messages
-fn temporal_variant_name(arr: &TemporalArray) -> &'static str {
-    match arr {
-        TemporalArray::Datetime32(_) => "Datetime32",
-        TemporalArray::Datetime64(_) => "Datetime64",
-        TemporalArray::Null => "Null",
     }
 }
 

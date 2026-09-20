@@ -30,6 +30,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::ffi::arrow_dtype::ArrowType;
 use crate::{Bitmask, FloatArray, IntegerArray, MaskedArray, Vec64};
 use crate::{BooleanArray, StringArray};
 #[cfg(feature = "decimal")]
@@ -189,6 +190,33 @@ macro_rules! decimal_to_str {
 }
 
 impl NumericArray {
+    /// Returns the Arrow physical type for this numeric array.
+    pub fn arrow_type(&self) -> ArrowType {
+        match self {
+            #[cfg(feature = "extended_numeric_types")]
+            NumericArray::Int8(_) => ArrowType::Int8,
+            #[cfg(feature = "extended_numeric_types")]
+            NumericArray::Int16(_) => ArrowType::Int16,
+            NumericArray::Int32(_) => ArrowType::Int32,
+            NumericArray::Int64(_) => ArrowType::Int64,
+            #[cfg(feature = "extended_numeric_types")]
+            NumericArray::UInt8(_) => ArrowType::UInt8,
+            #[cfg(feature = "extended_numeric_types")]
+            NumericArray::UInt16(_) => ArrowType::UInt16,
+            NumericArray::UInt32(_) => ArrowType::UInt32,
+            NumericArray::UInt64(_) => ArrowType::UInt64,
+            NumericArray::Float32(_) => ArrowType::Float32,
+            NumericArray::Float64(_) => ArrowType::Float64,
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal32(a) => a.arrow_type(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal64(a) => a.arrow_type(),
+            #[cfg(feature = "decimal")]
+            NumericArray::Decimal128(a) => a.arrow_type(),
+            NumericArray::Null => ArrowType::Null,
+        }
+    }
+
     /// Returns the logical length of the numeric array.
     #[inline]
     pub fn len(&self) -> usize {
@@ -1246,40 +1274,14 @@ impl Concatenate for NumericArray {
                 to: "NumericArray",
                 message: Some(format!(
                     "Cannot concatenate mismatched NumericArray variants: {:?} and {:?}",
-                    variant_name(&lhs),
-                    variant_name(&rhs)
+                    lhs.arrow_type(),
+                    rhs.arrow_type()
                 )),
             }),
         }
     }
 }
 
-/// Helper function to get the variant name for error messages
-fn variant_name(arr: &NumericArray) -> &'static str {
-    match arr {
-        #[cfg(feature = "extended_numeric_types")]
-        NumericArray::Int8(_) => "Int8",
-        #[cfg(feature = "extended_numeric_types")]
-        NumericArray::Int16(_) => "Int16",
-        NumericArray::Int32(_) => "Int32",
-        NumericArray::Int64(_) => "Int64",
-        #[cfg(feature = "extended_numeric_types")]
-        NumericArray::UInt8(_) => "UInt8",
-        #[cfg(feature = "extended_numeric_types")]
-        NumericArray::UInt16(_) => "UInt16",
-        NumericArray::UInt32(_) => "UInt32",
-        NumericArray::UInt64(_) => "UInt64",
-        NumericArray::Float32(_) => "Float32",
-        NumericArray::Float64(_) => "Float64",
-        #[cfg(feature = "decimal")]
-        NumericArray::Decimal32(_) => "Decimal32",
-        #[cfg(feature = "decimal")]
-        NumericArray::Decimal64(_) => "Decimal64",
-        #[cfg(feature = "decimal")]
-        NumericArray::Decimal128(_) => "Decimal128",
-        NumericArray::Null => "Null",
-    }
-}
 
 // ---------------------------------------------------------------------------
 // From impls - DecimalArray -> NumericArray
