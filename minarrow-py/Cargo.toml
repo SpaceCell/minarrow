@@ -96,6 +96,11 @@ name = "roundtrip_tensor"
 path = "examples/roundtrip_tensor.rs"
 required-features = ["embed", "ndarray"]
 
+[[example]]
+name = "roundtrip_to_python"
+path = "examples/roundtrip_to_python.rs"
+required-features = ["embed"]
+
 [build-dependencies]
 pyo3-build-config = { version = "0.29", features = ["resolve-config"] }
 
