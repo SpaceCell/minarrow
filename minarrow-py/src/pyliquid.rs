@@ -277,19 +277,27 @@ impl PyInput for Value {
             Value::SuperArrayView(_) => Ok(py.None().into_bound(py)), // unimplemented
             Value::SuperTable(st) => st.as_ref().to_python(py),
             Value::SuperTableView(_) => Ok(py.None().into_bound(py)), // unimplemented
+            #[cfg(feature = "matrix")]
             Value::Matrix(m) => {
                 let obj = crate::matrix::PyMatrix((**m).clone());
                 Ok(Bound::new(py, obj)?.into_any())
             }
+            #[cfg(feature = "matrix")]
             Value::MatrixView(_) => Ok(py.None().into_bound(py)), // unimplemented
+            #[cfg(feature = "ndarray")]
             Value::NdArray(nd) => nd.as_ref().to_python(py),
+            #[cfg(feature = "ndarray")]
             Value::NdArrayView(ndv) => ndv.to_ndarray().to_python(py),
+            #[cfg(feature = "ndarray")]
             Value::SuperNdArray(_) => Ok(py.None().into_bound(py)), // unimplemented
+            #[cfg(feature = "ndarray")]
             Value::SuperNdArrayView(_) => Ok(py.None().into_bound(py)), // unimplemented
+            #[cfg(feature = "ndarray")]
             Value::XArray(xa) => {
                 let obj = crate::xarray::PyXArray(crate::xarray::PyXArrayInner::F64(xa.clone()));
                 Ok(Bound::new(py, obj)?.into_any())
             }
+            #[cfg(feature = "cube")]
             Value::Cube(c) => {
                 let obj = crate::cube::PyCube(c.clone());
                 Ok(Bound::new(py, obj)?.into_any())
