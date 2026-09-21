@@ -326,6 +326,8 @@ impl PyInput for Value {
 }
 
 /// Converts an unscaled decimal integer to a Python `decimal.Decimal`.
+///
+/// This is only for the string display it does not end up widening the underlying type
 #[cfg(feature = "decimal")]
 fn decimal_to_python<'py>(
     py: Python<'py>,
