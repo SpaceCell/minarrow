@@ -75,7 +75,7 @@ use std::sync::Once;
 use minarrow::ffi::arrow_c_ffi::{ArrowArrayStream, ArrowSchema};
 #[cfg(feature = "ndarray")]
 use minarrow::{NdArray, Vec64};
-use minarrow::{Array, Scalar, Table, Value};
+use minarrow::{Array, ArrayV, FieldArray, Scalar, SuperArray, SuperTable, Table, TableV, Value};
 #[cfg(feature = "ndarray")]
 use minarrow_pyo3::ffi::dlpack::import_dlpack;
 use minarrow_pyo3::ffi::to_rust;
@@ -183,6 +183,168 @@ impl PyInput for NdArray<f64> {
         let obj = PyNdArray(PyNdArrayInner::from(self.clone()));
         Ok(Bound::new(py, obj)?.into_any())
     }
+}
+
+impl PyInput for FieldArray {
+    fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.array.clone().to_python(py)
+    }
+}
+
+impl PyInput for TableV {
+    fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let obj = PyTable(PyTableInner::from(self.clone()));
+        Ok(Bound::new(py, obj)?.into_any())
+    }
+}
+
+impl PyInput for ArrayV {
+    fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let obj = PyArray(PyArrayInner::from(self.clone()));
+        Ok(Bound::new(py, obj)?.into_any())
+    }
+}
+
+impl PyInput for SuperTable {
+    fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let obj = PyChunkedTable(Arc::new(self.clone()), None);
+        Ok(Bound::new(py, obj)?.into_any())
+    }
+}
+
+impl PyInput for SuperArray {
+    fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let obj = PyChunkedArray(Arc::new(self.clone()));
+        Ok(Bound::new(py, obj)?.into_any())
+    }
+}
+
+impl PyInput for Scalar {
+    fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        use pyo3::IntoPyObject;
+        match self {
+            Scalar::Null => Ok(py.None().into_bound(py)),
+            Scalar::Boolean(v) => Ok(PyBool::new(py, *v).to_owned().into_any()),
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::Int8(v) => Ok(v.into_pyobject(py)?.into_any()),
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::Int16(v) => Ok(v.into_pyobject(py)?.into_any()),
+            Scalar::Int32(v) => Ok(v.into_pyobject(py)?.into_any()),
+            Scalar::Int64(v) => Ok(v.into_pyobject(py)?.into_any()),
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::UInt8(v) => Ok(v.into_pyobject(py)?.into_any()),
+            #[cfg(feature = "extended_numeric_types")]
+            Scalar::UInt16(v) => Ok(v.into_pyobject(py)?.into_any()),
+            Scalar::UInt32(v) => Ok(v.into_pyobject(py)?.into_any()),
+            Scalar::UInt64(v) => Ok(v.into_pyobject(py)?.into_any()),
+            Scalar::Float32(v) => Ok(v.into_pyobject(py)?.into_any()),
+            Scalar::Float64(v) => Ok(v.into_pyobject(py)?.into_any()),
+            #[cfg(feature = "decimal")]
+            Scalar::Decimal32(v, _precision, scale) => {
+                decimal_to_python(py, *v as i128, *scale)
+            }
+            #[cfg(feature = "decimal")]
+            Scalar::Decimal64(v, _precision, scale) => {
+                decimal_to_python(py, *v as i128, *scale)
+            }
+            #[cfg(feature = "decimal")]
+            Scalar::Decimal128(v, _precision, scale) => {
+                decimal_to_python(py, *v, *scale)
+            }
+            Scalar::String32(v) => Ok(v.into_pyobject(py)?.into_any()),
+            #[cfg(feature = "large_string")]
+            Scalar::String64(v) => Ok(v.into_pyobject(py)?.into_any()),
+            #[cfg(feature = "datetime")]
+            Scalar::Datetime32(v) => Ok(v.into_pyobject(py)?.into_any()),
+            #[cfg(feature = "datetime")]
+            Scalar::Datetime64(v) => Ok(v.into_pyobject(py)?.into_any()),
+            #[cfg(feature = "datetime")]
+            Scalar::Interval => Ok(py.None().into_bound(py)),
+        }
+    }
+}
+
+impl PyInput for Value {
+    fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        match self {
+            Value::Scalar(s) => s.to_python(py),
+            Value::Array(a) => a.as_ref().to_python(py),
+            Value::ArrayView(av) => av.as_ref().to_python(py),
+            Value::FieldArray(fa) => fa.as_ref().to_python(py),
+            Value::Table(t) => t.as_ref().to_python(py),
+            Value::TableView(tv) => tv.as_ref().to_python(py),
+            Value::SuperArray(sa) => sa.as_ref().to_python(py),
+            Value::SuperArrayView(_) => Ok(py.None().into_bound(py)), // unimplemented
+            Value::SuperTable(st) => st.as_ref().to_python(py),
+            Value::SuperTableView(_) => Ok(py.None().into_bound(py)), // unimplemented
+            Value::Matrix(m) => {
+                let obj = crate::matrix::PyMatrix((**m).clone());
+                Ok(Bound::new(py, obj)?.into_any())
+            }
+            Value::MatrixView(_) => Ok(py.None().into_bound(py)), // unimplemented
+            Value::NdArray(nd) => nd.as_ref().to_python(py),
+            Value::NdArrayView(ndv) => ndv.to_ndarray().to_python(py),
+            Value::SuperNdArray(_) => Ok(py.None().into_bound(py)), // unimplemented
+            Value::SuperNdArrayView(_) => Ok(py.None().into_bound(py)), // unimplemented
+            Value::XArray(xa) => {
+                let obj = crate::xarray::PyXArray(crate::xarray::PyXArrayInner::F64(xa.clone()));
+                Ok(Bound::new(py, obj)?.into_any())
+            }
+            Value::Cube(c) => {
+                let obj = crate::cube::PyCube(c.clone());
+                Ok(Bound::new(py, obj)?.into_any())
+            }
+            Value::VecValue(items) => {
+                let list = PyList::new(py, items.iter().map(|v| v.to_python(py)).collect::<PyResult<Vec<_>>>()?)?;
+                Ok(list.into_any())
+            }
+            Value::BoxValue(inner) => inner.to_python(py),
+            Value::ArcValue(inner) => inner.as_ref().to_python(py),
+            Value::Tuple2(t) => {
+                let elements = vec![t.0.to_python(py)?, t.1.to_python(py)?];
+                Ok(PyTuple::new(py, elements)?.into_any())
+            }
+            Value::Tuple3(t) => {
+                let elements = vec![t.0.to_python(py)?, t.1.to_python(py)?, t.2.to_python(py)?];
+                Ok(PyTuple::new(py, elements)?.into_any())
+            }
+            Value::Tuple4(t) => {
+                let elements = vec![t.0.to_python(py)?, t.1.to_python(py)?, t.2.to_python(py)?, t.3.to_python(py)?];
+                Ok(PyTuple::new(py, elements)?.into_any())
+            }
+            Value::Tuple5(t) => {
+                let elements = vec![t.0.to_python(py)?, t.1.to_python(py)?, t.2.to_python(py)?, t.3.to_python(py)?, t.4.to_python(py)?];
+                Ok(PyTuple::new(py, elements)?.into_any())
+            }
+            Value::Tuple6(t) => {
+                let elements = vec![t.0.to_python(py)?, t.1.to_python(py)?, t.2.to_python(py)?, t.3.to_python(py)?, t.4.to_python(py)?, t.5.to_python(py)?];
+                Ok(PyTuple::new(py, elements)?.into_any())
+            }
+            Value::Custom(_) => Ok(py.None().into_bound(py)),
+        }
+    }
+}
+
+/// Converts an unscaled decimal integer to a Python `decimal.Decimal`.
+///
+/// This is only for the string display it does not end up widening the underlying type
+#[cfg(feature = "decimal")]
+fn decimal_to_python<'py>(
+    py: Python<'py>,
+    unscaled: i128,
+    scale: i8,
+) -> PyResult<Bound<'py, PyAny>> {
+    let decimal_mod = py.import("decimal")?;
+    let text = if scale <= 0 {
+        let multiplier = 10i128.pow((-scale) as u32);
+        format!("{}", unscaled * multiplier)
+    } else {
+        let divisor = 10i128.pow(scale as u32);
+        let whole = unscaled / divisor;
+        let frac = (unscaled % divisor).unsigned_abs();
+        format!("{whole}.{frac:0>width$}", width = scale as usize)
+    };
+    decimal_mod.call_method1("Decimal", (text,))
 }
 
 /// Converts a supported Python object to a Minarrow [`Value`].

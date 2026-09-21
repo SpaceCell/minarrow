@@ -28,7 +28,7 @@ checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "minarrow"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "log",
  "num-traits",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "minarrow-py"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "minarrow",
  "minarrow-pyo3",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "minarrow-pyo3"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "minarrow",
  "pyo3",
@@ -197,6 +197,6 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "vec64"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aef6bbef159f21ac387220ebc71141524423f7886afd390bc7b140f12630425"
+checksum = "54db55dbf75205d7a52f11a60aa6742d0ce6a9eb3ed97346556f26aec246f139"
