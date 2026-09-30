@@ -50,7 +50,7 @@ use crate::SuperNdArray;
 use crate::SuperNdArrayV;
 #[cfg(feature = "xarray")]
 use crate::XArray;
-use crate::{Array, FieldArray, Table, traits::custom_value::CustomValue};
+use crate::{Array, Field, FieldArray, Table, traits::custom_value::CustomValue};
 use std::sync::Arc;
 
 #[cfg(feature = "chunked")]
@@ -233,6 +233,93 @@ impl Value {
         self.len() == 0
     }
 
+    /// The fields on this value.
+    ///
+    /// ## Behaviour
+    /// - Tables, table views and chunked tables return their field schema.
+    /// - Field arrays and chunked arrays return their single field.
+    /// - Arrays, array views and scalars construct an unnamed field that
+    ///   includes their arrow type so the available documentation is still
+    ///   present.
+    /// - Cubes return the schema of their constituent tables.
+    /// - Recursive wrappers return the fields of the inner value.
+    /// - Matrices, n-dimensional arrays, lists, tuples and custom values have
+    ///   no schema and return `None`.
+    pub fn fields(&self) -> Option<Vec<Arc<Field>>> {
+        match self {
+            #[cfg(feature = "scalar_type")]
+            Value::Scalar(s) => Some(vec![Arc::new(Field::new("", s.arrow_type(), true, None))]),
+
+            Value::Table(t) => Some(t.schema()),
+
+            #[cfg(feature = "views")]
+            Value::TableView(tv) => Some(tv.fields.clone()),
+
+            Value::Array(a) => {
+                Some(vec![Arc::new(Field::new("", a.arrow_type(), a.is_nullable(), None))])
+            }
+
+            #[cfg(feature = "views")]
+            Value::ArrayView(av) => Some(vec![Arc::new(Field::new(
+                "",
+                av.array.arrow_type(),
+                av.array.is_nullable(),
+                None,
+            ))]),
+
+            Value::FieldArray(fa) => Some(vec![fa.field.clone()]),
+
+            #[cfg(feature = "chunked")]
+            Value::SuperArray(sa) => sa.field().map(|f| vec![Arc::new(f.clone())]),
+
+            #[cfg(all(feature = "chunked", feature = "views"))]
+            Value::SuperArrayView(sav) => Some(vec![sav.field.clone()]),
+
+            #[cfg(feature = "chunked")]
+            Value::SuperTable(st) => Some(st.schema().to_vec()),
+
+            #[cfg(all(feature = "chunked", feature = "views"))]
+            Value::SuperTableView(stv) => Some(stv.cols()),
+
+            #[cfg(feature = "matrix")]
+            Value::Matrix(_) => None,
+
+            #[cfg(all(feature = "matrix", feature = "views"))]
+            Value::MatrixView(_) => None,
+
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(_) => None,
+
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(_) => None,
+
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(_) => None,
+
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(_) => None,
+
+            #[cfg(feature = "xarray")]
+            Value::XArray(_) => None,
+
+            #[cfg(feature = "cube")]
+            Value::Cube(c) => Some(c.schema()),
+
+            Value::VecValue(_) => None,
+
+            Value::BoxValue(bv) => bv.fields(),
+            Value::ArcValue(av) => av.fields(),
+
+            Value::Tuple2(_)
+            | Value::Tuple3(_)
+            | Value::Tuple4(_)
+            | Value::Tuple5(_)
+            | Value::Tuple6(_) => None,
+
+            Value::Custom(_) => None,
+        }
+    }
+
     /// Returns a zero-copy view over `[offset .. offset + length)` rows of this Value.
     ///
     /// For table and array types this returns the corresponding view variant.
@@ -409,6 +496,41 @@ mod tests {
             arr.push(i as i64);
         }
         Array::NumericArray(NumericArray::Int64(Arc::new(arr)))
+    }
+
+    #[test]
+    fn fields_of_a_table_are_its_schema() {
+        let table = Table::new(
+            "t".to_string(),
+            Some(vec![
+                FieldArray::from_arr("a", seq_array(3)),
+                FieldArray::from_arr("b", seq_array(3)),
+            ]),
+        );
+        let fields = Value::Table(Arc::new(table)).fields().expect("a table has fields");
+        let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn fields_of_a_field_array_are_its_own_field() {
+        let value = Value::FieldArray(Arc::new(FieldArray::from_arr("amount", seq_array(3))));
+        let fields = value.fields().expect("a field array has a field");
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "amount");
+    }
+
+    #[test]
+    fn an_unnamed_array_has_one_unnamed_field_of_its_type() {
+        let fields = Value::Array(Arc::new(seq_array(3))).fields().expect("an array has a field");
+        assert_eq!(fields.len(), 1);
+        assert!(fields[0].name.starts_with("UnnamedField"), "{}", fields[0].name);
+        assert_eq!(fields[0].dtype, ArrowType::Int64);
+    }
+
+    #[test]
+    fn a_list_has_no_fields() {
+        assert!(Value::VecValue(Arc::new(Vec::new())).fields().is_none());
     }
 
     /// `len` counts the rows a view covers, so callers can pass the count
