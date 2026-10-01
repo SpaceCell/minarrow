@@ -405,6 +405,16 @@ impl From<&PyArray> for ArrayV {
     }
 }
 
+impl From<&PyArray> for Array {
+    fn from(py_array: &PyArray) -> Self {
+        match &py_array.0 {
+            PyArrayInner::Array(array) => (**array).clone(),
+            PyArrayInner::Field(field) => field.array.clone(),
+            PyArrayInner::View(view) => view.to_array(),
+        }
+    }
+}
+
 #[pymethods]
 impl PyArray {
     /// Construct from a Python sequence, inferring the dtype. `None` elements

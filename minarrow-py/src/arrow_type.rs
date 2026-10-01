@@ -63,6 +63,13 @@ impl From<PyTimeUnit> for TimeUnit {
     }
 }
 
+#[cfg(feature = "datetime")]
+impl From<&PyTimeUnit> for TimeUnit {
+    fn from(unit: &PyTimeUnit) -> Self {
+        (*unit).into()
+    }
+}
+
 /// The unit of an interval type. Mirrors `minarrow::IntervalUnit`.
 #[cfg(feature = "datetime")]
 #[pyclass(from_py_object, eq, eq_int, name = "IntervalUnit", module = "minarrow")]
@@ -295,6 +302,12 @@ py_arrow_type_numeric!([
     Utf8View(),
     Dictionary { index: PyCategoricalIndexType },
 ]);
+
+impl From<&PyArrowType> for ArrowType {
+    fn from(dtype: &PyArrowType) -> Self {
+        dtype.clone().into()
+    }
+}
 
 #[pymethods]
 impl PyArrowType {

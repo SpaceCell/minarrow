@@ -22,6 +22,12 @@ fn has_feature(list: &str, feature: &str) -> bool {
 }
 
 fn main() {
+    // The source root, published to dependent build scripts as `DEP_MINARROW_ROOT`.
+    println!(
+        "cargo:root={}",
+        env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR")
+    );
+
     ////////////////////////////////////////////////////////////////
     // C-FFI Integration tests
     ////////////////////////////////////////////////////////////////

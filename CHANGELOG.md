@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
+## 0.18.3 - 2026-10-01 Nightly Compatibility Release
+
+## Added
+* `arrow_type` on `NumericArray`, `TextArray` and `TemporalArray`.
+* `Value::fields`, returning the fields that describe a value's columns.
+* `PyInput` and `From` implementations in minarrow-py.
+
+## Maintenance
+* Compatibility with the 2026-09-30 Rust nightly, which moves the unstable allocator surface to `allocator_ext`. Requires that nightly or later.
+* Upgraded vec64 to 0.5.3.
+
 ## 0.18.2 Minor Enhancements Release
 
 ## Added
@@ -33,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-* Typed, row-wise accessors (e.g., `.get_u64(i)`) on `ArrayView` including hot path variants that skip bounds checks. 
+* Typed, row-wise accessors (e.g., `.get_u64(i)`) on `ArrayView` including hot path variants that skip bounds checks.
 * **Decimal array support** behind the `decimal` feature flag.
   * Added `DecimalArray<T>` for Decimal32, Decimal64, and Decimal128.
   * Supports configurable precision and scale.
@@ -57,8 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Adds `SuperArray::check_type_uniformity()`, gated to the same feature,
     reporting whether all chunks have the same `ArrowType`.
   * Ensures that a `Field`, when present, still guarantees that describes every chunk. Attaching a field to non-uniform chunks is rejected. Hence, it is not possible to create
-  a `SuperTable` with mixed `SuperArray`s either, as that would be contractually incorrect. 
-* With the feature off, behaviour is unchanged. 
+  a `SuperTable` with mixed `SuperArray`s either, as that would be contractually incorrect.
+* With the feature off, behaviour is unchanged.
 * `fa_dt32!` and `fa_dt64!` macros for building a named `FieldArray` of datetimes.
 * KernelError::Overflow(String) enum error type.
 

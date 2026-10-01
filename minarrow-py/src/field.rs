@@ -33,6 +33,12 @@ use crate::dtype::{dtype_from_arrow, DType};
 #[derive(Clone)]
 pub struct PyField(pub Field);
 
+impl From<&PyField> for Field {
+    fn from(py_field: &PyField) -> Self {
+        py_field.0.clone()
+    }
+}
+
 #[pymethods]
 impl PyField {
     /// Construct from a name and an `ArrowType`. `metadata` is a string mapping.

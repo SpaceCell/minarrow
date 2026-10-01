@@ -365,6 +365,30 @@ impl From<TableV> for PyTable {
     }
 }
 
+impl From<&PyTable> for TableV {
+    fn from(py_table: &PyTable) -> Self {
+        py_table.0.as_view()
+    }
+}
+
+impl From<&PyTable> for Table {
+    fn from(py_table: &PyTable) -> Self {
+        match &py_table.0 {
+            PyTableInner::Owned(table) => (**table).clone(),
+            PyTableInner::View(view) => view.to_table(),
+        }
+    }
+}
+
+impl From<&PyTable> for Arc<Table> {
+    fn from(py_table: &PyTable) -> Self {
+        match &py_table.0 {
+            PyTableInner::Owned(table) => table.clone(),
+            PyTableInner::View(view) => Arc::new(view.to_table()),
+        }
+    }
+}
+
 #[pymethods]
 impl PyTable {
     /// Construct from a dict of column name to sequence. Columns must share a

@@ -41,6 +41,18 @@ impl From<Cube> for PyCube {
     }
 }
 
+impl From<&PyCube> for Cube {
+    fn from(py_cube: &PyCube) -> Self {
+        (*py_cube.0).clone()
+    }
+}
+
+impl From<&PyCube> for Arc<Cube> {
+    fn from(py_cube: &PyCube) -> Self {
+        py_cube.0.clone()
+    }
+}
+
 /// The table at `index`, as the Python object carrying it.
 fn table_at(cube: &Cube, index: usize) -> Option<PyTable> {
     cube.table(index)
