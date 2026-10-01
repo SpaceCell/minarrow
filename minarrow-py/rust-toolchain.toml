@@ -1,4 +1,4 @@
-# minarrow (through vec64) uses allocator_api and portable_simd, which are only
+# minarrow (through vec64) uses allocator_ext and portable_simd, which are only
 # available on the nightly toolchain. cargo selects it automatically here, so
 # local builds, CI, and source installs all use the right channel.
 [toolchain]

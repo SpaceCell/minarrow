@@ -43,6 +43,12 @@ impl From<Matrix> for PyMatrix {
     }
 }
 
+impl From<&PyMatrix> for Matrix {
+    fn from(py_matrix: &PyMatrix) -> Self {
+        py_matrix.0.clone()
+    }
+}
+
 #[pymethods]
 impl PyMatrix {
     /// Build a matrix from rows, each row a list of the same length.

@@ -11,6 +11,9 @@ homepage = "https://github.com/pbower/minarrow"
 readme = "README.md"
 keywords = ["arrow", "columnar", "dataframe", "pyarrow", "analytics"]
 description = "Minimal, straightforward and fast SIMD-compatible Apache Arrow inter-op for Python."
+# Gives dependent build scripts the source root as `DEP_MINARROW_PY_ROOT`, for
+# generators that read the conversions from the Python classes with `syn`.
+links = "minarrow_py"
 
 [workspace]
 

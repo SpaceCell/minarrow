@@ -1,9 +1,12 @@
 [package]
 name = "minarrow"
-version = "0.18.2"
+version = "0.18.3"
 edition = "2024"
 authors = ['Peter G. Bower']
 build = "build.rs"
+# Gives dependent build scripts the source root as `DEP_MINARROW_ROOT`, for
+# generators that read minarrow's conversions with `syn`.
+links = "minarrow"
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/pbower/minarrow"

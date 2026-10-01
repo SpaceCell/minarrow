@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-10-01
+- Bumped `minarrow` dependency from 0.18.2 to 0.18.3 for compatibility with the 2026-09-30 Rust nightly.
+
 ## [0.18.2] - 2026-09-19
 - Bumped `minarrow` dependency from 0.18.1 to 0.18.2.
 
