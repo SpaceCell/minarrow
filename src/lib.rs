@@ -118,7 +118,7 @@
 //!
 //! _Construction time for Vec<i64> (87 ns) and Vec64<i64> (84 ns) excluded from benchmarks._
 
-#![feature(allocator_api)]
+#![feature(allocator_ext)]
 #![feature(portable_simd)]
 
 pub use ::vec64::{Vec64, Vec64Alloc, vec64};
