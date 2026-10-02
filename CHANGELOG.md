@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
+## Unreleased
+
+## Added
+* Scatter indices as write counterpart to gather indices for mask-based writes.
+
 ## 0.18.3 - 2026-10-01 Nightly Compatibility Release
 
 ## Added
