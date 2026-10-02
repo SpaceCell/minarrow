@@ -1657,9 +1657,10 @@ impl Array {
                 let dst = Arc::make_mut(d);
                 dst.data.ensure_capacity(dst_len);
                 for (&di, &si) in dst_idx.iter().zip(src_idx) {
-                    // Safety: the bounds checks above put every `di` inside
-                    // this array and every `si` inside the window, and
-                    // `ensure_capacity` sizes the value bits to the array.
+                    // Safety: 
+                    // - the bounds checks above mean every `di` is inside
+                    // this array and every `si` inside the window
+                    // - `ensure_capacity` sizes the value bits to the array.
                     unsafe { dst.data.set_unchecked(di, s.data.get_unchecked(offset + si)) };
                 }
                 scatter_mask!(dst.null_mask, s.null_mask.as_ref());
