@@ -22,8 +22,6 @@ name = "minarrow_py"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# `scalar_type` is required by element access.
-# Note this crate's `large_string` feature controls that rather than Minarrow's default.
 minarrow = { version = "0.18", path = "..", default-features = false, features = [
     "views",
     "chunked",
@@ -32,17 +30,16 @@ minarrow = { version = "0.18", path = "..", default-features = false, features =
     "log",
     "scalar_type",
 ] }
-minarrow-pyo3 = { version = "0.18", path = "../pyo3", optional = true, default-features = false }
+minarrow-pyo3 = { version = "0.18", path = "../pyo3", default-features = false, features = ["scalar_type"] }
 pyo3 = { version = "0.29", features = ["abi3-py39"] }
 thiserror = "2"
 
 [features]
 default = ["datetime", "large_string", "matrix", "scalar_type", "value_type", "cube", "arrow_interop", "ndarray", "decimal"]
 extension-module = ["pyo3/extension-module"]
-arrow_interop = ["dep:minarrow-pyo3"]
+arrow_interop = []
 simd = ["minarrow/simd"]
-# N-dimensional tensor with DLPack capsule interchange. The capsule glue
-# lives in minarrow-pyo3's ffi::dlpack, alongside the Arrow capsule glue.
+# N-dimensional tensor with DLPack capsule interchange.
 ndarray = [
     "scalar_type",
     "minarrow/ndarray",
@@ -51,7 +48,6 @@ ndarray = [
     "minarrow/select",
     "minarrow/chunked",
     "minarrow/xarray",
-    "dep:minarrow-pyo3",
     "minarrow-pyo3/ndarray",
 ]
 
@@ -59,16 +55,16 @@ ndarray = [
 # Links libpython - use the default non `extension-module` link mode and
 # it should not be combined with `extension-module`.
 embed = ["arrow_interop", "scalar_type", "value_type", "simd"]
-decimal = ["minarrow/decimal", "minarrow-pyo3?/decimal"]
-datetime = ["minarrow/datetime", "minarrow-pyo3?/datetime"]
-extended_numeric_types = ["minarrow/extended_numeric_types", "minarrow-pyo3?/extended_numeric_types"]
+decimal = ["minarrow/decimal", "minarrow-pyo3/decimal"]
+datetime = ["minarrow/datetime", "minarrow-pyo3/datetime"]
+extended_numeric_types = ["minarrow/extended_numeric_types", "minarrow-pyo3/extended_numeric_types"]
 large_string = ["minarrow/large_string"]
 scalar_type = ["minarrow/scalar_type"]
 value_type = ["minarrow/value_type"]
 # Dense column-major f64 buffer for the routines that hand memory to LAPACK.
 matrix = ["minarrow/matrix"]
 cube = ["minarrow/cube"]
-default_categorical_8 = ["minarrow/default_categorical_8", "minarrow-pyo3?/default_categorical_8"]
+default_categorical_8 = ["minarrow/default_categorical_8", "minarrow-pyo3/default_categorical_8"]
 # Mirrors the core crate, where `extended_categorical` implies `default_categorical_8`.
 # `minarrow-pyo3` needs `extended_numeric_types` too, as its dictionary-index conversion
 # gates the 8 and 16-bit key arms on both features.
@@ -76,7 +72,7 @@ extended_categorical = [
     "default_categorical_8",
     "extended_numeric_types",
     "minarrow/extended_categorical",
-    "minarrow-pyo3?/extended_categorical",
+    "minarrow-pyo3/extended_categorical",
 ]
 
 [[example]]

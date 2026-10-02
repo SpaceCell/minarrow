@@ -120,8 +120,10 @@ use crate::ffi::dlpack::PyNdArrayInner;
 pub use error::{PyMinarrowError, PyMinarrowResult};
 pub use types::{
     PyArray, PyArrayView, PyChunkedArray, PyChunkedArrayView, PyField, PyRecordBatch,
-    PyRecordBatchView, PyTable, PyTableView,
+    PyRecordBatchView, PyTable, PyTableView, PyTextArrayView,
 };
+#[cfg(feature = "scalar_type")]
+pub use types::PyScalar;
 
 // Re-export minarrow types that users might need
 pub use minarrow::{Array, Field, FieldArray, MaskedArray, NumericArray, SuperArray, SuperTable, Table, TextArray};

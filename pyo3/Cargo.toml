@@ -16,6 +16,8 @@ keywords = [
 ]
 categories = ["external-ffi-bindings", "api-bindings"]
 description = "PyO3 bindings for MinArrow - zero-copy Arrow interop with Python via PyArrow"
+# Gives dependent build scripts the source root as `DEP_MINARROW_PYO3_ROOT`
+links = "minarrow_pyo3"
 
 [workspace]
 
@@ -41,6 +43,8 @@ default_categorical_8 = ["minarrow/default_categorical_8"]
 extended_categorical = ["minarrow/extended_categorical"]
 decimal = ["minarrow/decimal"]
 table_metadata = ["minarrow/table_metadata"]
+# Python scalar extraction through `PyScalar`.
+scalar_type = ["minarrow/scalar_type"]
 # N-dimensional tensor bridging with DLPack capsule interchange.
 ndarray = ["minarrow/ndarray", "minarrow/dlpack", "minarrow/views", "minarrow/select"]
 

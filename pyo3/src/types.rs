@@ -19,9 +19,14 @@
 
 use minarrow::{
     Array, ArrayV, Field, FieldArray, SuperArray, SuperArrayV, SuperTable, SuperTableV, Table,
-    TableV,
+    TableV, TextArrayV,
 };
+#[cfg(feature = "scalar_type")]
+use minarrow::Scalar;
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
+#[cfg(feature = "scalar_type")]
+use pyo3::types::PyBool;
 use pyo3::Borrowed;
 use std::sync::Arc;
 
@@ -109,6 +114,12 @@ impl From<PyArray> for Arc<Array> {
     }
 }
 
+impl From<PyArray> for Array {
+    fn from(value: PyArray) -> Self {
+        value.0.array
+    }
+}
+
 impl AsRef<Array> for PyArray {
     fn as_ref(&self) -> &Array {
         &self.0.array
@@ -132,6 +143,118 @@ impl<'py> IntoPyObject<'py> for PyArray {
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         // Use the preserved Field metadata for correct Arrow type export
         to_py::array_to_py(Arc::new(self.0.array), &self.0.field, py)
+    }
+}
+
+// PyTextArrayView - Wrapper around MinArrow's TextArrayV
+
+/// Transparent wrapper around MinArrow's [`TextArrayV`].
+///
+/// Extracts from a Python list of `str`, or from any object exporting a string
+/// or categorical array through the Arrow PyCapsule interface, such as a
+/// PyArrow string array.
+///
+/// # Example (Rust)
+/// ```ignore
+/// use minarrow_pyo3::PyTextArrayView;
+/// use minarrow::TextArrayV;
+///
+/// #[pyfunction]
+/// fn add_labels(labels: PyTextArrayView) -> PyResult<()> {
+///     let labels: TextArrayV = labels.into();
+///     // Process...
+///     Ok(())
+/// }
+/// ```
+#[repr(transparent)]
+#[derive(Debug, Clone)]
+pub struct PyTextArrayView(pub TextArrayV);
+
+impl From<PyTextArrayView> for TextArrayV {
+    fn from(value: PyTextArrayView) -> Self {
+        value.0
+    }
+}
+
+impl<'py> FromPyObject<'_, 'py> for PyTextArrayView {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
+        if let Ok(strings) = ob.extract::<Vec<String>>() {
+            return Ok(PyTextArrayView(TextArrayV::from(strings)));
+        }
+        match to_rust::array_to_rust(&ob)?.array {
+            Array::TextArray(text) => Ok(PyTextArrayView(TextArrayV::from(text))),
+            _ => Err(PyTypeError::new_err(
+                "expected a list of str or an Arrow string or categorical array",
+            )),
+        }
+    }
+}
+
+// PyScalar - Wrapper around MinArrow's Scalar
+
+/// Transparent wrapper around MinArrow's [`Scalar`].
+///
+/// Extracts from a single Python value. `None` becomes `Scalar::Null`, and
+/// `bool`, `int`, `float` and `str` become `Boolean`, `Int64`, `Float64` and
+/// `String32`. `bool` is checked before `int` because a Python `bool` is an
+/// `int` subclass. Any other value raises `TypeError`.
+///
+/// # Example (Rust)
+/// ```ignore
+/// use minarrow_pyo3::PyScalar;
+/// use minarrow::Scalar;
+///
+/// #[pyfunction]
+/// fn fill_value(value: PyScalar) -> PyResult<()> {
+///     let value: Scalar = value.into();
+///     // Process...
+///     Ok(())
+/// }
+/// ```
+#[cfg(feature = "scalar_type")]
+#[repr(transparent)]
+#[derive(Debug, Clone)]
+pub struct PyScalar(pub Scalar);
+
+#[cfg(feature = "scalar_type")]
+impl From<Scalar> for PyScalar {
+    fn from(scalar: Scalar) -> Self {
+        Self(scalar)
+    }
+}
+
+#[cfg(feature = "scalar_type")]
+impl From<PyScalar> for Scalar {
+    fn from(value: PyScalar) -> Self {
+        value.0
+    }
+}
+
+#[cfg(feature = "scalar_type")]
+impl<'py> FromPyObject<'_, 'py> for PyScalar {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
+        if ob.is_none() {
+            return Ok(PyScalar(Scalar::Null));
+        }
+        if ob.is_instance_of::<PyBool>() {
+            return Ok(PyScalar(Scalar::Boolean(ob.extract()?)));
+        }
+        if let Ok(number) = ob.extract::<i64>() {
+            return Ok(PyScalar(Scalar::Int64(number)));
+        }
+        if let Ok(number) = ob.extract::<f64>() {
+            return Ok(PyScalar(Scalar::Float64(number)));
+        }
+        if let Ok(text) = ob.extract::<String>() {
+            return Ok(PyScalar(Scalar::String32(text)));
+        }
+        Err(PyTypeError::new_err(
+            "value must be None, bool, int, float, or str",
+        ))
     }
 }
 

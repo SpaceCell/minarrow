@@ -38,8 +38,9 @@ use crate::arrow_type::PyArrowType;
 use pyo3::exceptions::PyNotImplementedError;
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::ffi;
+use minarrow_pyo3::PyScalar;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyString};
+use pyo3::types::PyString;
 use pyo3::IntoPyObjectExt;
 
 /// Reads a Python sequence into a single 64-byte aligned `Vec64` buffer.
@@ -527,24 +528,7 @@ pub fn categorical_from_codes(
 /// `int` subclass. The scalar is later converted to the target array's element
 /// type when it is pushed or set.
 pub fn py_to_scalar(value: &Bound<'_, PyAny>) -> PyResult<Scalar> {
-    if value.is_none() {
-        return Ok(Scalar::Null);
-    }
-    if value.is_instance_of::<PyBool>() {
-        return Ok(Scalar::Boolean(value.extract()?));
-    }
-    if let Ok(number) = value.extract::<i64>() {
-        return Ok(Scalar::Int64(number));
-    }
-    if let Ok(number) = value.extract::<f64>() {
-        return Ok(Scalar::Float64(number));
-    }
-    if let Ok(text) = value.extract::<String>() {
-        return Ok(Scalar::String32(text));
-    }
-    Err(PyTypeError::new_err(
-        "value must be None, bool, int, float, or str",
-    ))
+    value.extract::<PyScalar>().map(Scalar::from)
 }
 
 pub fn resolve_index(i: isize, len: usize) -> PyResult<usize> {
