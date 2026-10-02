@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "minarrow-py"
-version = "0.18.2"
+version = "0.18.3"
 dependencies = [
  "minarrow",
  "minarrow-pyo3",

@@ -23,6 +23,8 @@ use minarrow::{arr_i8_opt, arr_i16_opt, arr_u8_opt, arr_u16_opt};
 use minarrow::enums::array::extract_option_values64;
 #[cfg(feature = "datetime")]
 use minarrow::enums::time_units::TimeUnit;
+#[cfg(feature = "value_type")]
+use minarrow::Value;
 #[cfg(feature = "decimal")]
 use minarrow::DecimalArray;
 #[cfg(feature = "datetime")]
@@ -40,6 +42,7 @@ use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyString};
+use pyo3::Borrowed;
 use pyo3::IntoPyObjectExt;
 
 /// Reads a Python sequence into a single 64-byte aligned `Vec64` buffer.
@@ -545,6 +548,35 @@ pub fn py_to_scalar(value: &Bound<'_, PyAny>) -> PyResult<Scalar> {
     Err(PyTypeError::new_err(
         "value must be None, bool, int, float, or str",
     ))
+}
+
+/// A Minarrow `Scalar` extracted from a Python value through [`py_to_scalar`].
+///
+/// Used as a pyo3 parameter type where a function takes a `Scalar`, since
+/// `FromPyObject` cannot be implemented for `Scalar` outside Minarrow.
+#[repr(transparent)]
+#[derive(Debug, Clone)]
+pub struct PyScalar(pub Scalar);
+
+impl<'py> FromPyObject<'_, 'py> for PyScalar {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
+        py_to_scalar(&ob).map(PyScalar)
+    }
+}
+
+impl From<PyScalar> for Scalar {
+    fn from(value: PyScalar) -> Self {
+        value.0
+    }
+}
+
+#[cfg(feature = "value_type")]
+impl From<PyScalar> for Value {
+    fn from(value: PyScalar) -> Self {
+        Value::Scalar(value.0)
+    }
 }
 
 pub fn resolve_index(i: isize, len: usize) -> PyResult<usize> {

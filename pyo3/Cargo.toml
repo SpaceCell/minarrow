@@ -16,6 +16,9 @@ keywords = [
 ]
 categories = ["external-ffi-bindings", "api-bindings"]
 description = "PyO3 bindings for MinArrow - zero-copy Arrow interop with Python via PyArrow"
+# Gives dependent build scripts the source root as `DEP_MINARROW_PYO3_ROOT`, for
+# generators that read the Python conversions with `syn`.
+links = "minarrow_pyo3"
 
 [workspace]
 

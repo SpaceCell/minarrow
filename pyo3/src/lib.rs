@@ -120,7 +120,7 @@ use crate::ffi::dlpack::PyNdArrayInner;
 pub use error::{PyMinarrowError, PyMinarrowResult};
 pub use types::{
     PyArray, PyArrayView, PyChunkedArray, PyChunkedArrayView, PyField, PyRecordBatch,
-    PyRecordBatchView, PyTable, PyTableView,
+    PyRecordBatchView, PyTable, PyTableView, PyTextArrayView,
 };
 
 // Re-export minarrow types that users might need

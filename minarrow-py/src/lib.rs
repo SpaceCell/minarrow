@@ -52,7 +52,7 @@ pub use chunked_array::PyChunkedArray;
 #[cfg(feature = "ndarray")]
 pub use chunked_ndarray::{PyChunkedNdArray, PyChunkedNdArrayInner};
 pub use chunked_table::PyChunkedTable;
-pub use convert::{build_array, py_to_scalar, resolve_index, scalar_to_py};
+pub use convert::{build_array, py_to_scalar, resolve_index, scalar_to_py, PyScalar};
 #[cfg(feature = "cube")]
 pub use cube::PyCube;
 pub use dtype::{dtype_from_arrow, width_from_arrow, DType, TypeClass};
