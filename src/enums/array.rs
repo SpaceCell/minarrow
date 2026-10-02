@@ -1507,14 +1507,24 @@ impl Array {
                 match $src_mask {
                     Some(sm) => {
                         let mask = $dst_mask.get_or_insert_with(|| Bitmask::new_set_all(dst_len, true));
+                        mask.ensure_capacity(dst_len);
                         for (&d, &s) in dst_idx.iter().zip(src_idx) {
-                            mask.set(d, sm.get(offset + s));
+                            // Safety: the bounds checks above put every `d`
+                            // inside this array and every `s` inside the
+                            // window, `ensure_capacity` sizes this mask to the
+                            // array, and the source mask spans its backing
+                            // array.
+                            unsafe { mask.set_unchecked(d, sm.get_unchecked(offset + s)) };
                         }
                     }
                     None => {
                         if let Some(mask) = $dst_mask.as_mut() {
+                            mask.ensure_capacity(dst_len);
                             for &d in dst_idx {
-                                mask.set(d, true);
+                                // Safety: the bounds check above puts every
+                                // `d` inside this array, and `ensure_capacity`
+                                // sizes this mask to the array.
+                                unsafe { mask.set_unchecked(d, true) };
                             }
                         }
                     }
@@ -1645,8 +1655,12 @@ impl Array {
             },
             (Array::BooleanArray(d), Array::BooleanArray(s)) => {
                 let dst = Arc::make_mut(d);
+                dst.data.ensure_capacity(dst_len);
                 for (&di, &si) in dst_idx.iter().zip(src_idx) {
-                    dst.data.set(di, s.data.get(offset + si));
+                    // Safety: the bounds checks above put every `di` inside
+                    // this array and every `si` inside the window, and
+                    // `ensure_capacity` sizes the value bits to the array.
+                    unsafe { dst.data.set_unchecked(di, s.data.get_unchecked(offset + si)) };
                 }
                 scatter_mask!(dst.null_mask, s.null_mask.as_ref());
             }
