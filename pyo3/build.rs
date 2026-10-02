@@ -14,4 +14,9 @@
 
 fn main() {
     pyo3_build_config::add_extension_module_link_args();
+    // The source root, published to dependent build scripts as `DEP_MINARROW_PYO3_ROOT`.
+    println!(
+        "cargo:root={}",
+        std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR")
+    );
 }
