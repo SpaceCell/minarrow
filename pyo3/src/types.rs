@@ -109,6 +109,12 @@ impl From<PyArray> for Arc<Array> {
     }
 }
 
+impl From<PyArray> for Array {
+    fn from(value: PyArray) -> Self {
+        value.0.array
+    }
+}
+
 impl AsRef<Array> for PyArray {
     fn as_ref(&self) -> &Array {
         &self.0.array
