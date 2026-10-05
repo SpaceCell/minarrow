@@ -33,6 +33,7 @@
 //!     `StringArray<u32>` (UTF-8), preserving null masks.
 //! - **Strings <-> Categoricals**
 //!   - `TryFrom<&StringArray<Off>> for CategoricalArray<Idx>` builds a dictionary with stable codes.
+//!   - `TryFrom<StringAVT<Off>> for CategoricalArray<Idx>` converts a string array window in place.
 //!   - `TryFrom<&CategoricalArray<Idx>> for StringArray<Off>` materialises codes back to UTF-8.
 //!   - Widening/narrowing categorical index conversions (`From`/`TryFrom`) with overflow checks.
 //! - **String offset width changes**
@@ -63,7 +64,7 @@ use crate::traits::concatenate::Concatenate;
 use crate::traits::view::View;
 use crate::{
     Array, Bitmask, BooleanArray, CategoricalArray, FloatArray, Integer, IntegerArray,
-    NumericArray, StringArray, TextArray, Vec64,
+    NumericArray, StringAVT, StringArray, TextArray, Vec64,
 };
 use num_traits::FromPrimitive;
 
@@ -483,11 +484,37 @@ macro_rules! string_to_cat {
             type Error = MinarrowError;
 
             fn try_from(src: &StringArray<$off>) -> Result<Self, Self::Error> {
+                CategoricalArray::try_from((src, 0, src.offsets.len().saturating_sub(1)))
+            }
+        }
+
+        /// Converts the string array window to a categorical array.
+        ///
+        /// The window is read in place, and the result holds only the
+        /// window's rows with codes assigned in order of first appearance.
+        /// Returns `MinarrowError::IndexError` when the window extends past
+        /// the end of the array.
+        impl<'a> TryFrom<StringAVT<'a, $off>> for CategoricalArray<$idx> {
+            type Error = MinarrowError;
+
+            fn try_from(
+                (src, offset, len): StringAVT<'a, $off>,
+            ) -> Result<Self, Self::Error> {
+                let n_rows = src.offsets.len().saturating_sub(1);
+                if offset + len > n_rows {
+                    return Err(MinarrowError::IndexError(format!(
+                        "String window {}..{} is out of bounds for an array of length {}",
+                        offset,
+                        offset + len,
+                        n_rows
+                    )));
+                }
+
                 let mut dict = HashMap::<&str, $idx>::new();
                 let mut uniq = Vec64::new();
-                let mut codes = Vec64::with_capacity(src.offsets.len().saturating_sub(1));
+                let mut codes = Vec64::with_capacity(len);
 
-                for win in src.offsets.windows(2) {
+                for win in src.offsets[offset..].windows(2).take(len) {
                     let (start, end) = (win[0].to_usize(), win[1].to_usize());
                     let slice = &src.data[start..end];
                     let s = std::str::from_utf8(slice).map_err(|e| MinarrowError::TypeError {
@@ -510,13 +537,21 @@ macro_rules! string_to_cat {
                     codes.push(code);
                 }
 
+                // Whole-array windows reuse the source mask. Partial windows
+                // copy their range of the mask into a new bitmask.
+                let null_mask = if offset == 0 && len == n_rows {
+                    src.null_mask.clone()
+                } else {
+                    src.null_mask.as_ref().map(|mask| mask.slice_clone(offset, len))
+                };
+
                 Ok(CategoricalArray {
                     data: codes.into(),
                     #[cfg(not(feature = "shared_dict"))]
                     unique_values: uniq,
                     #[cfg(feature = "shared_dict")]
                     dictionary: $crate::Dictionary::from(uniq),
-                    null_mask: src.null_mask.clone(),
+                    null_mask,
                 })
             }
         }
@@ -1450,5 +1485,99 @@ impl From<Scalar> for Array {
                 crate::DecimalArray::from_slice(&[v], p, s),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vec64;
+
+    #[cfg(feature = "default_categorical_8")]
+    type Code = u8;
+    #[cfg(not(feature = "default_categorical_8"))]
+    type Code = u32;
+
+    // The window covers rows 10 to 29 of a 100-row string array.
+    const WINDOW_OFFSET: usize = 10;
+    const WINDOW_LEN: usize = 20;
+
+    // Returns 100 labels cycling through seven values, with every fifth row null.
+    fn window_labels() -> (Vec<String>, Vec<bool>) {
+        let labels = (0..100).map(|i| format!("label_{}", i % 7)).collect();
+        let validity = (0..100).map(|i| i % 5 != 3).collect();
+        (labels, validity)
+    }
+
+    // The expected arrays are the outputs of the previous whole-array
+    // implementation, which assigned codes in order of first appearance and
+    // shared the source mask.
+    #[test]
+    fn test_string_to_categorical_whole_array_matches_previous_implementation() {
+        let mask = Bitmask::from_bools(&[true, true, true, false, true, true]);
+        let expected = CategoricalArray::<Code>::from_parts(
+            vec64![0, 1, 0, 2, 3, 1],
+            vec64!["b".to_string(), "a".to_string(), "".to_string(), "c".to_string()],
+            Some(mask.clone()),
+        );
+
+        let string32 =
+            StringArray::<u32>::from_vec(vec!["b", "a", "b", "", "c", "a"], Some(mask.clone()));
+        assert_eq!(CategoricalArray::<Code>::try_from(&string32).unwrap(), expected);
+
+        #[cfg(feature = "large_string")]
+        {
+            let string64 =
+                StringArray::<u64>::from_vec(vec!["b", "a", "b", "", "c", "a"], Some(mask));
+            assert_eq!(CategoricalArray::<Code>::try_from(&string64).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn test_string_to_categorical_window_matches_new_array() {
+        let (labels, validity) = window_labels();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let window_end = WINDOW_OFFSET + WINDOW_LEN;
+
+        let backing =
+            StringArray::<u32>::from_vec(labels.clone(), Some(Bitmask::from_bools(&validity)));
+        let reference = StringArray::<u32>::from_vec(
+            labels[WINDOW_OFFSET..window_end].to_vec(),
+            Some(Bitmask::from_bools(&validity[WINDOW_OFFSET..window_end])),
+        );
+
+        let expected = CategoricalArray::<Code>::try_from(&reference).unwrap();
+        let window =
+            CategoricalArray::<Code>::try_from((&backing, WINDOW_OFFSET, WINDOW_LEN)).unwrap();
+        assert_eq!(expected.data.len(), WINDOW_LEN);
+        assert_eq!(window, expected);
+    }
+
+    #[cfg(feature = "large_string")]
+    #[test]
+    fn test_large_string_to_categorical_window_matches_new_array() {
+        let (labels, validity) = window_labels();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let window_end = WINDOW_OFFSET + WINDOW_LEN;
+
+        let backing =
+            StringArray::<u64>::from_vec(labels.clone(), Some(Bitmask::from_bools(&validity)));
+        let reference = StringArray::<u64>::from_vec(
+            labels[WINDOW_OFFSET..window_end].to_vec(),
+            Some(Bitmask::from_bools(&validity[WINDOW_OFFSET..window_end])),
+        );
+
+        let expected = CategoricalArray::<Code>::try_from(&reference).unwrap();
+        let window =
+            CategoricalArray::<Code>::try_from((&backing, WINDOW_OFFSET, WINDOW_LEN)).unwrap();
+        assert_eq!(expected.data.len(), WINDOW_LEN);
+        assert_eq!(window, expected);
+    }
+
+    #[test]
+    fn test_string_to_categorical_window_out_of_bounds() {
+        let strings = StringArray::<u32>::from_slice(&["a", "b", "c"]);
+        let result = CategoricalArray::<Code>::try_from((&strings, 2, 2));
+        assert!(matches!(result, Err(MinarrowError::IndexError(_))));
     }
 }
