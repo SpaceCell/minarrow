@@ -696,8 +696,11 @@ impl ByteSize for Matrix {
         self.data.est_bytes()
     }
 
+    /// The matrix reports `n_rows * n_cols` values at `f64` width. Column
+    /// stride padding is alignment layout rather than data, so it is
+    /// excluded.
     fn logical_bytes(&self) -> usize {
-        unimplemented!("Matrix has not yet implemented logical bytes.")
+        self.n_rows * self.n_cols * size_of::<f64>()
     }
 }
 
@@ -717,8 +720,10 @@ impl ByteSize for MatrixV {
         }
     }
 
+    /// The view reports the rows of its window across every backing column
+    /// at `f64` width.
     fn logical_bytes(&self) -> usize {
-        unimplemented!("MatrixV has not yet implemented logical bytes.")
+        self.len * self.matrix.n_cols * size_of::<f64>()
     }
 }
 
@@ -1031,13 +1036,9 @@ impl ByteSize for Value {
             Value::SuperTableView(stv) => stv.logical_bytes(),
             Value::FieldArray(fa) => fa.logical_bytes(),
             #[cfg(feature = "matrix")]
-            Value::Matrix(_) => {
-                unimplemented!("Matrix does not define logical byte accounting")
-            }
+            Value::Matrix(m) => m.logical_bytes(),
             #[cfg(all(feature = "matrix", feature = "views"))]
-            Value::MatrixView(_) => {
-                unimplemented!("MatrixV does not define logical byte accounting")
-            }
+            Value::MatrixView(mv) => mv.logical_bytes(),
             #[cfg(feature = "ndarray")]
             Value::NdArray(_) => {
                 unimplemented!("NdArray does not define logical byte accounting")
@@ -1181,6 +1182,32 @@ mod tests {
             table.slice(1, 3).logical_bytes(),
             1 + 3 + 6 + 3 * size_of::<i32>() + 4 * size_of::<u32>() + 9
         );
+    }
+
+    #[cfg(feature = "matrix")]
+    #[test]
+    fn matrix_excludes_stride_padding() {
+        // Five rows pad to a stride of eight, so the backing buffer holds
+        // 24 elements against 15 values
+        let m = Matrix::new(5, 3, None::<&str>);
+        assert_eq!(m.stride, 8);
+        assert_eq!(m.logical_bytes(), 5 * 3 * size_of::<f64>());
+        assert_eq!(m.est_bytes(), 8 * 3 * size_of::<f64>());
+    }
+
+    #[cfg(all(feature = "matrix", feature = "views"))]
+    #[test]
+    fn matrix_view_reports_window_rows() {
+        let view = MatrixV::from_matrix(Matrix::new(10, 3, None::<&str>), 2, 4);
+        assert_eq!(view.logical_bytes(), 4 * 3 * size_of::<f64>());
+    }
+
+    #[cfg(all(feature = "matrix", feature = "value_type"))]
+    #[test]
+    fn matrix_value_delegates_to_matrix() {
+        let m = Matrix::new(5, 2, None::<&str>);
+        let expected = m.logical_bytes();
+        assert_eq!(Value::from(m).logical_bytes(), expected);
     }
 
     #[cfg(all(feature = "value_type", feature = "scalar_type"))]
