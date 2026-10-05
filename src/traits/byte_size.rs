@@ -75,11 +75,9 @@ pub trait ByteSize {
     /// wire-size planning where the figure must match the payload.
     ///
     /// Views report the window they cover rather than the backing array.
-    ///
-    /// ### Warning
-    /// The non-Arrow numerical container types (`Matrix`, `NdArray` and their chunked
-    /// and view forms, plus `XArray`) do not yet define logical byte
-    /// accounting currently and panic with `unimplemented!` when called.
+    /// The numerical container types (`Matrix`, `NdArray` and their chunked
+    /// and view forms, plus `XArray`) count their logical elements at
+    /// element width, so column stride padding is excluded.
     fn logical_bytes(&self) -> usize;
 }
 
@@ -822,8 +820,23 @@ impl<T: crate::Float> ByteSize for XArray<T> {
         data_bytes + coord_bytes
     }
 
+    /// The array reports its storage values plus each axis name and the
+    /// logical bytes of any coordinate array.
     fn logical_bytes(&self) -> usize {
-        unimplemented!("XArray has not yet implemented logical bytes.")
+        use crate::structs::xarray::NdArrayE;
+        let data_bytes = match self.storage() {
+            NdArrayE::Owned(nd) => nd.logical_bytes(),
+            #[cfg(feature = "views")]
+            NdArrayE::View(v) => v.logical_bytes(),
+        };
+        let coord_bytes: usize = self
+            .axes()
+            .iter()
+            .map(|axis| {
+                axis.name.len() + axis.coords.as_ref().map_or(0, |c| c.logical_bytes())
+            })
+            .sum();
+        data_bytes + coord_bytes
     }
 }
 
@@ -1016,10 +1029,8 @@ impl ByteSize for Value {
         }
     }
 
-    /// The tabular variants delegate to their inner type. The numerical
-    /// container variants (`Matrix`, `NdArray` and their chunked and view
-    /// forms, plus `XArray`) and `Custom` do not define logical byte
-    /// accounting and panic with `unimplemented!` when called.
+    /// Each variant delegates to its inner type. `Custom` does not define
+    /// logical byte accounting and panics with `unimplemented!` when called.
     fn logical_bytes(&self) -> usize {
         match self {
             #[cfg(feature = "scalar_type")]
@@ -1052,9 +1063,7 @@ impl ByteSize for Value {
             #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
             Value::SuperNdArrayView(sv) => sv.logical_bytes(),
             #[cfg(feature = "xarray")]
-            Value::XArray(_) => {
-                unimplemented!("XArray does not define logical byte accounting")
-            }
+            Value::XArray(xa) => xa.logical_bytes(),
             #[cfg(feature = "cube")]
             Value::Cube(c) => c.logical_bytes(),
             Value::VecValue(vec) => vec.iter().map(|v| v.logical_bytes()).sum::<usize>(),
@@ -1240,6 +1249,23 @@ mod tests {
         assert_eq!(sup.logical_bytes(), 30 * size_of::<f64>());
         // Rows 2 to 7 span the batch boundary
         assert_eq!(sup.slice(2, 5).logical_bytes(), 15 * size_of::<f64>());
+    }
+
+    #[cfg(feature = "xarray")]
+    #[test]
+    fn xarray_counts_storage_axis_names_and_coordinates() {
+        use crate::structs::xarray::Axis;
+        let nd = NdArray::<f64>::from_slice(&[0.0; 6], &[3, 2]);
+        let coords = crate::Array::from_int64(IntegerArray::<i64>::from_slice(&[10, 20, 30]));
+        let xa = XArray::with_axes(
+            nd,
+            vec![Axis::with_coords("obs", coords), Axis::named("feat")],
+        );
+        // Six values, the names "obs" and "feat" and three i64 coordinates
+        assert_eq!(
+            xa.logical_bytes(),
+            6 * size_of::<f64>() + 3 + 4 + 3 * size_of::<i64>()
+        );
     }
 
     #[cfg(all(feature = "value_type", feature = "scalar_type"))]
