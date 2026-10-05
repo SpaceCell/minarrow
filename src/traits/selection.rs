@@ -77,6 +77,9 @@ pub trait DataSelector {
         );
         (indices[0], indices[0] + 1, true)
     }
+
+    /// Produce an owned version of this selector.
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync>;
 }
 
 // These traits are implemented on structures like Table, ArrayV, etc.
@@ -448,6 +451,10 @@ impl DataSelector for usize {
         );
         (*self, *self + 1, true)
     }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(*self)
+    }
 }
 
 /// Single data index from a plain integer literal. Negative values
@@ -474,12 +481,20 @@ impl DataSelector for i32 {
         );
         (*self as usize, *self as usize + 1, true)
     }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(*self)
+    }
 }
 
 /// Multiple data indices
 impl DataSelector for &[usize] {
     fn resolve_indices(&self, count: usize) -> Vec<usize> {
         self.iter().copied().filter(|&idx| idx < count).collect()
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.to_vec())
     }
 }
 
@@ -488,12 +503,20 @@ impl<const N: usize> DataSelector for &[usize; N] {
     fn resolve_indices(&self, count: usize) -> Vec<usize> {
         self.iter().copied().filter(|&idx| idx < count).collect()
     }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.to_vec())
+    }
 }
 
 /// Multiple data indices (Vec)
 impl DataSelector for Vec<usize> {
     fn resolve_indices(&self, count: usize) -> Vec<usize> {
         self.iter().copied().filter(|&idx| idx < count).collect()
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.clone())
     }
 }
 
@@ -516,6 +539,10 @@ impl DataSelector for Range<usize> {
             self.start, self.end, dim_size
         );
         (self.start, self.end, false)
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.clone())
     }
 }
 
@@ -541,6 +568,10 @@ impl DataSelector for Range<i32> {
         );
         (self.start as usize, self.end as usize, false)
     }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.clone())
+    }
 }
 
 /// Data range from selection
@@ -560,6 +591,10 @@ impl DataSelector for RangeFrom<usize> {
             "axis selection: range {}.. out of bounds (size {})", self.start, dim_size
         );
         (self.start, dim_size, false)
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.clone())
     }
 }
 
@@ -582,6 +617,10 @@ impl DataSelector for RangeFrom<i32> {
         );
         (self.start as usize, dim_size, false)
     }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.clone())
+    }
 }
 
 /// Data range to selection
@@ -602,6 +641,10 @@ impl DataSelector for RangeTo<usize> {
             "axis selection: range ..{} out of bounds (size {})", self.end, dim_size
         );
         (0, self.end, false)
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.clone())
     }
 }
 
@@ -625,6 +668,10 @@ impl DataSelector for RangeTo<i32> {
         );
         (0, self.end as usize, false)
     }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.clone())
+    }
 }
 
 /// Data full range selection
@@ -640,6 +687,10 @@ impl DataSelector for RangeFull {
     #[cfg(feature = "ndarray")]
     fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
         (0, dim_size, false)
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.clone())
     }
 }
 
@@ -663,6 +714,10 @@ impl DataSelector for RangeInclusive<usize> {
             self.start(), self.end(), dim_size
         );
         (*self.start(), *self.end() + 1, false)
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.clone())
     }
 }
 
@@ -690,5 +745,29 @@ impl DataSelector for RangeInclusive<i32> {
             self.start(), self.end(), dim_size
         );
         (*self.start() as usize, *self.end() as usize + 1, false)
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.clone())
+    }
+}
+
+/// Boxed data selector for owned selection
+impl DataSelector for Box<dyn DataSelector + Send + Sync> {
+    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+        (**self).resolve_indices(count)
+    }
+
+    fn is_contiguous(&self) -> bool {
+        (**self).is_contiguous()
+    }
+
+    #[cfg(feature = "ndarray")]
+    fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
+        (**self).resolve_axis(dim_size)
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        (**self).to_owned()
     }
 }
