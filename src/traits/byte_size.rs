@@ -779,7 +779,7 @@ impl<T> ByteSize for SuperNdArray<T> {
     }
 
     fn logical_bytes(&self) -> usize {
-        unimplemented!("SuperNdArray has not yet implemented logical bytes.")
+        self.batches.iter().map(|batch| batch.logical_bytes()).sum()
     }
 }
 
@@ -794,7 +794,7 @@ impl<T: crate::Float> ByteSize for SuperNdArrayV<T> {
     }
 
     fn logical_bytes(&self) -> usize {
-        unimplemented!("SuperNdArrayV has not yet implemented logical bytes.")
+        self.slices.iter().map(|slice| slice.logical_bytes()).sum()
     }
 }
 
@@ -1048,13 +1048,9 @@ impl ByteSize for Value {
             #[cfg(all(feature = "ndarray", feature = "views"))]
             Value::NdArrayView(v) => v.logical_bytes(),
             #[cfg(all(feature = "ndarray", feature = "chunked"))]
-            Value::SuperNdArray(_) => {
-                unimplemented!("SuperNdArray does not define logical byte accounting")
-            }
+            Value::SuperNdArray(snd) => snd.logical_bytes(),
             #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
-            Value::SuperNdArrayView(_) => {
-                unimplemented!("SuperNdArrayV does not define logical byte accounting")
-            }
+            Value::SuperNdArrayView(sv) => sv.logical_bytes(),
             #[cfg(feature = "xarray")]
             Value::XArray(_) => {
                 unimplemented!("XArray does not define logical byte accounting")
@@ -1229,6 +1225,21 @@ mod tests {
         let nd = NdArray::<f64>::from_slice(&[0.0; 30], &[10, 3]);
         let view = NdArrayV::new(nd, 2, &[4, 3], &[1, 10]);
         assert_eq!(view.logical_bytes(), 12 * size_of::<f64>());
+    }
+
+    #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+    #[test]
+    fn super_ndarray_sums_batches_and_window_slices() {
+        let sup = SuperNdArray::from_batches(
+            vec![
+                NdArray::<f64>::from_slice(&[0.0; 12], &[4, 3]),
+                NdArray::<f64>::from_slice(&[0.0; 18], &[6, 3]),
+            ],
+            "s",
+        );
+        assert_eq!(sup.logical_bytes(), 30 * size_of::<f64>());
+        // Rows 2 to 7 span the batch boundary
+        assert_eq!(sup.slice(2, 5).logical_bytes(), 15 * size_of::<f64>());
     }
 
     #[cfg(all(feature = "value_type", feature = "scalar_type"))]
