@@ -55,7 +55,9 @@
 //! `large_string`, `datetime`, or `views`. Enable the features you need in `Cargo.toml`.
 
 use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
 use std::convert::{From, TryFrom};
+use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 
 use crate::enums::error::MinarrowError;
@@ -477,6 +479,76 @@ impl From<&BooleanArray<u8>> for StringArray<u32> {
 
 // Categorical <-> String
 
+/// Multiplier for the folded multiply in [`DictKeyHasher`].
+const DICT_KEY_MULTIPLIER: u64 = 0x5851_F42D_4C95_7F2D;
+
+/// Hash state for the dictionary lookup in the string to categorical
+/// conversion.
+///
+/// The seed is drawn from the standard library's randomised `RandomState`
+/// once per conversion, so hash values differ between conversions and
+/// between processes.
+#[derive(Clone, Copy)]
+struct DictKeyState(u64);
+
+impl DictKeyState {
+    fn new() -> Self {
+        Self(RandomState::new().hash_one(0u8))
+    }
+}
+
+impl BuildHasher for DictKeyState {
+    type Hasher = DictKeyHasher;
+
+    #[inline(always)]
+    fn build_hasher(&self) -> DictKeyHasher {
+        DictKeyHasher(self.0)
+    }
+}
+
+/// Hasher for the `&str` keys of the string to categorical dictionary.
+///
+/// Key bytes are read in 8-byte little-endian words, with the length mixed
+/// in first, and each word is combined through a folded multiply. Codes and
+/// dictionary order come from first appearance, so the hasher affects
+/// speed and not the result.
+struct DictKeyHasher(u64);
+
+impl DictKeyHasher {
+    #[inline(always)]
+    fn mix(&mut self, word: u64) {
+        let product = (self.0 ^ word) as u128 * DICT_KEY_MULTIPLIER as u128;
+        self.0 = (product as u64) ^ ((product >> 64) as u64);
+    }
+}
+
+impl Hasher for DictKeyHasher {
+    #[inline(always)]
+    fn write(&mut self, bytes: &[u8]) {
+        self.mix(bytes.len() as u64);
+        let mut words = bytes.chunks_exact(8);
+        for word in &mut words {
+            self.mix(u64::from_le_bytes(word.try_into().unwrap()));
+        }
+        let tail = words.remainder();
+        if !tail.is_empty() {
+            let mut buf = [0u8; 8];
+            buf[..tail.len()].copy_from_slice(tail);
+            self.mix(u64::from_le_bytes(buf));
+        }
+    }
+
+    #[inline(always)]
+    fn write_u8(&mut self, i: u8) {
+        self.mix(i as u64);
+    }
+
+    #[inline(always)]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 // ---------- String<Idx>  ->  Categorical<Idx> ----------
 macro_rules! string_to_cat {
     ($off:ty, $idx:ty) => {
@@ -510,18 +582,42 @@ macro_rules! string_to_cat {
                     )));
                 }
 
-                let mut dict = HashMap::<&str, $idx>::new();
+                // The window's byte range is validated as UTF-8 once. Rows
+                // whose bytes lie inside that text on character boundaries
+                // are read from it, and any other row takes the per-row
+                // slice and validation path with its original errors.
+                let text = match (src.offsets.get(offset), src.offsets.get(offset + len)) {
+                    (Some(&lo), Some(&hi)) if len > 0 => {
+                        let lo = lo.to_usize();
+                        src.data
+                            .get(lo..hi.to_usize())
+                            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                            .map(|text| (lo, text))
+                    }
+                    _ => None,
+                };
+
+                let mut dict =
+                    HashMap::<&str, $idx, DictKeyState>::with_hasher(DictKeyState::new());
                 let mut uniq = Vec64::new();
                 let mut codes = Vec64::with_capacity(len);
 
                 for win in src.offsets[offset..].windows(2).take(len) {
                     let (start, end) = (win[0].to_usize(), win[1].to_usize());
-                    let slice = &src.data[start..end];
-                    let s = std::str::from_utf8(slice).map_err(|e| MinarrowError::TypeError {
-                        from: "String",
-                        to: "Categorical",
-                        message: Some(e.to_string()),
-                    })?;
+                    let row = text.and_then(|(lo, text)| {
+                        text.get(start.wrapping_sub(lo)..end.wrapping_sub(lo))
+                    });
+                    let s = match row {
+                        Some(s) => s,
+                        None => {
+                            let slice = &src.data[start..end];
+                            std::str::from_utf8(slice).map_err(|e| MinarrowError::TypeError {
+                                from: "String",
+                                to: "Categorical",
+                                message: Some(e.to_string()),
+                            })?
+                        }
+                    };
 
                     let code = *dict.entry(s).or_insert_with(|| {
                         let next = uniq.len();
