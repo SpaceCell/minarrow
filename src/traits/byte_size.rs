@@ -738,8 +738,10 @@ impl<T> ByteSize for NdArray<T> {
         self.data.est_bytes()
     }
 
+    /// The array reports the product of its shape at element width. Stride
+    /// padding in the backing buffer is excluded.
     fn logical_bytes(&self) -> usize {
-        unimplemented!("NdArray has not yet implemented logical bytes.")
+        self.dims.len() * size_of::<T>()
     }
 }
 
@@ -759,8 +761,10 @@ impl<T: crate::Float> ByteSize for NdArrayV<T> {
         }
     }
 
+    /// The view reports the elements its own shape addresses at element
+    /// width, independent of the backing array's size and strides.
     fn logical_bytes(&self) -> usize {
-        unimplemented!("NdArrayV has not yet implemented logical bytes.")
+        self.len() * size_of::<T>()
     }
 }
 
@@ -1040,13 +1044,9 @@ impl ByteSize for Value {
             #[cfg(all(feature = "matrix", feature = "views"))]
             Value::MatrixView(mv) => mv.logical_bytes(),
             #[cfg(feature = "ndarray")]
-            Value::NdArray(_) => {
-                unimplemented!("NdArray does not define logical byte accounting")
-            }
+            Value::NdArray(nd) => nd.logical_bytes(),
             #[cfg(all(feature = "ndarray", feature = "views"))]
-            Value::NdArrayView(_) => {
-                unimplemented!("NdArrayV does not define logical byte accounting")
-            }
+            Value::NdArrayView(v) => v.logical_bytes(),
             #[cfg(all(feature = "ndarray", feature = "chunked"))]
             Value::SuperNdArray(_) => {
                 unimplemented!("SuperNdArray does not define logical byte accounting")
@@ -1208,6 +1208,27 @@ mod tests {
         let m = Matrix::new(5, 2, None::<&str>);
         let expected = m.logical_bytes();
         assert_eq!(Value::from(m).logical_bytes(), expected);
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[test]
+    fn ndarray_excludes_stride_padding() {
+        // A 5 x 3 array with a column stride of eight spans 24 buffer
+        // elements against 15 values
+        let nd = NdArray::<f64>::from_buffer(Buffer::from_slice(&[0.0; 24]), &[5, 3], &[1, 8]);
+        assert_eq!(nd.logical_bytes(), 15 * size_of::<f64>());
+        assert_eq!(nd.est_bytes(), 24 * size_of::<f64>());
+
+        let compact = NdArray::<f32>::from_slice(&[0.0; 12], &[4, 3]);
+        assert_eq!(compact.logical_bytes(), 12 * size_of::<f32>());
+    }
+
+    #[cfg(all(feature = "ndarray", feature = "views"))]
+    #[test]
+    fn ndarray_view_reports_its_own_shape() {
+        let nd = NdArray::<f64>::from_slice(&[0.0; 30], &[10, 3]);
+        let view = NdArrayV::new(nd, 2, &[4, 3], &[1, 10]);
+        assert_eq!(view.logical_bytes(), 12 * size_of::<f64>());
     }
 
     #[cfg(all(feature = "value_type", feature = "scalar_type"))]
