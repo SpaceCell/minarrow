@@ -289,3 +289,79 @@ fn create_test_table() -> Table {
         Some(vec![col_id, col_name, col_value]),
     )
 }
+
+// DataSelector::to_owned and the boxed DataSelector impl
+
+use minarrow::traits::selection::DataSelector;
+
+/// Asserts that the owned selector matches the original on indices and contiguity.
+fn assert_owned_matches<S: DataSelector>(selector: S, count: usize) {
+    let owned = selector.to_owned();
+    assert_eq!(owned.resolve_indices(count), selector.resolve_indices(count));
+    assert_eq!(owned.is_contiguous(), selector.is_contiguous());
+}
+
+#[test]
+fn test_data_selector_to_owned_single_index() {
+    assert_owned_matches(2usize, 5);
+    assert_owned_matches(2i32, 5);
+    assert_eq!(DataSelector::to_owned(&3usize).resolve_indices(5), vec![3]);
+}
+
+#[test]
+fn test_data_selector_to_owned_index_lists() {
+    let slice: &[usize] = &[1, 3, 9];
+    assert_owned_matches(slice, 5);
+    assert_owned_matches(&[0usize, 4], 5);
+    assert_owned_matches(vec![4usize, 2, 7], 5);
+    assert!(!DataSelector::to_owned(&vec![1usize, 2]).is_contiguous());
+}
+
+#[test]
+fn test_data_selector_to_owned_ranges() {
+    assert_owned_matches(1usize..4, 5);
+    assert_owned_matches(1i32..4, 5);
+    assert_owned_matches(2usize.., 5);
+    assert_owned_matches(2i32.., 5);
+    assert_owned_matches(..3usize, 5);
+    assert_owned_matches(..3i32, 5);
+    assert_owned_matches(.., 5);
+    assert_owned_matches(1usize..=3, 5);
+    assert_owned_matches(1i32..=3, 5);
+    assert!(DataSelector::to_owned(&(1usize..4)).is_contiguous());
+}
+
+#[test]
+fn test_data_selector_boxed_impl_forwards() {
+    let boxed: Box<dyn DataSelector + Send + Sync> = Box::new(1usize..4);
+    assert_eq!(boxed.resolve_indices(5), vec![1, 2, 3]);
+    assert!(boxed.is_contiguous());
+
+    let boxed_list: Box<dyn DataSelector + Send + Sync> = Box::new(vec![0usize, 2]);
+    assert_eq!(boxed_list.resolve_indices(5), vec![0, 2]);
+    assert!(!boxed_list.is_contiguous());
+
+    // A boxed selector clones into another boxed selector with the same behaviour.
+    let again = DataSelector::to_owned(&boxed);
+    assert_eq!(again.resolve_indices(5), vec![1, 2, 3]);
+    assert!(again.is_contiguous());
+}
+
+#[test]
+fn test_data_selector_boxed_usable_with_row_selection() {
+    let table = create_test_table();
+    let boxed: Box<dyn DataSelector + Send + Sync> = DataSelector::to_owned(&(1usize..3));
+    let view = table.r(boxed);
+    assert_eq!(view.n_rows(), 2);
+}
+
+#[cfg(feature = "ndarray")]
+#[test]
+fn test_data_selector_boxed_resolve_axis_forwards() {
+    let range: Box<dyn DataSelector + Send + Sync> = Box::new(1usize..4);
+    assert_eq!(range.resolve_axis(5), (1, 4, false));
+    let single: Box<dyn DataSelector + Send + Sync> = Box::new(2usize);
+    assert_eq!(single.resolve_axis(5), (2, 3, true));
+    let full: Box<dyn DataSelector + Send + Sync> = DataSelector::to_owned(&..);
+    assert_eq!(full.resolve_axis(5), (0, 5, false));
+}
