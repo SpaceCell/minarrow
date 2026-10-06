@@ -609,20 +609,56 @@ impl Array {
         match self {
             Array::BooleanArray(arr) => arr.clone(),
             Array::NumericArray(arr) => {
+                // Packs the result one 64-bit word at a time. The output null
+                // mask is a word-level copy of the source null mask, or all set
+                // when there is none. Each value word holds the non-zero test
+                // for 64 elements and is then ANDed with the matching null mask
+                // word, so null slots read false.
                 macro_rules! to_bool {
                     ($a:expr, $t:ty) => {{
-                        let mut bm = Bitmask::with_capacity($a.len());
-                        let mut out = Bitmask::with_capacity($a.len());
-                        for i in 0..$a.len() {
-                            let valid = !$a.is_null(i);
-                            bm.set(i, valid);
-                            let v = if valid && $a.data[i] != <$t>::default() {
-                                true
-                            } else {
-                                false
-                            };
-                            out.set(i, v);
+                        let len = $a.len();
+                        let bm = match $a.null_mask.as_ref() {
+                            None => Bitmask::new_set_all(len, true),
+                            Some(m) => {
+                                #[allow(unused_mut)]
+                                let mut word_copy = m.len() >= len;
+                                #[cfg(feature = "lbuffer")]
+                                {
+                                    word_copy &= !m.is_lbuffer_backed();
+                                }
+                                if word_copy {
+                                    m.slice_clone(0, len)
+                                } else {
+                                    // A mask shorter than the data, or one backed
+                                    // by an LBuffer, is read bit by bit through
+                                    // `get`.
+                                    let mut bm = Bitmask::with_capacity(len);
+                                    for i in 0..len {
+                                        bm.set(i, m.get(i));
+                                    }
+                                    bm
+                                }
+                            }
+                        };
+                        let zero = <$t>::default();
+                        let n_bytes = (len + 7) / 8;
+                        let mask_bytes = bm.bits.as_slice();
+                        let mut bytes = Vec64::<u8>::with_capacity(n_bytes);
+                        bytes.resize(n_bytes, 0);
+                        for (w, chunk) in $a.data[..len].chunks(64).enumerate() {
+                            let mut word = 0u64;
+                            for (j, v) in chunk.iter().enumerate() {
+                                word |= ((*v != zero) as u64) << j;
+                            }
+                            let start = w * 8;
+                            let end = (start + 8).min(n_bytes);
+                            let mut mask_word = [0u8; 8];
+                            mask_word[..end - start].copy_from_slice(&mask_bytes[start..end]);
+                            word &= u64::from_le_bytes(mask_word);
+                            bytes[start..end].copy_from_slice(&word.to_le_bytes()[..end - start]);
                         }
+                        let mut out = Bitmask::new(bytes, len);
+                        out.mask_trailing_bits();
                         BooleanArray::new(out, Some(bm)).into()
                     }};
                 }
@@ -7846,5 +7882,205 @@ mod scatter_tests {
         let mut dst = arr_i64![1, 2];
         let src = arr_i64![&[1]];
         let _ = dst.scatter_indices(&[2], &src.view(0, 1), &[0]);
+    }
+}
+
+#[cfg(test)]
+mod bool_word_level_tests {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use crate::traits::masked_array::MaskedArray;
+    use crate::{Array, Bitmask, BooleanArray, FloatArray, IntegerArray, NumericArray, Vec64};
+
+    /// The per-element numeric conversion that the word-level packing replaced,
+    /// kept as the reference for the exact comparison.
+    fn bool_reference(array: &Array) -> Arc<BooleanArray<()>> {
+        macro_rules! to_bool {
+            ($a:expr, $t:ty) => {{
+                let mut bm = Bitmask::with_capacity($a.len());
+                let mut out = Bitmask::with_capacity($a.len());
+                for i in 0..$a.len() {
+                    let valid = !$a.is_null(i);
+                    bm.set(i, valid);
+                    let v = if valid && $a.data[i] != <$t>::default() {
+                        true
+                    } else {
+                        false
+                    };
+                    out.set(i, v);
+                }
+                BooleanArray::new(out, Some(bm)).into()
+            }};
+        }
+        match array {
+            Array::NumericArray(arr) => match arr {
+                NumericArray::Int32(a) => to_bool!(a, i32),
+                NumericArray::Int64(a) => to_bool!(a, i64),
+                NumericArray::UInt32(a) => to_bool!(a, u32),
+                NumericArray::UInt64(a) => to_bool!(a, u64),
+                NumericArray::Float32(a) => to_bool!(a, f32),
+                NumericArray::Float64(a) => to_bool!(a, f64),
+                _ => BooleanArray::default().into(),
+            },
+            other => other.bool(),
+        }
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+    }
+
+    fn random_mask(rng: &mut Rng, len: usize, density_pct: u64) -> Bitmask {
+        let mut m = Bitmask::new_set_all(len, false);
+        for i in 0..len {
+            if rng.next() % 100 < density_pct {
+                m.set(i, true);
+            }
+        }
+        m
+    }
+
+    const LENGTHS: [usize; 12] = [0, 1, 7, 8, 63, 64, 65, 127, 128, 129, 1000, 4097];
+
+    /// The null mask options for one length: none, random masks at several
+    /// densities, and a mask longer than the data.
+    fn masks(rng: &mut Rng, len: usize) -> Vec<Option<Bitmask>> {
+        let mut out = vec![None];
+        for density in [0, 5, 50, 95, 100] {
+            out.push(Some(random_mask(rng, len, density)));
+        }
+        out.push(Some(random_mask(rng, len + 70, 50)));
+        out
+    }
+
+    /// Integer values with zeros at the given percentage.
+    fn ints(rng: &mut Rng, len: usize, zero_pct: u64) -> Vec<i64> {
+        (0..len)
+            .map(|_| {
+                if rng.next() % 100 < zero_pct {
+                    0
+                } else {
+                    (rng.next() as i64) | 1
+                }
+            })
+            .collect()
+    }
+
+    /// Float values drawn from zeros, signed zeros, NaN, infinities and
+    /// ordinary values.
+    fn floats(rng: &mut Rng, len: usize) -> Vec<f64> {
+        (0..len)
+            .map(|_| match rng.next() % 7 {
+                0 => 0.0,
+                1 => -0.0,
+                2 => f64::NAN,
+                3 => f64::INFINITY,
+                4 => f64::NEG_INFINITY,
+                _ => (rng.next() % 1000) as f64 - 500.0,
+            })
+            .collect()
+    }
+
+    fn arrays(rng: &mut Rng, len: usize) -> Vec<Array> {
+        let mut out = Vec::new();
+        for mask in masks(rng, len) {
+            for zero_pct in [0, 50, 100] {
+                let v = ints(rng, len, zero_pct);
+                out.push(Array::NumericArray(NumericArray::Int64(Arc::new(IntegerArray {
+                    data: Vec64::from_slice(&v).into(),
+                    null_mask: mask.clone(),
+                }))));
+                let v32: Vec<i32> = v.iter().map(|x| *x as i32).collect();
+                out.push(Array::NumericArray(NumericArray::Int32(Arc::new(IntegerArray {
+                    data: Vec64::from_slice(&v32).into(),
+                    null_mask: mask.clone(),
+                }))));
+                let vu32: Vec<u32> = v.iter().map(|x| *x as u32).collect();
+                out.push(Array::NumericArray(NumericArray::UInt32(Arc::new(IntegerArray {
+                    data: Vec64::from_slice(&vu32).into(),
+                    null_mask: mask.clone(),
+                }))));
+                let vu64: Vec<u64> = v.iter().map(|x| *x as u64).collect();
+                out.push(Array::NumericArray(NumericArray::UInt64(Arc::new(IntegerArray {
+                    data: Vec64::from_slice(&vu64).into(),
+                    null_mask: mask.clone(),
+                }))));
+            }
+            let f = floats(rng, len);
+            out.push(Array::NumericArray(NumericArray::Float64(Arc::new(FloatArray {
+                data: Vec64::from_slice(&f).into(),
+                null_mask: mask.clone(),
+            }))));
+            let f32s: Vec<f32> = f.iter().map(|x| *x as f32).collect();
+            out.push(Array::NumericArray(NumericArray::Float32(Arc::new(FloatArray {
+                data: Vec64::from_slice(&f32s).into(),
+                null_mask: mask.clone(),
+            }))));
+        }
+        out
+    }
+
+    fn assert_identical(new: &BooleanArray<()>, old: &BooleanArray<()>, context: &str) {
+        assert_eq!(new, old, "{context}");
+        assert_eq!(new.data.bits.as_slice(), old.data.bits.as_slice(), "data bytes: {context}");
+        assert_eq!(
+            new.null_mask.as_ref().map(|m| m.bits.as_slice().to_vec()),
+            old.null_mask.as_ref().map(|m| m.bits.as_slice().to_vec()),
+            "mask bytes: {context}"
+        );
+    }
+
+    #[test]
+    fn numeric_bool_matches_reference() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for &len in &LENGTHS {
+            for (k, array) in arrays(&mut rng, len).iter().enumerate() {
+                let new = array.bool();
+                let old = bool_reference(array);
+                assert_identical(&new, &old, &format!("len={len} case={k}"));
+                let new = array.try_bool().unwrap();
+                assert_identical(&new, &old, &format!("try_bool len={len} case={k}"));
+            }
+        }
+    }
+
+    /// A mask whose logical length is shorter than the data reads its missing
+    /// tail as null on both paths.
+    #[test]
+    fn numeric_bool_matches_reference_with_short_mask() {
+        let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+        for &len in &[9usize, 64, 65, 200] {
+            let v = ints(&mut rng, len, 30);
+            let full = random_mask(&mut rng, len, 60);
+            let mask = Bitmask::new(full.bits.clone(), len - 5);
+            let array = Array::NumericArray(NumericArray::Int64(Arc::new(IntegerArray {
+                data: Vec64::from_slice(&v).into(),
+                null_mask: Some(mask),
+            })));
+            assert_identical(&array.bool(), &bool_reference(&array), &format!("len={len}"));
+        }
+    }
+
+    #[test]
+    fn numeric_bool_large_completes_within_bound() {
+        let len = 1usize << 25;
+        let mut mask = Bitmask::new_set_all(len, true);
+        mask.set(7, false);
+        let array = Array::NumericArray(NumericArray::Int64(Arc::new(IntegerArray {
+            data: Vec64::from_slice(&vec![3i64; len]).into(),
+            null_mask: Some(mask),
+        })));
+        let start = Instant::now();
+        let out = array.bool();
+        assert_eq!(out.len(), len);
+        assert!(start.elapsed() < Duration::from_secs(60));
     }
 }
