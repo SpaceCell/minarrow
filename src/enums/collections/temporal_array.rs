@@ -191,7 +191,11 @@ impl TemporalArray {
             (TemporalArray::Datetime64(a), TemporalArray::Datetime64(b)) => {
                 a.adjacent_window(b).map(TemporalArray::Datetime64)
             }
-            _ => None,
+            (TemporalArray::Null, TemporalArray::Null) => Some(TemporalArray::Null),
+            // Arrays of differing variants hold no consecutive windows.
+            (TemporalArray::Datetime32(_), _) => None,
+            (TemporalArray::Datetime64(_), _) => None,
+            (TemporalArray::Null, _) => None,
         }
     }
 

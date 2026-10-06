@@ -919,7 +919,8 @@ impl Bitmask {
     /// shared windows over the same allocation, `self` ends on a byte
     /// boundary, and `next` starts at the following byte.
     ///
-    /// Joining copies nothing. See [`Buffer::adjacent_window`], and
+    /// Consolidating consecutive windows avoids incurring a memory copy.
+    /// See [`Buffer::adjacent_window`], and
     /// [`crate::LBuffer::bitmask_window`] for the windows this joins.
     pub fn adjacent_window(&self, next: &Self) -> Option<Self> {
         // Each window's bytes hold exactly its bits. `next` begins at the

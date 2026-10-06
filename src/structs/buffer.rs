@@ -776,10 +776,11 @@ impl<T> Buffer<T> {
     /// shared windows over the same allocation and `next` starts where `self`
     /// ends.
     ///
-    /// Joining copies nothing. Consecutive windows taken from one allocation,
-    /// such as those from [`crate::LBuffer::window`], consolidate back into a
-    /// single view. Returns `None` for owned buffers, for windows
-    /// over different allocations, and for windows that are not consecutive.
+    /// Consolidating consecutive windows avoids incurring a memory copy.
+    /// Consecutive windows taken from one allocation, such as those from
+    /// [`crate::LBuffer::window`], consolidate back into a single view.
+    /// Returns `None` for owned buffers, for windows over different
+    /// allocations, and for windows that are not consecutive.
     pub fn adjacent_window(&self, next: &Self) -> Option<Self> {
         let (
             Storage::Shared {

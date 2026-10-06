@@ -231,6 +231,13 @@ impl TextArray {
     /// variants.
     pub fn adjacent_window(&self, other: &Self) -> Option<Self> {
         match (self, other) {
+            (TextArray::String32(a), TextArray::String32(b)) => {
+                a.adjacent_window(b).map(TextArray::String32)
+            }
+            #[cfg(feature = "large_string")]
+            (TextArray::String64(a), TextArray::String64(b)) => {
+                a.adjacent_window(b).map(TextArray::String64)
+            }
             #[cfg(feature = "default_categorical_8")]
             (TextArray::Categorical8(a), TextArray::Categorical8(b)) => {
                 a.adjacent_window(b).map(TextArray::Categorical8)
@@ -250,7 +257,23 @@ impl TextArray {
             (TextArray::Categorical64(a), TextArray::Categorical64(b)) => {
                 a.adjacent_window(b).map(TextArray::Categorical64)
             }
-            _ => None,
+            (TextArray::Null, TextArray::Null) => Some(TextArray::Null),
+            // Arrays of differing variants hold no consecutive windows.
+            (TextArray::String32(_), _) => None,
+            #[cfg(feature = "large_string")]
+            (TextArray::String64(_), _) => None,
+            #[cfg(feature = "default_categorical_8")]
+            (TextArray::Categorical8(_), _) => None,
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical16(_), _) => None,
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            (TextArray::Categorical32(_), _) => None,
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical64(_), _) => None,
+            (TextArray::Null, _) => None,
         }
     }
 

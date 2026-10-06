@@ -225,21 +225,27 @@ impl LMaskTail {
 unsafe impl<T: Send + Sync> Send for LBufferInner<T> {}
 unsafe impl<T: Send + Sync> Sync for LBufferInner<T> {}
 
-/// Owner of a [`SharedBuffer`] window over an `LBuffer` allocation.
+/// The bytes of the cell's final elements, which lets a [`SharedBuffer`]
+/// hold the cell as its owner through [`SharedBuffer::from_arc`].
 ///
-/// Holds the allocation through the shared cell and exposes its first
-/// `bytes` bytes, all of which were final when the window was taken.
-struct LBufferRegion<T> {
-    inner: Arc<LBufferInner<T>>,
-    bytes: usize,
-}
-
-impl<T> AsRef<[u8]> for LBufferRegion<T> {
+/// A value buffer's final elements are its published elements. A null mask
+/// buffer's are its settled bytes, together with its last byte once the
+/// buffer is sealed.
+impl<T> AsRef<[u8]> for LBufferInner<T> {
     fn as_ref(&self) -> &[u8] {
-        // SAFETY: the first `bytes` bytes hold final elements, which are
-        // initialised and never written again. `base` is stable, and the
-        // `Arc` keeps the allocation alive for the region's lifetime.
-        unsafe { std::slice::from_raw_parts(self.inner.base.as_ptr() as *const u8, self.bytes) }
+        let bytes = match &self.mask_tail {
+            None => self.len.load(Ordering::Acquire) * size_of::<T>(),
+            Some(tail) => {
+                // The seal finalises the last byte before its `Release`
+                // store, which this `Acquire` load pairs with.
+                let sealed = self.sealed.load(Ordering::Acquire);
+                let (settled, filled) = tail.load();
+                settled + usize::from(sealed && filled > 0)
+            }
+        };
+        // SAFETY: final bytes are initialised and never written again, and
+        // `base` is stable for the cell's lifetime.
+        unsafe { std::slice::from_raw_parts(self.base.as_ptr() as *const u8, bytes) }
     }
 }
 
@@ -502,11 +508,7 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
             end <= published,
             "LBuffer window [{offset}, {end}) exceeds the published length {published}"
         );
-        let owner = SharedBuffer::from_owner(LBufferRegion {
-            inner: Arc::clone(&self.inner),
-            bytes: end * size_of::<T>(),
-        });
-        Buffer::from_shared_column(owner, offset, len)
+        Buffer::from_shared_column(SharedBuffer::from_arc(Arc::clone(&self.inner)), offset, len)
     }
 
     /// Seal the buffer (if not already sealed) and turn it into a regular
@@ -744,12 +746,12 @@ impl<T> LBuffer<T, true> {
             "bitmask window [{offset}, {end}) extends past the final bits {final_bits}"
         );
         let n_bytes = (end + 7) / 8;
-        let owner = SharedBuffer::from_owner(LBufferRegion {
-            inner: Arc::clone(mask),
-            bytes: n_bytes,
-        });
         Bitmask::new(
-            Buffer::from_shared_column(owner, offset / 8, n_bytes - offset / 8),
+            Buffer::from_shared_column(
+                SharedBuffer::from_arc(Arc::clone(mask)),
+                offset / 8,
+                n_bytes - offset / 8,
+            ),
             len,
         )
     }

@@ -4219,15 +4219,22 @@ impl Array {
             (Array::NumericArray(a), Array::NumericArray(b)) => {
                 a.adjacent_window(b).map(Array::NumericArray)
             }
-            (Array::BooleanArray(a), Array::BooleanArray(b)) => {
-                a.adjacent_window(b).map(Array::BooleanArray)
-            }
             (Array::TextArray(a), Array::TextArray(b)) => a.adjacent_window(b).map(Array::TextArray),
             #[cfg(feature = "datetime")]
             (Array::TemporalArray(a), Array::TemporalArray(b)) => {
                 a.adjacent_window(b).map(Array::TemporalArray)
             }
-            _ => None,
+            (Array::BooleanArray(a), Array::BooleanArray(b)) => {
+                a.adjacent_window(b).map(Array::BooleanArray)
+            }
+            (Array::Null, Array::Null) => Some(Array::Null),
+            // Arrays of differing variants hold no consecutive windows.
+            (Array::NumericArray(_), _) => None,
+            (Array::TextArray(_), _) => None,
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(_), _) => None,
+            (Array::BooleanArray(_), _) => None,
+            (Array::Null, _) => None,
         }
     }
 

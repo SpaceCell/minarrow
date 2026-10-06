@@ -392,7 +392,41 @@ impl NumericArray {
             (NumericArray::Float64(a), NumericArray::Float64(b)) => {
                 a.adjacent_window(b).map(NumericArray::Float64)
             }
-            _ => None,
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal32(a), NumericArray::Decimal32(b)) => {
+                a.adjacent_window(b).map(NumericArray::Decimal32)
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal64(a), NumericArray::Decimal64(b)) => {
+                a.adjacent_window(b).map(NumericArray::Decimal64)
+            }
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal128(a), NumericArray::Decimal128(b)) => {
+                a.adjacent_window(b).map(NumericArray::Decimal128)
+            }
+            (NumericArray::Null, NumericArray::Null) => Some(NumericArray::Null),
+            // Arrays of differing variants hold no consecutive windows.
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::Int8(_), _) => None,
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::Int16(_), _) => None,
+            (NumericArray::Int32(_), _) => None,
+            (NumericArray::Int64(_), _) => None,
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::UInt8(_), _) => None,
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::UInt16(_), _) => None,
+            (NumericArray::UInt32(_), _) => None,
+            (NumericArray::UInt64(_), _) => None,
+            (NumericArray::Float32(_), _) => None,
+            (NumericArray::Float64(_), _) => None,
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal32(_), _) => None,
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal64(_), _) => None,
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal128(_), _) => None,
+            (NumericArray::Null, _) => None,
         }
     }
 
