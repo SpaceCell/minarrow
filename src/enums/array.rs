@@ -4209,6 +4209,54 @@ impl Array {
         }
     }
 
+    /// Whether `self` and `other` are the same array, holding one shared
+    /// inner allocation.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Array::NumericArray(a), Array::NumericArray(b)) => a.ptr_eq(b),
+            (Array::TextArray(a), Array::TextArray(b)) => a.ptr_eq(b),
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(a), Array::TemporalArray(b)) => a.ptr_eq(b),
+            (Array::BooleanArray(a), Array::BooleanArray(b)) => Arc::ptr_eq(a, b),
+            (Array::Null, Array::Null) => true,
+            (Array::NumericArray(_), _) => false,
+            (Array::TextArray(_), _) => false,
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(_), _) => false,
+            (Array::BooleanArray(_), _) => false,
+            (Array::Null, _) => false,
+        }
+    }
+
+    /// Returns one array spanning `self` followed by `other` when both are
+    /// consecutive windows over the same allocations, without copying.
+    ///
+    /// See [`MaskedArray::adjacent_window`]. Returns `None` for differing
+    /// variants.
+    pub fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (Array::NumericArray(a), Array::NumericArray(b)) => {
+                a.adjacent_window(b).map(Array::NumericArray)
+            }
+            (Array::TextArray(a), Array::TextArray(b)) => a.adjacent_window(b).map(Array::TextArray),
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(a), Array::TemporalArray(b)) => {
+                a.adjacent_window(b).map(Array::TemporalArray)
+            }
+            (Array::BooleanArray(a), Array::BooleanArray(b)) => {
+                a.adjacent_window(b).map(Array::BooleanArray)
+            }
+            (Array::Null, Array::Null) => Some(Array::Null),
+            // Arrays of differing variants hold no consecutive windows.
+            (Array::NumericArray(_), _) => None,
+            (Array::TextArray(_), _) => None,
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(_), _) => None,
+            (Array::BooleanArray(_), _) => None,
+            (Array::Null, _) => None,
+        }
+    }
+
     /// Appends all values (and null mask if present) from `other` into `self`.
     ///
     /// Panics if the two arrays are of different variants or incompatible types.

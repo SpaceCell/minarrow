@@ -400,6 +400,24 @@ impl<T: Integer> MaskedArray for DecimalArray<T> {
     /// Panics if precision or scale differ between the two arrays, because
     /// concatenating values with different decimal semantics produces
     /// incorrect results.
+    fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        if self.precision != other.precision || self.scale != other.scale {
+            return None;
+        }
+        let data = self.data.adjacent_window(&other.data)?;
+        let null_mask = match (&self.null_mask, &other.null_mask) {
+            (None, None) => None,
+            (Some(a), Some(b)) => Some(a.adjacent_window(b)?),
+            _ => return None,
+        };
+        Some(DecimalArray {
+            data,
+            null_mask,
+            precision: self.precision,
+            scale: self.scale,
+        })
+    }
+
     fn append_array(&mut self, other: &Self) {
         assert!(
             self.precision == other.precision && self.scale == other.scale,
@@ -411,6 +429,12 @@ impl<T: Integer> MaskedArray for DecimalArray<T> {
         let other_len = other.len();
 
         if other_len == 0 {
+            return;
+        }
+
+        // Consecutive windows over one allocation join without copying.
+        if let Some(joined) = self.adjacent_window(other) {
+            *self = joined;
             return;
         }
 

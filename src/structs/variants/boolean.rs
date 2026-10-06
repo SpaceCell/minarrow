@@ -631,12 +631,33 @@ impl MaskedArray for BooleanArray<()> {
         self.len += n;
     }
 
+    fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        let data = self.data.adjacent_window(&other.data)?;
+        let null_mask = match (&self.null_mask, &other.null_mask) {
+            (None, None) => None,
+            (Some(a), Some(b)) => Some(a.adjacent_window(b)?),
+            _ => return None,
+        };
+        Some(BooleanArray {
+            data,
+            null_mask,
+            len: self.len + other.len,
+            _phantom: PhantomData,
+        })
+    }
+
     /// Appends all values (and null mask if present) from `other` to `self`.
     fn append_array(&mut self, other: &Self) {
         let orig_len = self.len();
         let other_len = other.len();
 
         if other_len == 0 {
+            return;
+        }
+
+        // Consecutive windows over one allocation join without copying.
+        if let Some(joined) = self.adjacent_window(other) {
+            *self = joined;
             return;
         }
 

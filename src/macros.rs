@@ -329,6 +329,12 @@ macro_rules! impl_masked_array {
                     return;
                 }
 
+                // Consecutive windows over one allocation join without copying.
+                if let Some(joined) = self.adjacent_window(other) {
+                    *self = joined;
+                    return;
+                }
+
                 // Append data
                 self.data_mut().extend_from_slice(other.data());
 
@@ -355,6 +361,21 @@ macro_rules! impl_masked_array {
                         // No mask in either: nothing to do.
                     }
                 }
+            }
+
+            fn adjacent_window(&self, other: &Self) -> Option<Self> {
+                let data = self.data.adjacent_window(&other.data)?;
+                let null_mask = match (&self.null_mask, &other.null_mask) {
+                    (None, None) => None,
+                    (Some(a), Some(b)) => Some(a.adjacent_window(b)?),
+                    _ => return None,
+                };
+                // Cloning shares the window buffers, which the joined
+                // buffers then replace.
+                let mut joined = self.clone();
+                joined.data = data;
+                joined.null_mask = null_mask;
+                Some(joined)
             }
 
             fn append_range(&mut self, other: &Self, offset: usize, len: usize) -> Result<(), $crate::enums::error::MinarrowError> {
@@ -1001,6 +1022,9 @@ macro_rules! impl_arc_masked_array {
             fn append_array(&mut self, other: &Self) {
                 ::std::sync::Arc::make_mut(self).append_array(&**other)
             }
+            fn adjacent_window(&self, other: &Self) -> Option<Self> {
+                (**self).adjacent_window(&**other).map(::std::sync::Arc::new)
+            }
             fn append_range(
                 &mut self,
                 other: &Self,
@@ -1135,6 +1159,9 @@ macro_rules! impl_arc_masked_array {
             }
             fn append_array(&mut self, other: &Self) {
                 ::std::sync::Arc::make_mut(self).append_array(&**other)
+            }
+            fn adjacent_window(&self, other: &Self) -> Option<Self> {
+                (**self).adjacent_window(&**other).map(::std::sync::Arc::new)
             }
             fn append_range(
                 &mut self,

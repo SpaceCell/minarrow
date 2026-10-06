@@ -224,6 +224,96 @@ impl TextArray {
     ///
     /// This ensures that calling `append_array` never mutates data referenced elsewhere,
     /// but also avoids unnecessary cloning when the data is uniquely owned.
+    /// Whether `self` and `other` are the same array, holding one shared
+    /// inner allocation.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (TextArray::String32(a), TextArray::String32(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "large_string")]
+            (TextArray::String64(a), TextArray::String64(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "default_categorical_8")]
+            (TextArray::Categorical8(a), TextArray::Categorical8(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical16(a), TextArray::Categorical16(b)) => Arc::ptr_eq(a, b),
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            (TextArray::Categorical32(a), TextArray::Categorical32(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical64(a), TextArray::Categorical64(b)) => Arc::ptr_eq(a, b),
+            (TextArray::Null, TextArray::Null) => true,
+            (TextArray::String32(_), _) => false,
+            #[cfg(feature = "large_string")]
+            (TextArray::String64(_), _) => false,
+            #[cfg(feature = "default_categorical_8")]
+            (TextArray::Categorical8(_), _) => false,
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical16(_), _) => false,
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            (TextArray::Categorical32(_), _) => false,
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical64(_), _) => false,
+            (TextArray::Null, _) => false,
+        }
+    }
+
+    /// Returns one array spanning `self` followed by `other` when both are
+    /// consecutive windows over the same allocations, without copying.
+    ///
+    /// See [`MaskedArray::adjacent_window`]. Returns `None` for differing
+    /// variants.
+    pub fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (TextArray::String32(a), TextArray::String32(b)) => {
+                a.adjacent_window(b).map(TextArray::String32)
+            }
+            #[cfg(feature = "large_string")]
+            (TextArray::String64(a), TextArray::String64(b)) => {
+                a.adjacent_window(b).map(TextArray::String64)
+            }
+            #[cfg(feature = "default_categorical_8")]
+            (TextArray::Categorical8(a), TextArray::Categorical8(b)) => {
+                a.adjacent_window(b).map(TextArray::Categorical8)
+            }
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical16(a), TextArray::Categorical16(b)) => {
+                a.adjacent_window(b).map(TextArray::Categorical16)
+            }
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            (TextArray::Categorical32(a), TextArray::Categorical32(b)) => {
+                a.adjacent_window(b).map(TextArray::Categorical32)
+            }
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical64(a), TextArray::Categorical64(b)) => {
+                a.adjacent_window(b).map(TextArray::Categorical64)
+            }
+            (TextArray::Null, TextArray::Null) => Some(TextArray::Null),
+            // Arrays of differing variants hold no consecutive windows.
+            (TextArray::String32(_), _) => None,
+            #[cfg(feature = "large_string")]
+            (TextArray::String64(_), _) => None,
+            #[cfg(feature = "default_categorical_8")]
+            (TextArray::Categorical8(_), _) => None,
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical16(_), _) => None,
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            (TextArray::Categorical32(_), _) => None,
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical64(_), _) => None,
+            (TextArray::Null, _) => None,
+        }
+    }
+
     pub fn append_array(&mut self, other: &Self) {
         match (self, other) {
             (TextArray::String32(a), TextArray::String32(b)) => Arc::make_mut(a).append_array(b),

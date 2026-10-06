@@ -915,6 +915,29 @@ impl Bitmask {
         self.bits.as_slice()
     }
 
+    /// Returns one bitmask spanning `self` followed by `next`, when both are
+    /// shared windows over the same allocation, `self` ends on a byte
+    /// boundary, and `next` starts at the following byte.
+    ///
+    /// Consolidating consecutive windows avoids incurring a memory copy.
+    /// See [`Buffer::adjacent_window`], and
+    /// [`crate::LBuffer::bitmask_window`] for the windows this joins.
+    pub fn adjacent_window(&self, next: &Self) -> Option<Self> {
+        // Each window's bytes hold exactly its bits. `next` begins at the
+        // byte after `self` only when `self` fills its last byte.
+        if self.len % 8 != 0
+            || self.bits.len() != self.len / 8
+            || next.bits.len() != (next.len + 7) / 8
+        {
+            return None;
+        }
+        let bits = self.bits.adjacent_window(&next.bits)?;
+        Some(Bitmask {
+            bits,
+            len: self.len + next.len,
+        })
+    }
+
     /// Slices by copying the data
     ///
     /// The copy runs one 64-bit word at a time. A byte-aligned `offset` copies

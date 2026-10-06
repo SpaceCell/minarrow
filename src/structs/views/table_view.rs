@@ -118,6 +118,36 @@ pub struct TableV {
 }
 
 impl TableV {
+    /// Returns one view spanning `self` followed by `other` when both view
+    /// the same table and `other` starts where `self` ends.
+    ///
+    /// Consolidating consecutive windows avoids incurring a memory copy, as
+    /// the joined view widens the row range over the same columns.
+    pub fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        if self.offset + self.len != other.offset || self.cols.len() != other.cols.len() {
+            return None;
+        }
+        #[cfg(feature = "select")]
+        if self.active_col_selection != other.active_col_selection {
+            return None;
+        }
+        let cols = self
+            .cols
+            .iter()
+            .zip(&other.cols)
+            .map(|(a, b)| a.adjacent_window(b))
+            .collect::<Option<Vec<ArrayV>>>()?;
+        Some(TableV {
+            name: self.name.clone(),
+            fields: self.fields.clone(),
+            cols,
+            offset: self.offset,
+            len: self.len + other.len,
+            #[cfg(feature = "select")]
+            active_col_selection: self.active_col_selection.clone(),
+        })
+    }
+
     /// Creates a new `TableView` over `table[offset .. offset+len)`.
     /// Provides a non-owning view into a subrange of the table.
     #[inline]
@@ -645,9 +675,15 @@ impl Concatenate for TableV {
     /// concatenating them, and wrapping the result back in a view.
     ///
     /// # Notes
-    /// - This operation copies data from both views to create owned tables.
+    /// - Consecutive views of one table join through
+    ///   [`adjacent_window`](TableV::adjacent_window) without copying.
+    /// - Otherwise this operation copies data from both views to create owned tables.
     /// - The resulting view has offset=0 and length equal to the combined length.
     fn concat(self, other: Self) -> Result<Self, MinarrowError> {
+        if let Some(joined) = self.adjacent_window(&other) {
+            return Ok(joined);
+        }
+
         // Materialise both views to owned tables
         let self_table = self.to_table();
         let other_table = other.to_table();
@@ -1080,5 +1116,55 @@ mod tests {
         let empty = view.gather_rows_mask(&Bitmask::new_set_all(130, false));
         assert_eq!(empty.n_rows, 0);
         assert_eq!(empty.n_cols(), 2);
+    }
+
+    #[test]
+    fn consecutive_views_of_one_table_join_without_copying() {
+        let table = Table::new(
+            "t".to_string(),
+            Some(vec![fa_i32!("a", 1, 2, 3, 4, 5), fa_i32!("b", 10, 20, 30, 40, 50)]),
+        );
+        let first = TableV::from_table(table.clone(), 0, 2);
+        let second = TableV::from_table(table.clone(), 2, 3);
+        let joined = first.adjacent_window(&second).expect("the views are consecutive");
+        assert_eq!((joined.offset, joined.len), (0, 5));
+        assert_eq!(joined.to_table(), table);
+        // The joined view reads the parent's columns in place.
+        assert!(joined.cols[0].array.ptr_eq(&table.cols[0].array));
+
+        // Out of order, overlapping, and equal data from another table do
+        // not join.
+        assert!(second.adjacent_window(&first).is_none());
+        assert!(first.adjacent_window(&TableV::from_table(table.clone(), 1, 3)).is_none());
+        let copy = Table::new(
+            "t".to_string(),
+            Some(vec![fa_i32!("a", 1, 2, 3, 4, 5), fa_i32!("b", 10, 20, 30, 40, 50)]),
+        );
+        assert!(first.adjacent_window(&TableV::from_table(copy, 2, 3)).is_none());
+
+        // Concatenation takes the join.
+        let concatenated = first.concat(second).unwrap();
+        assert_eq!((concatenated.offset, concatenated.len), (0, 5));
+        assert!(concatenated.cols[1].array.ptr_eq(&table.cols[1].array));
+    }
+
+    #[cfg(all(feature = "chunked", feature = "value_type"))]
+    #[test]
+    fn consecutive_table_views_consolidate_into_one_view() {
+        use crate::Value;
+        use crate::traits::consolidate::Consolidate;
+
+        let table = Table::new("t".to_string(), Some(vec![fa_i32!("a", 1, 2, 3, 4, 5, 6)]));
+        let values: Vec<Value> = [(0, 2), (2, 2), (4, 2)]
+            .into_iter()
+            .map(|(offset, len)| {
+                Value::TableView(Arc::new(TableV::from_table(table.clone(), offset, len)))
+            })
+            .collect();
+        let Value::TableView(joined) = values.consolidate() else {
+            panic!("consecutive views consolidate into a view");
+        };
+        assert_eq!((joined.offset, joined.len), (0, 6));
+        assert!(joined.cols[0].array.ptr_eq(&table.cols[0].array));
     }
 }

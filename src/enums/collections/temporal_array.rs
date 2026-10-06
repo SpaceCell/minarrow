@@ -178,6 +178,40 @@ impl TemporalArray {
     ///
     /// This ensures that calling `append_array` never mutates data referenced elsewhere,
     /// but also avoids unnecessary cloning when the data is uniquely owned.
+    /// Whether `self` and `other` are the same array, holding one shared
+    /// inner allocation.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (TemporalArray::Datetime32(a), TemporalArray::Datetime32(b)) => Arc::ptr_eq(a, b),
+            (TemporalArray::Datetime64(a), TemporalArray::Datetime64(b)) => Arc::ptr_eq(a, b),
+            (TemporalArray::Null, TemporalArray::Null) => true,
+            (TemporalArray::Datetime32(_), _) => false,
+            (TemporalArray::Datetime64(_), _) => false,
+            (TemporalArray::Null, _) => false,
+        }
+    }
+
+    /// Returns one array spanning `self` followed by `other` when both are
+    /// consecutive windows over the same allocations, without copying.
+    ///
+    /// See [`MaskedArray::adjacent_window`]. Returns `None` for differing
+    /// variants.
+    pub fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (TemporalArray::Datetime32(a), TemporalArray::Datetime32(b)) => {
+                a.adjacent_window(b).map(TemporalArray::Datetime32)
+            }
+            (TemporalArray::Datetime64(a), TemporalArray::Datetime64(b)) => {
+                a.adjacent_window(b).map(TemporalArray::Datetime64)
+            }
+            (TemporalArray::Null, TemporalArray::Null) => Some(TemporalArray::Null),
+            // Arrays of differing variants hold no consecutive windows.
+            (TemporalArray::Datetime32(_), _) => None,
+            (TemporalArray::Datetime64(_), _) => None,
+            (TemporalArray::Null, _) => None,
+        }
+    }
+
     pub fn append_array(&mut self, other: &Self) {
         match (self, other) {
             (TemporalArray::Datetime32(a), TemporalArray::Datetime32(b)) => {

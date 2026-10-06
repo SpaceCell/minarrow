@@ -17,7 +17,7 @@ use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::traits::concatenate::Concatenate;
 use crate::traits::shape::Shape;
-use crate::{BooleanArray, FloatArray, IntegerArray, StringArray};
+use crate::{BooleanArray, FloatArray, IntegerArray, StringArray, Table};
 use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
@@ -683,6 +683,8 @@ impl Consolidate for Vec<Value> {
     /// Consolidate a vector of Values into a single Value.
     ///
     /// Uses `Concatenate` to fold matching-typed Values together.
+    /// A vector of tables consolidates as `Vec<Table>`, in one pass, and
+    /// consecutive views of one array or table join without copying.
     /// A single-element vector returns the element directly.
     /// An empty vector returns an empty VecValue.
     ///
@@ -693,7 +695,39 @@ impl Consolidate for Vec<Value> {
         match self.len() {
             0 => Value::VecValue(Arc::new(vec![])),
             1 => self.into_iter().next().unwrap(),
+            // Tables consolidate in one pass rather than through pairwise
+            // concatenation. Cloning a shared table clones its column handles
+            // and leaves their buffers shared.
+            _ if self.iter().all(|value| matches!(value, Value::Table(_))) => {
+                let tables: Vec<Table> = self
+                    .into_iter()
+                    .map(|value| match value {
+                        Value::Table(table) => Arc::unwrap_or_clone(table),
+                        _ => unreachable!("every value is verified to be a table"),
+                    })
+                    .collect();
+                Value::Table(Arc::new(tables.consolidate()))
+            }
             _ => {
+                // Consecutive views of one parent join without copying.
+                let mut values = self.iter();
+                let mut joined = values.next().cloned();
+                for value in values {
+                    joined = match (joined, value) {
+                        (Some(Value::ArrayView(a)), Value::ArrayView(b)) => {
+                            a.adjacent_window(b).map(|view| Value::ArrayView(Arc::new(view)))
+                        }
+                        (Some(Value::TableView(a)), Value::TableView(b)) => {
+                            a.adjacent_window(b).map(|view| Value::TableView(Arc::new(view)))
+                        }
+                        // Any other pairing is not two consecutive views.
+                        _ => None,
+                    };
+                }
+                if let Some(joined) = joined {
+                    return joined;
+                }
+
                 let mut iter = self.into_iter();
                 let first = iter.next().unwrap();
                 iter.fold(first, |acc, val| {

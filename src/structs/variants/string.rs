@@ -889,6 +889,13 @@ impl<T: Integer> MaskedArray for StringArray<T> {
         self.offsets.len() - 1
     }
 
+    /// String arrays consolidate by copying, because every string array's
+    /// offsets start at zero and the offsets of `other` therefore never
+    /// continue those of `self` within one allocation.
+    fn adjacent_window(&self, _other: &Self) -> Option<Self> {
+        None
+    }
+
     /// Appends all values (and null mask if present) from `other` to `self`.
     fn append_array(&mut self, other: &Self) {
         let orig_len = self.len();

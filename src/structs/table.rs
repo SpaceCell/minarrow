@@ -974,7 +974,9 @@ impl Concatenate for Table {
     /// - Column names, types, and nullability must match in order
     ///
     /// # Returns
-    /// A new Table with rows from `self` followed by rows from `other`
+    /// A new Table with rows from `self` followed by rows from `other`.
+    /// Tables with the same name keep that name, and otherwise the result
+    /// is named `"{self}+{other}"`.
     ///
     /// # Errors
     /// - `IncompatibleTypeError` if column schemas don't match
@@ -1054,7 +1056,13 @@ impl Concatenate for Table {
 
         // Create result table
         let n_rows = result_cols.first().map(|c| c.len()).unwrap_or(0);
-        let name = format!("{}+{}", self.name, other.name);
+        // Appending batches of one table keeps that table's name rather than
+        // repeating it.
+        let name = if self.name == other.name {
+            self.name
+        } else {
+            format!("{}+{}", self.name, other.name)
+        };
         let table = Table::build(result_cols, n_rows, name);
         #[cfg(feature = "table_metadata")]
         let table = {
@@ -1088,6 +1096,35 @@ impl Consolidate for Vec<Table> {
         }
         if self.len() == 1 {
             return self.into_iter().next().unwrap();
+        }
+
+        // Tables whose columns are consecutive windows over one allocation
+        // join without copying. Cloning the first table's columns shares
+        // their buffers.
+        let mut cols = self[0].cols.clone();
+        let adjacent = self[1..].iter().all(|table| {
+            table.cols.len() == cols.len()
+                && cols.iter_mut().zip(&table.cols).all(|(col, next)| {
+                    match col.array.adjacent_window(&next.array) {
+                        Some(array) => {
+                            col.array = array;
+                            col.null_count += next.null_count;
+                            true
+                        }
+                        None => false,
+                    }
+                })
+        });
+        if adjacent {
+            let n_rows = self.iter().map(|table| table.n_rows).sum();
+            let table = Table::build(cols, n_rows, self[0].name.clone());
+            #[cfg(feature = "table_metadata")]
+            let table = {
+                let mut t = table;
+                t.metadata = self[0].metadata.clone();
+                t
+            };
+            return table;
         }
 
         #[cfg(feature = "arena")]
