@@ -326,11 +326,7 @@ pub trait MaskedArray {
     /// are not consecutive, and for array types without window support.
     fn adjacent_window(&self, other: &Self) -> Option<Self>
     where
-        Self: Sized,
-    {
-        let _ = other;
-        None
-    }
+        Self: Sized;
 
     /// Appends rows `[offset..offset+len)` from another array into self.
     ///
