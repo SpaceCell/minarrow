@@ -898,11 +898,41 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
         self.null_mask = mask
     }
 
+    fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        // Codes are only interchangeable against the same dictionary.
+        #[cfg(feature = "shared_dict")]
+        let same_dictionary = self.dictionary.shares_with(&other.dictionary)
+            || self.dictionary.values() == other.dictionary.values();
+        #[cfg(not(feature = "shared_dict"))]
+        let same_dictionary = self.unique_values == other.unique_values;
+        if !same_dictionary {
+            return None;
+        }
+        let data = self.data.adjacent_window(&other.data)?;
+        let null_mask = match (&self.null_mask, &other.null_mask) {
+            (None, None) => None,
+            (Some(a), Some(b)) => Some(a.adjacent_window(b)?),
+            _ => return None,
+        };
+        // Cloning shares the window buffers, which the joined buffers then
+        // replace.
+        let mut joined = self.clone();
+        joined.data = data;
+        joined.null_mask = null_mask;
+        Some(joined)
+    }
+
     /// Appends all values (and null mask if present) from `other` to `self`.
     fn append_array(&mut self, other: &Self) {
         let orig_len = self.len();
         let other_len = other.len();
         if other_len == 0 {
+            return;
+        }
+
+        // Consecutive windows over one allocation join without copying.
+        if let Some(joined) = self.adjacent_window(other) {
+            *self = joined;
             return;
         }
 
@@ -1420,6 +1450,10 @@ impl<T: Integer> Concatenate for CategoricalArray<T> {
     /// 3. **Divergent**: both dictionaries grew independently. Append the
     ///    missing entries into `self`'s dictionary via `intern` (O(1) per
     ///    string) and remap `other`'s codes into the combined space.
+    ///
+    /// Without `shared_dict`, equal dictionaries take the first path. On the
+    /// paths that append codes as they are, consecutive windows over one
+    /// allocation join without copying.
     fn concat(
         mut self,
         other: Self,
@@ -1436,17 +1470,20 @@ impl<T: Integer> Concatenate for CategoricalArray<T> {
             let share = self.dictionary.shares_with(&other.dictionary);
             if share {
                 // Same dictionary instance: pure buffer concat.
-                self.data.extend_from_slice(other.data.as_ref());
+                self.append_array(&other);
+                return Ok(self);
             } else if other.dictionary.values().len() <= self.dictionary.values().len()
                 && other.dictionary.is_prefix_of(&self.dictionary)
             {
                 // `other`'s codes are already valid against the longer `self` dictionary.
-                self.data.extend_from_slice(other.data.as_ref());
+                self.append_array(&other);
+                return Ok(self);
             } else if self.dictionary.is_prefix_of(&other.dictionary) {
                 // `self`'s codes are valid against the longer `other` dictionary.
                 // Adopt `other`'s dictionary and append `other`'s data verbatim.
                 self.dictionary = other.dictionary.clone();
-                self.data.extend_from_slice(other.data.as_ref());
+                self.append_array(&other);
+                return Ok(self);
             } else {
                 // Divergent: bring missing entries from other into self's
                 // dictionary, then remap other's codes through the union.
@@ -1464,6 +1501,11 @@ impl<T: Integer> Concatenate for CategoricalArray<T> {
         }
         #[cfg(not(feature = "shared_dict"))]
         {
+            // Codes appended against an equal dictionary need no remapping.
+            if self.unique_values == other.unique_values {
+                self.append_array(&other);
+                return Ok(self);
+            }
             // Without `shared_dict` each categorical owns its dictionary
             // outright; merge by interning every entry of `other`'s
             // dictionary into `self`'s, then remap `other`'s codes.

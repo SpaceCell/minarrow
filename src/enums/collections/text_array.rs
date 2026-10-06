@@ -224,6 +224,36 @@ impl TextArray {
     ///
     /// This ensures that calling `append_array` never mutates data referenced elsewhere,
     /// but also avoids unnecessary cloning when the data is uniquely owned.
+    /// Returns one array spanning `self` followed by `other` when both are
+    /// consecutive windows over the same allocations, without copying.
+    ///
+    /// See [`MaskedArray::adjacent_window`]. Returns `None` for differing
+    /// variants.
+    pub fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            #[cfg(feature = "default_categorical_8")]
+            (TextArray::Categorical8(a), TextArray::Categorical8(b)) => {
+                a.adjacent_window(b).map(TextArray::Categorical8)
+            }
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical16(a), TextArray::Categorical16(b)) => {
+                a.adjacent_window(b).map(TextArray::Categorical16)
+            }
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            (TextArray::Categorical32(a), TextArray::Categorical32(b)) => {
+                a.adjacent_window(b).map(TextArray::Categorical32)
+            }
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical64(a), TextArray::Categorical64(b)) => {
+                a.adjacent_window(b).map(TextArray::Categorical64)
+            }
+            _ => None,
+        }
+    }
+
     pub fn append_array(&mut self, other: &Self) {
         match (self, other) {
             (TextArray::String32(a), TextArray::String32(b)) => Arc::make_mut(a).append_array(b),

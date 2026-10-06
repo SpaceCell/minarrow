@@ -57,7 +57,16 @@
 //! Calling `.freeze()` on a sealed lbuffer turns it into a regular 
 //! `Vec64<T>`-backed `Buffer`. If the buffer isn't already sealed, this
 //! seals it as well.
-//! 
+//!
+//! ## Windows
+//!
+//! [`LBuffer::window`] and [`LBuffer::bitmask_window`] share a range of
+//! published elements as an ordinary `Buffer` or `Bitmask` without copying.
+//! A producer can therefore send rows as soon as they are published while
+//! continuing to write into one contiguous allocation. Consecutive windows
+//! join back into a single window through [`Buffer::adjacent_window`] and
+//! [`Bitmask::adjacent_window`].
+//!
 //! ## Null masks
 //!
 //! [`LBuffer::with_capacity_masked`] pairs the value buffer with a
@@ -97,6 +106,7 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
+use crate::structs::shared_buffer::SharedBuffer;
 use crate::{Bitmask, Buffer, Vec64, Vec64Alloc};
 
 /// # LBuffer
@@ -214,6 +224,24 @@ impl LMaskTail {
 // that observes them via `Acquire`.
 unsafe impl<T: Send + Sync> Send for LBufferInner<T> {}
 unsafe impl<T: Send + Sync> Sync for LBufferInner<T> {}
+
+/// Owner of a [`SharedBuffer`] window over an `LBuffer` allocation.
+///
+/// Holds the allocation through the shared cell and exposes its first
+/// `bytes` bytes, all of which were final when the window was taken.
+struct LBufferRegion<T> {
+    inner: Arc<LBufferInner<T>>,
+    bytes: usize,
+}
+
+impl<T> AsRef<[u8]> for LBufferRegion<T> {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: the first `bytes` bytes hold final elements, which are
+        // initialised and never written again. `base` is stable, and the
+        // `Arc` keeps the allocation alive for the region's lifetime.
+        unsafe { std::slice::from_raw_parts(self.inner.base.as_ptr() as *const u8, self.bytes) }
+    }
+}
 
 impl<T> LBuffer<T, false> {
     /// Allocate a fixed-capacity buffer through `vec64`'s allocator.
@@ -450,6 +478,37 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         Buffer::from_lbuffer(self.view())
     }
 
+    /// Zero-copy [`Buffer<T>`] over the published elements
+    /// `[offset, offset + len)`.
+    ///
+    /// The window is an immutable view over elements the writer never writes
+    /// again, and it stays valid while the writer continues to append. It
+    /// holds the allocation through an `Arc` and may outlive the `LBuffer`.
+    /// Consecutive windows over the same buffer join into one window through
+    /// [`Buffer::adjacent_window`], which copies nothing.
+    ///
+    /// The window is 64-byte aligned when `offset * size_of::<T>()` is a
+    /// multiple of 64.
+    ///
+    /// # Panics
+    /// Panics if `offset + len` exceeds the published length.
+    pub fn window(&self, offset: usize, len: usize) -> Buffer<T>
+    where
+        T: Send + Sync + 'static,
+    {
+        let end = offset.checked_add(len).expect("LBuffer window overflow");
+        let published = self.len();
+        assert!(
+            end <= published,
+            "LBuffer window [{offset}, {end}) exceeds the published length {published}"
+        );
+        let owner = SharedBuffer::from_owner(LBufferRegion {
+            inner: Arc::clone(&self.inner),
+            bytes: end * size_of::<T>(),
+        });
+        Buffer::from_shared_column(owner, offset, len)
+    }
+
     /// Seal the buffer (if not already sealed) and turn it into a regular
     /// owned [`Vec64<T>`]-backed [`Buffer<T>`].
     ///
@@ -646,6 +705,53 @@ impl<T> LBuffer<T, true> {
         Bitmask::from_lbuffer(LBufferV {
             inner: Arc::clone(mask),
         })
+    }
+
+    /// Zero-copy [`Bitmask`] over the null mask bits `[offset, offset + len)`.
+    ///
+    /// `offset` must be a multiple of 8 because the window shares the null
+    /// mask bytes. Every byte it covers must be final, which holds when the
+    /// window ends at or before the last completed byte, or once the buffer is
+    /// sealed. Consecutive windows join into one through
+    /// [`Bitmask::adjacent_window`], which copies nothing.
+    ///
+    /// # Panics
+    /// Panics if `offset` is not a multiple of 8, or if the window covers bits
+    /// in the byte still being filled.
+    pub fn bitmask_window(&self, offset: usize, len: usize) -> Bitmask {
+        assert!(
+            offset % 8 == 0,
+            "bitmask window offset {offset} is not on a byte boundary"
+        );
+        let mask = self
+            .mask
+            .as_ref()
+            .expect("masked buffer carries a null mask cell");
+        let (settled, filled) = mask
+            .mask_tail
+            .as_ref()
+            .expect("null mask buffer carries a tail")
+            .load();
+        // The byte being filled is final only once the buffer is sealed.
+        let final_bits = if mask.sealed.load(Ordering::Acquire) {
+            settled * 8 + filled
+        } else {
+            settled * 8
+        };
+        let end = offset.checked_add(len).expect("bitmask window overflow");
+        assert!(
+            end <= final_bits,
+            "bitmask window [{offset}, {end}) extends past the final bits {final_bits}"
+        );
+        let n_bytes = (end + 7) / 8;
+        let owner = SharedBuffer::from_owner(LBufferRegion {
+            inner: Arc::clone(mask),
+            bytes: n_bytes,
+        });
+        Bitmask::new(
+            Buffer::from_shared_column(owner, offset / 8, n_bytes - offset / 8),
+            len,
+        )
     }
 }
 
@@ -1373,5 +1479,207 @@ mod tests {
         let a_vals = a.as_buffer();
         assert_eq!(a_vals.len(), 20);
         assert_eq!(a_vals.as_slice()[6], 6.0);
+    }
+
+    #[test]
+    fn window_shares_published_elements() {
+        let mut buf = LBuffer::<i64>::with_capacity(256);
+        for i in 0..100i64 {
+            buf.push(i).unwrap();
+        }
+        let window = buf.window(64, 30);
+        assert_eq!(window.as_slice(), &(64i64..94).collect::<Vec<_>>()[..]);
+        // The window reads the allocation in place.
+        assert_eq!(window.as_slice().as_ptr(), unsafe { buf.inner.base.as_ptr().add(64) } as *const i64);
+        // A window starting on a 64-byte multiple is SIMD aligned.
+        assert_eq!(window.as_slice().as_ptr() as usize % 64, 0);
+        // Elements pushed afterwards leave the window unchanged.
+        buf.push(1_000).unwrap();
+        assert_eq!(window.len(), 30);
+    }
+
+    #[test]
+    fn window_outlives_the_writer() {
+        let mut buf = LBuffer::<u32>::with_capacity(64);
+        for i in 0..10u32 {
+            buf.push(i).unwrap();
+        }
+        let window = buf.window(2, 5);
+        drop(buf);
+        assert_eq!(window.as_slice(), &[2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds the published length")]
+    fn window_past_the_published_length_panics() {
+        let mut buf = LBuffer::<u32>::with_capacity(64);
+        buf.push(1).unwrap();
+        let _ = buf.window(0, 2);
+    }
+
+    #[test]
+    fn consecutive_windows_join_without_copying() {
+        let mut buf = LBuffer::<f64>::with_capacity(256);
+        for i in 0..128 {
+            buf.push(i as f64).unwrap();
+        }
+        let first = buf.window(0, 64);
+        for i in 128..192 {
+            buf.push(i as f64).unwrap();
+        }
+        let second = buf.window(64, 128);
+        let joined = first.adjacent_window(&second).expect("the windows are consecutive");
+        assert_eq!(joined.len(), 192);
+        assert_eq!(joined.as_slice().as_ptr(), first.as_slice().as_ptr());
+        assert_eq!(joined.as_slice(), &(0..192).map(|i| i as f64).collect::<Vec<_>>()[..]);
+
+        // Windows that are out of order, overlapping or from another
+        // allocation do not join.
+        assert!(second.adjacent_window(&first).is_none());
+        assert!(first.adjacent_window(&buf.window(32, 64)).is_none());
+        let mut other = LBuffer::<f64>::with_capacity(256);
+        other.push(0.0).unwrap();
+        assert!(first.adjacent_window(&other.window(0, 1)).is_none());
+        assert!(first.adjacent_window(&Buffer::from_slice(&[1.0])).is_none());
+    }
+
+    #[test]
+    fn bitmask_windows_join_without_copying() {
+        let mut buf = LBuffer::<i64>::with_capacity_masked(256);
+        for i in 0..130i64 {
+            if i % 10 == 0 {
+                buf.push_null().unwrap();
+            } else {
+                buf.push(i).unwrap();
+            }
+        }
+        // Rows 128 and 129 sit in the byte still being filled.
+        let first = buf.bitmask_window(0, 64);
+        let second = buf.bitmask_window(64, 64);
+        let joined = first.adjacent_window(&second).expect("the windows are consecutive");
+        assert_eq!(joined.len(), 128);
+        assert_eq!(joined.as_slice().as_ptr(), first.as_slice().as_ptr());
+        for i in 0..128 {
+            assert_eq!(joined.get(i), i % 10 != 0, "bit {i}");
+        }
+
+        // Once sealed, the final byte is complete and joins too.
+        buf.seal();
+        let tail = buf.bitmask_window(128, 2);
+        let all = joined.adjacent_window(&tail).expect("the windows are consecutive");
+        assert_eq!(all.len(), 130);
+        assert!(!all.get(129 - 9) && all.get(129));
+        // A window that does not end on a byte boundary does not take a
+        // following window.
+        assert!(tail.adjacent_window(&joined).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "extends past the final bits")]
+    fn bitmask_window_over_the_byte_being_filled_panics() {
+        let mut buf = LBuffer::<i64>::with_capacity_masked(64);
+        for i in 0..10i64 {
+            buf.push(i).unwrap();
+        }
+        let _ = buf.bitmask_window(0, 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "not on a byte boundary")]
+    fn bitmask_window_off_a_byte_boundary_panics() {
+        let mut buf = LBuffer::<i64>::with_capacity_masked(64);
+        for i in 0..16i64 {
+            buf.push(i).unwrap();
+        }
+        let _ = buf.bitmask_window(4, 8);
+    }
+
+    #[test]
+    fn array_append_joins_consecutive_windows() {
+        use crate::{IntegerArray, MaskedArray};
+
+        let mut buf = LBuffer::<i64>::with_capacity_masked(256);
+        for i in 0..192i64 {
+            if i == 70 {
+                buf.push_null().unwrap();
+            } else {
+                buf.push(i).unwrap();
+            }
+        }
+        let window = |offset, len| IntegerArray::<i64> {
+            data: buf.window(offset, len),
+            null_mask: Some(buf.bitmask_window(offset, len)),
+        };
+        let mut joined = window(0, 64);
+        joined.append_array(&window(64, 64));
+        joined.append_array(&window(128, 64));
+        assert_eq!(joined.len(), 192);
+        assert!(joined.data.shared_parts().is_some(), "the joined data stays a shared window");
+        assert_eq!(joined.data.as_slice().as_ptr(), buf.window(0, 1).as_slice().as_ptr());
+        assert!(joined.is_null(70));
+        assert_eq!(joined.null_count(), 1);
+        assert_eq!(joined.get(191), Some(191));
+
+        // A batch from elsewhere is appended by copying.
+        joined.append_array(&IntegerArray::<i64>::from_slice(&[-1]));
+        assert_eq!(joined.len(), 193);
+        assert_eq!(joined.get(192), Some(-1));
+        assert!(joined.data.shared_parts().is_none());
+    }
+
+    #[cfg(all(feature = "chunked", feature = "value_type"))]
+    #[test]
+    fn table_consolidation_joins_consecutive_windows() {
+        use crate::traits::consolidate::Consolidate;
+        use crate::{Array, BooleanArray, CategoricalArray, Field, FieldArray, IntegerArray, Table, Value};
+        use crate::ffi::arrow_dtype::ArrowType;
+
+        let mut qty = LBuffer::<i64>::with_capacity(256);
+        let mut side = LBuffer::<u32>::with_capacity(256);
+        let mut flag = LBuffer::<u8>::with_capacity_masked(256);
+        for i in 0..192i64 {
+            qty.push(i).unwrap();
+            side.push((i % 2) as u32).unwrap();
+            if i % 3 == 0 {
+                flag.push_null().unwrap();
+            } else {
+                flag.push(0).unwrap();
+            }
+        }
+        let dictionary: Vec64<String> = vec!["bid".to_string(), "ask".to_string()].into_iter().collect();
+        let batch = |offset, len| {
+            let qty = Array::from_int64(IntegerArray { data: qty.window(offset, len), null_mask: None });
+            let side = Array::from_categorical32(CategoricalArray::new(
+                side.window(offset, len),
+                dictionary.clone(),
+                None,
+            ));
+            let flag = Array::from_bool(BooleanArray::new(flag.bitmask_window(offset, len), None));
+            Table::new(
+                "trades".to_string(),
+                Some(vec![
+                    FieldArray::new(Field::new("qty", ArrowType::Int64, false, None), qty),
+                    FieldArray::new(Field::new("side", ArrowType::Dictionary(crate::ffi::arrow_dtype::CategoricalIndexType::UInt32), false, None), side),
+                    FieldArray::new(Field::new("flag", ArrowType::Boolean, false, None), flag),
+                ]),
+            )
+        };
+
+        let batches = vec![
+            Value::Table(Arc::new(batch(0, 64))),
+            Value::Table(Arc::new(batch(64, 64))),
+            Value::Table(Arc::new(batch(128, 64))),
+        ];
+        let Value::Table(window) = batches.consolidate() else {
+            panic!("tables consolidate into a table");
+        };
+        assert_eq!(window.n_rows, 192);
+        assert_eq!(window.name, "trades");
+        let whole = batch(0, 192);
+        assert_eq!(*window, whole);
+        // Every column is the original allocation over all 192 rows.
+        let Array::NumericArray(qty_col) = &window.cols[0].array else { panic!("qty is numeric") };
+        let crate::NumericArray::Int64(qty_col) = qty_col else { panic!("qty is Int64") };
+        assert_eq!(qty_col.data.as_slice().as_ptr(), qty.window(0, 1).as_slice().as_ptr());
     }
 }

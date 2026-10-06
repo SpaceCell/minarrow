@@ -4209,6 +4209,28 @@ impl Array {
         }
     }
 
+    /// Returns one array spanning `self` followed by `other` when both are
+    /// consecutive windows over the same allocations, without copying.
+    ///
+    /// See [`MaskedArray::adjacent_window`]. Returns `None` for differing
+    /// variants.
+    pub fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (Array::NumericArray(a), Array::NumericArray(b)) => {
+                a.adjacent_window(b).map(Array::NumericArray)
+            }
+            (Array::BooleanArray(a), Array::BooleanArray(b)) => {
+                a.adjacent_window(b).map(Array::BooleanArray)
+            }
+            (Array::TextArray(a), Array::TextArray(b)) => a.adjacent_window(b).map(Array::TextArray),
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(a), Array::TemporalArray(b)) => {
+                a.adjacent_window(b).map(Array::TemporalArray)
+            }
+            _ => None,
+        }
+    }
+
     /// Appends all values (and null mask if present) from `other` into `self`.
     ///
     /// Panics if the two arrays are of different variants or incompatible types.

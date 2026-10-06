@@ -351,6 +351,51 @@ impl NumericArray {
     ///
     /// This ensures that calling `append_array` never mutates data referenced elsewhere,
     /// but also avoids unnecessary cloning when the data is uniquely owned.
+    /// Returns one array spanning `self` followed by `other` when both are
+    /// consecutive windows over the same allocations, without copying.
+    ///
+    /// See [`MaskedArray::adjacent_window`]. Returns `None` for differing
+    /// variants.
+    pub fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::Int8(a), NumericArray::Int8(b)) => {
+                a.adjacent_window(b).map(NumericArray::Int8)
+            }
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::Int16(a), NumericArray::Int16(b)) => {
+                a.adjacent_window(b).map(NumericArray::Int16)
+            }
+            (NumericArray::Int32(a), NumericArray::Int32(b)) => {
+                a.adjacent_window(b).map(NumericArray::Int32)
+            }
+            (NumericArray::Int64(a), NumericArray::Int64(b)) => {
+                a.adjacent_window(b).map(NumericArray::Int64)
+            }
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::UInt8(a), NumericArray::UInt8(b)) => {
+                a.adjacent_window(b).map(NumericArray::UInt8)
+            }
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::UInt16(a), NumericArray::UInt16(b)) => {
+                a.adjacent_window(b).map(NumericArray::UInt16)
+            }
+            (NumericArray::UInt32(a), NumericArray::UInt32(b)) => {
+                a.adjacent_window(b).map(NumericArray::UInt32)
+            }
+            (NumericArray::UInt64(a), NumericArray::UInt64(b)) => {
+                a.adjacent_window(b).map(NumericArray::UInt64)
+            }
+            (NumericArray::Float32(a), NumericArray::Float32(b)) => {
+                a.adjacent_window(b).map(NumericArray::Float32)
+            }
+            (NumericArray::Float64(a), NumericArray::Float64(b)) => {
+                a.adjacent_window(b).map(NumericArray::Float64)
+            }
+            _ => None,
+        }
+    }
+
     pub fn append_array(&mut self, other: &Self) {
         match (self, other) {
             #[cfg(feature = "extended_numeric_types")]

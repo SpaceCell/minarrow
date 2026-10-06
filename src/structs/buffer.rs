@@ -771,6 +771,47 @@ impl<T> Buffer<T> {
             Storage::UnsafeMut { .. } => None,
         }
     }
+
+    /// Returns one window spanning `self` followed by `next`, when both are
+    /// shared windows over the same allocation and `next` starts where `self`
+    /// ends.
+    ///
+    /// Joining copies nothing. Consecutive windows taken from one allocation,
+    /// such as those from [`crate::LBuffer::window`], consolidate back into a
+    /// single view. Returns `None` for owned buffers, for windows
+    /// over different allocations, and for windows that are not consecutive.
+    pub fn adjacent_window(&self, next: &Self) -> Option<Self> {
+        let (
+            Storage::Shared {
+                owner: a,
+                offset: a_offset,
+                len: a_len,
+            },
+            Storage::Shared {
+                owner: b,
+                offset: b_offset,
+                len: b_len,
+            },
+        ) = (&self.storage, &next.storage)
+        else {
+            return None;
+        };
+        // Owners with the same base address share one allocation, and
+        // offsets count from that base.
+        if a.as_slice().as_ptr() != b.as_slice().as_ptr() || a_offset + a_len != *b_offset {
+            return None;
+        }
+        // Either owner keeps the allocation alive, and the longer one covers
+        // both windows.
+        let owner = if b.len() >= a.len() { b.clone() } else { a.clone() };
+        Some(Buffer {
+            storage: Storage::Shared {
+                owner,
+                offset: *a_offset,
+                len: a_len + b_len,
+            },
+        })
+    }
 }
 
 impl<T: Clone> Buffer<T> {
