@@ -60,6 +60,33 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
     let time_unit = src.time_unit;
     let len = out.len();
 
+    // Week flooring runs on integers through `week_floor`.
+    if matches!(period, TimePeriod::Week) {
+        for i in 0..len {
+            let original = src.data[src_offset + i];
+            out[i] = original;
+            let valid = if src.is_null(src_offset + i) {
+                false
+            } else {
+                match original
+                    .to_i64()
+                    .and_then(|v| week_floor(v, time_unit))
+                    .and_then(T::from_i64)
+                {
+                    Some(t) => {
+                        out[i] = t;
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if let Some(mask) = out_mask.as_deref_mut() {
+                mask.set(i, valid);
+            }
+        }
+        return;
+    }
+
     // Calendar periods floor through a datetime. Sub-second periods divide the raw
     // value instead, since the datetime path cannot express them directly.
     let calendar: Option<fn(time::OffsetDateTime) -> Option<time::OffsetDateTime>> = match period {
@@ -73,13 +100,6 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
             time::Date::from_calendar_date(dt.year(), dt.month(), 1)
                 .ok()
                 .and_then(|d| d.with_hms(0, 0, 0).ok())
-                .map(|pdt| pdt.assume_utc())
-        }),
-        TimePeriod::Week => Some(|dt| {
-            // Weekday is 1=Sunday .. 7=Saturday, so step back to Sunday.
-            let days_to_sunday = (dt.weekday().number_from_sunday() - 1) as i64;
-            dt.checked_sub(time::Duration::days(days_to_sunday))
-                .and_then(|week_start| week_start.date().with_hms(0, 0, 0).ok())
                 .map(|pdt| pdt.assume_utc())
         }),
         TimePeriod::Day => Some(|dt| dt.date().with_hms(0, 0, 0).ok().map(|pdt| pdt.assume_utc())),
@@ -101,7 +121,8 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
                 .ok()
                 .map(|pdt| pdt.assume_utc())
         }),
-        TimePeriod::Millisecond | TimePeriod::Microsecond => None,
+        // Week is floored by the integer path above.
+        TimePeriod::Week | TimePeriod::Millisecond | TimePeriod::Microsecond => None,
     };
 
     if let Some(trunc) = calendar {
@@ -168,6 +189,65 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
             mask.set(i, valid);
         }
     }
+}
+
+/// Floors a raw datetime value in `time_unit` to the start of its week, Sunday
+/// 00:00 UTC.
+///
+/// The result matches flooring through `time::OffsetDateTime` for every input.
+/// Values outside the `time` crate's date range, and values whose week starts
+/// before `Date::MIN`, return `None`. The `Days` unit converts through an `i32`
+/// Julian day, and the final scaling to `time_unit` overflows as the
+/// `OffsetDateTime` conversion does.
+fn week_floor(v: i64, time_unit: TimeUnit) -> Option<i64> {
+    const UNIX_EPOCH_JULIAN_DAY: i64 = 2_440_588;
+    const SECONDS_PER_DAY: i64 = 86_400;
+    let min_julian_day = time::Date::MIN.to_julian_day() as i64;
+    let max_julian_day = time::Date::MAX.to_julian_day() as i64;
+    let min_day = min_julian_day - UNIX_EPOCH_JULIAN_DAY;
+    let max_day = max_julian_day - UNIX_EPOCH_JULIAN_DAY;
+
+    // Computes the days since the epoch, applying the same range check as
+    // `i64_to_datetime`.
+    let day = match time_unit {
+        TimeUnit::Days => {
+            let julian_day = (v + UNIX_EPOCH_JULIAN_DAY) as i32 as i64;
+            if julian_day < min_julian_day || julian_day > max_julian_day {
+                return None;
+            }
+            julian_day - UNIX_EPOCH_JULIAN_DAY
+        }
+        _ => {
+            let per_second = match time_unit {
+                TimeUnit::Seconds => 1,
+                TimeUnit::Milliseconds => 1_000,
+                TimeUnit::Microseconds => 1_000_000,
+                _ => 1_000_000_000,
+            };
+            let seconds = v.div_euclid(per_second);
+            if seconds < min_day * SECONDS_PER_DAY
+                || seconds > max_day * SECONDS_PER_DAY + SECONDS_PER_DAY - 1
+            {
+                return None;
+            }
+            seconds.div_euclid(SECONDS_PER_DAY)
+        }
+    };
+
+    // The epoch day is a Thursday, so `(day + 4) mod 7` counts the days back to
+    // the preceding Sunday.
+    let week_start = day - (day + 4).rem_euclid(7);
+    if week_start < min_day {
+        return None;
+    }
+    let seconds = week_start * SECONDS_PER_DAY;
+    Some(match time_unit {
+        TimeUnit::Seconds => seconds,
+        TimeUnit::Milliseconds => seconds * 1_000,
+        TimeUnit::Microseconds => seconds * 1_000_000,
+        TimeUnit::Nanoseconds => seconds * 1_000_000_000,
+        TimeUnit::Days => week_start,
+    })
 }
 
 /// Add `duration` to the values of `src` in the window `[src_offset, src_offset +
@@ -668,5 +748,245 @@ mod tests {
             );
             assert!(mask.get(i));
         }
+    }
+}
+
+#[cfg(test)]
+mod week_floor_tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::time::{Duration as StdDuration, Instant};
+
+    use super::*;
+    use crate::Vec64;
+
+    /// Week truncation through `time::OffsetDateTime`, as `truncate_into` ran it
+    /// before the integer path, kept as the reference for the exact comparison.
+    fn truncate_week_reference<T: Integer + FromPrimitive>(
+        src: &DatetimeArray<T>,
+        src_offset: usize,
+        out: &mut [T],
+        mut out_mask: Option<&mut Bitmask>,
+    ) {
+        let time_unit = src.time_unit;
+        let len = out.len();
+        let trunc: fn(time::OffsetDateTime) -> Option<time::OffsetDateTime> = |dt| {
+            let days_to_sunday = (dt.weekday().number_from_sunday() - 1) as i64;
+            dt.checked_sub(time::Duration::days(days_to_sunday))
+                .and_then(|week_start| week_start.date().with_hms(0, 0, 0).ok())
+                .map(|pdt| pdt.assume_utc())
+        };
+        for i in 0..len {
+            let original = src.data[src_offset + i];
+            out[i] = original;
+            let valid = if src.is_null(src_offset + i) {
+                false
+            } else {
+                match original
+                    .to_i64()
+                    .and_then(|v| DatetimeArray::<T>::i64_to_datetime(v, time_unit))
+                    .and_then(trunc)
+                    .map(|dt| DatetimeArray::<T>::datetime_to_i64(dt, time_unit))
+                    .and_then(T::from_i64)
+                {
+                    Some(t) => {
+                        out[i] = t;
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if let Some(mask) = out_mask.as_deref_mut() {
+                mask.set(i, valid);
+            }
+        }
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+    }
+
+    const UNITS: [TimeUnit; 5] = [
+        TimeUnit::Seconds,
+        TimeUnit::Milliseconds,
+        TimeUnit::Microseconds,
+        TimeUnit::Nanoseconds,
+        TimeUnit::Days,
+    ];
+
+    fn units_per_day(unit: TimeUnit) -> i64 {
+        match unit {
+            TimeUnit::Seconds => 86_400,
+            TimeUnit::Milliseconds => 86_400_000,
+            TimeUnit::Microseconds => 86_400_000_000,
+            TimeUnit::Nanoseconds => 86_400_000_000_000,
+            TimeUnit::Days => 1,
+        }
+    }
+
+    /// Values at and around the epoch, Sunday week starts, the `time` crate's
+    /// range limits, the `i32` Julian day wrap of the `Days` unit and the ends
+    /// of the `i64` and `i32` ranges.
+    fn boundary_values(unit: TimeUnit) -> Vec<i64> {
+        let per_day = units_per_day(unit) as i128;
+        let min_day = time::Date::MIN.to_julian_day() as i128 - 2_440_588;
+        let max_day = time::Date::MAX.to_julian_day() as i128 - 2_440_588;
+        let mut anchors: Vec<i128> = vec![
+            0,
+            // 1969-12-28 and 1970-01-04, the Sundays around the epoch.
+            -4 * per_day,
+            3 * per_day,
+            min_day * per_day,
+            (max_day + 1) * per_day,
+            i64::MIN as i128,
+            i64::MAX as i128,
+            i32::MIN as i128,
+            i32::MAX as i128,
+        ];
+        for k in -15..15 {
+            anchors.push(k * per_day);
+        }
+        for k in 0..8 {
+            anchors.push((min_day + k) * per_day);
+            anchors.push((max_day - k) * per_day);
+        }
+        if matches!(unit, TimeUnit::Days) {
+            // The Julian day conversion wraps through `i32`.
+            for base in [1i128 << 31, 1i128 << 32, -(1i128 << 31), -(1i128 << 32), 5i128 << 32] {
+                anchors.push(base - 2_440_588);
+                anchors.push(base - 2_440_588 + min_day + 2_440_588);
+                anchors.push(base + max_day);
+            }
+            anchors.push(i64::MAX as i128 - 2_440_588);
+        }
+        let mut out = Vec::new();
+        for a in anchors {
+            for d in [-per_day - 1, -per_day, -2, -1, 0, 1, 2, per_day - 1, per_day] {
+                let v = a + d;
+                if v >= i64::MIN as i128 && v <= i64::MAX as i128 {
+                    out.push(v as i64);
+                }
+            }
+        }
+        out
+    }
+
+    /// Runs both forms over the window, returning `None` when the form panics.
+    fn run_both<T: Integer + FromPrimitive + std::fmt::Debug>(
+        src: &DatetimeArray<T>,
+        offset: usize,
+        len: usize,
+        with_mask: bool,
+    ) -> (Option<(Vec<T>, Option<Bitmask>)>, Option<(Vec<T>, Option<Bitmask>)>) {
+        let run = |reference: bool| {
+            catch_unwind(AssertUnwindSafe(|| {
+                let mut out = vec![T::zero(); len];
+                let mut mask = with_mask.then(|| Bitmask::new_set_all(len, true));
+                if reference {
+                    truncate_week_reference(src, offset, &mut out, mask.as_mut());
+                } else {
+                    truncate_into(src, offset, TimePeriod::Week, &mut out, mask.as_mut());
+                }
+                (out, mask)
+            }))
+            .ok()
+        };
+        (run(false), run(true))
+    }
+
+    fn assert_same<T: Integer + FromPrimitive + std::fmt::Debug>(
+        src: &DatetimeArray<T>,
+        offset: usize,
+        len: usize,
+        context: &str,
+    ) {
+        for with_mask in [true, false] {
+            let (new, old) = run_both(src, offset, len, with_mask);
+            assert_eq!(new.is_some(), old.is_some(), "panic differs: {context}");
+            if let (Some((new_out, new_mask)), Some((old_out, old_mask))) = (new, old) {
+                assert_eq!(new_out, old_out, "values differ: {context}");
+                assert_eq!(new_mask, old_mask, "mask differs: {context}");
+            }
+        }
+    }
+
+    #[test]
+    fn week_matches_reference_at_boundaries() {
+        for unit in UNITS {
+            for v in boundary_values(unit) {
+                let src = DatetimeArray::<i64>::from_slice(&[v], Some(unit));
+                assert_same(&src, 0, 1, &format!("i64 unit={unit:?} v={v}"));
+                if let Ok(v32) = i32::try_from(v) {
+                    let src = DatetimeArray::<i32>::from_slice(&[v32], Some(unit));
+                    assert_same(&src, 0, 1, &format!("i32 unit={unit:?} v={v32}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn week_matches_reference_across_i64_range() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for unit in UNITS {
+            let per_day = units_per_day(unit);
+            for scenario in 0..3 {
+                let values: Vec<i64> = (0..4000)
+                    .map(|_| match scenario {
+                        // The full i64 range.
+                        0 => rng.next() as i64,
+                        // Within roughly 270 years of the epoch.
+                        1 => (rng.next() as i64 % 100_000) * per_day
+                            + (rng.next() % per_day as u64) as i64,
+                        // Within a few weeks of the epoch.
+                        _ => rng.next() as i64 % (40 * per_day),
+                    })
+                    .collect();
+                for density in [0u64, 5, 50, 100] {
+                    let mask = (density < 100).then(|| {
+                        let mut m = Bitmask::new_set_all(values.len(), true);
+                        for i in 0..values.len() {
+                            if rng.next() % 100 < density {
+                                m.set(i, false);
+                            }
+                        }
+                        m
+                    });
+                    let src = DatetimeArray::<i64>::new(Vec64::from_slice(&values), mask, Some(unit));
+                    let n = values.len();
+                    for (offset, len) in [(0, n), (3, n - 3), (65, 1000), (n, 0)] {
+                        assert_same(
+                            &src,
+                            offset,
+                            len,
+                            &format!("unit={unit:?} scenario={scenario} density={density} offset={offset}"),
+                        );
+                    }
+                    let values32: Vec<i32> = values.iter().map(|v| *v as i32).collect();
+                    let mask32 = src.null_mask.clone();
+                    let src32 =
+                        DatetimeArray::<i32>::new(Vec64::from_slice(&values32), mask32, Some(unit));
+                    assert_same(&src32, 0, n, &format!("i32 unit={unit:?} scenario={scenario}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn week_large_completes_within_bound() {
+        let len = 1usize << 24;
+        let values: Vec<i64> = (0..len as i64).map(|i| i * 61_000).collect();
+        let src = DatetimeArray::<i64>::from_slice(&values, Some(TimeUnit::Milliseconds));
+        let mut out = vec![0i64; len];
+        let mut mask = Bitmask::new_set_all(len, true);
+        let start = Instant::now();
+        truncate_into(&src, 0, TimePeriod::Week, &mut out, Some(&mut mask));
+        assert!(start.elapsed() < StdDuration::from_secs(60));
+        assert_eq!(out[len - 1] % (7 * 86_400_000), 3 * 86_400_000);
     }
 }
