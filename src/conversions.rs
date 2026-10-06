@@ -486,8 +486,8 @@ const DICT_KEY_MULTIPLIER: u64 = 0x5851_F42D_4C95_7F2D;
 /// conversion.
 ///
 /// The seed is drawn from the standard library's randomised `RandomState`
-/// once per conversion, so hash values differ between conversions and
-/// between processes.
+/// once per conversion, ensuring hash values differ between conversions and
+/// processes.
 #[derive(Clone, Copy)]
 struct DictKeyState(u64);
 
@@ -510,8 +510,8 @@ impl BuildHasher for DictKeyState {
 ///
 /// Key bytes are read in 8-byte little-endian words, with the length mixed
 /// in first, and each word is combined through a folded multiply. Codes and
-/// dictionary order come from first appearance, so the hasher affects
-/// speed and not the result.
+/// dictionary order come from first appearance. This ensures the hasher affects
+/// speed rather than the result.
 struct DictKeyHasher(u64);
 
 impl DictKeyHasher {
