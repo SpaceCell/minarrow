@@ -316,11 +316,12 @@ pub trait MaskedArray {
     /// is an alternative option.
     fn append_array(&mut self, other: &Self);
 
-    /// Returns one array spanning `self` followed by `other` when both are
+    /// Must returns one array spanning `self` followed by `other` when both are
     /// consecutive windows over the same allocations, without copying.
     ///
     /// [`append_array`](Self::append_array) and table consolidation use
-    /// this to join windows such as those from [`crate::LBuffer::window`].
+    /// this to join windows.
+    ///
     /// Returns `None` when either array owns its buffers, when the windows
     /// are not consecutive, and for array types without window support.
     fn adjacent_window(&self, other: &Self) -> Option<Self>
