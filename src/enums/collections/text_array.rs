@@ -224,6 +224,43 @@ impl TextArray {
     ///
     /// This ensures that calling `append_array` never mutates data referenced elsewhere,
     /// but also avoids unnecessary cloning when the data is uniquely owned.
+    /// Whether `self` and `other` are the same array, holding one shared
+    /// inner allocation.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (TextArray::String32(a), TextArray::String32(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "large_string")]
+            (TextArray::String64(a), TextArray::String64(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "default_categorical_8")]
+            (TextArray::Categorical8(a), TextArray::Categorical8(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical16(a), TextArray::Categorical16(b)) => Arc::ptr_eq(a, b),
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            (TextArray::Categorical32(a), TextArray::Categorical32(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical64(a), TextArray::Categorical64(b)) => Arc::ptr_eq(a, b),
+            (TextArray::Null, TextArray::Null) => true,
+            (TextArray::String32(_), _) => false,
+            #[cfg(feature = "large_string")]
+            (TextArray::String64(_), _) => false,
+            #[cfg(feature = "default_categorical_8")]
+            (TextArray::Categorical8(_), _) => false,
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical16(_), _) => false,
+            #[cfg(any(
+                not(feature = "default_categorical_8"),
+                feature = "extended_categorical"
+            ))]
+            (TextArray::Categorical32(_), _) => false,
+            #[cfg(feature = "extended_categorical")]
+            (TextArray::Categorical64(_), _) => false,
+            (TextArray::Null, _) => false,
+        }
+    }
+
     /// Returns one array spanning `self` followed by `other` when both are
     /// consecutive windows over the same allocations, without copying.
     ///

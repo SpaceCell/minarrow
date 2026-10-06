@@ -4209,6 +4209,25 @@ impl Array {
         }
     }
 
+    /// Whether `self` and `other` are the same array, holding one shared
+    /// inner allocation.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Array::NumericArray(a), Array::NumericArray(b)) => a.ptr_eq(b),
+            (Array::TextArray(a), Array::TextArray(b)) => a.ptr_eq(b),
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(a), Array::TemporalArray(b)) => a.ptr_eq(b),
+            (Array::BooleanArray(a), Array::BooleanArray(b)) => Arc::ptr_eq(a, b),
+            (Array::Null, Array::Null) => true,
+            (Array::NumericArray(_), _) => false,
+            (Array::TextArray(_), _) => false,
+            #[cfg(feature = "datetime")]
+            (Array::TemporalArray(_), _) => false,
+            (Array::BooleanArray(_), _) => false,
+            (Array::Null, _) => false,
+        }
+    }
+
     /// Returns one array spanning `self` followed by `other` when both are
     /// consecutive windows over the same allocations, without copying.
     ///

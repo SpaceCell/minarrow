@@ -178,6 +178,19 @@ impl TemporalArray {
     ///
     /// This ensures that calling `append_array` never mutates data referenced elsewhere,
     /// but also avoids unnecessary cloning when the data is uniquely owned.
+    /// Whether `self` and `other` are the same array, holding one shared
+    /// inner allocation.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (TemporalArray::Datetime32(a), TemporalArray::Datetime32(b)) => Arc::ptr_eq(a, b),
+            (TemporalArray::Datetime64(a), TemporalArray::Datetime64(b)) => Arc::ptr_eq(a, b),
+            (TemporalArray::Null, TemporalArray::Null) => true,
+            (TemporalArray::Datetime32(_), _) => false,
+            (TemporalArray::Datetime64(_), _) => false,
+            (TemporalArray::Null, _) => false,
+        }
+    }
+
     /// Returns one array spanning `self` followed by `other` when both are
     /// consecutive windows over the same allocations, without copying.
     ///

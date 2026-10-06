@@ -1684,6 +1684,16 @@ impl ArrayV {
         self.offset + self.len
     }
 
+    /// Returns one view spanning `self` followed by `other` when both view
+    /// the same array and `other` starts where `self` ends.
+    ///
+    /// Consolidating consecutive windows avoids incurring a memory copy, as
+    /// the joined view widens the range over the same array.
+    pub fn adjacent_window(&self, other: &Self) -> Option<Self> {
+        (self.array.ptr_eq(&other.array) && self.end() == other.offset)
+            .then(|| ArrayV::new(self.array.clone(), self.offset, self.len + other.len))
+    }
+
     /// Returns the underlying window as a tuple: (Array, offset, len).
     ///
     /// Note: This clones the Arc-wrapped Array.
@@ -1922,9 +1932,15 @@ impl Concatenate for ArrayV {
     /// concatenating them, and wrapping the result back in a view.
     ///
     /// # Notes
-    /// - This operation copies data from both views to create owned arrays.
+    /// - Consecutive views of one array join through
+    ///   [`adjacent_window`](ArrayV::adjacent_window) without copying.
+    /// - Otherwise this operation copies data from both views to create owned arrays.
     /// - The resulting view has offset=0 and length equal to the combined length.
     fn concat(self, other: Self) -> Result<Self, MinarrowError> {
+        if let Some(joined) = self.adjacent_window(&other) {
+            return Ok(joined);
+        }
+
         // Materialise both views to owned arrays
         let self_array = self.to_array();
         let other_array = other.to_array();

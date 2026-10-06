@@ -683,7 +683,8 @@ impl Consolidate for Vec<Value> {
     /// Consolidate a vector of Values into a single Value.
     ///
     /// Uses `Concatenate` to fold matching-typed Values together.
-    /// A vector of tables consolidates as `Vec<Table>`, in one pass.
+    /// A vector of tables consolidates as `Vec<Table>`, in one pass, and
+    /// consecutive views of one array or table join without copying.
     /// A single-element vector returns the element directly.
     /// An empty vector returns an empty VecValue.
     ///
@@ -708,6 +709,25 @@ impl Consolidate for Vec<Value> {
                 Value::Table(Arc::new(tables.consolidate()))
             }
             _ => {
+                // Consecutive views of one parent join without copying.
+                let mut values = self.iter();
+                let mut joined = values.next().cloned();
+                for value in values {
+                    joined = match (joined, value) {
+                        (Some(Value::ArrayView(a)), Value::ArrayView(b)) => {
+                            a.adjacent_window(b).map(|view| Value::ArrayView(Arc::new(view)))
+                        }
+                        (Some(Value::TableView(a)), Value::TableView(b)) => {
+                            a.adjacent_window(b).map(|view| Value::TableView(Arc::new(view)))
+                        }
+                        // Any other pairing is not two consecutive views.
+                        _ => None,
+                    };
+                }
+                if let Some(joined) = joined {
+                    return joined;
+                }
+
                 let mut iter = self.into_iter();
                 let first = iter.next().unwrap();
                 iter.fold(first, |acc, val| {

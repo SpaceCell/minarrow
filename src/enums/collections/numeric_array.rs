@@ -351,6 +351,55 @@ impl NumericArray {
     ///
     /// This ensures that calling `append_array` never mutates data referenced elsewhere,
     /// but also avoids unnecessary cloning when the data is uniquely owned.
+    /// Whether `self` and `other` are the same array, holding one shared
+    /// inner allocation.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::Int8(a), NumericArray::Int8(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::Int16(a), NumericArray::Int16(b)) => Arc::ptr_eq(a, b),
+            (NumericArray::Int32(a), NumericArray::Int32(b)) => Arc::ptr_eq(a, b),
+            (NumericArray::Int64(a), NumericArray::Int64(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::UInt8(a), NumericArray::UInt8(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::UInt16(a), NumericArray::UInt16(b)) => Arc::ptr_eq(a, b),
+            (NumericArray::UInt32(a), NumericArray::UInt32(b)) => Arc::ptr_eq(a, b),
+            (NumericArray::UInt64(a), NumericArray::UInt64(b)) => Arc::ptr_eq(a, b),
+            (NumericArray::Float32(a), NumericArray::Float32(b)) => Arc::ptr_eq(a, b),
+            (NumericArray::Float64(a), NumericArray::Float64(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal32(a), NumericArray::Decimal32(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal64(a), NumericArray::Decimal64(b)) => Arc::ptr_eq(a, b),
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal128(a), NumericArray::Decimal128(b)) => Arc::ptr_eq(a, b),
+            (NumericArray::Null, NumericArray::Null) => true,
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::Int8(_), _) => false,
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::Int16(_), _) => false,
+            (NumericArray::Int32(_), _) => false,
+            (NumericArray::Int64(_), _) => false,
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::UInt8(_), _) => false,
+            #[cfg(feature = "extended_numeric_types")]
+            (NumericArray::UInt16(_), _) => false,
+            (NumericArray::UInt32(_), _) => false,
+            (NumericArray::UInt64(_), _) => false,
+            (NumericArray::Float32(_), _) => false,
+            (NumericArray::Float64(_), _) => false,
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal32(_), _) => false,
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal64(_), _) => false,
+            #[cfg(feature = "decimal")]
+            (NumericArray::Decimal128(_), _) => false,
+            (NumericArray::Null, _) => false,
+        }
+    }
+
     /// Returns one array spanning `self` followed by `other` when both are
     /// consecutive windows over the same allocations, without copying.
     ///
