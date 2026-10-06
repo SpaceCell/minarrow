@@ -75,11 +75,9 @@ pub trait ByteSize {
     /// wire-size planning where the figure must match the payload.
     ///
     /// Views report the window they cover rather than the backing array.
-    ///
-    /// ### Warning
-    /// The non-Arrow numerical container types (`Matrix`, `NdArray` and their chunked
-    /// and view forms, plus `XArray`) do not yet define logical byte
-    /// accounting currently and panic with `unimplemented!` when called.
+    /// The numerical container types (`Matrix`, `NdArray` and their chunked
+    /// and view forms, plus `XArray`) count their logical elements at
+    /// element width, so column stride padding is excluded.
     fn logical_bytes(&self) -> usize;
 }
 
@@ -696,8 +694,11 @@ impl ByteSize for Matrix {
         self.data.est_bytes()
     }
 
+    /// The matrix reports `n_rows * n_cols` values at `f64` width. Column
+    /// stride padding is alignment layout rather than data, so it is
+    /// excluded.
     fn logical_bytes(&self) -> usize {
-        unimplemented!("Matrix has not yet implemented logical bytes.")
+        self.n_rows * self.n_cols * size_of::<f64>()
     }
 }
 
@@ -717,8 +718,10 @@ impl ByteSize for MatrixV {
         }
     }
 
+    /// The view reports the rows of its window across every backing column
+    /// at `f64` width.
     fn logical_bytes(&self) -> usize {
-        unimplemented!("MatrixV has not yet implemented logical bytes.")
+        self.len * self.matrix.n_cols * size_of::<f64>()
     }
 }
 
@@ -733,8 +736,10 @@ impl<T> ByteSize for NdArray<T> {
         self.data.est_bytes()
     }
 
+    /// The array reports the product of its shape at element width. Stride
+    /// padding in the backing buffer is excluded.
     fn logical_bytes(&self) -> usize {
-        unimplemented!("NdArray has not yet implemented logical bytes.")
+        self.dims.len() * size_of::<T>()
     }
 }
 
@@ -754,8 +759,10 @@ impl<T: crate::Float> ByteSize for NdArrayV<T> {
         }
     }
 
+    /// The view reports the elements its own shape addresses at element
+    /// width, independent of the backing array's size and strides.
     fn logical_bytes(&self) -> usize {
-        unimplemented!("NdArrayV has not yet implemented logical bytes.")
+        self.len() * size_of::<T>()
     }
 }
 
@@ -770,7 +777,7 @@ impl<T> ByteSize for SuperNdArray<T> {
     }
 
     fn logical_bytes(&self) -> usize {
-        unimplemented!("SuperNdArray has not yet implemented logical bytes.")
+        self.batches.iter().map(|batch| batch.logical_bytes()).sum()
     }
 }
 
@@ -785,7 +792,7 @@ impl<T: crate::Float> ByteSize for SuperNdArrayV<T> {
     }
 
     fn logical_bytes(&self) -> usize {
-        unimplemented!("SuperNdArrayV has not yet implemented logical bytes.")
+        self.slices.iter().map(|slice| slice.logical_bytes()).sum()
     }
 }
 
@@ -813,8 +820,23 @@ impl<T: crate::Float> ByteSize for XArray<T> {
         data_bytes + coord_bytes
     }
 
+    /// The array reports its storage values plus each axis name and the
+    /// logical bytes of any coordinate array.
     fn logical_bytes(&self) -> usize {
-        unimplemented!("XArray has not yet implemented logical bytes.")
+        use crate::structs::xarray::NdArrayE;
+        let data_bytes = match self.storage() {
+            NdArrayE::Owned(nd) => nd.logical_bytes(),
+            #[cfg(feature = "views")]
+            NdArrayE::View(v) => v.logical_bytes(),
+        };
+        let coord_bytes: usize = self
+            .axes()
+            .iter()
+            .map(|axis| {
+                axis.name.len() + axis.coords.as_ref().map_or(0, |c| c.logical_bytes())
+            })
+            .sum();
+        data_bytes + coord_bytes
     }
 }
 
@@ -1007,10 +1029,8 @@ impl ByteSize for Value {
         }
     }
 
-    /// The tabular variants delegate to their inner type. The numerical
-    /// container variants (`Matrix`, `NdArray` and their chunked and view
-    /// forms, plus `XArray`) and `Custom` do not define logical byte
-    /// accounting and panic with `unimplemented!` when called.
+    /// Each variant delegates to its inner type. `Custom` does not define
+    /// logical byte accounting and panics with `unimplemented!` when called.
     fn logical_bytes(&self) -> usize {
         match self {
             #[cfg(feature = "scalar_type")]
@@ -1031,33 +1051,19 @@ impl ByteSize for Value {
             Value::SuperTableView(stv) => stv.logical_bytes(),
             Value::FieldArray(fa) => fa.logical_bytes(),
             #[cfg(feature = "matrix")]
-            Value::Matrix(_) => {
-                unimplemented!("Matrix does not define logical byte accounting")
-            }
+            Value::Matrix(m) => m.logical_bytes(),
             #[cfg(all(feature = "matrix", feature = "views"))]
-            Value::MatrixView(_) => {
-                unimplemented!("MatrixV does not define logical byte accounting")
-            }
+            Value::MatrixView(mv) => mv.logical_bytes(),
             #[cfg(feature = "ndarray")]
-            Value::NdArray(_) => {
-                unimplemented!("NdArray does not define logical byte accounting")
-            }
+            Value::NdArray(nd) => nd.logical_bytes(),
             #[cfg(all(feature = "ndarray", feature = "views"))]
-            Value::NdArrayView(_) => {
-                unimplemented!("NdArrayV does not define logical byte accounting")
-            }
+            Value::NdArrayView(v) => v.logical_bytes(),
             #[cfg(all(feature = "ndarray", feature = "chunked"))]
-            Value::SuperNdArray(_) => {
-                unimplemented!("SuperNdArray does not define logical byte accounting")
-            }
+            Value::SuperNdArray(snd) => snd.logical_bytes(),
             #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
-            Value::SuperNdArrayView(_) => {
-                unimplemented!("SuperNdArrayV does not define logical byte accounting")
-            }
+            Value::SuperNdArrayView(sv) => sv.logical_bytes(),
             #[cfg(feature = "xarray")]
-            Value::XArray(_) => {
-                unimplemented!("XArray does not define logical byte accounting")
-            }
+            Value::XArray(xa) => xa.logical_bytes(),
             #[cfg(feature = "cube")]
             Value::Cube(c) => c.logical_bytes(),
             Value::VecValue(vec) => vec.iter().map(|v| v.logical_bytes()).sum::<usize>(),
@@ -1180,6 +1186,85 @@ mod tests {
         assert_eq!(
             table.slice(1, 3).logical_bytes(),
             1 + 3 + 6 + 3 * size_of::<i32>() + 4 * size_of::<u32>() + 9
+        );
+    }
+
+    #[cfg(feature = "matrix")]
+    #[test]
+    fn matrix_excludes_stride_padding() {
+        // Five rows pad to a stride of eight, so the backing buffer holds
+        // 24 elements against 15 values
+        let m = Matrix::new(5, 3, None::<&str>);
+        assert_eq!(m.stride, 8);
+        assert_eq!(m.logical_bytes(), 5 * 3 * size_of::<f64>());
+        assert_eq!(m.est_bytes(), 8 * 3 * size_of::<f64>());
+    }
+
+    #[cfg(all(feature = "matrix", feature = "views"))]
+    #[test]
+    fn matrix_view_reports_window_rows() {
+        let view = MatrixV::from_matrix(Matrix::new(10, 3, None::<&str>), 2, 4);
+        assert_eq!(view.logical_bytes(), 4 * 3 * size_of::<f64>());
+    }
+
+    #[cfg(all(feature = "matrix", feature = "value_type"))]
+    #[test]
+    fn matrix_value_delegates_to_matrix() {
+        let m = Matrix::new(5, 2, None::<&str>);
+        let expected = m.logical_bytes();
+        assert_eq!(Value::from(m).logical_bytes(), expected);
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[test]
+    fn ndarray_excludes_stride_padding() {
+        // A 5 x 3 array with a column stride of eight spans 24 buffer
+        // elements against 15 values
+        let nd = NdArray::<f64>::from_buffer(Buffer::from_slice(&[0.0; 24]), &[5, 3], &[1, 8]);
+        assert_eq!(nd.logical_bytes(), 15 * size_of::<f64>());
+        assert_eq!(nd.est_bytes(), 24 * size_of::<f64>());
+
+        let compact = NdArray::<f32>::from_slice(&[0.0; 12], &[4, 3]);
+        assert_eq!(compact.logical_bytes(), 12 * size_of::<f32>());
+    }
+
+    #[cfg(all(feature = "ndarray", feature = "views"))]
+    #[test]
+    fn ndarray_view_reports_its_own_shape() {
+        let nd = NdArray::<f64>::from_slice(&[0.0; 30], &[10, 3]);
+        let view = NdArrayV::new(nd, 2, &[4, 3], &[1, 10]);
+        assert_eq!(view.logical_bytes(), 12 * size_of::<f64>());
+    }
+
+    #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+    #[test]
+    fn super_ndarray_sums_batches_and_window_slices() {
+        let sup = SuperNdArray::from_batches(
+            vec![
+                NdArray::<f64>::from_slice(&[0.0; 12], &[4, 3]),
+                NdArray::<f64>::from_slice(&[0.0; 18], &[6, 3]),
+            ],
+            "s",
+        );
+        assert_eq!(sup.logical_bytes(), 30 * size_of::<f64>());
+        // Rows 2 to 7 span the batch boundary
+        assert_eq!(sup.slice(2, 5).logical_bytes(), 15 * size_of::<f64>());
+    }
+
+    #[cfg(feature = "xarray")]
+    #[test]
+    fn xarray_counts_storage_axis_names_and_coordinates() {
+        use crate::structs::xarray::Axis;
+        let nd = NdArray::<f64>::from_slice(&[0.0; 6], &[3, 2]);
+        let coords = crate::Array::from_int64(IntegerArray::<i64>::from_slice(&[10, 20, 30]));
+        let xa = XArray::with_axes(
+            nd,
+            vec![Axis::with_coords("obs", coords), Axis::named("feat")],
+        );
+        // Six values, the names "obs" and "feat" and three i64 coordinates
+        assert_eq!(
+            xa.logical_bytes(),
+            6 * size_of::<f64>() + 3 + 4 + 3 * size_of::<i64>()
         );
     }
 
