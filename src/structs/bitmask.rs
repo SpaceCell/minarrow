@@ -854,16 +854,39 @@ impl Bitmask {
             return;
         }
 
-        // General case: bit-level append
-        for i in 0..len {
-            let bit = (src[i >> 3] >> (i & 7)) & 1;
-            if bit != 0 {
-                let j = start + i;
-                dst[j >> 3] |= 1 << (j & 7);
-            } else {
-                let j = start + i;
-                dst[j >> 3] &= !(1 << (j & 7));
-            }
+        // General case: the destination starts mid-byte. Each source word is
+        // shifted up by the destination's bit position, and the bits shifted
+        // out of the top move into the next output word. The bits below
+        // `start` in the first destination byte keep their values, and any
+        // source bits past `len` land above the new length, where
+        // `mask_trailing_bits` clears them.
+        if len == 0 {
+            self.mask_trailing_bits();
+            return;
+        }
+        let src = &src[..(len + 7) >> 3];
+        let dst_byte = start >> 3;
+        let shift = (start & 7) as u32;
+        let mut spill = (dst[dst_byte] & ((1u8 << shift) - 1)) as u64;
+        let mut i = 0;
+        while i + 8 <= src.len() {
+            let word = u64::from_le_bytes(src[i..i + 8].try_into().unwrap());
+            let out = (word << shift) | spill;
+            dst[dst_byte + i..dst_byte + i + 8].copy_from_slice(&out.to_le_bytes());
+            spill = word >> (64 - shift);
+            i += 8;
+        }
+        // Handle the remaining source bytes one at a time.
+        while i < src.len() {
+            let byte = src[i] as u64;
+            dst[dst_byte + i] = ((byte << shift) | spill) as u8;
+            spill = byte >> (8 - shift);
+            i += 1;
+        }
+        // The final spill fills the byte after the last source byte when the
+        // new length reaches into it.
+        if dst_byte + i < dst.len() {
+            dst[dst_byte + i] = spill as u8;
         }
         self.mask_trailing_bits();
     }
@@ -892,9 +915,12 @@ impl Bitmask {
         self.bits.as_slice()
     }
 
-    // TODO: Optimise with word version
-
     /// Slices by copying the data
+    ///
+    /// The copy runs one 64-bit word at a time. A byte-aligned `offset` copies
+    /// the source bytes as they are, and any other offset shifts each source
+    /// word down by `offset % 8` bits, combining it with the low bits of the
+    /// following byte.
     #[inline]
     pub fn slice_clone(&self, offset: usize, len: usize) -> Self {
         assert!(
@@ -902,18 +928,41 @@ impl Bitmask {
             "Bitmask::slice_clone out of bounds"
         );
         let mut out = Bitmask::new_set_all(len, false);
+        if len == 0 {
+            return out;
+        }
         let src = self.bits.as_slice();
         let dst = out.bits.as_mut_slice();
 
-        for i in 0..len {
-            let src_idx = offset + i;
-            let src_byte = src_idx / 8;
-            let src_bit = src_idx % 8;
+        // The source bytes holding bits `[offset, offset + len)`.
+        let src = &src[offset >> 3..(offset + len + 7) >> 3];
+        let n_out = dst.len();
+        let shift = (offset & 7) as u32;
 
-            if (src[src_byte] & (1 << src_bit)) != 0 {
-                let dst_byte = i / 8;
-                let dst_bit = i % 8;
-                dst[dst_byte] |= 1 << dst_bit;
+        if shift == 0 {
+            dst.copy_from_slice(&src[..n_out]);
+        } else {
+            // Each output word takes eight source bytes shifted down, plus the
+            // low bits of the ninth byte. `src` holds at most one byte more
+            // than `dst`, so the word loop stays inside both slices.
+            let mut i = 0;
+            while i + 8 < src.len() {
+                let lo = u64::from_le_bytes(src[i..i + 8].try_into().unwrap());
+                let hi = src[i + 8] as u64;
+                let word = (lo >> shift) | (hi << (64 - shift));
+                dst[i..i + 8].copy_from_slice(&word.to_le_bytes());
+                i += 8;
+            }
+            // Handle the remaining bytes one at a time.
+            while i < n_out {
+                let lo = src[i] >> shift;
+                let hi = if i + 1 < src.len() {
+                    src[i + 1] << (8 - shift)
+                } else {
+                    0
+                };
+                dst[i] = lo | hi;
+                i += 1;
             }
         }
         out.mask_trailing_bits();
@@ -1638,5 +1687,321 @@ impl Concatenate for Bitmask {
         // Consume other and extend self with its bits
         self.extend_from_bitmask(&other);
         Ok(self)
+    }
+}
+
+#[cfg(test)]
+mod word_level_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// The per-bit `slice_clone` that the word-level copy replaced, kept as the
+    /// reference for the exact comparison.
+    fn slice_clone_reference(m: &Bitmask, offset: usize, len: usize) -> Bitmask {
+        assert!(offset + len <= m.len, "Bitmask::slice_clone out of bounds");
+        let mut out = Bitmask::new_set_all(len, false);
+        let src = m.bits.as_slice();
+        let dst = out.bits.as_mut_slice();
+        for i in 0..len {
+            let src_idx = offset + i;
+            let src_byte = src_idx / 8;
+            let src_bit = src_idx % 8;
+            if (src[src_byte] & (1 << src_bit)) != 0 {
+                let dst_byte = i / 8;
+                let dst_bit = i % 8;
+                dst[dst_byte] |= 1 << dst_bit;
+            }
+        }
+        out.mask_trailing_bits();
+        out
+    }
+
+    /// The `extend_from_slice` whose unaligned-destination case appended bit by
+    /// bit, kept as the reference for the exact comparison.
+    fn extend_from_slice_reference(m: &mut Bitmask, src: &[u8], len: usize) {
+        let start = m.len;
+        let total = start + len;
+        m.resize(total, false);
+        let dst = m.bits.as_mut_slice();
+        if (start & 7) == 0 {
+            let dst_byte = start >> 3;
+            let n_full_bytes = len >> 3;
+            for i in 0..n_full_bytes {
+                dst[dst_byte + i] = src[i];
+            }
+            let tail = len & 7;
+            if tail != 0 {
+                let mask = (1u8 << tail) - 1;
+                dst[dst_byte + n_full_bytes] &= !mask;
+                dst[dst_byte + n_full_bytes] |= src[n_full_bytes] & mask;
+            }
+            m.mask_trailing_bits();
+            return;
+        }
+        for i in 0..len {
+            let bit = (src[i >> 3] >> (i & 7)) & 1;
+            let j = start + i;
+            if bit != 0 {
+                dst[j >> 3] |= 1 << (j & 7);
+            } else {
+                dst[j >> 3] &= !(1 << (j & 7));
+            }
+        }
+        m.mask_trailing_bits();
+    }
+
+    /// `extend_from_bitmask_range` over the reference `extend_from_slice`.
+    fn extend_from_bitmask_range_reference(
+        m: &mut Bitmask,
+        other: &Bitmask,
+        offset: usize,
+        len: usize,
+    ) {
+        if len == 0 {
+            return;
+        }
+        let src_bytes = other.bits.as_slice();
+        if offset & 7 == 0 {
+            extend_from_slice_reference(m, &src_bytes[offset >> 3..], len);
+        } else {
+            let src_byte_start = offset >> 3;
+            let bit_shift = (offset & 7) as u32;
+            let n_src_bytes = ((len + 7) >> 3) + 1;
+            let end = (src_byte_start + n_src_bytes).min(src_bytes.len());
+            let mut shifted = Vec::with_capacity(n_src_bytes);
+            for i in src_byte_start..end {
+                let lo = src_bytes[i] >> bit_shift;
+                let hi = if i + 1 < src_bytes.len() {
+                    src_bytes[i + 1] << (8 - bit_shift)
+                } else {
+                    0
+                };
+                shifted.push(lo | hi);
+            }
+            extend_from_slice_reference(m, &shifted, len);
+        }
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// A mask of `len` bits where each bit is set with probability
+    /// `density_pct / 100`.
+    fn random_mask(rng: &mut Rng, len: usize, density_pct: u64) -> Bitmask {
+        let mut m = Bitmask::new_set_all(len, false);
+        for i in 0..len {
+            if rng.next() % 100 < density_pct {
+                m.set(i, true);
+            }
+        }
+        m
+    }
+
+    const LENGTHS: [usize; 16] = [
+        0, 1, 7, 8, 9, 63, 64, 65, 71, 127, 128, 129, 200, 513, 1000, 4097,
+    ];
+    const DENSITIES: [u64; 5] = [0, 5, 50, 95, 100];
+
+    fn assert_identical(new: &Bitmask, old: &Bitmask, context: &str) {
+        assert_eq!(new.len, old.len, "len differs: {context}");
+        assert_eq!(
+            new.bits.as_slice(),
+            old.bits.as_slice(),
+            "bytes differ: {context}"
+        );
+    }
+
+    #[test]
+    fn slice_clone_matches_reference() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for &src_len in &LENGTHS {
+            for &density in &DENSITIES {
+                let m = random_mask(&mut rng, src_len, density);
+                let mut cases: Vec<(usize, usize)> = Vec::new();
+                for offset in [0, 1, 3, 7, 8, 9, 63, 64, 65] {
+                    if offset <= src_len {
+                        cases.push((offset, src_len - offset));
+                        cases.push((offset, (src_len - offset) / 2));
+                        cases.push((offset, 0));
+                    }
+                }
+                for _ in 0..20 {
+                    let offset = rng.below(src_len + 1);
+                    let len = rng.below(src_len - offset + 1);
+                    cases.push((offset, len));
+                }
+                for (offset, len) in cases {
+                    let new = m.slice_clone(offset, len);
+                    let old = slice_clone_reference(&m, offset, len);
+                    assert_identical(
+                        &new,
+                        &old,
+                        &format!("src_len={src_len} density={density} offset={offset} len={len}"),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A source buffer longer than its logical length, with set bits past
+    /// the end, gives the same copy.
+    #[test]
+    fn slice_clone_matches_reference_over_oversized_buffer() {
+        let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+        for &len in &LENGTHS {
+            let n_bytes = (len + 7) / 8 + 16;
+            let bytes: Vec<u8> = (0..n_bytes).map(|_| rng.next() as u8).collect();
+            let m = Bitmask::new(Vec64::from_slice(&bytes), len);
+            for offset in 0..=len.min(70) {
+                for sub_len in [0, (len - offset) / 3, len - offset] {
+                    let new = m.slice_clone(offset, sub_len);
+                    let old = slice_clone_reference(&m, offset, sub_len);
+                    assert_identical(&new, &old, &format!("len={len} offset={offset} sub_len={sub_len}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn slice_clone_out_of_bounds_panics_as_before() {
+        let m = Bitmask::new_set_all(10, true);
+        assert!(std::panic::catch_unwind(|| m.slice_clone(5, 6)).is_err());
+        assert!(std::panic::catch_unwind(|| slice_clone_reference(&m, 5, 6)).is_err());
+    }
+
+    #[test]
+    fn extend_from_slice_matches_reference() {
+        let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+        for &dst_len in &LENGTHS {
+            for &density in &DENSITIES {
+                for &len in &LENGTHS {
+                    let base = random_mask(&mut rng, dst_len, density);
+                    let n_src = (len + 7) / 8 + (rng.below(3));
+                    let src: Vec<u8> = (0..n_src).map(|_| rng.next() as u8).collect();
+
+                    let mut new = base.clone();
+                    new.extend_from_slice(&src, len);
+                    let mut old = base.clone();
+                    extend_from_slice_reference(&mut old, &src, len);
+                    assert_identical(
+                        &new,
+                        &old,
+                        &format!("dst_len={dst_len} density={density} len={len}"),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A destination whose partial last byte holds set bits above its length
+    /// gives the same result, because both forms overwrite every appended
+    /// position.
+    #[test]
+    fn extend_from_slice_matches_reference_over_unmasked_destination() {
+        let mut rng = Rng(0xA076_1D64_78BD_642F);
+        for &dst_len in &LENGTHS {
+            for &len in &LENGTHS {
+                let n_bytes = (dst_len + 7) / 8;
+                let bytes: Vec<u8> = (0..n_bytes).map(|_| rng.next() as u8 | 0x80).collect();
+                let base = Bitmask::new(Vec64::from_slice(&bytes), dst_len);
+                let src: Vec<u8> = (0..(len + 7) / 8).map(|_| rng.next() as u8).collect();
+
+                let mut new = base.clone();
+                new.extend_from_slice(&src, len);
+                let mut old = base.clone();
+                extend_from_slice_reference(&mut old, &src, len);
+                assert_identical(&new, &old, &format!("dst_len={dst_len} len={len}"));
+            }
+        }
+    }
+
+    #[test]
+    fn extend_from_slice_short_source_panics_as_before() {
+        let src = [0xFFu8; 2];
+        let mut new = Bitmask::new_set_all(3, true);
+        assert!(std::panic::catch_unwind(move || new.extend_from_slice(&src, 30)).is_err());
+        let mut old = Bitmask::new_set_all(3, true);
+        assert!(
+            std::panic::catch_unwind(move || extend_from_slice_reference(&mut old, &src, 30))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn extend_from_bitmask_range_matches_reference() {
+        let mut rng = Rng(0xE703_7ED1_A0B4_28DB);
+        for &src_len in &LENGTHS {
+            for &density in &DENSITIES {
+                let other = random_mask(&mut rng, src_len, density);
+                for &dst_len in &[0usize, 1, 5, 8, 13, 64, 67] {
+                    let base = random_mask(&mut rng, dst_len, 50);
+                    for _ in 0..12 {
+                        let offset = rng.below(src_len + 1);
+                        let len = rng.below(src_len - offset + 1);
+                        let mut new = base.clone();
+                        new.extend_from_bitmask_range(&other, offset, len);
+                        let mut old = base.clone();
+                        extend_from_bitmask_range_reference(&mut old, &other, offset, len);
+                        assert_identical(
+                            &new,
+                            &old,
+                            &format!(
+                                "src_len={src_len} density={density} dst_len={dst_len} offset={offset} len={len}"
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Repeated single-bit and multi-bit appends, as the gather paths issue
+    /// them, build the same mask.
+    #[test]
+    fn repeated_appends_match_reference() {
+        let mut rng = Rng(0x8EBC_6AF0_9C88_C6E3);
+        let other = random_mask(&mut rng, 5000, 50);
+        let mut new = Bitmask::new_set_all(0, false);
+        let mut old = Bitmask::new_set_all(0, false);
+        for _ in 0..2000 {
+            let offset = rng.below(5000);
+            let len = rng.below((5000 - offset).min(80) + 1);
+            new.extend_from_bitmask_range(&other, offset, len);
+            extend_from_bitmask_range_reference(&mut old, &other, offset, len);
+            assert_identical(&new, &old, &format!("offset={offset} len={len}"));
+        }
+    }
+
+    #[test]
+    fn slice_clone_large_unaligned_completes_within_bound() {
+        let len = 1usize << 28;
+        let m = Bitmask::new_set_all(len, true);
+        let start = Instant::now();
+        let out = m.slice_clone(3, len - 3);
+        assert_eq!(out.len(), len - 3);
+        assert!(start.elapsed() < Duration::from_secs(60));
+    }
+
+    #[test]
+    fn extend_from_slice_large_unaligned_completes_within_bound() {
+        let len = 1usize << 28;
+        let src = vec![0xA5u8; len / 8];
+        let mut m = Bitmask::new_set_all(3, true);
+        let start = Instant::now();
+        m.extend_from_slice(&src, len);
+        assert_eq!(m.len(), len + 3);
+        assert!(start.elapsed() < Duration::from_secs(60));
     }
 }
