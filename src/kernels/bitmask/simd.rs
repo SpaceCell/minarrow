@@ -145,7 +145,8 @@ pub fn bitmask_unop_simd<const LANES: usize>(src: BitmaskVT<'_>, op: UnaryOperat
 /// the words never straddle a window edge, so adjacent windows of a shared
 /// output buffer stay independent.
 ///
-/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+/// Input offsets may be any bit position. `out_off` is byte-aligned i.e. a
+/// multiple of 8 bits.
 #[inline(always)]
 pub fn bitmask_binop_simd_into<const LANES: usize>(
     out: &mut Bitmask,
@@ -164,50 +165,76 @@ pub fn bitmask_binop_simd_into<const LANES: usize>(
         0,
         "bitmask_binop_simd_into: out_off must be byte-aligned"
     );
-    debug_assert_eq!(
-        lhs_off % 8,
-        0,
-        "bitmask_binop_simd_into: lhs offset must be byte-aligned"
-    );
-    debug_assert_eq!(
-        rhs_off % 8,
-        0,
-        "bitmask_binop_simd_into: rhs offset must be byte-aligned"
-    );
     let full_words = len / 64;
     let tail_bits = len % 64;
     {
-        let lhs_bytes = bitmask_window_bytes(lhs_mask, lhs_off, len);
-        let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
+        // Each input is read from the byte holding its first window bit. For
+        // windows starting inside a byte, each word is joined with the low bits
+        // of the following word through a shift and an OR. Output words are
+        // copied in as little-endian bytes, which needs no word alignment of
+        // the output window.
+        let lhs_bytes: &[u8] = &lhs_mask.bits[lhs_off / 8..];
+        let rhs_bytes: &[u8] = &rhs_mask.bits[rhs_off / 8..];
+        let lhs_shift = (lhs_off % 8) as u64;
+        let rhs_shift = (rhs_off % 8) as u64;
         let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
-        unsafe {
-            let lp = lhs_bytes.as_ptr().cast::<u64>();
-            let rp = rhs_bytes.as_ptr().cast::<u64>();
-            let dp = out_bytes.as_mut_ptr().cast::<u64>();
-            let mut i = 0;
-            while i + LANES <= full_words {
-                let a =
-                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(lp.add(i), LANES));
-                let b =
-                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(rp.add(i), LANES));
-                let r = match op {
-                    LogicalOperator::And => a & b,
-                    LogicalOperator::Or => a | b,
-                    LogicalOperator::Xor => a ^ b,
-                };
-                std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
-                i += LANES;
+
+        let words_at = |bytes: &[u8], k: usize| {
+            let mut words = [0u64; LANES];
+            for (word, chunk) in words
+                .iter_mut()
+                .zip(bytes[k * 8..(k + LANES) * 8].chunks_exact(8))
+            {
+                *word = u64::from_le_bytes(chunk.try_into().unwrap());
             }
-            // Scalar word tail when full_words is not a multiple of LANES.
-            for k in i..full_words {
-                let a = *lp.add(k);
-                let b = *rp.add(k);
-                *dp.add(k) = match op {
-                    LogicalOperator::And => a & b,
-                    LogicalOperator::Or => a | b,
-                    LogicalOperator::Xor => a ^ b,
-                };
+            Simd::<u64, LANES>::from_array(words)
+        };
+        let window_batch = |bytes: &[u8], shift: u64, k: usize| {
+            if shift == 0 {
+                words_at(bytes, k)
+            } else {
+                (words_at(bytes, k) >> Simd::splat(shift))
+                    | (words_at(bytes, k + 1) << Simd::splat(64 - shift))
             }
+        };
+        // Shifted batches also read the word after the batch, which has to lie
+        // within the buffer.
+        let batchable = |bytes: &[u8], shift: u64| {
+            if shift == 0 {
+                full_words
+            } else {
+                full_words.min((bytes.len() / 8).saturating_sub(1))
+            }
+        };
+        let n_batched =
+            batchable(lhs_bytes, lhs_shift).min(batchable(rhs_bytes, rhs_shift)) / LANES * LANES;
+
+        for k in (0..n_batched).step_by(LANES) {
+            let a = window_batch(lhs_bytes, lhs_shift, k);
+            let b = window_batch(rhs_bytes, rhs_shift, k);
+            let r = match op {
+                LogicalOperator::And => a & b,
+                LogicalOperator::Or => a | b,
+                LogicalOperator::Xor => a ^ b,
+            };
+            for (chunk, word) in out_bytes[k * 8..(k + LANES) * 8]
+                .chunks_exact_mut(8)
+                .zip(r.to_array())
+            {
+                chunk.copy_from_slice(&word.to_le_bytes());
+            }
+        }
+        // Scalar word tail when full_words is not a multiple of LANES, or when
+        // a shifted batch would read past the end of the buffer.
+        for k in n_batched..full_words {
+            let a = load_word(lhs_mask, lhs_off + k * 64);
+            let b = load_word(rhs_mask, rhs_off + k * 64);
+            let word = match op {
+                LogicalOperator::And => a & b,
+                LogicalOperator::Or => a | b,
+                LogicalOperator::Xor => a ^ b,
+            };
+            out_bytes[k * 8..k * 8 + 8].copy_from_slice(&word.to_le_bytes());
         }
     }
     // Final partial word written one bit at a time.
@@ -233,7 +260,8 @@ pub fn bitmask_binop_simd_into<const LANES: usize>(
 /// remaining whole words scalar. The final `len % 64` bits run one bit at a
 /// time, so the write never touches the trailing bits past `len`.
 ///
-/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+/// The input offset may be any bit position. `out_off` is byte-aligned i.e. a
+/// multiple of 8 bits.
 #[inline(always)]
 pub fn bitmask_unop_simd_into<const LANES: usize>(
     out: &mut Bitmask,
@@ -250,37 +278,62 @@ pub fn bitmask_unop_simd_into<const LANES: usize>(
         0,
         "bitmask_unop_simd_into: out_off must be byte-aligned"
     );
-    debug_assert_eq!(
-        offset % 8,
-        0,
-        "bitmask_unop_simd_into: src offset must be byte-aligned"
-    );
     let full_words = len / 64;
     let tail_bits = len % 64;
     {
-        let src_bytes = bitmask_window_bytes(mask, offset, len);
+        // The input is read from the byte holding its first window bit. For
+        // windows starting inside a byte, each word is joined with the low bits
+        // of the following word through a shift and an OR. Output words are
+        // copied in as little-endian bytes, which needs no word alignment of
+        // the output window.
+        let src_bytes: &[u8] = &mask.bits[offset / 8..];
+        let shift = (offset % 8) as u64;
         let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
-        unsafe {
-            let sp = src_bytes.as_ptr().cast::<u64>();
-            let dp = out_bytes.as_mut_ptr().cast::<u64>();
-            let mut i = 0;
-            while i + LANES <= full_words {
-                let a =
-                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(sp.add(i), LANES));
-                let r = match op {
-                    UnaryOperator::Not => !a,
-                    _ => unreachable!(),
-                };
-                std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
-                i += LANES;
+
+        let words_at = |k: usize| {
+            let mut words = [0u64; LANES];
+            for (word, chunk) in words
+                .iter_mut()
+                .zip(src_bytes[k * 8..(k + LANES) * 8].chunks_exact(8))
+            {
+                *word = u64::from_le_bytes(chunk.try_into().unwrap());
             }
-            // Scalar word tail when full_words is not a multiple of LANES.
-            for k in i..full_words {
-                *dp.add(k) = match op {
-                    UnaryOperator::Not => !*sp.add(k),
-                    _ => unreachable!(),
-                };
+            Simd::<u64, LANES>::from_array(words)
+        };
+        // Shifted batches also read the word after the batch, which has to lie
+        // within the buffer.
+        let batchable = if shift == 0 {
+            full_words
+        } else {
+            full_words.min((src_bytes.len() / 8).saturating_sub(1))
+        };
+        let n_batched = batchable / LANES * LANES;
+
+        for k in (0..n_batched).step_by(LANES) {
+            let a = if shift == 0 {
+                words_at(k)
+            } else {
+                (words_at(k) >> Simd::splat(shift)) | (words_at(k + 1) << Simd::splat(64 - shift))
+            };
+            let r = match op {
+                UnaryOperator::Not => !a,
+                _ => unreachable!(),
+            };
+            for (chunk, word) in out_bytes[k * 8..(k + LANES) * 8]
+                .chunks_exact_mut(8)
+                .zip(r.to_array())
+            {
+                chunk.copy_from_slice(&word.to_le_bytes());
             }
+        }
+        // Scalar word tail when full_words is not a multiple of LANES, or when
+        // a shifted batch would read past the end of the buffer.
+        for k in n_batched..full_words {
+            let word = match op {
+                UnaryOperator::Not => !load_word(mask, offset + k * 64),
+                _ => unreachable!(),
+            };
+            out_bytes[k * 8..k * 8 + 8].copy_from_slice(&word.to_le_bytes());
         }
     }
     // Final partial word written one bit at a time.
@@ -429,47 +482,44 @@ where
         return Bitmask::new_set_all(0, false);
     }
 
-    // Check which boolean values are present in rhs. Process whole u64 words
-    // that fit entirely in the tight byte slice, then handle the 0..7
-    // leftover bytes byte-by-byte. The partial last logical byte (when
-    // len & 7 != 0) is masked to its valid bits to avoid false positives
-    // from slack bits.
-    let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
-    let total_bytes = rhs_bytes.len();
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
-    let full_logical_bytes = len / 8;
-    let last_bits = len & 7;
+    // Check which boolean values are present in rhs. Whole words are read from
+    // the byte holding the first window bit. For windows starting inside a
+    // byte, each word is joined with the low bits of the following byte. The
+    // final partial word is read through `load_word` and masked to the window,
+    // which keeps bits outside the window out of both checks.
+    let rhs_bytes: &[u8] = &rhs_mask.bits[rhs_off / 8..];
+    let shift = rhs_off % 8;
+    let full_words = len / 64;
     let mut any_set = 0u64;
     let mut any_unset = 0u64;
-    unsafe {
-        let rp = rhs_bytes.as_ptr().cast::<u64>();
+    let mut scan = |w: u64| {
+        any_set |= w;
+        any_unset |= !w;
+        any_set != 0 && any_unset != 0
+    };
+    if shift == 0 {
+        for chunk in rhs_bytes[..full_words * 8].chunks_exact(8) {
+            if scan(u64::from_le_bytes(chunk.try_into().unwrap())) {
+                break;
+            }
+        }
+    } else {
+        // The bytes of every whole window word, and the byte after each, lie
+        // within the window.
+        let body = &rhs_bytes[..full_words * 8 + 1];
         for k in 0..full_words {
-            let w = *rp.add(k);
-            any_set |= w;
-            any_unset |= !w;
-            if any_set != 0 && any_unset != 0 {
+            let lo = u64::from_le_bytes(body[k * 8..k * 8 + 8].try_into().unwrap());
+            if scan((lo >> shift) | ((body[k * 8 + 8] as u64) << (64 - shift))) {
                 break;
             }
         }
     }
-    if any_set == 0 || any_unset == 0 {
-        let base = full_words * 8;
-        for k in 0..tail_bytes {
-            let byte_index = base + k;
-            let b = rhs_bytes[byte_index];
-            if byte_index < full_logical_bytes {
-                any_set |= b as u64;
-                any_unset |= (!b) as u64;
-            } else if last_bits != 0 {
-                let m = (1u8 << last_bits) - 1;
-                any_set |= (b & m) as u64;
-                any_unset |= ((!b) & m) as u64;
-            }
-            if any_set != 0 && any_unset != 0 {
-                break;
-            }
-        }
+    let tail_bits = len % 64;
+    if tail_bits != 0 && (any_set == 0 || any_unset == 0) {
+        let in_window = u64::MAX >> (64 - tail_bits);
+        let w = load_word(rhs_mask, rhs_off + full_words * 64);
+        any_set |= w & in_window;
+        any_unset |= !w & in_window;
     }
     let has_true = any_set != 0;
     let has_false = any_unset != 0;
@@ -638,6 +688,8 @@ where
 pub fn all_eq_mask_simd<const LANES: usize>(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool
 where
 {
+    use std::simd::prelude::SimdPartialEq;
+
     let (am, ao, len) = a;
     let (bm, bo, blen) = b;
     debug_assert_eq!(len, blen, "BitWindow length mismatch in all_eq_mask");
@@ -653,66 +705,43 @@ where
         );
     }
 
-    let a_bytes = bitmask_window_bytes(am, ao, len);
-    let b_bytes = bitmask_window_bytes(bm, bo, len);
-    // Whole u64 words within the tight byte slice, then byte-by-byte
-    // for the 0..7 leftover. The partial last logical byte is masked
-    // to its valid bits so slack differences don't cause false negatives.
-    let total_bytes = a_bytes.len();
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
-    let full_logical_bytes = len / 8;
-    let last_bits = len & 7;
-
-    unsafe {
-        let ap = a_bytes.as_ptr().cast::<u64>();
-        let bp = b_bytes.as_ptr().cast::<u64>();
-
-        #[cfg(feature = "simd")]
+    // Both windows start on a word boundary, and whole words are read from the
+    // window bytes. The final partial word is read through `load_word` and
+    // masked to the window, which keeps differences past the window from
+    // causing false negatives.
+    let a_bytes: &[u8] = &am.bits[ao / 8..];
+    let b_bytes: &[u8] = &bm.bits[bo / 8..];
+    let full_words = len / 64;
+    let n_batched = full_words / LANES * LANES;
+    let words_at = |bytes: &[u8], k: usize| {
+        let mut words = [0u64; LANES];
+        for (word, chunk) in words
+            .iter_mut()
+            .zip(bytes[k * 8..(k + LANES) * 8].chunks_exact(8))
         {
-            use std::simd::prelude::SimdPartialEq;
-            let mut i = 0;
-            while i + LANES <= full_words {
-                let sa =
-                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(ap.add(i), LANES));
-                let sb =
-                    Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(bp.add(i), LANES));
-                if !sa.simd_eq(sb).all() {
-                    return false;
-                }
-                i += LANES;
-            }
-            for k in i..full_words {
-                if *ap.add(k) != *bp.add(k) {
-                    return false;
-                }
-            }
+            *word = u64::from_le_bytes(chunk.try_into().unwrap());
         }
-        #[cfg(not(feature = "simd"))]
-        {
-            for k in 0..full_words {
-                if *ap.add(k) != *bp.add(k) {
-                    return false;
-                }
-            }
+        Simd::<u64, LANES>::from_array(words)
+    };
+
+    for k in (0..n_batched).step_by(LANES) {
+        if !words_at(a_bytes, k).simd_eq(words_at(b_bytes, k)).all() {
+            return false;
         }
     }
-    // Partial-byte tail: compare byte-by-byte, masking the partial
-    // last logical byte to its valid bits.
-    let base = full_words * 8;
-    for k in 0..tail_bytes {
-        let byte_index = base + k;
-        let av = a_bytes[byte_index];
-        let bv = b_bytes[byte_index];
-        if byte_index < full_logical_bytes {
-            if av != bv {
-                return false;
-            }
-        } else if last_bits != 0 {
-            let m = (1u8 << last_bits) - 1;
-            if (av & m) != (bv & m) {
-                return false;
-            }
+    for k in n_batched..full_words {
+        let a = u64::from_le_bytes(a_bytes[k * 8..k * 8 + 8].try_into().unwrap());
+        let b = u64::from_le_bytes(b_bytes[k * 8..k * 8 + 8].try_into().unwrap());
+        if a != b {
+            return false;
+        }
+    }
+    let tail_bits = len % 64;
+    if tail_bits != 0 {
+        let base = full_words * 64;
+        let in_window = u64::MAX >> (64 - tail_bits);
+        if (load_word(am, ao + base) ^ load_word(bm, bo + base)) & in_window != 0 {
+            return false;
         }
     }
     true
@@ -734,60 +763,55 @@ where
 pub fn popcount_mask_simd<const LANES: usize>(m: BitmaskVT<'_>) -> usize
 where
 {
+    use std::simd::prelude::SimdUint;
+
     let (mask, offset, len) = m;
     if len == 0 {
         return 0;
     }
 
-    let bytes = bitmask_window_bytes(mask, offset, len);
-    // Whole u64 words within the tight byte slice via SIMD, scalar
-    // tail for partial u64 words, then byte-by-byte for the leftover
-    // 0..7 bytes. The partial last logical byte is masked to its
-    // valid bits so slack ones don't inflate the count.
-    let total_bytes = bytes.len();
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
-    let full_logical_bytes = len / 8;
-    let last_bits = len & 7;
+    // Whole words are read from the byte holding the first window bit. For
+    // windows starting inside a byte, each word is joined with the low bits of
+    // the following word through a shift and an OR. Whole batches of `LANES`
+    // words are reduced through SIMD. The remaining words are read through
+    // `load_word`, with the final partial word masked to the window, which
+    // keeps bits outside the window out of the count.
+    let bytes: &[u8] = &mask.bits[offset / 8..];
+    let shift = (offset % 8) as u64;
+    let full_words = len / 64;
+    let words_at = |k: usize| {
+        let mut words = [0u64; LANES];
+        for (word, chunk) in words
+            .iter_mut()
+            .zip(bytes[k * 8..(k + LANES) * 8].chunks_exact(8))
+        {
+            *word = u64::from_le_bytes(chunk.try_into().unwrap());
+        }
+        Simd::<u64, LANES>::from_array(words)
+    };
+    // Shifted batches also read the word after the batch, which has to lie
+    // within the buffer.
+    let batchable = if shift == 0 {
+        full_words
+    } else {
+        full_words.min((bytes.len() / 8).saturating_sub(1))
+    };
+    let n_batched = batchable / LANES * LANES;
+
     let mut acc = 0usize;
-
-    unsafe {
-        let words_ptr = bytes.as_ptr().cast::<u64>();
-
-        #[cfg(feature = "simd")]
-        {
-            use std::simd::prelude::SimdUint;
-            let mut i = 0;
-            while i + LANES <= full_words {
-                let v = Simd::<u64, LANES>::from_slice(std::slice::from_raw_parts(
-                    words_ptr.add(i),
-                    LANES,
-                ));
-                acc += v.count_ones().reduce_sum() as usize;
-                i += LANES;
-            }
-            for k in i..full_words {
-                acc += (*words_ptr.add(k)).count_ones() as usize;
-            }
-        }
-        #[cfg(not(feature = "simd"))]
-        {
-            for k in 0..full_words {
-                acc += (*words_ptr.add(k)).count_ones() as usize;
-            }
-        }
+    for k in (0..n_batched).step_by(LANES) {
+        let words = if shift == 0 {
+            words_at(k)
+        } else {
+            (words_at(k) >> Simd::splat(shift)) | (words_at(k + 1) << Simd::splat(64 - shift))
+        };
+        acc += words.count_ones().reduce_sum() as usize;
     }
-    // Partial-byte tail.
-    let base = full_words * 8;
-    for k in 0..tail_bytes {
-        let byte_index = base + k;
-        let b = bytes[byte_index];
-        if byte_index < full_logical_bytes {
-            acc += b.count_ones() as usize;
-        } else if last_bits != 0 {
-            let m = (1u8 << last_bits) - 1;
-            acc += (b & m).count_ones() as usize;
-        }
+    for k in n_batched..len.div_ceil(64) {
+        let bit_base = k * 64;
+        let take = (len - bit_base).min(64);
+        let word = load_word(mask, offset + bit_base) & (u64::MAX >> (64 - take));
+        acc += word.count_ones() as usize;
     }
     acc
 }

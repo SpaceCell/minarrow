@@ -83,7 +83,8 @@ pub fn bitmask_binop_std(lhs: BitmaskVT<'_>, rhs: BitmaskVT<'_>, op: LogicalOper
 /// the words never straddle a window edge, so adjacent windows of a shared
 /// output buffer stay independent.
 ///
-/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+/// Input offsets may be any bit position. `out_off` is byte-aligned i.e. a
+/// multiple of 8 bits.
 #[inline(always)]
 pub fn bitmask_binop_std_into(
     out: &mut Bitmask,
@@ -102,32 +103,80 @@ pub fn bitmask_binop_std_into(
         0,
         "bitmask_binop_std_into: out_off must be byte-aligned"
     );
-    debug_assert_eq!(
-        lhs_off % 8,
-        0,
-        "bitmask_binop_std_into: lhs offset must be byte-aligned"
-    );
-    debug_assert_eq!(
-        rhs_off % 8,
-        0,
-        "bitmask_binop_std_into: rhs offset must be byte-aligned"
-    );
     let full_words = len / 64;
     let tail_bits = len % 64;
     {
-        let lhs_bytes = bitmask_window_bytes(lhs_mask, lhs_off, len);
-        let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
+        // Each input is read from the byte holding its first window bit. For
+        // windows starting inside a byte, each word is joined with the low bits
+        // of the following word through a shift and an OR. Output words are
+        // copied in as little-endian bytes, which needs no word alignment of
+        // the output window.
+        let lhs_bytes: &[u8] = &lhs_mask.bits[lhs_off / 8..];
+        let rhs_bytes: &[u8] = &rhs_mask.bits[rhs_off / 8..];
+        let lhs_shift = lhs_off % 8;
+        let rhs_shift = rhs_off % 8;
         let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
-        unsafe {
-            let lp = lhs_bytes.as_ptr().cast::<u64>();
-            let rp = rhs_bytes.as_ptr().cast::<u64>();
-            let dp = out_bytes.as_mut_ptr().cast::<u64>();
-            for k in 0..full_words {
-                *dp.add(k) = match op {
-                    LogicalOperator::And => *lp.add(k) & *rp.add(k),
-                    LogicalOperator::Or => *lp.add(k) | *rp.add(k),
-                    LogicalOperator::Xor => *lp.add(k) ^ *rp.add(k),
+        let apply = |a: u64, b: u64| match op {
+            LogicalOperator::And => a & b,
+            LogicalOperator::Or => a | b,
+            LogicalOperator::Xor => a ^ b,
+        };
+
+        if lhs_shift == 0 && rhs_shift == 0 {
+            for ((chunk, a), b) in out_bytes[..full_words * 8]
+                .chunks_exact_mut(8)
+                .zip(lhs_bytes[..full_words * 8].chunks_exact(8))
+                .zip(rhs_bytes[..full_words * 8].chunks_exact(8))
+            {
+                let a = u64::from_le_bytes(a.try_into().unwrap());
+                let b = u64::from_le_bytes(b.try_into().unwrap());
+                chunk.copy_from_slice(&apply(a, b).to_le_bytes());
+            }
+        } else {
+            // Where the following word lies within both buffers, input words are
+            // built from two whole-word reads. `(hi << 1) << (63 - shift)` moves
+            // the low `shift` bits of the following word to the top, and is zero
+            // for an input starting on a byte boundary.
+            let paired = full_words
+                .min((lhs_bytes.len() / 8).saturating_sub(1))
+                .min((rhs_bytes.len() / 8).saturating_sub(1));
+            if paired > 0 {
+                let join = |(lo, hi): (&[u8], &[u8]), shift: usize| {
+                    let lo = u64::from_le_bytes(lo.try_into().unwrap());
+                    let hi = u64::from_le_bytes(hi.try_into().unwrap());
+                    (lo >> shift) | ((hi << 1) << (63 - shift))
                 };
+                let lhs_words = lhs_bytes[..paired * 8]
+                    .chunks_exact(8)
+                    .zip(lhs_bytes[8..(paired + 1) * 8].chunks_exact(8));
+                let rhs_words = rhs_bytes[..paired * 8]
+                    .chunks_exact(8)
+                    .zip(rhs_bytes[8..(paired + 1) * 8].chunks_exact(8));
+                for ((chunk, a), b) in out_bytes[..paired * 8]
+                    .chunks_exact_mut(8)
+                    .zip(lhs_words)
+                    .zip(rhs_words)
+                {
+                    let word = apply(join(a, lhs_shift), join(b, rhs_shift));
+                    chunk.copy_from_slice(&word.to_le_bytes());
+                }
+            }
+            // The remaining words are joined with the low bits of the following
+            // byte, which lies within the window.
+            let word_at = |bytes: &[u8], shift: usize, k: usize| {
+                let lo = u64::from_le_bytes(bytes[k * 8..k * 8 + 8].try_into().unwrap());
+                if shift == 0 {
+                    lo
+                } else {
+                    (lo >> shift) | ((bytes[k * 8 + 8] as u64) << (64 - shift))
+                }
+            };
+            for k in paired..full_words {
+                let word = apply(
+                    word_at(lhs_bytes, lhs_shift, k),
+                    word_at(rhs_bytes, rhs_shift, k),
+                );
+                out_bytes[k * 8..k * 8 + 8].copy_from_slice(&word.to_le_bytes());
             }
         }
     }
@@ -162,7 +211,8 @@ pub fn bitmask_unop_std(src: BitmaskVT<'_>, op: UnaryOperator) -> Bitmask {
 /// Full 64-bit words run word-wise. The final `len % 64` bits run one bit at a
 /// time, so the write never touches the trailing bits past `len`.
 ///
-/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+/// The input offset may be any bit position. `out_off` is byte-aligned i.e. a
+/// multiple of 8 bits.
 #[inline(always)]
 pub fn bitmask_unop_std_into(
     out: &mut Bitmask,
@@ -179,24 +229,51 @@ pub fn bitmask_unop_std_into(
         0,
         "bitmask_unop_std_into: out_off must be byte-aligned"
     );
-    debug_assert_eq!(
-        offset % 8,
-        0,
-        "bitmask_unop_std_into: src offset must be byte-aligned"
-    );
     let full_words = len / 64;
     let tail_bits = len % 64;
     {
-        let src_bytes = bitmask_window_bytes(mask, offset, len);
+        // The input is read from the byte holding its first window bit. For
+        // windows starting inside a byte, each word is joined with the low bits
+        // of the following word through a shift and an OR. Output words are
+        // copied in as little-endian bytes, which needs no word alignment of
+        // the output window.
+        let src_bytes: &[u8] = &mask.bits[offset / 8..];
+        let shift = offset % 8;
         let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
-        unsafe {
-            let sp = src_bytes.as_ptr().cast::<u64>();
-            let dp = out_bytes.as_mut_ptr().cast::<u64>();
-            for k in 0..full_words {
-                *dp.add(k) = match op {
-                    UnaryOperator::Not => !*sp.add(k),
-                    _ => unreachable!(), // Positive Negative invalid for bools
-                };
+        let apply = |src_word: u64| match op {
+            UnaryOperator::Not => !src_word,
+            _ => unreachable!(), // Positive Negative invalid for bools
+        };
+
+        if shift == 0 {
+            for (chunk, src) in out_bytes[..full_words * 8]
+                .chunks_exact_mut(8)
+                .zip(src_bytes[..full_words * 8].chunks_exact(8))
+            {
+                let src_word = u64::from_le_bytes(src.try_into().unwrap());
+                chunk.copy_from_slice(&apply(src_word).to_le_bytes());
+            }
+        } else {
+            // Where the following word lies within the buffer, words are built
+            // from two whole-word reads. The remaining words are joined with the
+            // low bits of the following byte, which lies within the window.
+            let paired = full_words.min((src_bytes.len() / 8).saturating_sub(1));
+            if paired > 0 {
+                for ((chunk, lo), hi) in out_bytes[..paired * 8]
+                    .chunks_exact_mut(8)
+                    .zip(src_bytes[..paired * 8].chunks_exact(8))
+                    .zip(src_bytes[8..(paired + 1) * 8].chunks_exact(8))
+                {
+                    let lo = u64::from_le_bytes(lo.try_into().unwrap());
+                    let hi = u64::from_le_bytes(hi.try_into().unwrap());
+                    let src_word = (lo >> shift) | (hi << (64 - shift));
+                    chunk.copy_from_slice(&apply(src_word).to_le_bytes());
+                }
+            }
+            for k in paired..full_words {
+                let lo = u64::from_le_bytes(src_bytes[k * 8..k * 8 + 8].try_into().unwrap());
+                let src_word = (lo >> shift) | ((src_bytes[k * 8 + 8] as u64) << (64 - shift));
+                out_bytes[k * 8..k * 8 + 8].copy_from_slice(&apply(src_word).to_le_bytes());
             }
         }
     }
@@ -351,37 +428,27 @@ pub fn all_eq_mask(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
         );
     }
 
-    let a_bytes = bitmask_window_bytes(am, ao, len);
-    let b_bytes = bitmask_window_bytes(bm, bo, len);
-    let total_bytes = a_bytes.len();
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
-    let full_logical_bytes = len / 8;
-    let last_bits = len & 7;
-
-    unsafe {
-        let ap = a_bytes.as_ptr().cast::<u64>();
-        let bp = b_bytes.as_ptr().cast::<u64>();
-        for k in 0..full_words {
-            if *ap.add(k) != *bp.add(k) {
-                return false;
-            }
+    // Both windows start on a word boundary, and whole words are read from the
+    // window bytes. The final partial word is read through `load_word` and
+    // masked to the window, which keeps differences past the window from
+    // causing false negatives.
+    let full_words = len / 64;
+    let a_bytes: &[u8] = &am.bits[ao / 8..];
+    let b_bytes: &[u8] = &bm.bits[bo / 8..];
+    for (a, b) in a_bytes[..full_words * 8]
+        .chunks_exact(8)
+        .zip(b_bytes[..full_words * 8].chunks_exact(8))
+    {
+        if a != b {
+            return false;
         }
     }
-    let base = full_words * 8;
-    for k in 0..tail_bytes {
-        let byte_index = base + k;
-        let av = a_bytes[byte_index];
-        let bv = b_bytes[byte_index];
-        if byte_index < full_logical_bytes {
-            if av != bv {
-                return false;
-            }
-        } else if last_bits != 0 {
-            let m = (1u8 << last_bits) - 1;
-            if (av & m) != (bv & m) {
-                return false;
-            }
+    let tail_bits = len % 64;
+    if tail_bits != 0 {
+        let base = full_words * 64;
+        let in_window = u64::MAX >> (64 - tail_bits);
+        if (load_word(am, ao + base) ^ load_word(bm, bo + base)) & in_window != 0 {
+            return false;
         }
     }
     true
@@ -410,30 +477,43 @@ pub fn popcount_mask(m: BitmaskVT<'_>) -> usize {
     if len == 0 {
         return 0;
     }
-    let bytes = bitmask_window_bytes(mask, offset, len);
-    let total_bytes = bytes.len();
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
-    let full_logical_bytes = len / 8;
-    let last_bits = len & 7;
+    // Whole words are read from the byte holding the first window bit. For
+    // windows starting inside a byte, each word is joined with the low bits of
+    // the following word through a shift and an OR. The final partial word is
+    // read through `load_word` and masked to the window, which keeps bits
+    // outside the window out of the count.
+    let bytes: &[u8] = &mask.bits[offset / 8..];
+    let shift = offset % 8;
+    let full_words = len / 64;
     let mut acc = 0usize;
-
-    unsafe {
-        let words_ptr = bytes.as_ptr().cast::<u64>();
-        for k in 0..full_words {
-            acc += (*words_ptr.add(k)).count_ones() as usize;
+    if shift == 0 {
+        for chunk in bytes[..full_words * 8].chunks_exact(8) {
+            acc += u64::from_le_bytes(chunk.try_into().unwrap()).count_ones() as usize;
+        }
+    } else {
+        // Where the following word lies within the buffer, words are built from
+        // two whole-word reads. The remaining words are joined with the low bits
+        // of the following byte, which lies within the window.
+        let paired = full_words.min((bytes.len() / 8).saturating_sub(1));
+        if paired > 0 {
+            let lo_words = bytes[..paired * 8].chunks_exact(8);
+            let hi_words = bytes[8..(paired + 1) * 8].chunks_exact(8);
+            for (lo, hi) in lo_words.zip(hi_words) {
+                let lo = u64::from_le_bytes(lo.try_into().unwrap());
+                let hi = u64::from_le_bytes(hi.try_into().unwrap());
+                acc += ((lo >> shift) | (hi << (64 - shift))).count_ones() as usize;
+            }
+        }
+        for k in paired..full_words {
+            let lo = u64::from_le_bytes(bytes[k * 8..k * 8 + 8].try_into().unwrap());
+            let word = (lo >> shift) | ((bytes[k * 8 + 8] as u64) << (64 - shift));
+            acc += word.count_ones() as usize;
         }
     }
-    let base = full_words * 8;
-    for k in 0..tail_bytes {
-        let byte_index = base + k;
-        let b = bytes[byte_index];
-        if byte_index < full_logical_bytes {
-            acc += b.count_ones() as usize;
-        } else if last_bits != 0 {
-            let m = (1u8 << last_bits) - 1;
-            acc += (b & m).count_ones() as usize;
-        }
+    let tail_bits = len % 64;
+    if tail_bits != 0 {
+        let word = load_word(mask, offset + full_words * 64) & (u64::MAX >> (64 - tail_bits));
+        acc += word.count_ones() as usize;
     }
     acc
 }
