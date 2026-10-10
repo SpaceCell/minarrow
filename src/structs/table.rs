@@ -1258,8 +1258,8 @@ impl ColumnSelection for Table {
         let all_fields: Vec<Arc<Field>> = self.cols.iter().map(|fa| fa.field.clone()).collect();
         let col_indices = selection.resolve_fields(&all_fields);
 
-        // If selecting all columns, create a full view without filtering
-        if col_indices.len() == all_fields.len() {
+        // If selecting all columns in table order, create a full view without filtering
+        if col_indices.iter().copied().eq(0..all_fields.len()) {
             return TableV {
                 name: self.name.clone(),
                 fields: all_fields,
@@ -1575,6 +1575,19 @@ mod tests {
             Array::NumericArray(NumericArray::Int32(a)) => assert_eq!(a.len(), 2),
             _ => panic!("ints column type mismatch"),
         }
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn test_column_selection_of_every_column_keeps_the_selection_order() {
+        let mut t = Table::new_empty();
+        t.add_col(fa_i32!("ints", 1, 2));
+        t.add_col(fa_bool!("bools", true, false));
+
+        let view = t.c(vec!["bools", "ints"]);
+        let names: Vec<&str> = view.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["bools", "ints"]);
+        assert!(matches!(&view.col_ix(0).unwrap().array, Array::BooleanArray(_)));
     }
 
     #[test]
