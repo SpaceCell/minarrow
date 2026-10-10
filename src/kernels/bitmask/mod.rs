@@ -406,4 +406,144 @@ mod tests {
             assert!(out.get(i), "bit {i} past the window was disturbed");
         }
     }
+
+    /// Window offsets for the bitmask kernel sweeps, covering starts inside a
+    /// byte, byte-aligned starts off a word boundary and word-aligned starts.
+    pub(super) const WINDOW_OFFSETS: [usize; 13] = [0, 1, 3, 5, 7, 8, 9, 13, 56, 63, 64, 65, 72];
+
+    /// Window lengths for the bitmask kernel sweeps, covering partial bytes,
+    /// partial final words, whole words and several whole SIMD batches.
+    pub(super) const WINDOW_LENS: [usize; 15] =
+        [1, 7, 8, 9, 56, 57, 60, 63, 64, 65, 127, 128, 129, 200, 1000];
+
+    /// Builds an `n`-bit mask with bit `i` set where `i % a == 0 || i % b == 1`.
+    ///
+    /// Coprime `a` and `b` give a pattern that does not repeat every 8 bits,
+    /// which exposes any read shifted by part of a byte.
+    pub(super) fn pattern_mask(n: usize, a: usize, b: usize) -> Bitmask {
+        let mut mask = Bitmask::new_set_all(n, false);
+        for i in 0..n {
+            if i % a == 0 || i % b == 1 {
+                mask.set(i, true);
+            }
+        }
+        mask
+    }
+
+    /// Reads `len` bits from `offset` one at a time through `Bitmask::get`, as
+    /// the reference for the word-level kernels.
+    pub(super) fn window_bits(mask: &Bitmask, offset: usize, len: usize) -> Vec<bool> {
+        (0..len).map(|i| mask.get(offset + i)).collect()
+    }
+
+    /// `popcount_mask` counts the window bits when the window starts inside a byte.
+    #[test]
+    fn popcount_counts_windows_starting_inside_a_byte() {
+        use crate::kernels::bitmask::dispatch::popcount_mask;
+
+        let trailing_null = Bitmask::from_bools(&[true, true, true, true, true, true, true, false]);
+        let leading_null = Bitmask::from_bools(&[false, true, true, true, true, true, true, true]);
+        let all_set = Bitmask::new_set_all(24, true);
+
+        for (mask, offset, len) in [
+            (&trailing_null, 1, 7),
+            (&leading_null, 1, 7),
+            (&all_set, 5, 12),
+        ] {
+            let expected = window_bits(mask, offset, len)
+                .into_iter()
+                .filter(|&bit| bit)
+                .count();
+            assert_eq!(
+                popcount_mask((mask, offset, len)),
+                expected,
+                "window ({offset}, {len})"
+            );
+        }
+    }
+
+    /// `popcount_mask` counts a window that starts on a byte off a word boundary.
+    #[test]
+    fn popcount_counts_windows_starting_off_a_word_boundary() {
+        use crate::kernels::bitmask::dispatch::popcount_mask;
+
+        let mask = Bitmask::new_set_all(128, true);
+        let expected = window_bits(&mask, 8, 64)
+            .into_iter()
+            .filter(|&bit| bit)
+            .count();
+        assert_eq!(popcount_mask((&mask, 8, 64)), expected);
+    }
+
+    /// `popcount_mask` excludes the bits past the window in its final partial word.
+    #[test]
+    fn popcount_excludes_bits_past_the_window() {
+        use crate::kernels::bitmask::dispatch::popcount_mask;
+
+        let mask = Bitmask::new_set_all(128, true);
+        let expected = window_bits(&mask, 0, 60)
+            .into_iter()
+            .filter(|&bit| bit)
+            .count();
+        assert_eq!(popcount_mask((&mask, 0, 60)), expected);
+    }
+
+    /// `and_masks` combines windows that start inside a byte and end within one word.
+    #[test]
+    fn and_masks_combines_windows_starting_inside_a_byte() {
+        use crate::kernels::bitmask::dispatch::and_masks;
+
+        let mut a = Bitmask::new_set_all(16, true);
+        a.set(5, false);
+        let mut b = Bitmask::new_set_all(16, true);
+        b.set(9, false);
+
+        let out = and_masks((&a, 3, 10), (&b, 3, 10));
+        let expected: Vec<bool> = window_bits(&a, 3, 10)
+            .into_iter()
+            .zip(window_bits(&b, 3, 10))
+            .map(|(x, y)| x && y)
+            .collect();
+        assert_eq!(out.len(), 10);
+        assert_eq!(window_bits(&out, 0, 10), expected);
+    }
+
+    /// `and_masks` combines whole words of windows that start inside a byte.
+    #[test]
+    fn and_masks_combines_whole_words_starting_inside_a_byte() {
+        use crate::kernels::bitmask::dispatch::and_masks;
+
+        // Bit 2 lies before the window, which starts at bit 3.
+        let mut a = Bitmask::new_set_all(136, true);
+        a.set(2, false);
+        let b = Bitmask::new_set_all(136, true);
+
+        let out = and_masks((&a, 3, 64), (&b, 3, 64));
+        let expected: Vec<bool> = window_bits(&a, 3, 64)
+            .into_iter()
+            .zip(window_bits(&b, 3, 64))
+            .map(|(x, y)| x && y)
+            .collect();
+        assert_eq!(out.len(), 64);
+        assert_eq!(window_bits(&out, 0, 64), expected);
+    }
+
+    /// `and_masks` combines windows that start on a byte off a word boundary.
+    #[test]
+    fn and_masks_combines_windows_starting_off_a_word_boundary() {
+        use crate::kernels::bitmask::dispatch::and_masks;
+
+        let mut a = Bitmask::new_set_all(128, true);
+        a.set(20, false);
+        let b = Bitmask::new_set_all(128, true);
+
+        let out = and_masks((&a, 8, 64), (&b, 8, 64));
+        let expected: Vec<bool> = window_bits(&a, 8, 64)
+            .into_iter()
+            .zip(window_bits(&b, 8, 64))
+            .map(|(x, y)| x && y)
+            .collect();
+        assert_eq!(out.len(), 64);
+        assert_eq!(window_bits(&out, 0, 64), expected);
+    }
 }

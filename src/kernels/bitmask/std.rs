@@ -554,6 +554,7 @@ mod tests {
     use super::*;
     use crate::Bitmask;
     use crate::kernels::bitmask::clear_trailing_bits;
+    use crate::kernels::bitmask::tests::{WINDOW_LENS, WINDOW_OFFSETS, pattern_mask, window_bits};
 
     // Helper: Create a Bitmask from a bool slice.
     fn bm(bits: &[bool]) -> Bitmask {
@@ -743,5 +744,151 @@ mod tests {
         let mut b = a.clone();
         let window_mut = bitmask_window_bytes_mut(&mut b, 2, 4);
         assert_eq!(window_mut.len(), 1);
+    }
+
+    #[test]
+    fn test_popcount_mask_windows() {
+        for offset in WINDOW_OFFSETS {
+            for len in WINDOW_LENS {
+                let mask = pattern_mask(offset + len + 67, 3, 7);
+                let expected = window_bits(&mask, offset, len)
+                    .into_iter()
+                    .filter(|&bit| bit)
+                    .count();
+                assert_eq!(
+                    popcount_mask((&mask, offset, len)),
+                    expected,
+                    "offset {offset} len {len}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_bitmask_binop_std_into_windows() {
+        let ops = [
+            LogicalOperator::And,
+            LogicalOperator::Or,
+            LogicalOperator::Xor,
+        ];
+        for (k, lhs_off) in WINDOW_OFFSETS.into_iter().enumerate() {
+            let rhs_off = WINDOW_OFFSETS[(k + 5) % WINDOW_OFFSETS.len()];
+            for len in WINDOW_LENS {
+                let lhs = pattern_mask(lhs_off + len + 67, 3, 7);
+                let rhs = pattern_mask(rhs_off + len + 67, 5, 11);
+                let lhs_bits = window_bits(&lhs, lhs_off, len);
+                let rhs_bits = window_bits(&rhs, rhs_off, len);
+                for op in ops {
+                    let expected: Vec<bool> = lhs_bits
+                        .iter()
+                        .zip(&rhs_bits)
+                        .map(|(&a, &b)| match op {
+                            LogicalOperator::And => a & b,
+                            LogicalOperator::Or => a | b,
+                            LogicalOperator::Xor => a ^ b,
+                        })
+                        .collect();
+                    for out_off in [0usize, 8, 64, 128] {
+                        let mut out = pattern_mask(out_off + len + 64, 2, 9);
+                        let before = out.clone();
+                        bitmask_binop_std_into(
+                            &mut out,
+                            out_off,
+                            (&lhs, lhs_off, len),
+                            (&rhs, rhs_off, len),
+                            op,
+                        );
+                        let case =
+                            format!("{op:?} lhs {lhs_off} rhs {rhs_off} len {len} out {out_off}");
+                        let end = out_off + len;
+                        assert_eq!(window_bits(&out, out_off, len), expected, "{case}");
+                        assert_eq!(
+                            window_bits(&out, 0, out_off),
+                            window_bits(&before, 0, out_off),
+                            "{case}"
+                        );
+                        assert_eq!(
+                            window_bits(&out, end, out.len() - end),
+                            window_bits(&before, end, before.len() - end),
+                            "{case}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_bitmask_unop_std_into_windows() {
+        for offset in WINDOW_OFFSETS {
+            for len in WINDOW_LENS {
+                let src = pattern_mask(offset + len + 67, 3, 7);
+                let expected: Vec<bool> = window_bits(&src, offset, len)
+                    .into_iter()
+                    .map(|bit| !bit)
+                    .collect();
+                for out_off in [0usize, 8, 64, 128] {
+                    let mut out = pattern_mask(out_off + len + 64, 2, 9);
+                    let before = out.clone();
+                    bitmask_unop_std_into(
+                        &mut out,
+                        out_off,
+                        (&src, offset, len),
+                        UnaryOperator::Not,
+                    );
+                    let case = format!("offset {offset} len {len} out {out_off}");
+                    let end = out_off + len;
+                    assert_eq!(window_bits(&out, out_off, len), expected, "{case}");
+                    assert_eq!(
+                        window_bits(&out, 0, out_off),
+                        window_bits(&before, 0, out_off),
+                        "{case}"
+                    );
+                    assert_eq!(
+                        window_bits(&out, end, out.len() - end),
+                        window_bits(&before, end, before.len() - end),
+                        "{case}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_all_eq_mask_windows() {
+        for (lhs_off, rhs_off) in [(0usize, 0usize), (0, 64), (64, 0), (64, 64)] {
+            for len in WINDOW_LENS {
+                let n = 64 + len + 67;
+                let lhs = pattern_mask(n, 3, 7);
+                // Equal to `lhs` within the window and inverted outside it.
+                let mut rhs = Bitmask::new_set_all(n, false);
+                for i in 0..n {
+                    let inside = i >= rhs_off && i < rhs_off + len;
+                    let bit = if inside {
+                        lhs.get(lhs_off + i - rhs_off)
+                    } else {
+                        !lhs.get(i)
+                    };
+                    rhs.set(i, bit);
+                }
+                let case = format!("lhs {lhs_off} rhs {rhs_off} len {len}");
+
+                let expected = window_bits(&lhs, lhs_off, len) == window_bits(&rhs, rhs_off, len);
+                assert_eq!(
+                    all_eq_mask((&lhs, lhs_off, len), (&rhs, rhs_off, len)),
+                    expected,
+                    "{case}"
+                );
+
+                let last = rhs_off + len - 1;
+                rhs.set(last, !rhs.get(last));
+                let expected = window_bits(&lhs, lhs_off, len) == window_bits(&rhs, rhs_off, len);
+                assert_eq!(
+                    all_eq_mask((&lhs, lhs_off, len), (&rhs, rhs_off, len)),
+                    expected,
+                    "{case}, last window bit flipped"
+                );
+            }
+        }
     }
 }
