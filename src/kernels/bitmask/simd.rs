@@ -56,13 +56,34 @@
 //! if !eq_mask.all() { return false; }
 //! ```
 
-use core::simd::Simd;
+use core::simd::{Simd, Swizzle};
 
 use crate::kernels::arithmetic::simd::{W8, W16, W32, W64};
 use crate::{Bitmask, BitmaskVT};
 
 use crate::enums::operators::{LogicalOperator, UnaryOperator};
-use crate::kernels::bitmask::{bitmask_window_bytes, bitmask_window_bytes_mut, load_word};
+use crate::kernels::bitmask::{
+    bitmask_window_bytes, bitmask_window_bytes_mut, load_word, mask_bits_as_words,
+};
+
+/// Swizzle index `[1, 2, ..., N]` over two concatenated vectors.
+///
+/// Applied to consecutive vectors of mask words `cur` and `nxt`, the result
+/// contains the word that follows each lane of `cur`. The swizzle is a register
+/// permute, for example `valignq` on AVX-512, rather than a memory load.
+struct NextWords;
+
+impl<const N: usize> Swizzle<N> for NextWords {
+    const INDEX: [usize; N] = {
+        let mut index = [0; N];
+        let mut i = 0;
+        while i < N {
+            index[i] = i + 1;
+            i += 1;
+        }
+        index
+    };
+}
 
 /// Primitive bit ops
 
@@ -141,11 +162,19 @@ pub fn bitmask_unop_simd<const LANES: usize>(src: BitmaskVT<'_>, op: UnaryOperat
 /// Full 64-bit words lying entirely within `[0, len)` run word-wise, `LANES`
 /// words per SIMD step and then any remaining whole words scalar. The final
 /// `len % 64` bits run one bit at a time, so the write touches only valid
-/// positions and never the trailing bits past `len`. With byte-aligned offsets
-/// the words never straddle a window edge, so adjacent windows of a shared
-/// output buffer stay independent.
+/// positions and never the trailing bits past `len`. With a byte-aligned
+/// `out_off` the words never straddle a window edge. Adjacent windows of a
+/// shared output buffer therefore stay independent.
 ///
-/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+/// When every input offset is a multiple of 64, whole words are loaded from
+/// the window. Otherwise, for an input window that starts at bit `s` of mask
+/// word `w0`, window word `k` is formed from mask words `w0 + k` and
+/// `w0 + k + 1` as `(cur >> s) | (next << (64 - s))`. Both paths load whole
+/// words only. Whole result words are written with aligned stores when
+/// `out_off` is a multiple of 64, and as little-endian bytes otherwise.
+///
+/// Input offsets may be any bit position. `out_off` is byte-aligned, i.e. a
+/// multiple of 8 bits.
 #[inline(always)]
 pub fn bitmask_binop_simd_into<const LANES: usize>(
     out: &mut Bitmask,
@@ -164,22 +193,17 @@ pub fn bitmask_binop_simd_into<const LANES: usize>(
         0,
         "bitmask_binop_simd_into: out_off must be byte-aligned"
     );
-    debug_assert_eq!(
-        lhs_off % 8,
-        0,
-        "bitmask_binop_simd_into: lhs offset must be byte-aligned"
-    );
-    debug_assert_eq!(
-        rhs_off % 8,
-        0,
-        "bitmask_binop_simd_into: rhs offset must be byte-aligned"
-    );
     let full_words = len / 64;
     let tail_bits = len % 64;
-    {
+    if lhs_off % 64 == 0 && rhs_off % 64 == 0 {
         let lhs_bytes = bitmask_window_bytes(lhs_mask, lhs_off, len);
         let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
         let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
+        // SAFETY: Both input offsets are multiples of 64 and mask buffers start on a
+        // 64-byte boundary, which makes `lp` and `rp` aligned `u64` pointers. Words
+        // `0..full_words` lie inside each input window and the output window. Whole
+        // words are written through `dp` as `u64` only when `out_off` is a multiple
+        // of 64, and as 8 bytes otherwise, which needs no alignment.
         unsafe {
             let lp = lhs_bytes.as_ptr().cast::<u64>();
             let rp = rhs_bytes.as_ptr().cast::<u64>();
@@ -195,19 +219,142 @@ pub fn bitmask_binop_simd_into<const LANES: usize>(
                     LogicalOperator::Or => a | b,
                     LogicalOperator::Xor => a ^ b,
                 };
-                std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
+                if out_off % 64 == 0 {
+                    std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
+                } else {
+                    for (j, w) in r.as_array().iter().enumerate() {
+                        dp.add(i + j).cast::<[u8; 8]>().write(w.to_le_bytes());
+                    }
+                }
                 i += LANES;
             }
             // Scalar word tail when full_words is not a multiple of LANES.
             for k in i..full_words {
                 let a = *lp.add(k);
                 let b = *rp.add(k);
-                *dp.add(k) = match op {
+                let w = match op {
                     LogicalOperator::And => a & b,
                     LogicalOperator::Or => a | b,
                     LogicalOperator::Xor => a ^ b,
                 };
+                if out_off % 64 == 0 {
+                    *dp.add(k) = w;
+                } else {
+                    dp.add(k).cast::<[u8; 8]>().write(w.to_le_bytes());
+                }
             }
+        }
+    } else {
+        let (lw0, ls) = (lhs_off / 64, (lhs_off % 64) as u64);
+        let (rw0, rs) = (rhs_off / 64, (rhs_off % 64) as u64);
+        // SAFETY: Mask buffers start on a 64-byte boundary, which aligns the buffer
+        // start for `u64`, and `bits.len() / 8` whole words lie inside the buffer.
+        let lwords = unsafe {
+            std::slice::from_raw_parts(mask_bits_as_words(&lhs_mask.bits), lhs_mask.bits.len() / 8)
+        };
+        // SAFETY: The same holds for the rhs mask buffer.
+        let rwords = unsafe {
+            std::slice::from_raw_parts(mask_bits_as_words(&rhs_mask.bits), rhs_mask.bits.len() / 8)
+        };
+        let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
+        let dp = out_bytes.as_mut_ptr().cast::<u64>();
+        // SIMD steps run while the following vector of each input lies inside
+        // its buffer.
+        let steps = (full_words / LANES)
+            .min(lwords.len().saturating_sub(lw0 + LANES) / LANES)
+            .min(rwords.len().saturating_sub(rw0 + LANES) / LANES);
+        let mut i = 0;
+        if steps > 0 {
+            let (lshift, lback) = (Simd::splat(ls), Simd::splat(64 - ls));
+            let (rshift, rback) = (Simd::splat(rs), Simd::splat(64 - rs));
+            let mut lcur = Simd::<u64, LANES>::from_slice(&lwords[lw0..lw0 + LANES]);
+            let mut rcur = Simd::<u64, LANES>::from_slice(&rwords[rw0..rw0 + LANES]);
+            for _ in 0..steps {
+                let lj = lw0 + i + LANES;
+                let rj = rw0 + i + LANES;
+                let lnxt = Simd::<u64, LANES>::from_slice(&lwords[lj..lj + LANES]);
+                let rnxt = Simd::<u64, LANES>::from_slice(&rwords[rj..rj + LANES]);
+                // Inputs at offsets that are multiples of 64 are used without
+                // a shift.
+                let a = if ls == 0 {
+                    lcur
+                } else {
+                    (lcur >> lshift) | (NextWords::concat_swizzle(lcur, lnxt) << lback)
+                };
+                let b = if rs == 0 {
+                    rcur
+                } else {
+                    (rcur >> rshift) | (NextWords::concat_swizzle(rcur, rnxt) << rback)
+                };
+                let r = match op {
+                    LogicalOperator::And => a & b,
+                    LogicalOperator::Or => a | b,
+                    LogicalOperator::Xor => a ^ b,
+                };
+                // SAFETY: `i + LANES <= full_words`, which keeps words `i..i + LANES` inside
+                // the output window. They are written as aligned `u64` words only when
+                // `out_off` is a multiple of 64, and as 8 bytes each otherwise.
+                unsafe {
+                    if out_off % 64 == 0 {
+                        std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
+                    } else {
+                        for (j, w) in r.as_array().iter().enumerate() {
+                            dp.add(i + j).cast::<[u8; 8]>().write(w.to_le_bytes());
+                        }
+                    }
+                }
+                lcur = lnxt;
+                rcur = rnxt;
+                i += LANES;
+            }
+        }
+        // Remaining whole words one at a time. Mask words that are not whole
+        // inside the buffer are read with `load_word`, which reads bytes past
+        // the end of the buffer as zero.
+        let lword = |j: usize| {
+            lwords
+                .get(j)
+                .copied()
+                .unwrap_or_else(|| load_word(lhs_mask, j * 64))
+        };
+        let rword = |j: usize| {
+            rwords
+                .get(j)
+                .copied()
+                .unwrap_or_else(|| load_word(rhs_mask, j * 64))
+        };
+        let mut lcur = lword(lw0 + i);
+        let mut rcur = rword(rw0 + i);
+        for k in i..full_words {
+            let lnext = lword(lw0 + k + 1);
+            let rnext = rword(rw0 + k + 1);
+            let a = if ls == 0 {
+                lcur
+            } else {
+                (lcur >> ls) | (lnext << (64 - ls))
+            };
+            let b = if rs == 0 {
+                rcur
+            } else {
+                (rcur >> rs) | (rnext << (64 - rs))
+            };
+            let w = match op {
+                LogicalOperator::And => a & b,
+                LogicalOperator::Or => a | b,
+                LogicalOperator::Xor => a ^ b,
+            };
+            // SAFETY: `k < full_words`, which keeps word `k` inside the output window. It
+            // is written as an aligned `u64` only when `out_off` is a multiple of 64,
+            // and as 8 bytes otherwise.
+            unsafe {
+                if out_off % 64 == 0 {
+                    *dp.add(k) = w;
+                } else {
+                    dp.add(k).cast::<[u8; 8]>().write(w.to_le_bytes());
+                }
+            }
+            lcur = lnext;
+            rcur = rnext;
         }
     }
     // Final partial word written one bit at a time.
@@ -233,7 +380,15 @@ pub fn bitmask_binop_simd_into<const LANES: usize>(
 /// remaining whole words scalar. The final `len % 64` bits run one bit at a
 /// time, so the write never touches the trailing bits past `len`.
 ///
-/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+/// When `offset` is a multiple of 64, whole words are loaded from the window.
+/// Otherwise, for a window that starts at bit `s` of mask word `w0`, window
+/// word `k` is formed from mask words `w0 + k` and `w0 + k + 1` as
+/// `(cur >> s) | (next << (64 - s))`. Both paths load whole words only. Whole
+/// result words are written with aligned stores when `out_off` is a multiple
+/// of 64, and as little-endian bytes otherwise.
+///
+/// The input offset may be any bit position. `out_off` is byte-aligned, i.e. a
+/// multiple of 8 bits.
 #[inline(always)]
 pub fn bitmask_unop_simd_into<const LANES: usize>(
     out: &mut Bitmask,
@@ -250,16 +405,16 @@ pub fn bitmask_unop_simd_into<const LANES: usize>(
         0,
         "bitmask_unop_simd_into: out_off must be byte-aligned"
     );
-    debug_assert_eq!(
-        offset % 8,
-        0,
-        "bitmask_unop_simd_into: src offset must be byte-aligned"
-    );
     let full_words = len / 64;
     let tail_bits = len % 64;
-    {
+    if offset % 64 == 0 {
         let src_bytes = bitmask_window_bytes(mask, offset, len);
         let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
+        // SAFETY: The input offset is a multiple of 64 and mask buffers start on a
+        // 64-byte boundary, which makes `sp` an aligned `u64` pointer. Words
+        // `0..full_words` lie inside the input window and the output window. Whole
+        // words are written through `dp` as `u64` only when `out_off` is a multiple
+        // of 64, and as 8 bytes otherwise, which needs no alignment.
         unsafe {
             let sp = src_bytes.as_ptr().cast::<u64>();
             let dp = out_bytes.as_mut_ptr().cast::<u64>();
@@ -271,16 +426,94 @@ pub fn bitmask_unop_simd_into<const LANES: usize>(
                     UnaryOperator::Not => !a,
                     _ => unreachable!(),
                 };
-                std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
+                if out_off % 64 == 0 {
+                    std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
+                } else {
+                    for (j, w) in r.as_array().iter().enumerate() {
+                        dp.add(i + j).cast::<[u8; 8]>().write(w.to_le_bytes());
+                    }
+                }
                 i += LANES;
             }
             // Scalar word tail when full_words is not a multiple of LANES.
             for k in i..full_words {
-                *dp.add(k) = match op {
+                let w = match op {
                     UnaryOperator::Not => !*sp.add(k),
                     _ => unreachable!(),
                 };
+                if out_off % 64 == 0 {
+                    *dp.add(k) = w;
+                } else {
+                    dp.add(k).cast::<[u8; 8]>().write(w.to_le_bytes());
+                }
             }
+        }
+    } else {
+        let (w0, s) = (offset / 64, (offset % 64) as u64);
+        // SAFETY: Mask buffers start on a 64-byte boundary, which aligns the buffer
+        // start for `u64`, and `bits.len() / 8` whole words lie inside the buffer.
+        let words = unsafe {
+            std::slice::from_raw_parts(mask_bits_as_words(&mask.bits), mask.bits.len() / 8)
+        };
+        let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
+        let dp = out_bytes.as_mut_ptr().cast::<u64>();
+        // SIMD steps run while the following vector lies inside the buffer.
+        let steps = (full_words / LANES).min(words.len().saturating_sub(w0 + LANES) / LANES);
+        let mut i = 0;
+        if steps > 0 {
+            let (shift, back) = (Simd::splat(s), Simd::splat(64 - s));
+            let mut cur = Simd::<u64, LANES>::from_slice(&words[w0..w0 + LANES]);
+            for _ in 0..steps {
+                let at = w0 + i + LANES;
+                let nxt = Simd::<u64, LANES>::from_slice(&words[at..at + LANES]);
+                let a = (cur >> shift) | (NextWords::concat_swizzle(cur, nxt) << back);
+                let r = match op {
+                    UnaryOperator::Not => !a,
+                    _ => unreachable!(),
+                };
+                // SAFETY: `i + LANES <= full_words`, which keeps words `i..i + LANES` inside
+                // the output window. They are written as aligned `u64` words only when
+                // `out_off` is a multiple of 64, and as 8 bytes each otherwise.
+                unsafe {
+                    if out_off % 64 == 0 {
+                        std::ptr::copy_nonoverlapping(r.as_array().as_ptr(), dp.add(i), LANES);
+                    } else {
+                        for (j, w) in r.as_array().iter().enumerate() {
+                            dp.add(i + j).cast::<[u8; 8]>().write(w.to_le_bytes());
+                        }
+                    }
+                }
+                cur = nxt;
+                i += LANES;
+            }
+        }
+        // Remaining whole words one at a time. Mask words that are not whole
+        // inside the buffer are read with `load_word`, which reads bytes past
+        // the end of the buffer as zero.
+        let word = |j: usize| {
+            words
+                .get(j)
+                .copied()
+                .unwrap_or_else(|| load_word(mask, j * 64))
+        };
+        let mut cur = word(w0 + i);
+        for k in i..full_words {
+            let next = word(w0 + k + 1);
+            let w = match op {
+                UnaryOperator::Not => !((cur >> s) | (next << (64 - s))),
+                _ => unreachable!(),
+            };
+            // SAFETY: `k < full_words`, which keeps word `k` inside the output window. It
+            // is written as an aligned `u64` only when `out_off` is a multiple of 64,
+            // and as 8 bytes otherwise.
+            unsafe {
+                if out_off % 64 == 0 {
+                    *dp.add(k) = w;
+                } else {
+                    dp.add(k).cast::<[u8; 8]>().write(w.to_le_bytes());
+                }
+            }
+            cur = next;
         }
     }
     // Final partial word written one bit at a time.
@@ -722,6 +955,13 @@ where
 ///
 /// Counts set bits in a bitmask window using SIMD popcount with horizontal reduction.
 ///
+/// When `offset` is a multiple of 64, whole words are loaded from the window.
+/// Otherwise, for a window that starts at bit `s` of mask word `w0`, window
+/// word `k` is formed from mask words `w0 + k` and `w0 + k + 1` as
+/// `(cur >> s) | (next << (64 - s))`, using whole-word loads only. On both
+/// paths the final window word is masked to the window length, which excludes
+/// rows past the end of the window.
+///
 /// # Type Parameters
 /// - `LANES`: Number of u64 lanes to process simultaneously
 ///
@@ -739,14 +979,64 @@ where
         return 0;
     }
 
+    if offset % 64 != 0 {
+        use std::simd::prelude::SimdUint;
+        let (w0, s) = (offset / 64, (offset % 64) as u64);
+        // SAFETY: Mask buffers start on a 64-byte boundary, which aligns the buffer
+        // start for `u64`, and `bits.len() / 8` whole words lie inside the buffer.
+        let words = unsafe {
+            std::slice::from_raw_parts(mask_bits_as_words(&mask.bits), mask.bits.len() / 8)
+        };
+        let full_words = len / 64;
+        // SIMD steps run while the following vector lies inside the buffer.
+        let steps = (full_words / LANES).min(words.len().saturating_sub(w0 + LANES) / LANES);
+        let mut acc = 0usize;
+        let mut i = 0;
+        if steps > 0 {
+            let (shift, back) = (Simd::splat(s), Simd::splat(64 - s));
+            let mut cur = Simd::<u64, LANES>::from_slice(&words[w0..w0 + LANES]);
+            for _ in 0..steps {
+                let at = w0 + i + LANES;
+                let nxt = Simd::<u64, LANES>::from_slice(&words[at..at + LANES]);
+                let v = (cur >> shift) | (NextWords::concat_swizzle(cur, nxt) << back);
+                acc += v.count_ones().reduce_sum() as usize;
+                cur = nxt;
+                i += LANES;
+            }
+        }
+        // Remaining words one at a time. Mask words that are not whole inside
+        // the buffer are read with `load_word`, which reads bytes past the end
+        // of the buffer as zero.
+        let word = |j: usize| {
+            words
+                .get(j)
+                .copied()
+                .unwrap_or_else(|| load_word(mask, j * 64))
+        };
+        let mut cur = word(w0 + i);
+        for k in i..full_words {
+            let next = word(w0 + k + 1);
+            acc += ((cur >> s) | (next << (64 - s))).count_ones() as usize;
+            cur = next;
+        }
+        // Final window word, masked to the rows inside the window.
+        let tail_bits = len % 64;
+        if tail_bits != 0 {
+            let next = word(w0 + full_words + 1);
+            let w = (cur >> s) | (next << (64 - s));
+            acc += (w & (u64::MAX >> (64 - tail_bits))).count_ones() as usize;
+        }
+        return acc;
+    }
+
     let bytes = bitmask_window_bytes(mask, offset, len);
-    // Whole u64 words within the tight byte slice via SIMD, scalar
-    // tail for partial u64 words, then byte-by-byte for the leftover
-    // 0..7 bytes. The partial last logical byte is masked to its
+    // Whole u64 words inside the window via SIMD, scalar tail for
+    // partial u64 words, then byte-by-byte for the 0..8 bytes of the
+    // final partial word. The partial last logical byte is masked to its
     // valid bits so slack ones don't inflate the count.
     let total_bytes = bytes.len();
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
+    let full_words = len / 64;
+    let tail_bytes = total_bytes - full_words * 8;
     let full_logical_bytes = len / 8;
     let last_bits = len & 7;
     let mut acc = 0usize;

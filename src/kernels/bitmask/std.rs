@@ -51,7 +51,9 @@ use crate::{Bitmask, BitmaskVT};
 
 use crate::{
     enums::operators::{LogicalOperator, UnaryOperator},
-    kernels::bitmask::{bitmask_window_bytes, bitmask_window_bytes_mut, load_word},
+    kernels::bitmask::{
+        bitmask_window_bytes, bitmask_window_bytes_mut, load_word, mask_bits_as_words,
+    },
 };
 
 /// Performs bitwise binary operations (AND/OR/XOR) over two bitmask slices using word-level processing.
@@ -79,11 +81,19 @@ pub fn bitmask_binop_std(lhs: BitmaskVT<'_>, rhs: BitmaskVT<'_>, op: LogicalOper
 ///
 /// Full 64-bit words lying entirely within `[0, len)` run word-wise. The final
 /// `len % 64` bits run one bit at a time, so the write touches only valid
-/// positions and never the trailing bits past `len`. With byte-aligned offsets
-/// the words never straddle a window edge, so adjacent windows of a shared
-/// output buffer stay independent.
+/// positions and never the trailing bits past `len`. With a byte-aligned
+/// `out_off` the words never straddle a window edge. Adjacent windows of a
+/// shared output buffer therefore stay independent.
 ///
-/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+/// When every input offset is a multiple of 64, whole words are loaded from
+/// the window. Otherwise, for an input window that starts at bit `s` of mask
+/// word `w0`, window word `k` is formed from mask words `w0 + k` and
+/// `w0 + k + 1` as `(cur >> s) | (next << (64 - s))`. Both paths load whole
+/// words only. Whole result words are written with aligned stores when
+/// `out_off` is a multiple of 64, and as little-endian bytes otherwise.
+///
+/// Input offsets may be any bit position. `out_off` is byte-aligned, i.e. a
+/// multiple of 8 bits.
 #[inline(always)]
 pub fn bitmask_binop_std_into(
     out: &mut Bitmask,
@@ -102,33 +112,112 @@ pub fn bitmask_binop_std_into(
         0,
         "bitmask_binop_std_into: out_off must be byte-aligned"
     );
-    debug_assert_eq!(
-        lhs_off % 8,
-        0,
-        "bitmask_binop_std_into: lhs offset must be byte-aligned"
-    );
-    debug_assert_eq!(
-        rhs_off % 8,
-        0,
-        "bitmask_binop_std_into: rhs offset must be byte-aligned"
-    );
     let full_words = len / 64;
     let tail_bits = len % 64;
-    {
+    if lhs_off % 64 == 0 && rhs_off % 64 == 0 {
         let lhs_bytes = bitmask_window_bytes(lhs_mask, lhs_off, len);
         let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
         let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
+        // SAFETY: Both input offsets are multiples of 64 and mask buffers start on a
+        // 64-byte boundary, which makes `lp` and `rp` aligned `u64` pointers. Words
+        // `0..full_words` lie inside each input window and the output window. Whole
+        // words are written through `dp` as `u64` only when `out_off` is a multiple
+        // of 64, and as 8 bytes otherwise, which needs no alignment.
         unsafe {
             let lp = lhs_bytes.as_ptr().cast::<u64>();
             let rp = rhs_bytes.as_ptr().cast::<u64>();
             let dp = out_bytes.as_mut_ptr().cast::<u64>();
-            for k in 0..full_words {
-                *dp.add(k) = match op {
-                    LogicalOperator::And => *lp.add(k) & *rp.add(k),
-                    LogicalOperator::Or => *lp.add(k) | *rp.add(k),
-                    LogicalOperator::Xor => *lp.add(k) ^ *rp.add(k),
-                };
+            if out_off % 64 == 0 {
+                for k in 0..full_words {
+                    *dp.add(k) = match op {
+                        LogicalOperator::And => *lp.add(k) & *rp.add(k),
+                        LogicalOperator::Or => *lp.add(k) | *rp.add(k),
+                        LogicalOperator::Xor => *lp.add(k) ^ *rp.add(k),
+                    };
+                }
+            } else {
+                for k in 0..full_words {
+                    let w = match op {
+                        LogicalOperator::And => *lp.add(k) & *rp.add(k),
+                        LogicalOperator::Or => *lp.add(k) | *rp.add(k),
+                        LogicalOperator::Xor => *lp.add(k) ^ *rp.add(k),
+                    };
+                    dp.add(k).cast::<[u8; 8]>().write(w.to_le_bytes());
+                }
             }
+        }
+    } else {
+        let (lw0, ls) = (lhs_off / 64, (lhs_off % 64) as u32);
+        let (rw0, rs) = (rhs_off / 64, (rhs_off % 64) as u32);
+        // SAFETY: Mask buffers start on a 64-byte boundary, which aligns the buffer
+        // start for `u64`, and `bits.len() / 8` whole words lie inside the buffer.
+        let lwords = unsafe {
+            std::slice::from_raw_parts(mask_bits_as_words(&lhs_mask.bits), lhs_mask.bits.len() / 8)
+        };
+        // SAFETY: The same holds for the rhs mask buffer.
+        let rwords = unsafe {
+            std::slice::from_raw_parts(mask_bits_as_words(&rhs_mask.bits), rhs_mask.bits.len() / 8)
+        };
+        let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
+        let dp = out_bytes.as_mut_ptr().cast::<u64>();
+        // Window word formed from mask words `cur` and `next`. An input at an
+        // offset that is a multiple of 64 is used without a shift.
+        let join = |cur: u64, next: u64, s: u32| {
+            if s == 0 {
+                cur
+            } else {
+                (cur >> s) | (next << (64 - s))
+            }
+        };
+        let write = |k: usize, a: u64, b: u64| {
+            let w = match op {
+                LogicalOperator::And => a & b,
+                LogicalOperator::Or => a | b,
+                LogicalOperator::Xor => a ^ b,
+            };
+            // SAFETY: `k < full_words`, which keeps word `k` inside the output window. It
+            // is written as an aligned `u64` only when `out_off` is a multiple of 64,
+            // and as 8 bytes otherwise.
+            unsafe {
+                if out_off % 64 == 0 {
+                    *dp.add(k) = w;
+                } else {
+                    dp.add(k).cast::<[u8; 8]>().write(w.to_le_bytes());
+                }
+            }
+        };
+        // Window words whose two mask words lie whole inside both buffers.
+        let whole = full_words
+            .min(lwords.len().saturating_sub(lw0 + 1))
+            .min(rwords.len().saturating_sub(rw0 + 1));
+        if whole > 0 {
+            let lspan = &lwords[lw0..=lw0 + whole];
+            let rspan = &rwords[rw0..=rw0 + whole];
+            for k in 0..whole {
+                let a = join(lspan[k], lspan[k + 1], ls);
+                let b = join(rspan[k], rspan[k + 1], rs);
+                write(k, a, b);
+            }
+        }
+        // Remaining words. Mask words that are not whole inside the buffer are
+        // read with `load_word`, which reads bytes past the end of the buffer
+        // as zero.
+        let lword = |j: usize| {
+            lwords
+                .get(j)
+                .copied()
+                .unwrap_or_else(|| load_word(lhs_mask, j * 64))
+        };
+        let rword = |j: usize| {
+            rwords
+                .get(j)
+                .copied()
+                .unwrap_or_else(|| load_word(rhs_mask, j * 64))
+        };
+        for k in whole..full_words {
+            let a = join(lword(lw0 + k), lword(lw0 + k + 1), ls);
+            let b = join(rword(rw0 + k), rword(rw0 + k + 1), rs);
+            write(k, a, b);
         }
     }
     // Final partial word written one bit at a time.
@@ -162,7 +251,15 @@ pub fn bitmask_unop_std(src: BitmaskVT<'_>, op: UnaryOperator) -> Bitmask {
 /// Full 64-bit words run word-wise. The final `len % 64` bits run one bit at a
 /// time, so the write never touches the trailing bits past `len`.
 ///
-/// All offsets are byte-aligned i.e. a multiple of 8 bits.
+/// When `offset` is a multiple of 64, whole words are loaded from the window.
+/// Otherwise, for a window that starts at bit `s` of mask word `w0`, window
+/// word `k` is formed from mask words `w0 + k` and `w0 + k + 1` as
+/// `(cur >> s) | (next << (64 - s))`. Both paths load whole words only. Whole
+/// result words are written with aligned stores when `out_off` is a multiple
+/// of 64, and as little-endian bytes otherwise.
+///
+/// The input offset may be any bit position. `out_off` is byte-aligned, i.e. a
+/// multiple of 8 bits.
 #[inline(always)]
 pub fn bitmask_unop_std_into(
     out: &mut Bitmask,
@@ -179,25 +276,80 @@ pub fn bitmask_unop_std_into(
         0,
         "bitmask_unop_std_into: out_off must be byte-aligned"
     );
-    debug_assert_eq!(
-        offset % 8,
-        0,
-        "bitmask_unop_std_into: src offset must be byte-aligned"
-    );
     let full_words = len / 64;
     let tail_bits = len % 64;
-    {
+    if offset % 64 == 0 {
         let src_bytes = bitmask_window_bytes(mask, offset, len);
         let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
+        // SAFETY: The input offset is a multiple of 64 and mask buffers start on a
+        // 64-byte boundary, which makes `sp` an aligned `u64` pointer. Words
+        // `0..full_words` lie inside the input window and the output window. Whole
+        // words are written through `dp` as `u64` only when `out_off` is a multiple
+        // of 64, and as 8 bytes otherwise, which needs no alignment.
         unsafe {
             let sp = src_bytes.as_ptr().cast::<u64>();
             let dp = out_bytes.as_mut_ptr().cast::<u64>();
-            for k in 0..full_words {
-                *dp.add(k) = match op {
-                    UnaryOperator::Not => !*sp.add(k),
-                    _ => unreachable!(), // Positive Negative invalid for bools
-                };
+            if out_off % 64 == 0 {
+                for k in 0..full_words {
+                    *dp.add(k) = match op {
+                        UnaryOperator::Not => !*sp.add(k),
+                        _ => unreachable!(), // Positive Negative invalid for bools
+                    };
+                }
+            } else {
+                for k in 0..full_words {
+                    let w = match op {
+                        UnaryOperator::Not => !*sp.add(k),
+                        _ => unreachable!(),
+                    };
+                    dp.add(k).cast::<[u8; 8]>().write(w.to_le_bytes());
+                }
             }
+        }
+    } else {
+        let (w0, s) = (offset / 64, (offset % 64) as u32);
+        // SAFETY: Mask buffers start on a 64-byte boundary, which aligns the buffer
+        // start for `u64`, and `bits.len() / 8` whole words lie inside the buffer.
+        let words = unsafe {
+            std::slice::from_raw_parts(mask_bits_as_words(&mask.bits), mask.bits.len() / 8)
+        };
+        let out_bytes = bitmask_window_bytes_mut(out, out_off, len);
+        let dp = out_bytes.as_mut_ptr().cast::<u64>();
+        let write = |k: usize, cur: u64, next: u64| {
+            let w = match op {
+                UnaryOperator::Not => !((cur >> s) | (next << (64 - s))),
+                _ => unreachable!(),
+            };
+            // SAFETY: `k < full_words`, which keeps word `k` inside the output window. It
+            // is written as an aligned `u64` only when `out_off` is a multiple of 64,
+            // and as 8 bytes otherwise.
+            unsafe {
+                if out_off % 64 == 0 {
+                    *dp.add(k) = w;
+                } else {
+                    dp.add(k).cast::<[u8; 8]>().write(w.to_le_bytes());
+                }
+            }
+        };
+        // Window words whose two mask words lie whole inside the buffer.
+        let whole = full_words.min(words.len().saturating_sub(w0 + 1));
+        if whole > 0 {
+            let span = &words[w0..=w0 + whole];
+            for k in 0..whole {
+                write(k, span[k], span[k + 1]);
+            }
+        }
+        // Remaining words. Mask words that are not whole inside the buffer are
+        // read with `load_word`, which reads bytes past the end of the buffer
+        // as zero.
+        let word = |j: usize| {
+            words
+                .get(j)
+                .copied()
+                .unwrap_or_else(|| load_word(mask, j * 64))
+        };
+        for k in whole..full_words {
+            write(k, word(w0 + k), word(w0 + k + 1));
         }
     }
     // Final partial word written one bit at a time.
@@ -399,6 +551,13 @@ pub fn all_ne_mask(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
 /// The implementation processes data in 64-bit words and uses native CPU popcount instructions for
 /// optimal performance.
 ///
+/// When `offset` is a multiple of 64, whole words are loaded from the window.
+/// Otherwise, for a window that starts at bit `s` of mask word `w0`, window
+/// word `k` is formed from mask words `w0 + k` and `w0 + k + 1` as
+/// `(cur >> s) | (next << (64 - s))`, using whole-word loads only. On both
+/// paths the final window word is masked to the window length, which excludes
+/// rows past the end of the window.
+///
 /// # Parameters
 /// - `m`: Bitmask window as `(mask, offset, length)` tuple
 ///
@@ -410,10 +569,49 @@ pub fn popcount_mask(m: BitmaskVT<'_>) -> usize {
     if len == 0 {
         return 0;
     }
+    if offset % 64 != 0 {
+        let (w0, s) = (offset / 64, (offset % 64) as u32);
+        // SAFETY: Mask buffers start on a 64-byte boundary, which aligns the buffer
+        // start for `u64`, and `bits.len() / 8` whole words lie inside the buffer.
+        let words = unsafe {
+            std::slice::from_raw_parts(mask_bits_as_words(&mask.bits), mask.bits.len() / 8)
+        };
+        let full_words = len / 64;
+        let mut acc = 0usize;
+        // Window words whose two mask words lie whole inside the buffer.
+        let whole = full_words.min(words.len().saturating_sub(w0 + 1));
+        if whole > 0 {
+            let span = &words[w0..=w0 + whole];
+            for k in 0..whole {
+                acc += ((span[k] >> s) | (span[k + 1] << (64 - s))).count_ones() as usize;
+            }
+        }
+        // Remaining words. Mask words that are not whole inside the buffer are
+        // read with `load_word`, which reads bytes past the end of the buffer
+        // as zero.
+        let word = |j: usize| {
+            words
+                .get(j)
+                .copied()
+                .unwrap_or_else(|| load_word(mask, j * 64))
+        };
+        for k in whole..full_words {
+            acc += ((word(w0 + k) >> s) | (word(w0 + k + 1) << (64 - s))).count_ones() as usize;
+        }
+        // Final window word, masked to the rows inside the window.
+        let tail_bits = len % 64;
+        if tail_bits != 0 {
+            let k = full_words;
+            let w = (word(w0 + k) >> s) | (word(w0 + k + 1) << (64 - s));
+            acc += (w & (u64::MAX >> (64 - tail_bits))).count_ones() as usize;
+        }
+        return acc;
+    }
     let bytes = bitmask_window_bytes(mask, offset, len);
     let total_bytes = bytes.len();
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
+    // Whole words inside the window, then the bytes of the final partial word.
+    let full_words = len / 64;
+    let tail_bytes = total_bytes - full_words * 8;
     let full_logical_bytes = len / 8;
     let last_bits = len & 7;
     let mut acc = 0usize;
