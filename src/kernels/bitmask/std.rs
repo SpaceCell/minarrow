@@ -554,6 +554,7 @@ mod tests {
     use super::*;
     use crate::Bitmask;
     use crate::kernels::bitmask::clear_trailing_bits;
+    use crate::kernels::bitmask::tests::{sweep_binop_into, sweep_popcount, sweep_unop_into};
 
     // Helper: Create a Bitmask from a bool slice.
     fn bm(bits: &[bool]) -> Bitmask {
@@ -705,6 +706,23 @@ mod tests {
     fn test_popcount_mask() {
         let a = bm(&[true, false, true, false, true, true]);
         assert_eq!(popcount_mask((&a, 0, a.len())), 4);
+    }
+
+    // The scalar kernels have no SIMD width. The sweeps take their lengths
+    // from a width of 8 words.
+    #[test]
+    fn test_binop_std_into_window_offsets() {
+        sweep_binop_into(8, bitmask_binop_std_into);
+    }
+
+    #[test]
+    fn test_unop_std_into_window_offsets() {
+        sweep_unop_into(8, bitmask_unop_std_into);
+    }
+
+    #[test]
+    fn test_popcount_mask_window_offsets() {
+        sweep_popcount(8, popcount_mask);
     }
 
     #[test]

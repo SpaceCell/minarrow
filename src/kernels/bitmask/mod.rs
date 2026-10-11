@@ -224,6 +224,7 @@ pub fn merge_bitmasks_to_new(
 mod tests {
     use super::*;
     use crate::Bitmask;
+    use crate::enums::operators::{LogicalOperator, UnaryOperator};
 
     #[test]
     fn test_words_for() {
@@ -405,5 +406,165 @@ mod tests {
         for i in win_end..256 {
             assert!(out.get(i), "bit {i} past the window was disturbed");
         }
+    }
+
+    /// Window offsets for the offset sweeps. They cover bit positions within a
+    /// byte and within a word, whole-word offsets, and offsets that start
+    /// several words into the mask.
+    pub(super) const SWEEP_OFFSETS: [usize; 13] = [0, 1, 2, 3, 7, 8, 13, 63, 64, 65, 67, 512, 515];
+
+    /// Window lengths for the offset sweeps at a SIMD width of `lanes` words.
+    /// The two longest lengths span one and three whole vectors plus a partial
+    /// word.
+    pub(super) fn sweep_lengths(lanes: usize) -> [usize; 10] {
+        // Bits in one vector of `lanes` words.
+        let v = 64 * lanes;
+        [1, 57, 61, 63, 64, 65, 130, 200, v + 37, 3 * v + 37]
+    }
+
+    /// Sweep offsets for windows of `len` bits, each paired with the length of
+    /// the mask that contains the window. Every offset appears twice, once in a
+    /// mask that ends with the window and once in a mask that extends one whole
+    /// vector and a partial word past it.
+    pub(super) fn sweep_windows(len: usize, lanes: usize) -> impl Iterator<Item = (usize, usize)> {
+        SWEEP_OFFSETS
+            .into_iter()
+            .flat_map(move |off| [(off, off + len), (off, off + len + 64 * lanes + 13)])
+    }
+
+    /// Mask of `n` bits with bit `i` set when `i % a == 0 || i % b == 1`. The
+    /// sweeps use values of `a` and `b` for which the pattern does not repeat
+    /// every 8 bits.
+    pub(super) fn sweep_mask(n: usize, a: usize, b: usize) -> Bitmask {
+        let mut m = Bitmask::new_set_all(n, false);
+        for i in 0..n {
+            if i % a == 0 || i % b == 1 {
+                m.set(i, true);
+            }
+        }
+        m
+    }
+
+    /// Checks a binary `_into` kernel against a bit-by-bit `Bitmask::get`
+    /// reference, over every pair of sweep offsets, the sweep lengths and
+    /// output offsets 0, 8 and 64. Output bits outside the window keep their
+    /// prior values.
+    pub(super) fn sweep_binop_into(
+        lanes: usize,
+        kernel: impl Fn(&mut Bitmask, usize, BitmaskVT<'_>, BitmaskVT<'_>, LogicalOperator),
+    ) {
+        let ops = [
+            LogicalOperator::And,
+            LogicalOperator::Or,
+            LogicalOperator::Xor,
+        ];
+        for len in sweep_lengths(lanes) {
+            for out_off in [0usize, 8, 64] {
+                let out_n = out_off + len + 70;
+                let before = sweep_mask(out_n, 4, 9);
+                for (lhs_off, lhs_n) in sweep_windows(len, lanes) {
+                    let lhs = sweep_mask(lhs_n, 3, 7);
+                    for (rhs_off, rhs_n) in sweep_windows(len, lanes) {
+                        let rhs = sweep_mask(rhs_n, 5, 11);
+                        for op in ops {
+                            let mut out = before.clone();
+                            let lhs_window = (&lhs, lhs_off, len);
+                            let rhs_window = (&rhs, rhs_off, len);
+                            kernel(&mut out, out_off, lhs_window, rhs_window, op);
+                            for i in 0..out_n {
+                                let expected = if i < out_off || i >= out_off + len {
+                                    before.get(i)
+                                } else {
+                                    let a = lhs.get(lhs_off + i - out_off);
+                                    let b = rhs.get(rhs_off + i - out_off);
+                                    match op {
+                                        LogicalOperator::And => a & b,
+                                        LogicalOperator::Or => a | b,
+                                        LogicalOperator::Xor => a ^ b,
+                                    }
+                                };
+                                assert_eq!(
+                                    out.get(i),
+                                    expected,
+                                    "{op:?}: lhs ({lhs_off}, {len}) of {lhs_n} bits, \
+                                     rhs ({rhs_off}, {len}) of {rhs_n} bits, \
+                                     out_off {out_off}, out bit {i}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Checks a unary `_into` kernel against a bit-by-bit `Bitmask::get`
+    /// reference, over the sweep offsets, the sweep lengths and output offsets
+    /// 0, 8 and 64. Output bits outside the window keep their prior values.
+    pub(super) fn sweep_unop_into(
+        lanes: usize,
+        kernel: impl Fn(&mut Bitmask, usize, BitmaskVT<'_>, UnaryOperator),
+    ) {
+        for len in sweep_lengths(lanes) {
+            for out_off in [0usize, 8, 64] {
+                let out_n = out_off + len + 70;
+                let before = sweep_mask(out_n, 4, 9);
+                for (off, n) in sweep_windows(len, lanes) {
+                    let src = sweep_mask(n, 3, 7);
+                    let mut out = before.clone();
+                    kernel(&mut out, out_off, (&src, off, len), UnaryOperator::Not);
+                    for i in 0..out_n {
+                        let expected = if i < out_off || i >= out_off + len {
+                            before.get(i)
+                        } else {
+                            !src.get(off + i - out_off)
+                        };
+                        assert_eq!(
+                            out.get(i),
+                            expected,
+                            "Not: src ({off}, {len}) of {n} bits, out_off {out_off}, out bit {i}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Checks a popcount kernel against a bit-by-bit `Bitmask::get` count over
+    /// the sweep offsets and lengths. Rows past the end of the window are
+    /// excluded from the count.
+    pub(super) fn sweep_popcount(lanes: usize, kernel: impl Fn(BitmaskVT<'_>) -> usize) {
+        for len in sweep_lengths(lanes) {
+            for (off, n) in sweep_windows(len, lanes) {
+                let m = sweep_mask(n, 3, 7);
+                let expected = (off..off + len).filter(|&i| m.get(i)).count();
+                assert_eq!(
+                    kernel((&m, off, len)),
+                    expected,
+                    "window ({off}, {len}) of {n} bits"
+                );
+            }
+        }
+    }
+
+    /// The dispatched binary `_into` kernel reads windows at any input offset.
+    #[test]
+    fn binop_into_window_offsets() {
+        use crate::kernels::bitmask::dispatch::{W8, bitmask_binop_into};
+        sweep_binop_into(W8, bitmask_binop_into);
+    }
+
+    /// The dispatched unary `_into` kernel reads windows at any input offset.
+    #[test]
+    fn unop_into_window_offsets() {
+        use crate::kernels::bitmask::dispatch::{W8, bitmask_unop_into};
+        sweep_unop_into(W8, bitmask_unop_into);
+    }
+
+    /// The dispatched popcount counts the rows of windows at any offset.
+    #[test]
+    fn popcount_window_offsets() {
+        use crate::kernels::bitmask::dispatch::{W8, popcount_mask};
+        sweep_popcount(W8, popcount_mask);
     }
 }
