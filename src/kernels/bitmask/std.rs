@@ -539,7 +539,7 @@ pub fn all_eq_mask(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
     true
 }
 
-/// Returns true if all bits differ across two slices.
+/// Returns true if any bits differ across two slices, as the complement of `all_eq_mask`.
 #[inline]
 pub fn all_ne_mask(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
     !all_eq_mask(a, b)

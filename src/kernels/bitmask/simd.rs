@@ -831,11 +831,11 @@ where
     !eq_mask_simd::<LANES>(a, b)
 }
 
-/// Tests if all corresponding bits between two bitmask windows are different.
+/// Tests if any corresponding bits between two bitmask windows differ.
 ///
 /// Performs bulk inequality comparison across entire bitmask windows by computing the logical
-/// complement of `all_eq_mask_simd`. Returns true only if every corresponding bit pair differs
-/// between the two input windows.
+/// complement of `all_eq_mask_simd`. Returns true when at least one corresponding bit pair
+/// differs between the two input windows.
 ///
 /// # Type Parameters
 /// - `LANES`: Number of u64 lanes to process simultaneously for vectorised comparison
@@ -845,7 +845,7 @@ where
 /// - `b`: Second bitmask window as `(mask, offset, length)` tuple
 ///
 /// # Returns
-/// `true` if all corresponding bits are different, `false` if any bits are equal.
+/// `true` if any corresponding bits differ, `false` if all corresponding bits are equal.
 #[inline]
 pub fn all_ne_mask_simd<const LANES: usize>(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool
 where

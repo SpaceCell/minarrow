@@ -272,7 +272,7 @@ pub fn all_eq(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
     }
 }
 
-/// Returns true if all bits differ between two bitmask windows.
+/// Returns true if any bits differ between two bitmask windows, as the complement of `all_eq`.
 #[inline(always)]
 pub fn all_ne(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
     #[cfg(feature = "simd")]
