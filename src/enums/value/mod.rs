@@ -50,7 +50,7 @@ use crate::SuperNdArray;
 use crate::SuperNdArrayV;
 #[cfg(feature = "xarray")]
 use crate::XArray;
-use crate::{Array, Field, FieldArray, Table, traits::custom_value::CustomValue};
+use crate::{Array, ArrowType, Field, FieldArray, Table, traits::custom_value::CustomValue};
 use std::sync::Arc;
 
 #[cfg(feature = "chunked")]
@@ -320,6 +320,84 @@ impl Value {
         }
     }
 
+    /// The arrow type of this value's elements.
+    ///
+    /// ## Behaviour
+    /// - Scalars, arrays, array views and field arrays return their own type.
+    /// - Chunked arrays and their views return the type of their field.
+    /// - Matrices, n-dimensional arrays and labelled arrays hold `f64` and
+    ///   return `Float64`.
+    /// - Recursive wrappers return the type of the inner value.
+    /// - Tables, cubes, lists, tuples and custom values hold several types
+    ///   and return `None`.
+    pub fn arrow_type(&self) -> Option<ArrowType> {
+        match self {
+            #[cfg(feature = "scalar_type")]
+            Value::Scalar(s) => Some(s.arrow_type()),
+
+            Value::Array(a) => Some(a.arrow_type()),
+
+            #[cfg(feature = "views")]
+            Value::ArrayView(av) => Some(av.array.arrow_type()),
+
+            Value::FieldArray(fa) => Some(fa.arrow_type()),
+
+            #[cfg(feature = "chunked")]
+            Value::SuperArray(sa) => sa.field().map(|f| f.dtype.clone()),
+
+            #[cfg(all(feature = "chunked", feature = "views"))]
+            Value::SuperArrayView(sav) => Some(sav.field.dtype.clone()),
+
+            #[cfg(feature = "matrix")]
+            Value::Matrix(_) => Some(ArrowType::Float64),
+
+            #[cfg(all(feature = "matrix", feature = "views"))]
+            Value::MatrixView(_) => Some(ArrowType::Float64),
+
+            #[cfg(feature = "ndarray")]
+            Value::NdArray(_) => Some(ArrowType::Float64),
+
+            #[cfg(all(feature = "ndarray", feature = "views"))]
+            Value::NdArrayView(_) => Some(ArrowType::Float64),
+
+            #[cfg(all(feature = "ndarray", feature = "chunked"))]
+            Value::SuperNdArray(_) => Some(ArrowType::Float64),
+
+            #[cfg(all(feature = "ndarray", feature = "chunked", feature = "views"))]
+            Value::SuperNdArrayView(_) => Some(ArrowType::Float64),
+
+            #[cfg(feature = "xarray")]
+            Value::XArray(_) => Some(ArrowType::Float64),
+
+            Value::BoxValue(bv) => bv.arrow_type(),
+            Value::ArcValue(av) => av.arrow_type(),
+
+            Value::Table(_) => None,
+
+            #[cfg(feature = "views")]
+            Value::TableView(_) => None,
+
+            #[cfg(feature = "chunked")]
+            Value::SuperTable(_) => None,
+
+            #[cfg(all(feature = "chunked", feature = "views"))]
+            Value::SuperTableView(_) => None,
+
+            #[cfg(feature = "cube")]
+            Value::Cube(_) => None,
+
+            Value::VecValue(_) => None,
+
+            Value::Tuple2(_)
+            | Value::Tuple3(_)
+            | Value::Tuple4(_)
+            | Value::Tuple5(_)
+            | Value::Tuple6(_) => None,
+
+            Value::Custom(_) => None,
+        }
+    }
+
     /// Returns a zero-copy view over `[offset .. offset + length)` rows of this Value.
     ///
     /// For table and array types this returns the corresponding view variant.
@@ -531,6 +609,35 @@ mod tests {
     #[test]
     fn a_list_has_no_fields() {
         assert!(Value::VecValue(Arc::new(Vec::new())).fields().is_none());
+    }
+
+    #[test]
+    fn arrow_type_of_an_array_and_a_field_array_is_their_element_type() {
+        assert_eq!(Value::Array(Arc::new(seq_array(3))).arrow_type(), Some(ArrowType::Int64));
+        let column = FieldArray::from_arr("amount", seq_array(3));
+        assert_eq!(Value::FieldArray(Arc::new(column)).arrow_type(), Some(ArrowType::Int64));
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn arrow_type_of_an_array_view_is_its_element_type() {
+        let view = ArrayV::new(seq_array(10), 2, 5);
+        assert_eq!(Value::ArrayView(Arc::new(view)).arrow_type(), Some(ArrowType::Int64));
+    }
+
+    #[test]
+    fn arrow_type_of_a_wrapped_value_is_the_inner_type() {
+        let inner = Value::Array(Arc::new(seq_array(3)));
+        assert_eq!(Value::BoxValue(Box::new(inner)).arrow_type(), Some(ArrowType::Int64));
+    }
+
+    #[test]
+    fn arrow_type_of_a_table_is_none() {
+        let table = Table::new(
+            "t".to_string(),
+            Some(vec![FieldArray::from_arr("a", seq_array(3))]),
+        );
+        assert_eq!(Value::Table(Arc::new(table)).arrow_type(), None);
     }
 
     /// `len` counts the rows a view covers, so callers can pass the count
