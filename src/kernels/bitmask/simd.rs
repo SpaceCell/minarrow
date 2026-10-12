@@ -650,6 +650,9 @@ where
 }
 
 /// Bitwise "in" for boolean bitmasks: each output bit is true if lhs bit is in the set of bits in rhs.
+///
+/// The rhs set is taken from `popcount_mask_simd` over the rhs window, which reads only the
+/// rows inside the window. Both windows may start at any bit offset.
 #[inline]
 pub fn in_mask_simd<const LANES: usize>(lhs: BitmaskVT<'_>, rhs: BitmaskVT<'_>) -> Bitmask
 where
@@ -662,50 +665,12 @@ where
         return Bitmask::new_set_all(0, false);
     }
 
-    // Check which boolean values are present in rhs. Process whole u64 words
-    // that fit entirely in the tight byte slice, then handle the 0..7
-    // leftover bytes byte-by-byte. The partial last logical byte (when
-    // len & 7 != 0) is masked to its valid bits to avoid false positives
-    // from slack bits.
-    let rhs_bytes = bitmask_window_bytes(rhs_mask, rhs_off, len);
-    let total_bytes = rhs_bytes.len();
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
-    let full_logical_bytes = len / 8;
-    let last_bits = len & 7;
-    let mut any_set = 0u64;
-    let mut any_unset = 0u64;
-    unsafe {
-        let rp = rhs_bytes.as_ptr().cast::<u64>();
-        for k in 0..full_words {
-            let w = *rp.add(k);
-            any_set |= w;
-            any_unset |= !w;
-            if any_set != 0 && any_unset != 0 {
-                break;
-            }
-        }
-    }
-    if any_set == 0 || any_unset == 0 {
-        let base = full_words * 8;
-        for k in 0..tail_bytes {
-            let byte_index = base + k;
-            let b = rhs_bytes[byte_index];
-            if byte_index < full_logical_bytes {
-                any_set |= b as u64;
-                any_unset |= (!b) as u64;
-            } else if last_bits != 0 {
-                let m = (1u8 << last_bits) - 1;
-                any_set |= (b & m) as u64;
-                any_unset |= ((!b) & m) as u64;
-            }
-            if any_set != 0 && any_unset != 0 {
-                break;
-            }
-        }
-    }
-    let has_true = any_set != 0;
-    let has_false = any_unset != 0;
+    // Check which boolean values are present in rhs. The window holds a true
+    // value when its count of set bits is above zero, and a false value when
+    // the count is below the window length.
+    let ones = popcount_mask_simd::<LANES>((rhs_mask, rhs_off, len));
+    let has_true = ones != 0;
+    let has_false = ones != len;
 
     match (has_true, has_false) {
         // Set contains both values: every bit is a member
@@ -1093,8 +1058,9 @@ where
     }
     let bytes = mask.bits.as_ref();
     let total_bytes = (len + 7) / 8;
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
+    // Whole words inside the mask, then the bytes of the final partial word.
+    let full_words = len / 64;
+    let tail_bytes = total_bytes - full_words * 8;
     let full_logical_bytes = len / 8;
     let last_bits = len & 7;
 
@@ -1161,8 +1127,9 @@ where
     }
     let bytes = mask.bits.as_ref();
     let total_bytes = (len + 7) / 8;
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
+    // Whole words inside the mask, then the bytes of the final partial word.
+    let full_words = len / 64;
+    let tail_bytes = total_bytes - full_words * 8;
     let full_logical_bytes = len / 8;
     let last_bits = len & 7;
 
@@ -1349,7 +1316,10 @@ impl_simd_eq_mask!(simd_eq_mask_u64, u64, W64);
 
 #[cfg(test)]
 mod tests {
-    use crate::kernels::bitmask::tests::{sweep_binop_into, sweep_popcount, sweep_unop_into};
+    use crate::kernels::bitmask::tests::{
+        sweep_all_bits, sweep_binop_into, sweep_in_mask, sweep_popcount,
+        sweep_unop_into,
+    };
     use crate::{Bitmask, BitmaskVT};
 
     use super::*;
@@ -1500,6 +1470,20 @@ mod tests {
                 #[test]
                 fn test_popcount_mask_simd_window_offsets() {
                     sweep_popcount(LANES, popcount_mask_simd::<LANES>);
+                }
+
+                #[test]
+                fn test_all_true_false_mask_simd_lengths() {
+                    sweep_all_bits(
+                        LANES,
+                        all_true_mask_simd::<LANES>,
+                        all_false_mask_simd::<LANES>,
+                    );
+                }
+
+                #[test]
+                fn test_in_mask_simd_window_offsets() {
+                    sweep_in_mask(LANES, in_mask_simd::<LANES>, not_in_mask_simd::<LANES>);
                 }
 
                 #[test]

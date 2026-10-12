@@ -223,8 +223,8 @@ pub fn merge_bitmasks_to_new(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Bitmask;
     use crate::enums::operators::{LogicalOperator, UnaryOperator};
+    use crate::{Bitmask, Vec64};
 
     #[test]
     fn test_words_for() {
@@ -547,6 +547,164 @@ mod tests {
         }
     }
 
+    /// Mask lengths for the all-bits checks at a SIMD width of `lanes` words.
+    /// Every length up to 256 is covered, together with the lengths around the
+    /// end of one and two whole vectors.
+    pub(super) fn all_bits_lengths(lanes: usize) -> impl Iterator<Item = usize> {
+        // Bits in one vector of `lanes` words.
+        let v = 64 * lanes;
+        (0..=256)
+            .chain(v - 8..=v + 64)
+            .chain(2 * v + 56..=2 * v + 64)
+    }
+
+    /// Bit positions flipped in the all-bits checks of a mask of `len` bits.
+    /// Every position is flipped in masks of up to 256 bits. Longer masks have
+    /// their first word, final two words, and the first and last bit of every
+    /// other word flipped.
+    pub(super) fn all_bits_flips(len: usize) -> impl Iterator<Item = usize> {
+        (0..len).filter(move |&p| {
+            len <= 256 || p < 64 || p + 128 >= len || p % 64 == 0 || p % 64 == 63
+        })
+    }
+
+    /// Checks `all_true_mask` and `all_false_mask` kernels against a
+    /// bit-by-bit `Bitmask::get` reference over the all-bits lengths.
+    ///
+    /// Each length is checked with masks that hold one value throughout, the
+    /// same masks with one bit flipped, masks whose unused final-byte bits hold
+    /// the opposite value, and windows copied from longer masks at offsets
+    /// inside a byte.
+    pub(super) fn sweep_all_bits(
+        lanes: usize,
+        all_true: impl Fn(&Bitmask) -> bool,
+        all_false: impl Fn(&Bitmask) -> bool,
+    ) {
+        // Reference over the `len` bits of `src` that start at bit `off`.
+        let check = |m: &Bitmask, src: &Bitmask, off: usize, case: &str| {
+            let len = m.len();
+            let expected_true = (off..off + len).all(|i| src.get(i));
+            let expected_false = (off..off + len).all(|i| !src.get(i));
+            assert_eq!(all_true(m), expected_true, "all_true: {case}, len {len}");
+            assert_eq!(all_false(m), expected_false, "all_false: {case}, len {len}");
+        };
+        for len in all_bits_lengths(lanes) {
+            for value in [true, false] {
+                let uniform = Bitmask::new_set_all(len, value);
+                check(&uniform, &uniform, 0, &format!("all {value}"));
+
+                for p in all_bits_flips(len) {
+                    let mut m = uniform.clone();
+                    m.set(p, !value);
+                    check(&m, &m, 0, &format!("all {value} except bit {p}"));
+                }
+
+                // Unused bits of the final byte hold the opposite value.
+                // `Bitmask::new` keeps them as written.
+                let n_bytes = len.div_ceil(8);
+                let mut bytes = Vec64::<u8>::with_capacity(n_bytes);
+                bytes.resize(n_bytes, if value { 0xFF } else { 0x00 });
+                if len % 8 != 0 {
+                    bytes[n_bytes - 1] ^= !((1u8 << (len % 8)) - 1);
+                }
+                let slack = Bitmask::new(bytes, len);
+                check(&slack, &slack, 0, &format!("all {value}, unused bits {}", !value));
+
+                // Windows at offsets inside a byte, copied from masks that hold
+                // the opposite value outside the window.
+                for off in [1usize, 3, 5, 11, 19, 63, 67] {
+                    let mut src = Bitmask::new_set_all(off + len + 13, !value);
+                    for i in off..off + len {
+                        src.set(i, value);
+                    }
+                    let window = src.slice_clone(off, len);
+                    check(&window, &src, off, &format!("all {value}, window at {off}"));
+                }
+            }
+        }
+    }
+
+    /// Window offsets for the `in_mask` sweeps. They cover bit positions within
+    /// a byte, byte offsets that are not whole words, and whole-word offsets.
+    const IN_MASK_OFFSETS: [usize; 10] = [0, 1, 3, 5, 8, 11, 19, 63, 64, 67];
+
+    /// Rhs masks for the `in_mask` sweeps at window length `len`, each paired
+    /// with its window offset and a case description.
+    ///
+    /// Each window holds one value throughout, or that value with its first or
+    /// last bit flipped, and the bits outside the window hold the opposite
+    /// value. Every offset appears twice, once in a mask that ends with the
+    /// window and once in a mask that extends one whole vector and a partial
+    /// word past it.
+    fn in_mask_rhs_windows(len: usize, lanes: usize) -> Vec<(Bitmask, usize, String)> {
+        let mut windows = Vec::new();
+        for value in [true, false] {
+            for flip in [None, Some(0), Some(len - 1)] {
+                for off in IN_MASK_OFFSETS {
+                    for n in [off + len, off + len + 64 * lanes + 13] {
+                        let mut rhs = Bitmask::new_set_all(n, !value);
+                        for i in off..off + len {
+                            rhs.set(i, value);
+                        }
+                        if let Some(p) = flip {
+                            rhs.set(off + p, !value);
+                        }
+                        let case =
+                            format!("rhs ({off}, {len}) of {n} bits, {value} with flip {flip:?}");
+                        windows.push((rhs, off, case));
+                    }
+                }
+            }
+        }
+        windows
+    }
+
+    /// Checks `in_mask` and `not_in_mask` kernels against a bit-by-bit
+    /// `Bitmask::get` reference, over every pairing of lhs window offsets with
+    /// the rhs windows of `in_mask_rhs_windows`, at the sweep lengths.
+    pub(super) fn sweep_in_mask(
+        lanes: usize,
+        in_mask: impl Fn(BitmaskVT<'_>, BitmaskVT<'_>) -> Bitmask,
+        not_in_mask: impl Fn(BitmaskVT<'_>, BitmaskVT<'_>) -> Bitmask,
+    ) {
+        for len in sweep_lengths(lanes).into_iter().chain([7, 8, 9, 40]) {
+            let lhs_masks = IN_MASK_OFFSETS.map(|off| sweep_mask(off + len + 70, 3, 7));
+            for (rhs, rhs_off, case) in in_mask_rhs_windows(len, lanes) {
+                let has_true = (rhs_off..rhs_off + len).any(|i| rhs.get(i));
+                let has_false = (rhs_off..rhs_off + len).any(|i| !rhs.get(i));
+                for (lhs_off, lhs) in IN_MASK_OFFSETS.into_iter().zip(&lhs_masks) {
+                    let lhs_window = (lhs, lhs_off, len);
+                    let rhs_window = (&rhs, rhs_off, len);
+                    let ins = in_mask(lhs_window, rhs_window);
+                    let not_ins = not_in_mask(lhs_window, rhs_window);
+                    assert_eq!(ins.len(), len, "in_mask output length, {case}");
+                    assert_eq!(not_ins.len(), len, "not_in_mask output length, {case}");
+                    // Lhs rows are members when the rhs window holds their value.
+                    let member = |i: usize| {
+                        if lhs.get(lhs_off + i) {
+                            has_true
+                        } else {
+                            has_false
+                        }
+                    };
+                    let wrong_in = (0..len).filter(|&i| ins.get(i) != member(i)).count();
+                    let wrong_not_in = (0..len).filter(|&i| not_ins.get(i) == member(i)).count();
+                    assert_eq!(
+                        wrong_in,
+                        0,
+                        "in_mask: lhs ({lhs_off}, {len}), {case}: {wrong_in} of {len} rows wrong"
+                    );
+                    assert_eq!(
+                        wrong_not_in,
+                        0,
+                        "not_in_mask: lhs ({lhs_off}, {len}), {case}: \
+                         {wrong_not_in} of {len} rows wrong"
+                    );
+                }
+            }
+        }
+    }
+
     /// The dispatched binary `_into` kernel reads windows at any input offset.
     #[test]
     fn binop_into_window_offsets() {
@@ -566,5 +724,20 @@ mod tests {
     fn popcount_window_offsets() {
         use crate::kernels::bitmask::dispatch::{W8, popcount_mask};
         sweep_popcount(W8, popcount_mask);
+    }
+
+    /// The dispatched all-bits checks read every bit of masks of any length.
+    #[test]
+    fn all_true_false_mask_lengths() {
+        use crate::kernels::bitmask::dispatch::{W8, all_false_mask, all_true_mask};
+        sweep_all_bits(W8, all_true_mask, all_false_mask);
+    }
+
+    /// The dispatched `in_mask` and `not_in_mask` read only the rhs window, at
+    /// any offset.
+    #[test]
+    fn in_mask_window_offsets() {
+        use crate::kernels::bitmask::dispatch::{W8, in_mask, not_in_mask};
+        sweep_in_mask(W8, in_mask, not_in_mask);
     }
 }
