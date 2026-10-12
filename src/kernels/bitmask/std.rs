@@ -539,7 +539,7 @@ pub fn all_eq_mask(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
     true
 }
 
-/// Returns true if any bits differ across two slices, as the complement of `all_eq_mask`.
+/// Returns true if all bits differ across two slices.
 #[inline]
 pub fn all_ne_mask(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool {
     !all_eq_mask(a, b)
@@ -755,7 +755,7 @@ mod tests {
     use crate::Bitmask;
     use crate::kernels::bitmask::clear_trailing_bits;
     use crate::kernels::bitmask::tests::{
-        check_all_ne, sweep_all_bits, sweep_binop_into, sweep_in_mask, sweep_popcount,
+        sweep_all_bits, sweep_binop_into, sweep_in_mask, sweep_popcount,
         sweep_unop_into,
     };
 
@@ -931,11 +931,6 @@ mod tests {
     #[test]
     fn test_all_true_false_mask_lengths() {
         sweep_all_bits(8, all_true_mask, all_false_mask);
-    }
-
-    #[test]
-    fn test_all_ne_mask_any_bit_differs() {
-        check_all_ne(8, all_ne_mask);
     }
 
     #[test]

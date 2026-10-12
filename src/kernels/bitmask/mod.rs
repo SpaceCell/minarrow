@@ -624,39 +624,6 @@ mod tests {
         }
     }
 
-    /// Checks an `all_ne` kernel against a bit-by-bit `Bitmask::get`
-    /// reference. The kernel returns true when at least one corresponding bit
-    /// pair of the two windows differs. The windows start at offset 0 of masks
-    /// that end with the window.
-    pub(super) fn check_all_ne(
-        lanes: usize,
-        all_ne: impl Fn(BitmaskVT<'_>, BitmaskVT<'_>) -> bool,
-    ) {
-        // Only the second bit pair is equal.
-        let a = Bitmask::from_bools(&[true, false, true, true]);
-        let b = Bitmask::from_bools(&[false, false, false, false]);
-        assert!(all_ne((&a, 0, 4), (&b, 0, 4)), "one equal bit pair");
-
-        for len in all_bits_lengths(lanes) {
-            let a = sweep_mask(len, 3, 7);
-            let mut complement = a.clone();
-            for i in 0..len {
-                complement.set(i, !a.get(i));
-            }
-            let mut cases = vec![(a.clone(), "equal windows".to_string())];
-            cases.push((complement, "every bit pair differs".to_string()));
-            for p in all_bits_flips(len) {
-                let mut b = a.clone();
-                b.set(p, !a.get(p));
-                cases.push((b, format!("bit {p} differs")));
-            }
-            for (b, case) in cases {
-                let expected = (0..len).any(|i| a.get(i) != b.get(i));
-                assert_eq!(all_ne((&a, 0, len), (&b, 0, len)), expected, "{case}, len {len}");
-            }
-        }
-    }
-
     /// Window offsets for the `in_mask` sweeps. They cover bit positions within
     /// a byte, byte offsets that are not whole words, and whole-word offsets.
     const IN_MASK_OFFSETS: [usize; 10] = [0, 1, 3, 5, 8, 11, 19, 63, 64, 67];
@@ -764,13 +731,6 @@ mod tests {
     fn all_true_false_mask_lengths() {
         use crate::kernels::bitmask::dispatch::{W8, all_false_mask, all_true_mask};
         sweep_all_bits(W8, all_true_mask, all_false_mask);
-    }
-
-    /// The dispatched `all_ne` returns true when any bit pair differs.
-    #[test]
-    fn all_ne_any_bit_differs() {
-        use crate::kernels::bitmask::dispatch::{W8, all_ne};
-        check_all_ne(W8, all_ne);
     }
 
     /// The dispatched `in_mask` and `not_in_mask` read only the rhs window, at

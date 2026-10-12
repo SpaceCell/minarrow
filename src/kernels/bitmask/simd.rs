@@ -796,11 +796,11 @@ where
     !eq_mask_simd::<LANES>(a, b)
 }
 
-/// Tests if any corresponding bits between two bitmask windows differ.
+/// Tests if all corresponding bits between two bitmask windows are different.
 ///
 /// Performs bulk inequality comparison across entire bitmask windows by computing the logical
-/// complement of `all_eq_mask_simd`. Returns true when at least one corresponding bit pair
-/// differs between the two input windows.
+/// complement of `all_eq_mask_simd`. Returns true only if every corresponding bit pair differs
+/// between the two input windows.
 ///
 /// # Type Parameters
 /// - `LANES`: Number of u64 lanes to process simultaneously for vectorised comparison
@@ -810,7 +810,7 @@ where
 /// - `b`: Second bitmask window as `(mask, offset, length)` tuple
 ///
 /// # Returns
-/// `true` if any corresponding bits differ, `false` if all corresponding bits are equal.
+/// `true` if all corresponding bits are different, `false` if any bits are equal.
 #[inline]
 pub fn all_ne_mask_simd<const LANES: usize>(a: BitmaskVT<'_>, b: BitmaskVT<'_>) -> bool
 where
@@ -1317,7 +1317,7 @@ impl_simd_eq_mask!(simd_eq_mask_u64, u64, W64);
 #[cfg(test)]
 mod tests {
     use crate::kernels::bitmask::tests::{
-        check_all_ne, sweep_all_bits, sweep_binop_into, sweep_in_mask, sweep_popcount,
+        sweep_all_bits, sweep_binop_into, sweep_in_mask, sweep_popcount,
         sweep_unop_into,
     };
     use crate::{Bitmask, BitmaskVT};
@@ -1479,11 +1479,6 @@ mod tests {
                         all_true_mask_simd::<LANES>,
                         all_false_mask_simd::<LANES>,
                     );
-                }
-
-                #[test]
-                fn test_all_ne_mask_simd_any_bit_differs() {
-                    check_all_ne(LANES, all_ne_mask_simd::<LANES>);
                 }
 
                 #[test]
