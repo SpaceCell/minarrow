@@ -657,6 +657,87 @@ mod tests {
         }
     }
 
+    /// Window offsets for the `in_mask` sweeps. They cover bit positions within
+    /// a byte, byte offsets that are not whole words, and whole-word offsets.
+    const IN_MASK_OFFSETS: [usize; 10] = [0, 1, 3, 5, 8, 11, 19, 63, 64, 67];
+
+    /// Rhs masks for the `in_mask` sweeps at window length `len`, each paired
+    /// with its window offset and a case description.
+    ///
+    /// Each window holds one value throughout, or that value with its first or
+    /// last bit flipped, and the bits outside the window hold the opposite
+    /// value. Every offset appears twice, once in a mask that ends with the
+    /// window and once in a mask that extends one whole vector and a partial
+    /// word past it.
+    fn in_mask_rhs_windows(len: usize, lanes: usize) -> Vec<(Bitmask, usize, String)> {
+        let mut windows = Vec::new();
+        for value in [true, false] {
+            for flip in [None, Some(0), Some(len - 1)] {
+                for off in IN_MASK_OFFSETS {
+                    for n in [off + len, off + len + 64 * lanes + 13] {
+                        let mut rhs = Bitmask::new_set_all(n, !value);
+                        for i in off..off + len {
+                            rhs.set(i, value);
+                        }
+                        if let Some(p) = flip {
+                            rhs.set(off + p, !value);
+                        }
+                        let case =
+                            format!("rhs ({off}, {len}) of {n} bits, {value} with flip {flip:?}");
+                        windows.push((rhs, off, case));
+                    }
+                }
+            }
+        }
+        windows
+    }
+
+    /// Checks `in_mask` and `not_in_mask` kernels against a bit-by-bit
+    /// `Bitmask::get` reference, over every pairing of lhs window offsets with
+    /// the rhs windows of `in_mask_rhs_windows`, at the sweep lengths.
+    pub(super) fn sweep_in_mask(
+        lanes: usize,
+        in_mask: impl Fn(BitmaskVT<'_>, BitmaskVT<'_>) -> Bitmask,
+        not_in_mask: impl Fn(BitmaskVT<'_>, BitmaskVT<'_>) -> Bitmask,
+    ) {
+        for len in sweep_lengths(lanes).into_iter().chain([7, 8, 9, 40]) {
+            let lhs_masks = IN_MASK_OFFSETS.map(|off| sweep_mask(off + len + 70, 3, 7));
+            for (rhs, rhs_off, case) in in_mask_rhs_windows(len, lanes) {
+                let has_true = (rhs_off..rhs_off + len).any(|i| rhs.get(i));
+                let has_false = (rhs_off..rhs_off + len).any(|i| !rhs.get(i));
+                for (lhs_off, lhs) in IN_MASK_OFFSETS.into_iter().zip(&lhs_masks) {
+                    let lhs_window = (lhs, lhs_off, len);
+                    let rhs_window = (&rhs, rhs_off, len);
+                    let ins = in_mask(lhs_window, rhs_window);
+                    let not_ins = not_in_mask(lhs_window, rhs_window);
+                    assert_eq!(ins.len(), len, "in_mask output length, {case}");
+                    assert_eq!(not_ins.len(), len, "not_in_mask output length, {case}");
+                    // Lhs rows are members when the rhs window holds their value.
+                    let member = |i: usize| {
+                        if lhs.get(lhs_off + i) {
+                            has_true
+                        } else {
+                            has_false
+                        }
+                    };
+                    let wrong_in = (0..len).filter(|&i| ins.get(i) != member(i)).count();
+                    let wrong_not_in = (0..len).filter(|&i| not_ins.get(i) == member(i)).count();
+                    assert_eq!(
+                        wrong_in,
+                        0,
+                        "in_mask: lhs ({lhs_off}, {len}), {case}: {wrong_in} of {len} rows wrong"
+                    );
+                    assert_eq!(
+                        wrong_not_in,
+                        0,
+                        "not_in_mask: lhs ({lhs_off}, {len}), {case}: \
+                         {wrong_not_in} of {len} rows wrong"
+                    );
+                }
+            }
+        }
+    }
+
     /// The dispatched binary `_into` kernel reads windows at any input offset.
     #[test]
     fn binop_into_window_offsets() {
@@ -690,5 +771,13 @@ mod tests {
     fn all_ne_any_bit_differs() {
         use crate::kernels::bitmask::dispatch::{W8, all_ne};
         check_all_ne(W8, all_ne);
+    }
+
+    /// The dispatched `in_mask` and `not_in_mask` read only the rhs window, at
+    /// any offset.
+    #[test]
+    fn in_mask_window_offsets() {
+        use crate::kernels::bitmask::dispatch::{W8, in_mask, not_in_mask};
+        sweep_in_mask(W8, in_mask, not_in_mask);
     }
 }

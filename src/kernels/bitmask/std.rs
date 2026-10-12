@@ -753,7 +753,8 @@ mod tests {
     use crate::Bitmask;
     use crate::kernels::bitmask::clear_trailing_bits;
     use crate::kernels::bitmask::tests::{
-        check_all_ne, sweep_all_bits, sweep_binop_into, sweep_popcount, sweep_unop_into,
+        check_all_ne, sweep_all_bits, sweep_binop_into, sweep_in_mask, sweep_popcount,
+        sweep_unop_into,
     };
 
     // Helper: Create a Bitmask from a bool slice.
@@ -933,6 +934,11 @@ mod tests {
     #[test]
     fn test_all_ne_mask_any_bit_differs() {
         check_all_ne(8, all_ne_mask);
+    }
+
+    #[test]
+    fn test_in_mask_window_offsets() {
+        sweep_in_mask(8, in_mask, not_in_mask);
     }
 
     #[test]
