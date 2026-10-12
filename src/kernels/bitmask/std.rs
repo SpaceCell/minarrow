@@ -645,8 +645,9 @@ pub fn all_true_mask(mask: &Bitmask) -> bool {
     }
     let bytes = mask.bits.as_ref();
     let total_bytes = (n_bits + 7) / 8;
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
+    // Whole words inside the mask, then the bytes of the final partial word.
+    let full_words = n_bits / 64;
+    let tail_bytes = total_bytes - full_words * 8;
     let full_logical_bytes = n_bits / 8;
     let last_bits = n_bits & 7;
 
@@ -685,8 +686,9 @@ pub fn all_false_mask(mask: &Bitmask) -> bool {
     }
     let bytes = mask.bits.as_ref();
     let total_bytes = (n_bits + 7) / 8;
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
+    // Whole words inside the mask, then the bytes of the final partial word.
+    let full_words = n_bits / 64;
+    let tail_bytes = total_bytes - full_words * 8;
     let full_logical_bytes = n_bits / 8;
     let last_bits = n_bits & 7;
 

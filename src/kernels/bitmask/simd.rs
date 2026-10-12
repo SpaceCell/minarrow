@@ -1093,8 +1093,9 @@ where
     }
     let bytes = mask.bits.as_ref();
     let total_bytes = (len + 7) / 8;
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
+    // Whole words inside the mask, then the bytes of the final partial word.
+    let full_words = len / 64;
+    let tail_bytes = total_bytes - full_words * 8;
     let full_logical_bytes = len / 8;
     let last_bits = len & 7;
 
@@ -1161,8 +1162,9 @@ where
     }
     let bytes = mask.bits.as_ref();
     let total_bytes = (len + 7) / 8;
-    let full_words = total_bytes / 8;
-    let tail_bytes = total_bytes % 8;
+    // Whole words inside the mask, then the bytes of the final partial word.
+    let full_words = len / 64;
+    let tail_bytes = total_bytes - full_words * 8;
     let full_logical_bytes = len / 8;
     let last_bits = len & 7;
 
