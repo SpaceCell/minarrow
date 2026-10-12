@@ -48,7 +48,7 @@ mod tests {
     use crate::kernels::bitmask::merge_bitmasks_to_new;
     use crate::structs::variants::float::FloatArray;
     use crate::structs::variants::integer::IntegerArray;
-    use crate::{Bitmask, MaskedArray, vec64};
+    use crate::{Bitmask, MaskedArray, Vec64, vec64};
 
     use crate::enums::operators::ArithmeticOperator;
     use crate::kernels::arithmetic::dispatch::{
@@ -473,6 +473,77 @@ mod tests {
         let mask = bitmask(&[true, false, true]);
         let out = apply_fma_f64(&lhs, &rhs, &acc, Some(&mask)).unwrap();
         assert_float(&out, &[4.5, 0.0, 18.5], Some(&[true, false, true]));
+    }
+
+    /// Masked kernels given an all-set mask match a scalar reference at every
+    /// length up to 256, including the lengths that end 57 to 63 rows into a
+    /// 64-bit mask word. The inputs are small multiples of 0.5, which keep the
+    /// fused multiply-add products and sums exact.
+    #[test]
+    fn all_set_mask_matches_scalar_reference() {
+        use ArithmeticOperator::{Add, Divide, FloorDiv, Multiply, Remainder, Subtract};
+        let ops = [Add, Subtract, Multiply, Divide, Remainder, FloorDiv];
+        // Floats compare by bit pattern, with every NaN equal to every NaN.
+        let same_f64 = |x: f64, y: f64| x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan());
+        let same_f32 = |x: f32, y: f32| x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan());
+        for len in 0..=256usize {
+            let mask = Bitmask::new_set_all(len, true);
+            let a: Vec64<f64> = (0..len).map(|i| i as f64 * 1.5 - 40.0).collect();
+            let b: Vec64<f64> = (0..len).map(|i| (i % 7) as f64 - 3.0).collect();
+            let c: Vec64<f64> = (0..len).map(|i| (i % 13) as f64 * 0.5).collect();
+            let a32: Vec64<f32> = a.iter().map(|&v| v as f32).collect();
+            let b32: Vec64<f32> = b.iter().map(|&v| v as f32).collect();
+            let c32: Vec64<f32> = c.iter().map(|&v| v as f32).collect();
+            let x: Vec64<i64> = (0..len).map(|i| i as i64 * 37 - 500).collect();
+            let y: Vec64<i64> = (0..len).map(|i| (i % 9) as i64 - 4).collect();
+
+            for op in ops {
+                let out64 = apply_float_f64(&a, &b, op, Some(&mask)).unwrap();
+                let out32 = apply_float_f32(&a32, &b32, op, Some(&mask)).unwrap();
+                let out_int = apply_int_i64(&x, &y, op, Some(&mask)).unwrap();
+                let mask64 = out64.null_mask.as_ref().unwrap();
+                let mask32 = out32.null_mask.as_ref().unwrap();
+                let mask_int = out_int.null_mask.as_ref().unwrap();
+                for i in 0..len {
+                    let (e64, e32) = match op {
+                        Add => (a[i] + b[i], a32[i] + b32[i]),
+                        Subtract => (a[i] - b[i], a32[i] - b32[i]),
+                        Multiply => (a[i] * b[i], a32[i] * b32[i]),
+                        Divide => (a[i] / b[i], a32[i] / b32[i]),
+                        Remainder => (a[i] % b[i], a32[i] % b32[i]),
+                        _ => ((a[i] / b[i]).floor(), (a32[i] / b32[i]).floor()),
+                    };
+                    assert!(same_f64(out64.data[i], e64), "f64 {op:?}, len {len}, row {i}");
+                    assert!(same_f32(out32.data[i], e32), "f32 {op:?}, len {len}, row {i}");
+                    assert!(mask64.get(i) && mask32.get(i), "float {op:?}, len {len}, row {i}");
+
+                    // Integer rows with a zero divisor are null.
+                    let e_int = match op {
+                        Add => Some(x[i].wrapping_add(y[i])),
+                        Subtract => Some(x[i].wrapping_sub(y[i])),
+                        Multiply => Some(x[i].wrapping_mul(y[i])),
+                        _ if y[i] == 0 => None,
+                        Remainder => Some(x[i] % y[i]),
+                        _ => Some((x[i] as f64 / y[i] as f64).floor() as i64),
+                    };
+                    assert_eq!(mask_int.get(i), e_int.is_some(), "i64 {op:?}, len {len}, row {i}");
+                    if let Some(e) = e_int {
+                        assert_eq!(out_int.data[i], e, "i64 {op:?}, len {len}, row {i}");
+                    }
+                }
+            }
+
+            let fma64 = apply_fma_f64(&a, &b, &c, Some(&mask)).unwrap();
+            let fma32 = apply_fma_f32(&a32, &b32, &c32, Some(&mask)).unwrap();
+            let fma_mask64 = fma64.null_mask.as_ref().unwrap();
+            let fma_mask32 = fma32.null_mask.as_ref().unwrap();
+            for i in 0..len {
+                let (e64, e32) = (a[i] * b[i] + c[i], a32[i] * b32[i] + c32[i]);
+                assert!(same_f64(fma64.data[i], e64), "fma f64, len {len}, row {i}");
+                assert!(same_f32(fma32.data[i], e32), "fma f32, len {len}, row {i}");
+                assert!(fma_mask64.get(i) && fma_mask32.get(i), "fma, len {len}, row {i}");
+            }
+        }
     }
 
     #[test]

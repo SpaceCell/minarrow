@@ -526,4 +526,29 @@ mod tests {
             }
         }
     }
+
+    /// Masked bitwise kernels given an all-set mask match a scalar reference
+    /// at every length up to 256, including the lengths that end 57 to 63 rows
+    /// into a 64-bit mask word.
+    #[test]
+    fn bitwise_all_set_mask_matches_scalar_reference() {
+        for len in 0..=256usize {
+            let mask = Bitmask::new_set_all(len, true);
+            let lhs: Vec64<i64> = (0..len).map(|i| i as i64 * 0x1F3 - 77).collect();
+            let rhs: Vec64<i64> = (0..len).map(|i| (i as i64) << 3 ^ 0x5A).collect();
+            for op in [BitwiseOperator::And, BitwiseOperator::Or, BitwiseOperator::Xor] {
+                let out = apply_int_bitwise_i64(&lhs, &rhs, op, Some(&mask)).unwrap();
+                let out_mask = out.null_mask.as_ref().unwrap();
+                for i in 0..len {
+                    let expected = match op {
+                        BitwiseOperator::And => lhs[i] & rhs[i],
+                        BitwiseOperator::Or => lhs[i] | rhs[i],
+                        BitwiseOperator::Xor => lhs[i] ^ rhs[i],
+                    };
+                    assert_eq!(out.data[i], expected, "{op:?}, len {len}, row {i}");
+                    assert!(out_mask.get(i), "{op:?}, len {len}, row {i}");
+                }
+            }
+        }
+    }
 }
