@@ -223,8 +223,8 @@ pub fn merge_bitmasks_to_new(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Bitmask;
     use crate::enums::operators::{LogicalOperator, UnaryOperator};
+    use crate::{Bitmask, Vec64};
 
     #[test]
     fn test_words_for() {
@@ -547,6 +547,116 @@ mod tests {
         }
     }
 
+    /// Mask lengths for the all-bits checks at a SIMD width of `lanes` words.
+    /// Every length up to 256 is covered, together with the lengths around the
+    /// end of one and two whole vectors.
+    pub(super) fn all_bits_lengths(lanes: usize) -> impl Iterator<Item = usize> {
+        // Bits in one vector of `lanes` words.
+        let v = 64 * lanes;
+        (0..=256)
+            .chain(v - 8..=v + 64)
+            .chain(2 * v + 56..=2 * v + 64)
+    }
+
+    /// Bit positions flipped in the all-bits checks of a mask of `len` bits.
+    /// Every position is flipped in masks of up to 256 bits. Longer masks have
+    /// their first word, final two words, and the first and last bit of every
+    /// other word flipped.
+    pub(super) fn all_bits_flips(len: usize) -> impl Iterator<Item = usize> {
+        (0..len).filter(move |&p| {
+            len <= 256 || p < 64 || p + 128 >= len || p % 64 == 0 || p % 64 == 63
+        })
+    }
+
+    /// Checks `all_true_mask` and `all_false_mask` kernels against a
+    /// bit-by-bit `Bitmask::get` reference over the all-bits lengths.
+    ///
+    /// Each length is checked with masks that hold one value throughout, the
+    /// same masks with one bit flipped, masks whose unused final-byte bits hold
+    /// the opposite value, and windows copied from longer masks at offsets
+    /// inside a byte.
+    pub(super) fn sweep_all_bits(
+        lanes: usize,
+        all_true: impl Fn(&Bitmask) -> bool,
+        all_false: impl Fn(&Bitmask) -> bool,
+    ) {
+        // Reference over the `len` bits of `src` that start at bit `off`.
+        let check = |m: &Bitmask, src: &Bitmask, off: usize, case: &str| {
+            let len = m.len();
+            let expected_true = (off..off + len).all(|i| src.get(i));
+            let expected_false = (off..off + len).all(|i| !src.get(i));
+            assert_eq!(all_true(m), expected_true, "all_true: {case}, len {len}");
+            assert_eq!(all_false(m), expected_false, "all_false: {case}, len {len}");
+        };
+        for len in all_bits_lengths(lanes) {
+            for value in [true, false] {
+                let uniform = Bitmask::new_set_all(len, value);
+                check(&uniform, &uniform, 0, &format!("all {value}"));
+
+                for p in all_bits_flips(len) {
+                    let mut m = uniform.clone();
+                    m.set(p, !value);
+                    check(&m, &m, 0, &format!("all {value} except bit {p}"));
+                }
+
+                // Unused bits of the final byte hold the opposite value.
+                // `Bitmask::new` keeps them as written.
+                let n_bytes = len.div_ceil(8);
+                let mut bytes = Vec64::<u8>::with_capacity(n_bytes);
+                bytes.resize(n_bytes, if value { 0xFF } else { 0x00 });
+                if len % 8 != 0 {
+                    bytes[n_bytes - 1] ^= !((1u8 << (len % 8)) - 1);
+                }
+                let slack = Bitmask::new(bytes, len);
+                check(&slack, &slack, 0, &format!("all {value}, unused bits {}", !value));
+
+                // Windows at offsets inside a byte, copied from masks that hold
+                // the opposite value outside the window.
+                for off in [1usize, 3, 5, 11, 19, 63, 67] {
+                    let mut src = Bitmask::new_set_all(off + len + 13, !value);
+                    for i in off..off + len {
+                        src.set(i, value);
+                    }
+                    let window = src.slice_clone(off, len);
+                    check(&window, &src, off, &format!("all {value}, window at {off}"));
+                }
+            }
+        }
+    }
+
+    /// Checks an `all_ne` kernel against a bit-by-bit `Bitmask::get`
+    /// reference. The kernel returns true when at least one corresponding bit
+    /// pair of the two windows differs. The windows start at offset 0 of masks
+    /// that end with the window.
+    pub(super) fn check_all_ne(
+        lanes: usize,
+        all_ne: impl Fn(BitmaskVT<'_>, BitmaskVT<'_>) -> bool,
+    ) {
+        // Only the second bit pair is equal.
+        let a = Bitmask::from_bools(&[true, false, true, true]);
+        let b = Bitmask::from_bools(&[false, false, false, false]);
+        assert!(all_ne((&a, 0, 4), (&b, 0, 4)), "one equal bit pair");
+
+        for len in all_bits_lengths(lanes) {
+            let a = sweep_mask(len, 3, 7);
+            let mut complement = a.clone();
+            for i in 0..len {
+                complement.set(i, !a.get(i));
+            }
+            let mut cases = vec![(a.clone(), "equal windows".to_string())];
+            cases.push((complement, "every bit pair differs".to_string()));
+            for p in all_bits_flips(len) {
+                let mut b = a.clone();
+                b.set(p, !a.get(p));
+                cases.push((b, format!("bit {p} differs")));
+            }
+            for (b, case) in cases {
+                let expected = (0..len).any(|i| a.get(i) != b.get(i));
+                assert_eq!(all_ne((&a, 0, len), (&b, 0, len)), expected, "{case}, len {len}");
+            }
+        }
+    }
+
     /// The dispatched binary `_into` kernel reads windows at any input offset.
     #[test]
     fn binop_into_window_offsets() {
@@ -566,5 +676,19 @@ mod tests {
     fn popcount_window_offsets() {
         use crate::kernels::bitmask::dispatch::{W8, popcount_mask};
         sweep_popcount(W8, popcount_mask);
+    }
+
+    /// The dispatched all-bits checks read every bit of masks of any length.
+    #[test]
+    fn all_true_false_mask_lengths() {
+        use crate::kernels::bitmask::dispatch::{W8, all_false_mask, all_true_mask};
+        sweep_all_bits(W8, all_true_mask, all_false_mask);
+    }
+
+    /// The dispatched `all_ne` returns true when any bit pair differs.
+    #[test]
+    fn all_ne_any_bit_differs() {
+        use crate::kernels::bitmask::dispatch::{W8, all_ne};
+        check_all_ne(W8, all_ne);
     }
 }

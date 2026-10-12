@@ -1349,7 +1349,9 @@ impl_simd_eq_mask!(simd_eq_mask_u64, u64, W64);
 
 #[cfg(test)]
 mod tests {
-    use crate::kernels::bitmask::tests::{sweep_binop_into, sweep_popcount, sweep_unop_into};
+    use crate::kernels::bitmask::tests::{
+        check_all_ne, sweep_all_bits, sweep_binop_into, sweep_popcount, sweep_unop_into,
+    };
     use crate::{Bitmask, BitmaskVT};
 
     use super::*;
@@ -1500,6 +1502,20 @@ mod tests {
                 #[test]
                 fn test_popcount_mask_simd_window_offsets() {
                     sweep_popcount(LANES, popcount_mask_simd::<LANES>);
+                }
+
+                #[test]
+                fn test_all_true_false_mask_simd_lengths() {
+                    sweep_all_bits(
+                        LANES,
+                        all_true_mask_simd::<LANES>,
+                        all_false_mask_simd::<LANES>,
+                    );
+                }
+
+                #[test]
+                fn test_all_ne_mask_simd_any_bit_differs() {
+                    check_all_ne(LANES, all_ne_mask_simd::<LANES>);
                 }
 
                 #[test]

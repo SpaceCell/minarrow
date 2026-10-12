@@ -752,7 +752,9 @@ mod tests {
     use super::*;
     use crate::Bitmask;
     use crate::kernels::bitmask::clear_trailing_bits;
-    use crate::kernels::bitmask::tests::{sweep_binop_into, sweep_popcount, sweep_unop_into};
+    use crate::kernels::bitmask::tests::{
+        check_all_ne, sweep_all_bits, sweep_binop_into, sweep_popcount, sweep_unop_into,
+    };
 
     // Helper: Create a Bitmask from a bool slice.
     fn bm(bits: &[bool]) -> Bitmask {
@@ -921,6 +923,16 @@ mod tests {
     #[test]
     fn test_popcount_mask_window_offsets() {
         sweep_popcount(8, popcount_mask);
+    }
+
+    #[test]
+    fn test_all_true_false_mask_lengths() {
+        sweep_all_bits(8, all_true_mask, all_false_mask);
+    }
+
+    #[test]
+    fn test_all_ne_mask_any_bit_differs() {
+        check_all_ne(8, all_ne_mask);
     }
 
     #[test]
