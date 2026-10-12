@@ -475,10 +475,10 @@ mod tests {
         assert_float(&out, &[4.5, 0.0, 18.5], Some(&[true, false, true]));
     }
 
-    /// Masked kernels given an all-set mask match a scalar reference at every
-    /// length up to 256, including the lengths that end 57 to 63 rows into a
-    /// 64-bit mask word. The inputs are small multiples of 0.5, which keep the
-    /// fused multiply-add products and sums exact.
+    /// Masked kernels given an all-set mask must match a scalar reference, here 
+    /// performed at every length up to 256, including the lengths that end 57 to 63 rows into a
+    /// 64-bit mask word. The inputs are small multiples of 0.5, which ensure the
+    /// fused multiply-add products and sums are exact.
     #[test]
     fn all_set_mask_matches_scalar_reference() {
         use ArithmeticOperator::{Add, Divide, FloorDiv, Multiply, Remainder, Subtract};
