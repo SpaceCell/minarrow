@@ -294,18 +294,29 @@ fn create_test_table() -> Table {
 
 use minarrow::traits::selection::DataSelector;
 
-/// Asserts that the owned selector matches the original on indices and contiguity.
+/// Asserts that the owned selector produces the same mask and contiguity as
+/// the original.
 fn assert_owned_matches<S: DataSelector>(selector: S, count: usize) {
     let owned = selector.to_owned();
-    assert_eq!(owned.resolve_indices(count), selector.resolve_indices(count));
+    let orig_mask = selector.resolve_mask(count);
+    let owned_mask = owned.resolve_mask(count);
+    assert_eq!(orig_mask.len(), owned_mask.len());
+    for i in 0..count {
+        assert_eq!(orig_mask.get(i), owned_mask.get(i), "bit {} differs", i);
+    }
     assert_eq!(owned.is_contiguous(), selector.is_contiguous());
+}
+
+/// Collects the set-bit indices from a mask for assertion comparisons.
+fn mask_indices(mask: &minarrow::Bitmask) -> Vec<usize> {
+    mask.iter_set().collect()
 }
 
 #[test]
 fn test_data_selector_to_owned_single_index() {
     assert_owned_matches(2usize, 5);
     assert_owned_matches(2i32, 5);
-    assert_eq!(DataSelector::to_owned(&3usize).resolve_indices(5), vec![3]);
+    assert_eq!(mask_indices(&DataSelector::to_owned(&3usize).resolve_mask(5)), vec![3]);
 }
 
 #[test]
@@ -334,16 +345,16 @@ fn test_data_selector_to_owned_ranges() {
 #[test]
 fn test_data_selector_boxed_impl_forwards() {
     let boxed: Box<dyn DataSelector + Send + Sync> = Box::new(1usize..4);
-    assert_eq!(boxed.resolve_indices(5), vec![1, 2, 3]);
+    assert_eq!(mask_indices(&boxed.resolve_mask(5)), vec![1, 2, 3]);
     assert!(boxed.is_contiguous());
 
     let boxed_list: Box<dyn DataSelector + Send + Sync> = Box::new(vec![0usize, 2]);
-    assert_eq!(boxed_list.resolve_indices(5), vec![0, 2]);
+    assert_eq!(mask_indices(&boxed_list.resolve_mask(5)), vec![0, 2]);
     assert!(!boxed_list.is_contiguous());
 
     // A boxed selector clones into another boxed selector with the same behaviour.
     let again = DataSelector::to_owned(&boxed);
-    assert_eq!(again.resolve_indices(5), vec![1, 2, 3]);
+    assert_eq!(mask_indices(&again.resolve_mask(5)), vec![1, 2, 3]);
     assert!(again.is_contiguous());
 }
 

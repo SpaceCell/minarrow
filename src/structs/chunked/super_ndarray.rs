@@ -44,7 +44,7 @@ use crate::structs::ndarray::NdArrayIter;
 #[cfg(feature = "views")]
 use crate::Vec64;
 #[cfg(all(feature = "views", feature = "select"))]
-use crate::structs::ndarray::gather_obs_impl;
+use crate::structs::ndarray::gather_obs_mask_impl;
 #[cfg(all(feature = "views", feature = "select"))]
 use crate::traits::selection::{AxisSelection, DataSelector, RowSelection};
 #[cfg(feature = "views")]
@@ -620,13 +620,13 @@ impl<T: Float> RowSelection for SuperNdArray<T> {
                 self.name.clone(),
             );
         }
-        let indices = selection.resolve_indices(self.n_obs());
         if selection.is_contiguous() {
-            let start = indices.first().copied().unwrap_or(0);
-            return self.slice(start, indices.len());
+            let (start, len) = selection.resolve_range(self.n_obs());
+            return self.slice(start, len);
         }
-        let gathered = gather_obs_impl(
-            &indices,
+        let mask = selection.resolve_mask(self.n_obs());
+        let gathered = gather_obs_mask_impl(
+            &mask,
             &self.shape(),
             Some(self.name.clone()),
             |idx| self.get(idx),
@@ -1001,10 +1001,11 @@ mod tests {
             ],
             "data",
         );
+        // Bitmask-based gathering yields observations in ascending index order.
         let v = snd.r(&[3, 0]);
         assert_eq!(v.n_slices(), 1);
         let vals: Vec<f64> = (&v).into_iter().collect();
-        assert_eq!(vals, vec![4.0, 1.0]);
+        assert_eq!(vals, vec![1.0, 4.0]);
     }
 
     #[test]

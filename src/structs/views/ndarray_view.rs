@@ -15,7 +15,7 @@ use crate::enums::shape_dim::ShapeDim;
 use crate::structs::ndarray::{NdArray, NdArrayIter, NdDims, offset_of_impl};
 use crate::traits::print::print_ndarray_body;
 #[cfg(feature = "select")]
-use crate::structs::ndarray::gather_obs_impl;
+use crate::structs::ndarray::gather_obs_mask_impl;
 #[cfg(feature = "select")]
 use crate::traits::selection::{AxisSelection, DataSelector, RowSelection};
 #[cfg(feature = "select")]
@@ -443,17 +443,17 @@ impl<T: Float> RowSelection for NdArrayV<T> {
     fn r<S: DataSelector>(&self, selection: S) -> NdArrayV<T> {
         assert!(self.ndim() > 0, "row selection requires an axis 0");
         let n_obs = self.dims.shape()[0];
-        let indices = selection.resolve_indices(n_obs);
         if selection.is_contiguous() {
-            let start = indices.first().copied().unwrap_or(0);
-            let ranges: Vec<Range<usize>> = std::iter::once(start..start + indices.len())
+            let (start, len) = selection.resolve_range(n_obs);
+            let ranges: Vec<Range<usize>> = std::iter::once(start..start + len)
                 .chain(self.dims.shape()[1..].iter().map(|&n| 0..n))
                 .collect();
             let refs: Vec<&dyn DataSelector> = ranges.iter().map(|r| r as _).collect();
             return self.slice(&refs);
         }
-        NdArrayV::from_ndarray(gather_obs_impl(
-            &indices,
+        let mask = selection.resolve_mask(n_obs);
+        NdArrayV::from_ndarray(gather_obs_mask_impl(
+            &mask,
             self.dims.shape(),
             self.source.name.clone(),
             |idx| self.get(idx),
@@ -731,10 +731,10 @@ mod tests {
         let sub = v.r(1..3);
         assert_eq!(sub.shape(), &[2, 2]);
         assert_eq!(sub.get(&[0, 1]), 5.0);
-        // Index arrays gather in order, and the source is unaffected.
+        // Bitmask-based gathering yields rows in ascending index order.
         let picked = v.r(&[2, 0]);
-        assert_eq!(picked.get(&[0, 0]), 3.0);
-        assert_eq!(picked.get(&[1, 1]), 4.0);
+        assert_eq!(picked.get(&[0, 0]), 1.0);
+        assert_eq!(picked.get(&[1, 1]), 6.0);
     }
 
     #[test]

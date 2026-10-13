@@ -27,7 +27,7 @@ use crate::enums::shape_dim::ShapeDim;
 use crate::structs::buffer::Buffer;
 use crate::traits::print::print_float_grid;
 use crate::traits::{concatenate::Concatenate, shape::Shape};
-use crate::{Array, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
+use crate::{Array, Bitmask, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
 #[cfg(feature = "views")]
 use crate::{SharedBuffer, TableV};
 
@@ -400,13 +400,35 @@ impl Matrix {
 
     /// Extract rows by index into a new Matrix.
     /// Column stride alignment is maintained in the result.
-    pub fn extract_rows(&self, indices: &[usize]) -> Self {
+    pub fn gather_rows(&self, indices: &[usize]) -> Self {
         let n_new = indices.len();
         let mut dst = Matrix::new(n_new, self.n_cols, self.name.clone());
         for j in 0..self.n_cols {
             let src_col = self.col(j);
             let dst_col = dst.col_mut(j);
             for (k, &idx) in indices.iter().enumerate() {
+                dst_col[k] = src_col[idx];
+            }
+        }
+        dst
+    }
+
+    /// Extract the rows at set mask bits into a new Matrix.
+    ///
+    /// The mask must have the same length as `n_rows`. Column stride alignment
+    /// is maintained in the result.
+    pub fn gather_rows_mask(&self, mask: &Bitmask) -> Self {
+        assert_eq!(
+            mask.len(), self.n_rows,
+            "Matrix::gather_rows_mask: mask length {} does not match row count {}",
+            mask.len(), self.n_rows
+        );
+        let n_new = mask.count_ones();
+        let mut dst = Matrix::new(n_new, self.n_cols, self.name.clone());
+        for j in 0..self.n_cols {
+            let src_col = self.col(j);
+            let dst_col = dst.col_mut(j);
+            for (k, idx) in mask.iter_set().enumerate() {
                 dst_col[k] = src_col[idx];
             }
         }
@@ -1213,7 +1235,7 @@ mod try_as_matrix_zc_tests {
             &mut table.cols[0].array
         {
             let mut fa = (**arc_fa).clone();
-            let mut mask = crate::Bitmask::new_set_all(3, true);
+            let mut mask = Bitmask::new_set_all(3, true);
             mask.set(0, false);
             fa.null_mask = Some(mask);
             *arc_fa = std::sync::Arc::new(fa);
