@@ -1961,19 +1961,16 @@ impl RowSelection for ArrayV {
 
     fn r<S: DataSelector>(&self, selection: S) -> ArrayV {
         if selection.is_contiguous() {
-            // Contiguous selection (ranges): adjust offset and len
-            let indices = selection.resolve_indices(self.len());
-            if indices.is_empty() {
+            let (start, len) = selection.resolve_range(self.len());
+            if len == 0 {
                 return ArrayV::new(self.array.clone(), self.offset, 0);
             }
-            let new_offset = self.offset + indices[0];
-            let new_len = indices.len();
-            ArrayV::new(self.array.clone(), new_offset, new_len)
+            let new_offset = self.offset + start;
+            ArrayV::new(self.array.clone(), new_offset, len)
         } else {
-            // Non-contiguous selection (index arrays): gather into new array
-            let indices = selection.resolve_indices(self.len());
-            let gathered_array = self.gather_indices(&indices);
-            ArrayV::new(gathered_array, 0, indices.len())
+            let mask = selection.resolve_mask(self.len());
+            let gathered_array = self.gather_mask(&mask);
+            ArrayV::new(gathered_array, 0, mask.count_ones())
         }
     }
 

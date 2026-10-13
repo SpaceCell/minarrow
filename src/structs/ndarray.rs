@@ -1474,17 +1474,17 @@ impl<T: Float> RowSelection for NdArray<T> {
     fn r<S: DataSelector>(&self, selection: S) -> NdArrayV<T> {
         assert!(self.ndim() > 0, "row selection requires an axis 0");
         let n_obs = self.shape()[0];
-        let indices = selection.resolve_indices(n_obs);
         if selection.is_contiguous() {
-            let start = indices.first().copied().unwrap_or(0);
-            let ranges: Vec<Range<usize>> = std::iter::once(start..start + indices.len())
+            let (start, len) = selection.resolve_range(n_obs);
+            let ranges: Vec<Range<usize>> = std::iter::once(start..start + len)
                 .chain(self.shape()[1..].iter().map(|&n| 0..n))
                 .collect();
             let refs: Vec<&dyn DataSelector> = ranges.iter().map(|r| r as _).collect();
             return self.slice(&refs);
         }
-        NdArrayV::from_ndarray(gather_obs_impl(
-            &indices,
+        let mask = selection.resolve_mask(n_obs);
+        NdArrayV::from_ndarray(gather_obs_mask_impl(
+            &mask,
             self.shape(),
             self.name.clone(),
             |idx| self.get(idx),
@@ -1501,6 +1501,7 @@ impl<T: Float> RowSelection for NdArray<T> {
 /// element through the provided accessor, so any stride layout gathers
 /// correctly.
 #[cfg(all(feature = "views", feature = "select"))]
+#[allow(dead_code)]
 pub(crate) fn gather_obs_impl<T: Float>(
     indices: &[usize],
     shape: &[usize],
@@ -1517,6 +1518,48 @@ pub(crate) fn gather_obs_impl<T: Float>(
     let inner_runs: usize = shape[1..].iter().product::<usize>().max(1);
     for _ in 0..inner_runs {
         for &obs in indices {
+            idx[0] = obs;
+            flat.push(get(&idx));
+        }
+        // Advance the inner multi-index in column-major order.
+        let mut carry = true;
+        for d in 1..ndim {
+            if carry {
+                idx[d] += 1;
+                if idx[d] < shape[d] {
+                    carry = false;
+                } else {
+                    idx[d] = 0;
+                }
+            }
+        }
+    }
+    let mut result = NdArray::from_slice(&flat, &out_shape);
+    result.name = name;
+    result
+}
+
+/// Mask-based variant of [`gather_obs_impl`]. Gathers axis-0 observations
+/// where the corresponding mask bit is set, without materialising an
+/// intermediate index list.
+#[cfg(all(feature = "views", feature = "select"))]
+pub(crate) fn gather_obs_mask_impl<T: Float>(
+    mask: &crate::Bitmask,
+    shape: &[usize],
+    name: Option<String>,
+    get: impl Fn(&[usize]) -> T,
+) -> NdArray<T> {
+    let n_selected = mask.count_ones();
+    let mut out_shape = shape.to_vec();
+    out_shape[0] = n_selected;
+    let total: usize = out_shape.iter().product();
+
+    let mut flat = Vec64::with_capacity(total);
+    let ndim = shape.len();
+    let mut idx = vec![0usize; ndim];
+    let inner_runs: usize = shape[1..].iter().product::<usize>().max(1);
+    for _ in 0..inner_runs {
+        for obs in mask.iter_set() {
             idx[0] = obs;
             flat.push(get(&idx));
         }
@@ -2139,13 +2182,13 @@ mod tests {
     #[test]
     fn row_selection_gathers_indices() {
         let a = NdArray::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        // Bitmask-based gathering yields rows in ascending index order.
         let v = a.r(&[2, 0]);
         assert_eq!(v.shape(), &[2, 2]);
-        // Gathered rows follow selection order.
-        assert_eq!(v.get(&[0, 0]), 3.0);
-        assert_eq!(v.get(&[0, 1]), 6.0);
-        assert_eq!(v.get(&[1, 0]), 1.0);
-        assert_eq!(v.get(&[1, 1]), 4.0);
+        assert_eq!(v.get(&[0, 0]), 1.0);
+        assert_eq!(v.get(&[0, 1]), 4.0);
+        assert_eq!(v.get(&[1, 0]), 3.0);
+        assert_eq!(v.get(&[1, 1]), 6.0);
     }
 
     #[test]

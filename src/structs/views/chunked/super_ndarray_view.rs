@@ -41,7 +41,7 @@ use crate::enums::shape_dim::ShapeDim;
 use crate::structs::chunked::super_ndarray::SuperNdArray;
 use crate::structs::ndarray::NdArray;
 #[cfg(feature = "select")]
-use crate::structs::ndarray::gather_obs_impl;
+use crate::structs::ndarray::gather_obs_mask_impl;
 use crate::structs::views::ndarray_view::NdArrayV;
 use crate::traits::concatenate::Concatenate;
 #[cfg(feature = "select")]
@@ -289,13 +289,13 @@ impl<T: Float> RowSelection for SuperNdArrayV<T> {
                 self.name.clone(),
             );
         }
-        let indices = selection.resolve_indices(self.n_obs());
         if selection.is_contiguous() {
-            let start = indices.first().copied().unwrap_or(0);
-            return self.slice(start, indices.len());
+            let (start, len) = selection.resolve_range(self.n_obs());
+            return self.slice(start, len);
         }
-        let gathered = gather_obs_impl(
-            &indices,
+        let mask = selection.resolve_mask(self.n_obs());
+        let gathered = gather_obs_mask_impl(
+            &mask,
             &self.shape(),
             Some(self.name.clone()),
             |idx| self.get(idx),
@@ -609,11 +609,11 @@ mod tests {
         let sub = v.r(1..4);
         assert_eq!(sub.n_obs(), 3);
         assert_eq!(sub.get(&[0, 0]), 2.0);
-        // Index selection gathers in order.
+        // Bitmask-based gathering yields observations in ascending index order.
         let picked = v.r(&[4, 0]);
         assert_eq!(picked.n_slices(), 1);
-        assert_eq!(picked.get(&[0, 1]), 50.0);
-        assert_eq!(picked.get(&[1, 0]), 1.0);
+        assert_eq!(picked.get(&[0, 0]), 1.0);
+        assert_eq!(picked.get(&[1, 1]), 50.0);
     }
 
     #[test]

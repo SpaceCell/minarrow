@@ -702,18 +702,16 @@ impl RowSelection for FieldArray {
 
     fn r<S: DataSelector>(&self, selection: S) -> ArrayV {
         if selection.is_contiguous() {
-            // Contiguous selection (ranges): adjust offset and len
-            let indices = selection.resolve_indices(self.array.len());
-            if indices.is_empty() {
+            let (offset, len) = selection.resolve_range(self.array.len());
+            if len == 0 {
                 return ArrayV::new(self.array.clone(), 0, 0);
             }
-            ArrayV::new(self.array.clone(), indices[0], indices.len())
+            ArrayV::new(self.array.clone(), offset, len)
         } else {
-            // Non-contiguous selection (index arrays): gather into new array
+            let mask = selection.resolve_mask(self.array.len());
             let view = ArrayV::from(self.array.clone());
-            let indices = selection.resolve_indices(self.array.len());
-            let gathered_array = view.gather_indices(&indices);
-            ArrayV::new(gathered_array, 0, indices.len())
+            let gathered_array = view.gather_mask(&mask);
+            ArrayV::new(gathered_array, 0, mask.count_ones())
         }
     }
 

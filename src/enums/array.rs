@@ -7335,21 +7335,16 @@ impl crate::traits::selection::RowSelection for Array {
     /// For non-contiguous selections (index arrays), gathers into a new array.
     fn r<S: crate::traits::selection::DataSelector>(&self, selection: S) -> ArrayV {
         if selection.is_contiguous() {
-            // Contiguous selection (ranges): create a view
-            let indices = selection.resolve_indices(self.len());
-            if indices.is_empty() {
+            let (offset, len) = selection.resolve_range(self.len());
+            if len == 0 {
                 return ArrayV::new(self.clone(), 0, 0);
             }
-            let offset = indices[0];
-            let len = indices.len();
             ArrayV::new(self.clone(), offset, len)
         } else {
-            // Non-contiguous selection (index arrays): gather into new array
-            // For now, create a view over the whole array and use its gather
+            let mask = selection.resolve_mask(self.len());
             let full_view = ArrayV::new(self.clone(), 0, self.len());
-            let indices = selection.resolve_indices(self.len());
-            let gathered = full_view.gather_indices(&indices);
-            ArrayV::new(gathered, 0, indices.len())
+            let gathered = full_view.gather_mask(&mask);
+            ArrayV::new(gathered, 0, mask.count_ones())
         }
     }
 

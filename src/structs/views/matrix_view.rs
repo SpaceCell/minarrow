@@ -340,6 +340,27 @@ impl MatrixV {
             .collect();
         self.matrix.extract_rows(&absolute)
     }
+
+    /// Gathers the rows at set mask bits into a new owned `Matrix`.
+    ///
+    /// The mask is relative to this view's window and must match its row count.
+    pub fn gather_rows_mask(&self, mask: &crate::Bitmask) -> Matrix {
+        assert_eq!(
+            mask.len(), self.len,
+            "MatrixV::gather_rows_mask: mask length {} does not match row count {}",
+            mask.len(), self.len
+        );
+        let n_new = mask.count_ones();
+        let mut dst = Matrix::new(n_new, self.n_cols(), self.matrix.name.clone());
+        for j in 0..self.n_cols() {
+            let src_col = self.col(j);
+            let dst_col = dst.col_mut(j);
+            for (k, idx) in mask.iter_set().enumerate() {
+                dst_col[k] = src_col[idx];
+            }
+        }
+        dst
+    }
 }
 
 impl Shape for MatrixV {
@@ -456,12 +477,12 @@ impl RowSelection for Matrix {
     type View = MatrixV;
 
     fn r<S: DataSelector>(&self, selection: S) -> MatrixV {
-        let indices = selection.resolve_indices(self.n_rows);
         if selection.is_contiguous() {
-            let start = indices.first().copied().unwrap_or(0);
-            return MatrixV::from_matrix(self.clone(), start, indices.len());
+            let (start, len) = selection.resolve_range(self.n_rows);
+            return MatrixV::from_matrix(self.clone(), start, len);
         }
-        MatrixV::from(self.extract_rows(&indices))
+        let mask = selection.resolve_mask(self.n_rows);
+        MatrixV::from(self.extract_rows_mask(&mask))
     }
 
     fn get_row_count(&self) -> usize {
@@ -479,12 +500,12 @@ impl RowSelection for MatrixV {
     type View = MatrixV;
 
     fn r<S: DataSelector>(&self, selection: S) -> MatrixV {
-        let indices = selection.resolve_indices(self.len);
         if selection.is_contiguous() {
-            let start = indices.first().copied().unwrap_or(0);
-            return self.from_self(start, indices.len());
+            let (start, len) = selection.resolve_range(self.len);
+            return self.from_self(start, len);
         }
-        MatrixV::from(self.gather_rows(&indices))
+        let mask = selection.resolve_mask(self.len);
+        MatrixV::from(self.gather_rows_mask(&mask))
     }
 
     fn get_row_count(&self) -> usize {
@@ -803,7 +824,8 @@ mod tests {
         let selected = sample().r(&[3usize, 0][..]);
         assert_eq!(selected.n_rows(), 2);
         assert!(selected.spans_backing());
-        assert_eq!(selected.col(1), &[13.0, 10.0]);
+        // Bitmask-based gathering yields rows in ascending index order.
+        assert_eq!(selected.col(1), &[10.0, 13.0]);
     }
 
     #[cfg(feature = "select")]
@@ -816,9 +838,9 @@ mod tests {
         assert_eq!(chained.col(0), &[2.0, 3.0]);
         assert_eq!(chained.get_row_count(), 2);
 
-        // Non-contiguous selections gather rows into a new matrix.
+        // Non-contiguous selections gather rows in ascending index order.
         let picked = v.r(&[3usize, 1][..]);
-        assert_eq!(picked.col(0), &[4.0, 2.0]);
+        assert_eq!(picked.col(0), &[2.0, 4.0]);
     }
 
     #[cfg(feature = "size")]

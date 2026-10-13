@@ -413,6 +413,28 @@ impl Matrix {
         dst
     }
 
+    /// Extract the rows at set mask bits into a new Matrix.
+    ///
+    /// The mask must have the same length as `n_rows`. Column stride alignment
+    /// is maintained in the result.
+    pub fn extract_rows_mask(&self, mask: &crate::Bitmask) -> Self {
+        assert_eq!(
+            mask.len(), self.n_rows,
+            "Matrix::extract_rows_mask: mask length {} does not match row count {}",
+            mask.len(), self.n_rows
+        );
+        let n_new = mask.count_ones();
+        let mut dst = Matrix::new(n_new, self.n_cols, self.name.clone());
+        for j in 0..self.n_cols {
+            let src_col = self.col(j);
+            let dst_col = dst.col_mut(j);
+            for (k, idx) in mask.iter_set().enumerate() {
+                dst_col[k] = src_col[idx];
+            }
+        }
+        dst
+    }
+
     /// Sets the matrix name.
     #[inline]
     pub fn set_name(&mut self, name: impl Into<String>) {

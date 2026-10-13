@@ -818,16 +818,14 @@ impl RowSelection for TableV {
 
     fn r<S: DataSelector>(&self, selection: S) -> TableV {
         if selection.is_contiguous() {
-            // Contiguous selection (ranges): derive a properly windowed subview
-            let indices = selection.resolve_indices(self.len);
-            if indices.is_empty() {
+            let (start, len) = selection.resolve_range(self.len);
+            if len == 0 {
                 return self.from_self(0, 0);
             }
-            self.from_self(indices[0], indices.len())
+            self.from_self(start, len)
         } else {
-            // Non-contiguous selection (index arrays): materialise into Table
-            let indices = selection.resolve_indices(self.len);
-            let materialised_table = self.gather_rows(&indices);
+            let mask = selection.resolve_mask(self.len);
+            let materialised_table = self.gather_rows_mask(&mask);
             TableV::from(materialised_table)
         }
     }

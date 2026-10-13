@@ -26,7 +26,7 @@
 //! - **Selection3D**: Future Extension for 3D selection
 //! - **Selection4D**: Future Extension for 4D selection
 
-use crate::Field;
+use crate::{Bitmask, Field};
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo};
 use std::sync::Arc;
 
@@ -47,8 +47,17 @@ pub trait FieldSelector {
 
 /// Trait for types that can specify a data selection (index-based dimension)
 pub trait DataSelector {
-    /// Resolve this selection to indices (within the given count)
-    fn resolve_indices(&self, count: usize) -> Vec<usize>;
+    /// Resolve this selection to a bitmask with the selected positions set.
+    fn resolve_mask(&self, count: usize) -> Bitmask;
+
+    /// Resolve the start offset and length of a contiguous selection.
+    ///
+    /// Only valid when [`is_contiguous`](Self::is_contiguous) returns true.
+    /// The default panics because non-contiguous selectors have no single
+    /// range representation.
+    fn resolve_range(&self, _count: usize) -> (usize, usize) {
+        panic!("resolve_range called on a non-contiguous selector")
+    }
 
     /// Returns true if this selector represents a contiguous range.
     /// Range types (Range, RangeFrom, etc.) return true.
@@ -64,18 +73,14 @@ pub trait DataSelector {
     /// are rejected - gather through [`RowSelection::r`] instead.
     #[cfg(feature = "ndarray")]
     fn resolve_axis(&self, dim_size: usize) -> (usize, usize, bool) {
-        // usize::MAX so out-of-range indices survive to the bounds check
-        // below rather than being silently filtered.
-        let indices = self.resolve_indices(usize::MAX);
+        let mask = self.resolve_mask(dim_size);
+        let n = mask.count_ones();
         assert_eq!(
-            indices.len(), 1,
+            n, 1,
             "axis selection: index arrays take a single index or a contiguous range; gather with r() instead"
         );
-        assert!(
-            indices[0] < dim_size,
-            "axis selection: index {} out of bounds (size {})", indices[0], dim_size
-        );
-        (indices[0], indices[0] + 1, true)
+        let idx = mask.iter_set().next().unwrap();
+        (idx, idx + 1, true)
     }
 
     /// Produce an owned version of this selector.
@@ -430,12 +435,16 @@ impl FieldSelector for Box<dyn FieldSelector + Send + Sync> {
 
 /// Single data index
 impl DataSelector for usize {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        let mut mask = Bitmask::new_set_all(count, false);
         if *self < count {
-            vec![*self]
-        } else {
-            Vec::new()
+            mask.set_true(*self);
         }
+        mask
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        if *self < count { (*self, 1) } else { (0, 0) }
     }
 
     /// A single index is a contiguous window of length one.
@@ -460,11 +469,19 @@ impl DataSelector for usize {
 /// Single data index from a plain integer literal. Negative values
 /// resolve to nothing.
 impl DataSelector for i32 {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        let mut mask = Bitmask::new_set_all(count, false);
         if *self >= 0 && (*self as usize) < count {
-            vec![*self as usize]
+            mask.set_true(*self as usize);
+        }
+        mask
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        if *self >= 0 && (*self as usize) < count {
+            (*self as usize, 1)
         } else {
-            Vec::new()
+            (0, 0)
         }
     }
 
@@ -489,8 +506,14 @@ impl DataSelector for i32 {
 
 /// Multiple data indices
 impl DataSelector for &[usize] {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
-        self.iter().copied().filter(|&idx| idx < count).collect()
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        let mut mask = Bitmask::new_set_all(count, false);
+        for &idx in self.iter() {
+            if idx < count {
+                mask.set_true(idx);
+            }
+        }
+        mask
     }
 
     fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
@@ -500,8 +523,14 @@ impl DataSelector for &[usize] {
 
 /// Multiple data indices (array reference)
 impl<const N: usize> DataSelector for &[usize; N] {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
-        self.iter().copied().filter(|&idx| idx < count).collect()
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        let mut mask = Bitmask::new_set_all(count, false);
+        for &idx in self.iter() {
+            if idx < count {
+                mask.set_true(idx);
+            }
+        }
+        mask
     }
 
     fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
@@ -511,8 +540,14 @@ impl<const N: usize> DataSelector for &[usize; N] {
 
 /// Multiple data indices (Vec)
 impl DataSelector for Vec<usize> {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
-        self.iter().copied().filter(|&idx| idx < count).collect()
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        let mut mask = Bitmask::new_set_all(count, false);
+        for &idx in self.iter() {
+            if idx < count {
+                mask.set_true(idx);
+            }
+        }
+        mask
     }
 
     fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
@@ -522,9 +557,18 @@ impl DataSelector for Vec<usize> {
 
 /// Data range selection
 impl DataSelector for Range<usize> {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        let mut mask = Bitmask::new_set_all(count, false);
         let end = self.end.min(count);
-        (self.start..end).collect()
+        if self.start < end {
+            mask.set_range(self.start, end, true);
+        }
+        mask
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        let end = self.end.min(count);
+        if self.start < end { (self.start, end - self.start) } else { (0, 0) }
     }
 
     fn is_contiguous(&self) -> bool {
@@ -549,10 +593,20 @@ impl DataSelector for Range<usize> {
 /// Data range selection from plain integer literals. Negative bounds
 /// clamp to zero.
 impl DataSelector for Range<i32> {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        let mut mask = Bitmask::new_set_all(count, false);
         let start = self.start.max(0) as usize;
         let end = (self.end.max(0) as usize).min(count);
-        (start..end).collect()
+        if start < end {
+            mask.set_range(start, end, true);
+        }
+        mask
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        let start = self.start.max(0) as usize;
+        let end = (self.end.max(0) as usize).min(count);
+        if start < end { (start, end - start) } else { (0, 0) }
     }
 
     fn is_contiguous(&self) -> bool {
@@ -576,8 +630,16 @@ impl DataSelector for Range<i32> {
 
 /// Data range from selection
 impl DataSelector for RangeFrom<usize> {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
-        (self.start..count).collect()
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        let mut mask = Bitmask::new_set_all(count, false);
+        if self.start < count {
+            mask.set_range(self.start, count, true);
+        }
+        mask
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        if self.start < count { (self.start, count - self.start) } else { (0, 0) }
     }
 
     fn is_contiguous(&self) -> bool {
@@ -600,9 +662,18 @@ impl DataSelector for RangeFrom<usize> {
 
 /// Data range from selection from a plain integer literal.
 impl DataSelector for RangeFrom<i32> {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
         let start = self.start.max(0) as usize;
-        (start..count).collect()
+        let mut mask = Bitmask::new_set_all(count, false);
+        if start < count {
+            mask.set_range(start, count, true);
+        }
+        mask
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        let start = self.start.max(0) as usize;
+        if start < count { (start, count - start) } else { (0, 0) }
     }
 
     fn is_contiguous(&self) -> bool {
@@ -625,9 +696,18 @@ impl DataSelector for RangeFrom<i32> {
 
 /// Data range to selection
 impl DataSelector for RangeTo<usize> {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
         let end = self.end.min(count);
-        (0..end).collect()
+        let mut mask = Bitmask::new_set_all(count, false);
+        if end > 0 {
+            mask.set_range(0, end, true);
+        }
+        mask
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        let end = self.end.min(count);
+        (0, end)
     }
 
     fn is_contiguous(&self) -> bool {
@@ -651,9 +731,18 @@ impl DataSelector for RangeTo<usize> {
 /// Data range to selection from a plain integer literal. Negative bounds
 /// clamp to zero.
 impl DataSelector for RangeTo<i32> {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
         let end = (self.end.max(0) as usize).min(count);
-        (0..end).collect()
+        let mut mask = Bitmask::new_set_all(count, false);
+        if end > 0 {
+            mask.set_range(0, end, true);
+        }
+        mask
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        let end = (self.end.max(0) as usize).min(count);
+        (0, end)
     }
 
     fn is_contiguous(&self) -> bool {
@@ -676,8 +765,12 @@ impl DataSelector for RangeTo<i32> {
 
 /// Data full range selection
 impl DataSelector for RangeFull {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
-        (0..count).collect()
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        Bitmask::new_set_all(count, true)
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        (0, count)
     }
 
     fn is_contiguous(&self) -> bool {
@@ -696,10 +789,20 @@ impl DataSelector for RangeFull {
 
 /// Data inclusive range selection
 impl DataSelector for RangeInclusive<usize> {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
         let start = *self.start();
         let end = (*self.end() + 1).min(count);
-        (start..end).collect()
+        let mut mask = Bitmask::new_set_all(count, false);
+        if start < end {
+            mask.set_range(start, end, true);
+        }
+        mask
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        let start = *self.start();
+        let end = (*self.end() + 1).min(count);
+        if start < end { (start, end - start) } else { (0, 0) }
     }
 
     fn is_contiguous(&self) -> bool {
@@ -724,13 +827,26 @@ impl DataSelector for RangeInclusive<usize> {
 /// Data inclusive range selection from plain integer literals. Negative
 /// bounds clamp to zero.
 impl DataSelector for RangeInclusive<i32> {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
         if *self.end() < 0 {
-            return Vec::new();
+            return Bitmask::new_set_all(count, false);
         }
         let start = (*self.start()).max(0) as usize;
         let end = (*self.end() as usize + 1).min(count);
-        (start..end).collect()
+        let mut mask = Bitmask::new_set_all(count, false);
+        if start < end {
+            mask.set_range(start, end, true);
+        }
+        mask
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        if *self.end() < 0 {
+            return (0, 0);
+        }
+        let start = (*self.start()).max(0) as usize;
+        let end = (*self.end() as usize + 1).min(count);
+        if start < end { (start, end - start) } else { (0, 0) }
     }
 
     fn is_contiguous(&self) -> bool {
@@ -752,10 +868,30 @@ impl DataSelector for RangeInclusive<i32> {
     }
 }
 
+/// Bitmask as a data selector, returned as-is.
+impl DataSelector for Bitmask {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        assert_eq!(
+            self.len(), count,
+            "Bitmask::resolve_mask: mask length {} does not match count {}",
+            self.len(), count
+        );
+        self.to_owned_copy()
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.to_owned_copy())
+    }
+}
+
 /// Boxed data selector for owned selection
 impl DataSelector for Box<dyn DataSelector + Send + Sync> {
-    fn resolve_indices(&self, count: usize) -> Vec<usize> {
-        (**self).resolve_indices(count)
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        (**self).resolve_mask(count)
+    }
+
+    fn resolve_range(&self, count: usize) -> (usize, usize) {
+        (**self).resolve_range(count)
     }
 
     fn is_contiguous(&self) -> bool {
