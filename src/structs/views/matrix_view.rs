@@ -62,6 +62,7 @@ use std::sync::Arc;
 use crate::aliases::MatrixVT;
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
+use Bitmask;
 use crate::structs::matrix::Matrix;
 use crate::traits::concatenate::Concatenate;
 use crate::traits::print::print_float_grid;
@@ -338,13 +339,13 @@ impl MatrixV {
                 self.offset + i
             })
             .collect();
-        self.matrix.extract_rows(&absolute)
+        self.matrix.gather_rows(&absolute)
     }
 
     /// Gathers the rows at set mask bits into a new owned `Matrix`.
     ///
     /// The mask is relative to this view's window and must match its row count.
-    pub fn gather_rows_mask(&self, mask: &crate::Bitmask) -> Matrix {
+    pub fn gather_rows_mask(&self, mask: &Bitmask) -> Matrix {
         assert_eq!(
             mask.len(), self.len,
             "MatrixV::gather_rows_mask: mask length {} does not match row count {}",
@@ -482,7 +483,7 @@ impl RowSelection for Matrix {
             return MatrixV::from_matrix(self.clone(), start, len);
         }
         let mask = selection.resolve_mask(self.n_rows);
-        MatrixV::from(self.extract_rows_mask(&mask))
+        MatrixV::from(self.gather_rows_mask(&mask))
     }
 
     fn get_row_count(&self) -> usize {

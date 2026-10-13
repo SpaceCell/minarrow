@@ -77,7 +77,7 @@ use crate::traits::print::print_ndarray_body;
 use crate::traits::selection::{AxisSelection, DataSelector, RowSelection};
 use crate::traits::type_unions::Float;
 use crate::traits::{concatenate::Concatenate, shape::Shape};
-use crate::{Array, ArrowType, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
+use crate::{Array, ArrowType, Bitmask, Field, FieldArray, FloatArray, NumericArray, Table, Vec64};
 
 #[cfg(feature = "matrix")]
 use crate::structs::matrix::{Matrix, aligned_stride};
@@ -1544,7 +1544,7 @@ pub(crate) fn gather_obs_impl<T: Float>(
 /// intermediate index list.
 #[cfg(all(feature = "views", feature = "select"))]
 pub(crate) fn gather_obs_mask_impl<T: Float>(
-    mask: &crate::Bitmask,
+    mask: &Bitmask,
     shape: &[usize],
     name: Option<String>,
     get: impl Fn(&[usize]) -> T,
