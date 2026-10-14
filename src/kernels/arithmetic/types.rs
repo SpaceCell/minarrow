@@ -1072,6 +1072,104 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "scalar_type")]
+    #[test]
+    fn scalar_operands_apply_the_requested_operator() {
+        use crate::Scalar;
+        use crate::enums::operators::ArithmeticOperator;
+        use crate::kernels::broadcast::broadcast_value;
+
+        let apply = |op| {
+            broadcast_value(
+                op,
+                Value::Scalar(Scalar::Int32(7)),
+                Value::Scalar(Scalar::Int32(2)),
+            )
+            .unwrap()
+        };
+
+        let Value::Scalar(Scalar::Int32(diff)) = apply(ArithmeticOperator::Subtract) else {
+            panic!("Expected Int32 scalar from subtraction");
+        };
+        assert_eq!(diff, 5);
+
+        let Value::Scalar(Scalar::Int32(prod)) = apply(ArithmeticOperator::Multiply) else {
+            panic!("Expected Int32 scalar from multiplication");
+        };
+        assert_eq!(prod, 14);
+
+        // Integer scalar division is true division with a Float64 result.
+        let Value::Scalar(Scalar::Float64(quot)) = apply(ArithmeticOperator::Divide) else {
+            panic!("Expected Float64 scalar from division");
+        };
+        assert_eq!(quot, 3.5);
+
+        let Value::Scalar(Scalar::Int32(rem)) = apply(ArithmeticOperator::Remainder) else {
+            panic!("Expected Int32 scalar from remainder");
+        };
+        assert_eq!(rem, 1);
+
+        let Value::Scalar(Scalar::Int32(pow)) = apply(ArithmeticOperator::Power) else {
+            panic!("Expected Int32 scalar from power");
+        };
+        assert_eq!(pow, 49);
+
+        let Value::Scalar(Scalar::Int32(floor)) = apply(ArithmeticOperator::FloorDiv) else {
+            panic!("Expected Int32 scalar from floor division");
+        };
+        assert_eq!(floor, 3);
+
+        // Remainder keeps the dividend's sign and floor division rounds
+        // towards negative infinity.
+        let negative = |op| {
+            broadcast_value(
+                op,
+                Value::Scalar(Scalar::Int32(-7)),
+                Value::Scalar(Scalar::Int32(2)),
+            )
+            .unwrap()
+        };
+        let Value::Scalar(Scalar::Int32(rem)) = negative(ArithmeticOperator::Remainder) else {
+            panic!("Expected Int32 scalar from remainder");
+        };
+        assert_eq!(rem, -1);
+        let Value::Scalar(Scalar::Int32(floor)) = negative(ArithmeticOperator::FloorDiv) else {
+            panic!("Expected Int32 scalar from floor division");
+        };
+        assert_eq!(floor, -4);
+
+        let float = |op| {
+            broadcast_value(
+                op,
+                Value::Scalar(Scalar::Float64(7.5)),
+                Value::Scalar(Scalar::Float64(2.0)),
+            )
+            .unwrap()
+        };
+        let Value::Scalar(Scalar::Float64(rem)) = float(ArithmeticOperator::Remainder) else {
+            panic!("Expected Float64 scalar from remainder");
+        };
+        assert_eq!(rem, 1.5);
+        let Value::Scalar(Scalar::Float64(pow)) = float(ArithmeticOperator::Power) else {
+            panic!("Expected Float64 scalar from power");
+        };
+        assert!((pow - 56.25).abs() < 1e-9);
+        let Value::Scalar(Scalar::Float64(floor)) = float(ArithmeticOperator::FloorDiv) else {
+            panic!("Expected Float64 scalar from floor division");
+        };
+        assert_eq!(floor, 3.0);
+
+        // A zero divisor and a negative integer exponent return errors.
+        let zero = Value::Scalar(Scalar::Int32(0));
+        let seven = Value::Scalar(Scalar::Int32(7));
+        let negative_one = Value::Scalar(Scalar::Int32(-1));
+        assert!(
+            broadcast_value(ArithmeticOperator::Remainder, seven.clone(), zero.clone()).is_err()
+        );
+        assert!(broadcast_value(ArithmeticOperator::FloorDiv, seven.clone(), zero).is_err());
+        assert!(broadcast_value(ArithmeticOperator::Power, seven, negative_one).is_err());
+    }
+
     #[test]
     fn test_reference_operations() {
         let arr1 =

@@ -276,7 +276,7 @@ pub fn broadcast_value(
         // Scalar + Scalar = Scalar
         #[cfg(feature = "scalar_type")]
         (Value::Scalar(l), Value::Scalar(r)) => {
-            scalar_arithmetic(l, r, ArithmeticOperator::Add).map(Value::Scalar)
+            scalar_arithmetic(l, r, op).map(Value::Scalar)
         }
 
         // Array types - use resolve_binary_arithmetic
