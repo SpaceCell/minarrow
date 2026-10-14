@@ -47,15 +47,16 @@ pub fn scalar_arithmetic(
     use ArithmeticOperator::*;
     use Scalar;
 
-    // Applies `Remainder`, `Power` or `FloorDiv` to two integer scalars through
-    // the dense integer kernel, matching the integer array results.
+    // Computes `Remainder`, `Power` or `FloorDiv` for two integer scalars with the
+    // integer array kernel `int_dense_body_std`, applied to one-element slices.
     //
     // ## Behaviour
-    // - remainder keeps the dividend's sign
-    // - floor division rounds towards negative infinity and keeps the integer type
-    // - power uses wrapping exponentiation by squaring
-    // - a zero divisor, an overflowing division, or an exponent outside `u32`
-    //   returns an error, ahead of the kernel's panic on those inputs.
+    // - Remainder keeps the dividend's sign.
+    // - Floor division rounds towards negative infinity and keeps the integer type.
+    // - Power uses wrapping exponentiation by squaring.
+    // - The kernel panics on a zero divisor, an overflowing division and an
+    //   exponent outside `u32`. These inputs are checked first and return
+    //   `MinarrowError::KernelError`.
     macro_rules! integer_scalar_op {
         ($l:expr, $r:expr, $op:expr) => {{
             let (l, r, op) = ($l, $r, $op);
