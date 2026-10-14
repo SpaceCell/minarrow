@@ -28,6 +28,10 @@ use crate::kernels::arithmetic::{
     },
     string_ops::apply_str_str,
 };
+#[cfg(feature = "scalar_type")]
+use crate::kernels::arithmetic::std::int_dense_body_std;
+#[cfg(feature = "scalar_type")]
+use num_traits::ToPrimitive;
 #[cfg(feature = "decimal")]
 use crate::kernels::arithmetic::decimal::{decimal_binary, integer_to_decimal, max_precision};
 
@@ -43,6 +47,37 @@ pub fn scalar_arithmetic(
     use ArithmeticOperator::*;
     use Scalar;
 
+    // Applies `Remainder`, `Power` or `FloorDiv` to two integer scalars through
+    // the dense integer kernel, matching the integer array results.
+    //
+    // ## Behaviour
+    // - remainder keeps the dividend's sign
+    // - floor division rounds towards negative infinity and keeps the integer type
+    // - power uses wrapping exponentiation by squaring
+    // - a zero divisor, an overflowing division, or an exponent outside `u32`
+    //   returns an error, ahead of the kernel's panic on those inputs.
+    macro_rules! integer_scalar_op {
+        ($l:expr, $r:expr, $op:expr) => {{
+            let (l, r, op) = ($l, $r, $op);
+            if op == Power {
+                if r.to_u32().is_none() {
+                    return Err(MinarrowError::KernelError(Some(format!(
+                        "Power exponent {} is outside the u32 range. Consider casting to float first.",
+                        r
+                    ))));
+                }
+            } else if l.checked_rem(r).is_none() {
+                return Err(MinarrowError::KernelError(Some(format!(
+                    "Integer {:?} of {} by {} has a zero divisor or overflows",
+                    op, l, r
+                ))));
+            }
+            let mut out = [l];
+            int_dense_body_std(op, &[l], &[r], &mut out);
+            out[0]
+        }};
+    }
+
     let result = match (lhs, rhs, op) {
         // Int32 operations
         (Scalar::Int32(l), Scalar::Int32(r), Add) => Scalar::Int32(l + r),
@@ -51,24 +86,37 @@ pub fn scalar_arithmetic(
         // Integer scalar division is true division and returns a Float64
         // scalar, so 7 / 2 is 3.5 and division by zero follows IEEE 754.
         (Scalar::Int32(l), Scalar::Int32(r), Divide) => Scalar::Float64(l as f64 / r as f64),
+        (Scalar::Int32(l), Scalar::Int32(r), op @ (Remainder | Power | FloorDiv)) => {
+            Scalar::Int32(integer_scalar_op!(l, r, op))
+        }
 
         // Int64 operations
         (Scalar::Int64(l), Scalar::Int64(r), Add) => Scalar::Int64(l + r),
         (Scalar::Int64(l), Scalar::Int64(r), Subtract) => Scalar::Int64(l - r),
         (Scalar::Int64(l), Scalar::Int64(r), Multiply) => Scalar::Int64(l * r),
         (Scalar::Int64(l), Scalar::Int64(r), Divide) => Scalar::Float64(l as f64 / r as f64),
+        (Scalar::Int64(l), Scalar::Int64(r), op @ (Remainder | Power | FloorDiv)) => {
+            Scalar::Int64(integer_scalar_op!(l, r, op))
+        }
 
         // Float32 operations
         (Scalar::Float32(l), Scalar::Float32(r), Add) => Scalar::Float32(l + r),
         (Scalar::Float32(l), Scalar::Float32(r), Subtract) => Scalar::Float32(l - r),
         (Scalar::Float32(l), Scalar::Float32(r), Multiply) => Scalar::Float32(l * r),
         (Scalar::Float32(l), Scalar::Float32(r), Divide) => Scalar::Float32(l / r),
+        (Scalar::Float32(l), Scalar::Float32(r), Remainder) => Scalar::Float32(l % r),
+        // Float power uses logarithmic exponentiation, matching the float array kernels.
+        (Scalar::Float32(l), Scalar::Float32(r), Power) => Scalar::Float32((r * l.ln()).exp()),
+        (Scalar::Float32(l), Scalar::Float32(r), FloorDiv) => Scalar::Float32((l / r).floor()),
 
         // Float64 operations
         (Scalar::Float64(l), Scalar::Float64(r), Add) => Scalar::Float64(l + r),
         (Scalar::Float64(l), Scalar::Float64(r), Subtract) => Scalar::Float64(l - r),
         (Scalar::Float64(l), Scalar::Float64(r), Multiply) => Scalar::Float64(l * r),
         (Scalar::Float64(l), Scalar::Float64(r), Divide) => Scalar::Float64(l / r),
+        (Scalar::Float64(l), Scalar::Float64(r), Remainder) => Scalar::Float64(l % r),
+        (Scalar::Float64(l), Scalar::Float64(r), Power) => Scalar::Float64((r * l.ln()).exp()),
+        (Scalar::Float64(l), Scalar::Float64(r), FloorDiv) => Scalar::Float64((l / r).floor()),
 
         // Mixed type promotion (Int + Float = Float)
         (Scalar::Int32(l), Scalar::Float32(r), op) => {
@@ -93,6 +141,10 @@ pub fn scalar_arithmetic(
         (Scalar::Int8(l), Scalar::Int8(r), Multiply) => Scalar::Int8(l * r),
         #[cfg(feature = "extended_numeric_types")]
         (Scalar::Int8(l), Scalar::Int8(r), Divide) => Scalar::Float64(l as f64 / r as f64),
+        #[cfg(feature = "extended_numeric_types")]
+        (Scalar::Int8(l), Scalar::Int8(r), op @ (Remainder | Power | FloorDiv)) => {
+            Scalar::Int8(integer_scalar_op!(l, r, op))
+        }
 
         // Int16
         #[cfg(feature = "extended_numeric_types")]
@@ -103,6 +155,10 @@ pub fn scalar_arithmetic(
         (Scalar::Int16(l), Scalar::Int16(r), Multiply) => Scalar::Int16(l * r),
         #[cfg(feature = "extended_numeric_types")]
         (Scalar::Int16(l), Scalar::Int16(r), Divide) => Scalar::Float64(l as f64 / r as f64),
+        #[cfg(feature = "extended_numeric_types")]
+        (Scalar::Int16(l), Scalar::Int16(r), op @ (Remainder | Power | FloorDiv)) => {
+            Scalar::Int16(integer_scalar_op!(l, r, op))
+        }
 
         // UInt8
         #[cfg(feature = "extended_numeric_types")]
@@ -113,6 +169,10 @@ pub fn scalar_arithmetic(
         (Scalar::UInt8(l), Scalar::UInt8(r), Multiply) => Scalar::UInt8(l * r),
         #[cfg(feature = "extended_numeric_types")]
         (Scalar::UInt8(l), Scalar::UInt8(r), Divide) => Scalar::Float64(l as f64 / r as f64),
+        #[cfg(feature = "extended_numeric_types")]
+        (Scalar::UInt8(l), Scalar::UInt8(r), op @ (Remainder | Power | FloorDiv)) => {
+            Scalar::UInt8(integer_scalar_op!(l, r, op))
+        }
 
         // UInt16
         #[cfg(feature = "extended_numeric_types")]
@@ -123,18 +183,28 @@ pub fn scalar_arithmetic(
         (Scalar::UInt16(l), Scalar::UInt16(r), Multiply) => Scalar::UInt16(l * r),
         #[cfg(feature = "extended_numeric_types")]
         (Scalar::UInt16(l), Scalar::UInt16(r), Divide) => Scalar::Float64(l as f64 / r as f64),
+        #[cfg(feature = "extended_numeric_types")]
+        (Scalar::UInt16(l), Scalar::UInt16(r), op @ (Remainder | Power | FloorDiv)) => {
+            Scalar::UInt16(integer_scalar_op!(l, r, op))
+        }
 
         // UInt32
         (Scalar::UInt32(l), Scalar::UInt32(r), Add) => Scalar::UInt32(l + r),
         (Scalar::UInt32(l), Scalar::UInt32(r), Subtract) => Scalar::UInt32(l - r),
         (Scalar::UInt32(l), Scalar::UInt32(r), Multiply) => Scalar::UInt32(l * r),
         (Scalar::UInt32(l), Scalar::UInt32(r), Divide) => Scalar::Float64(l as f64 / r as f64),
+        (Scalar::UInt32(l), Scalar::UInt32(r), op @ (Remainder | Power | FloorDiv)) => {
+            Scalar::UInt32(integer_scalar_op!(l, r, op))
+        }
 
         // UInt64
         (Scalar::UInt64(l), Scalar::UInt64(r), Add) => Scalar::UInt64(l + r),
         (Scalar::UInt64(l), Scalar::UInt64(r), Subtract) => Scalar::UInt64(l - r),
         (Scalar::UInt64(l), Scalar::UInt64(r), Multiply) => Scalar::UInt64(l * r),
         (Scalar::UInt64(l), Scalar::UInt64(r), Divide) => Scalar::Float64(l as f64 / r as f64),
+        (Scalar::UInt64(l), Scalar::UInt64(r), op @ (Remainder | Power | FloorDiv)) => {
+            Scalar::UInt64(integer_scalar_op!(l, r, op))
+        }
         // String concatenation
         (Scalar::String32(l), Scalar::String32(r), Add) => Scalar::String32(format!("{}{}", l, r)),
         #[cfg(feature = "large_string")]
