@@ -1072,6 +1072,39 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "scalar_type")]
+    #[test]
+    fn scalar_operands_apply_the_requested_operator() {
+        use crate::Scalar;
+        use crate::enums::operators::ArithmeticOperator;
+        use crate::kernels::broadcast::broadcast_value;
+
+        let apply = |op| {
+            broadcast_value(
+                op,
+                Value::Scalar(Scalar::Int32(7)),
+                Value::Scalar(Scalar::Int32(2)),
+            )
+            .unwrap()
+        };
+
+        let Value::Scalar(Scalar::Int32(diff)) = apply(ArithmeticOperator::Subtract) else {
+            panic!("Expected Int32 scalar from subtraction");
+        };
+        assert_eq!(diff, 5);
+
+        let Value::Scalar(Scalar::Int32(prod)) = apply(ArithmeticOperator::Multiply) else {
+            panic!("Expected Int32 scalar from multiplication");
+        };
+        assert_eq!(prod, 14);
+
+        // Integer scalar division is true division with a Float64 result.
+        let Value::Scalar(Scalar::Float64(quot)) = apply(ArithmeticOperator::Divide) else {
+            panic!("Expected Float64 scalar from division");
+        };
+        assert_eq!(quot, 3.5);
+    }
+
     #[test]
     fn test_reference_operations() {
         let arr1 =
