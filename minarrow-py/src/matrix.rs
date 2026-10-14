@@ -216,7 +216,7 @@ impl PyMatrix {
                 self.0.n_rows
             )));
         }
-        Ok(PyMatrix(self.0.extract_rows(&indices)))
+        Ok(PyMatrix(self.0.gather_rows(&indices)))
     }
 
     /// The same values as a table, each column named by its position.
