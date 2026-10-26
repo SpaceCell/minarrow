@@ -437,7 +437,7 @@ impl ArrowType {
 /// - Variant availability depends on feature flags:
 ///   - `UInt8` requires `default_categorical_8` or `extended_categorical`.
 ///   - `UInt16` and `UInt64` require `extended_categorical`.
-///   - `UInt32` is available unless `default_categorical_8` is enabled without `extended_categorical`.
+///   - `UInt32` is always available.
 ///
 /// ## Interoperability
 /// - Maps directly to the integer index type in Apache Arrow's `DictionaryType`.
@@ -449,10 +449,6 @@ pub enum CategoricalIndexType {
     UInt8,
     #[cfg(feature = "extended_categorical")]
     UInt16,
-    #[cfg(any(
-        not(feature = "default_categorical_8"),
-        feature = "extended_categorical"
-    ))]
     UInt32,
     #[cfg(feature = "extended_categorical")]
     UInt64,
@@ -472,10 +468,6 @@ impl CategoricalIndexType {
             CategoricalIndexType::UInt8 => "uint8",
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt16 => "uint16",
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             CategoricalIndexType::UInt32 => "uint32",
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt64 => "uint64",
@@ -519,10 +511,6 @@ impl<T: Integer> CategoricalArray<T> {
         if t == TypeId::of::<u16>() {
             return ArrowType::Dictionary(CategoricalIndexType::UInt16);
         }
-        #[cfg(any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        ))]
         if t == TypeId::of::<u32>() {
             return ArrowType::Dictionary(CategoricalIndexType::UInt32);
         }
@@ -645,10 +633,6 @@ impl Display for CategoricalIndexType {
             CategoricalIndexType::UInt8 => f.write_str("UInt8"),
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt16 => f.write_str("UInt16"),
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             CategoricalIndexType::UInt32 => f.write_str("UInt32"),
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt64 => f.write_str("UInt64"),

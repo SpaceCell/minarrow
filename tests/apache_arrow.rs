@@ -477,10 +477,6 @@ fn rt_arrow_string64() {
     round_trip_array(MArray::TextArray(TextArray::String64(arr)), "string64");
 }
 
-#[cfg(any(
-    not(feature = "default_categorical_8"),
-    feature = "extended_categorical"
-))]
 #[test]
 fn rt_arrow_categorical32() {
     let arr = std::sync::Arc::new(minarrow::CategoricalArray::<u32>::from_slices(
@@ -885,11 +881,7 @@ fn arr_i32_like(vals: &[i32]) -> MArray {
 /// and that codes assigned in the first batch still decode the same in
 /// the rebuilt structure.
 #[cfg(all(
-    feature = "shared_dict",
-    any(
-        not(feature = "default_categorical_8"),
-        feature = "extended_categorical"
-    )
+    feature = "shared_dict"
 ))]
 #[test]
 fn rt_arrow_super_table_shared_categorical32() {

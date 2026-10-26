@@ -90,10 +90,6 @@ pub(crate) fn value_to_string(arr: &Array, idx: usize) -> String {
             TextArray::String32(s) => string_value(&s.offsets, &s.data, idx),
             #[cfg(feature = "large_string")]
             TextArray::String64(s) => string_value(&s.offsets, &s.data, idx),
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             TextArray::Categorical32(cat) => {
                 let key = cat.data[idx] as usize;
                 cat.unique_values()[key].clone()

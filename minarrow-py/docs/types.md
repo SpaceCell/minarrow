@@ -88,7 +88,7 @@ If you are compiling from source, the following Rust feature-flags are required:
 ¹ = Requires `extended_numeric_types`.
 ² = Requires `large_string`, enabled by default.
 ³ = Requires `default_categorical_8`.
-⁴ = Requires `extended_categorical`.
+⁴ = Requires `extended_categorical`. `cat32` is available under `default_categorical_8`.
 ⁵ = Requires `datetime`, enabled by default.
 
 The default Python package on Pypi.org includes these by default.

@@ -419,10 +419,6 @@ fn rt_polars_string64_element_equal() {
     );
 }
 
-#[cfg(any(
-    not(feature = "default_categorical_8"),
-    feature = "extended_categorical"
-))]
 #[test]
 // macOS: polars_arrow chunked export leaves sch.dictionary null while populating
 // arr.dictionary, which Minarrow surfaces as a BridgeError. Skip the round-trip
@@ -1006,11 +1002,7 @@ fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
 /// pre/post and the rebuilt structure preserves the append-only invariant
 /// (later batch's dictionary is a superset of earlier).
 #[cfg(all(
-    feature = "shared_dict",
-    any(
-        not(feature = "default_categorical_8"),
-        feature = "extended_categorical"
-    )
+    feature = "shared_dict"
 ))]
 #[test]
 fn rt_polars_super_table_shared_categorical32() {

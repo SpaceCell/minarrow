@@ -2195,11 +2195,7 @@ mod tests {
     /// growth observed at any one chunk is immediately visible at all
     /// others (single atomic store).
     #[cfg(all(
-        feature = "shared_dict",
-        any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        )
+        feature = "shared_dict"
     ))]
     #[test]
     fn test_shared_dict_add_across_pushes() {

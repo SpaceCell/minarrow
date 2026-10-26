@@ -615,10 +615,6 @@ pub enum CategoryManagerT {
     U8(Dictionary<u8>),
     #[cfg(feature = "extended_categorical")]
     U16(Dictionary<u16>),
-    #[cfg(any(
-        not(feature = "default_categorical_8"),
-        feature = "extended_categorical"
-    ))]
     U32(Dictionary<u32>),
     #[cfg(feature = "extended_categorical")]
     U64(Dictionary<u64>),
@@ -634,10 +630,6 @@ impl CategoryManagerT {
     pub fn install_from(array: &mut crate::Array) -> Option<Self> {
         use crate::{Array, TextArray};
         match array {
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             Array::TextArray(TextArray::Categorical32(arc)) => {
                 let cat = Arc::make_mut(arc);
                 Some(CategoryManagerT::U32(cat.dictionary.clone()))
@@ -668,10 +660,6 @@ impl CategoryManagerT {
     pub fn add_remap_cat(&self, array: &mut crate::Array) {
         use crate::{Array, TextArray};
         match (self, array) {
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             (CategoryManagerT::U32(d), Array::TextArray(TextArray::Categorical32(arc))) => {
                 d.add_remap_cat(Arc::make_mut(arc));
             }
@@ -722,10 +710,6 @@ impl CategoryManagerT {
             CategoryManagerT::U8(d) => d.len(),
             #[cfg(feature = "extended_categorical")]
             CategoryManagerT::U16(d) => d.len(),
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             CategoryManagerT::U32(d) => d.len(),
             #[cfg(feature = "extended_categorical")]
             CategoryManagerT::U64(d) => d.len(),

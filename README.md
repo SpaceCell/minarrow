@@ -261,7 +261,8 @@ Additional types:
 | `datetime` | Temporal array types as raw integer offsets |
 | `datetime_ops` | Datetime library functionality: ISO 8601 parsing, timezone-aware operations, arithmetic, component extraction |
 | `extended_numeric_types` | i8, i16, u8, u16 variants |
-| `extended_categorical` | Categorical8/16/64 dictionary index widths |
+| `default_categorical_8` | 8-bit default categorical width, with Categorical8 and Categorical32 both available |
+| `extended_categorical` | Adds Categorical16 and Categorical64 dictionary index widths |
 | `scalar_type` | Unified `Scalar` for aggregation results |
 | `value_type` | Catch-all `Value` enum for unified typing |
 | `matrix` | 2D matrix with BLAS/LAPACK-compatible layout |

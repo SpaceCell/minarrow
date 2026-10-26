@@ -808,10 +808,6 @@ macro_rules! impl_apply_dict_dict {
     };
 }
 
-#[cfg(any(
-    not(feature = "default_categorical_8"),
-    feature = "extended_categorical"
-))]
 impl_apply_dict_dict!(apply_dict32_dict32, u32);
 
 #[cfg(feature = "default_categorical_8")]

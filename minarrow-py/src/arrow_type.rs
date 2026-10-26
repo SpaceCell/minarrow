@@ -111,7 +111,6 @@ pub enum PyCategoricalIndexType {
     UInt8,
     #[cfg(feature = "extended_categorical")]
     UInt16,
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
     UInt32,
     #[cfg(feature = "extended_categorical")]
     UInt64,
@@ -124,7 +123,6 @@ impl From<CategoricalIndexType> for PyCategoricalIndexType {
             CategoricalIndexType::UInt8 => PyCategoricalIndexType::UInt8,
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt16 => PyCategoricalIndexType::UInt16,
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
             CategoricalIndexType::UInt32 => PyCategoricalIndexType::UInt32,
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt64 => PyCategoricalIndexType::UInt64,
@@ -139,7 +137,6 @@ impl From<PyCategoricalIndexType> for CategoricalIndexType {
             PyCategoricalIndexType::UInt8 => CategoricalIndexType::UInt8,
             #[cfg(feature = "extended_categorical")]
             PyCategoricalIndexType::UInt16 => CategoricalIndexType::UInt16,
-            #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
             PyCategoricalIndexType::UInt32 => CategoricalIndexType::UInt32,
             #[cfg(feature = "extended_categorical")]
             PyCategoricalIndexType::UInt64 => CategoricalIndexType::UInt64,

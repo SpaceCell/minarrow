@@ -246,10 +246,6 @@ impl<'a> Consolidate for Vec<crate::aliases::ArrayVT<'a>> {
             Array::TextArray(TextArray::String32(_)) => gather_string!(String32, u32),
             #[cfg(feature = "large_string")]
             Array::TextArray(TextArray::String64(_)) => gather_string!(String64, u64),
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             Array::TextArray(TextArray::Categorical32(_)) => {
                 gather_categorical!(Categorical32, u32)
             }

@@ -412,7 +412,7 @@ comparison_tests!(
     70_000
 );
 comparison_tests!(
-    cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical")),
+    cfg(all()),
     u32,
     u32_codes_match_reference,
     u32_codes_malformed_match_reference,
@@ -491,7 +491,6 @@ fn try_cat16_matches_reference() {
     }
 }
 
-#[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
 #[test]
 fn try_cat32_matches_reference() {
     for seed in 0..10 {
@@ -521,7 +520,6 @@ fn guard_labels(cardinality: usize) -> StringArray<u32> {
     StringArray::<u32>::from_vec(refs, None)
 }
 
-#[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
 #[test]
 fn string_to_categorical_u32_guard() {
     let src = guard_labels(200_000);

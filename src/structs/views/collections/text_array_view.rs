@@ -140,10 +140,6 @@ impl TextArrayV {
             TextArray::String32(arr) => arr.get_str(phys_idx),
             #[cfg(feature = "large_string")]
             TextArray::String64(arr) => arr.get_str(phys_idx),
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             TextArray::Categorical32(arr) => arr.get_str(phys_idx),
             #[cfg(feature = "default_categorical_8")]
             TextArray::Categorical8(arr) => arr.get_str(phys_idx),
@@ -350,10 +346,6 @@ impl Display for TextArrayV {
             TextArray::String32(_) => "String32<u32>",
             #[cfg(feature = "large_string")]
             TextArray::String64(_) => "String64<u64>",
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             TextArray::Categorical32(_) => "Categorical32<u32>",
             #[cfg(feature = "default_categorical_8")]
             TextArray::Categorical8(_) => "Categorical8<u8>",

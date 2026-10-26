@@ -296,7 +296,6 @@ pub fn parse_dtype(name: &str) -> PyResult<ArrowType> {
                 ArrowType::Dictionary(CategoricalIndexType::UInt32)
             }
         }
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
         "cat32" => ArrowType::Dictionary(CategoricalIndexType::UInt32),
         "cat8" => {
             #[cfg(feature = "default_categorical_8")]
@@ -431,7 +430,6 @@ fn categorical_from_values(
         #[cfg(feature = "extended_categorical")]
         CategoricalIndexType::UInt16 => CategoricalArray::<u16>::try_from_vec64(strings, Some(mask))
             .map(Array::from_categorical16),
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
         CategoricalIndexType::UInt32 => CategoricalArray::<u32>::try_from_vec64(strings, Some(mask))
             .map(Array::from_categorical32),
         #[cfg(feature = "extended_categorical")]
@@ -509,7 +507,6 @@ pub fn categorical_from_codes(
         CategoricalIndexType::UInt8 => build_codes!(u8, from_categorical8),
         #[cfg(feature = "extended_categorical")]
         CategoricalIndexType::UInt16 => build_codes!(u16, from_categorical16),
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
         CategoricalIndexType::UInt32 => build_codes!(u32, from_categorical32),
         #[cfg(feature = "extended_categorical")]
         CategoricalIndexType::UInt64 => build_codes!(u64, from_categorical64),

@@ -336,10 +336,6 @@ impl ByteSize for TextArray {
             TextArray::Categorical8(arr) => arr.est_bytes(),
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical16(arr) => arr.est_bytes(),
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             TextArray::Categorical32(arr) => arr.est_bytes(),
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical64(arr) => arr.est_bytes(),
@@ -356,10 +352,6 @@ impl ByteSize for TextArray {
             TextArray::Categorical8(arr) => arr.logical_bytes(),
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical16(arr) => arr.logical_bytes(),
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             TextArray::Categorical32(arr) => arr.logical_bytes(),
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical64(arr) => arr.logical_bytes(),
@@ -595,10 +587,6 @@ impl ByteSize for ArrayV {
                         + dict_bytes
                         + arr.null_mask.as_ref().map_or(0, |_| (len + 7) / 8)
                 }
-                #[cfg(any(
-                    not(feature = "default_categorical_8"),
-                    feature = "extended_categorical"
-                ))]
                 TextArray::Categorical32(arr) => {
                     let dict_bytes: usize =
                         arr.unique_values().iter().map(|s| s.len()).sum();

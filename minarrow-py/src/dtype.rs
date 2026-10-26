@@ -188,7 +188,6 @@ fn cat_index_width(idx: &CategoricalIndexType) -> u32 {
         UInt8 => 8,
         #[cfg(feature = "extended_categorical")]
         UInt16 => 16,
-        #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
         UInt32 => 32,
         #[cfg(feature = "extended_categorical")]
         UInt64 => 64,
