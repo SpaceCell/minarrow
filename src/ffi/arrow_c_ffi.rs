@@ -379,10 +379,6 @@ pub fn fmt_c(dtype: ArrowType) -> CString {
             CategoricalIndexType::UInt8 => b"C",
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt16 => b"S",
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             CategoricalIndexType::UInt32 => b"I",
             #[cfg(feature = "extended_categorical")]
             CategoricalIndexType::UInt64 => b"L",
@@ -534,10 +530,6 @@ pub fn export_view_to_c(
         Array::TextArray(TextArray::String64(_)) => {
             export_string_array_to_c(&array, schema, offset, length)
         }
-        #[cfg(any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        ))]
         Array::TextArray(TextArray::Categorical32(cat)) => {
             let uniques = cat.unique_values().to_vec();
             export_categorical_array_to_c(&array, schema, offset, length, &uniques, 32)
@@ -671,10 +663,6 @@ fn export_categorical_array_to_c(
         8 => ArrowType::Dictionary(crate::ffi::arrow_dtype::CategoricalIndexType::UInt8),
         #[cfg(feature = "extended_categorical")]
         16 => ArrowType::Dictionary(crate::ffi::arrow_dtype::CategoricalIndexType::UInt16),
-        #[cfg(any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        ))]
         32 => ArrowType::Dictionary(crate::ffi::arrow_dtype::CategoricalIndexType::UInt32),
         #[cfg(feature = "extended_categorical")]
         64 => ArrowType::Dictionary(crate::ffi::arrow_dtype::CategoricalIndexType::UInt64),
@@ -825,16 +813,6 @@ pub unsafe fn import_from_c(arr_ptr: *const ArrowArray, sch_ptr: *const ArrowSch
         o => panic!("unsupported format {:?}", o),
     };
 
-    // When default_categorical_8 is on without extended_categorical and Arrow sends
-    // i32 dictionary indices, narrow them to u8 before building CategoricalArray<u8>
-    #[cfg(all(
-        feature = "default_categorical_8",
-        not(feature = "extended_categorical")
-    ))]
-    if is_dict && matches!(dtype, ArrowType::Int32 | ArrowType::UInt32) {
-        return unsafe { import_categorical_narrow_to_u8(arr, sch, None) };
-    }
-
     // if the array owns a dictionary, map the physical index dtype ➜ CategoricalIndexType
     #[allow(unreachable_code)]
     let maybe_cat_index = if is_dict {
@@ -845,10 +823,6 @@ pub unsafe fn import_from_c(arr_ptr: *const ArrowArray, sch_ptr: *const ArrowSch
             #[cfg(feature = "extended_numeric_types")]
             #[cfg(feature = "extended_categorical")]
             ArrowType::Int16 | ArrowType::UInt16 => CategoricalIndexType::UInt16,
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             ArrowType::Int32 | ArrowType::UInt32 => CategoricalIndexType::UInt32,
             #[cfg(feature = "extended_numeric_types")]
             #[cfg(feature = "extended_categorical")]
@@ -1017,10 +991,6 @@ pub unsafe fn import_from_c_owned(
                         #[cfg(not(feature = "extended_categorical"))]
                         panic!("Extended categorical not enabled")
                     }
-                    #[cfg(any(
-                        not(feature = "default_categorical_8"),
-                        feature = "extended_categorical"
-                    ))]
                     ArrowType::Int32 | ArrowType::UInt32 => CategoricalIndexType::UInt32,
                     #[cfg(feature = "extended_numeric_types")]
                     ArrowType::Int64 | ArrowType::UInt64 => {
@@ -1131,18 +1101,6 @@ unsafe fn import_array_zero_copy(
     if !arr.dictionary.is_null() {
         let sch = unsafe { &*sch_ptr };
 
-        // Narrow i32 Arrow dictionary indices to u8 when only CategoricalArray<u8> is available
-        #[cfg(all(
-            feature = "default_categorical_8",
-            not(feature = "extended_categorical")
-        ))]
-        if matches!(
-            dtype,
-            ArrowType::Int32 | ArrowType::UInt32 | ArrowType::Dictionary(_)
-        ) {
-            return unsafe { import_categorical_narrow_to_u8(arr, sch, Some(arr_box)) };
-        }
-
         let idx_type = match dtype.clone() {
             ArrowType::Dictionary(idx) => idx,
             _ => {
@@ -1159,10 +1117,6 @@ unsafe fn import_array_zero_copy(
                         feature = "extended_categorical"
                     ))]
                     ArrowType::Int16 | ArrowType::UInt16 => CategoricalIndexType::UInt16,
-                    #[cfg(any(
-                        not(feature = "default_categorical_8"),
-                        feature = "extended_categorical"
-                    ))]
                     ArrowType::Int32 | ArrowType::UInt32 => CategoricalIndexType::UInt32,
                     #[cfg(all(
                         feature = "extended_numeric_types",
@@ -1766,10 +1720,6 @@ unsafe fn import_categorical(
             let arr = CategoricalArray::<u16>::new(codes_buf, dict_strings, null_mask);
             Arc::new(Array::TextArray(TextArray::Categorical16(Arc::new(arr))))
         }
-        #[cfg(any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        ))]
         CategoricalIndexType::UInt32 => {
             let codes_buf = unsafe { build_codes::<u32>(codes_ptr, offset, len, ownership) };
             let arr = CategoricalArray::<u32>::new(codes_buf, dict_strings, null_mask);
@@ -1782,90 +1732,6 @@ unsafe fn import_categorical(
             Arc::new(Array::TextArray(TextArray::Categorical64(Arc::new(arr))))
         }
     }
-}
-
-/// Imports a categorical array from Arrow C format, narrowing i32 indices to u8.
-///
-/// Used when `default_categorical_8` is on and Arrow sends the standard i32 dictionary
-/// indices. Reads each i32 code and casts to u8. Panics if any index exceeds 255.
-///
-/// Dictionary strings are always copied, same as `import_categorical`.
-///
-/// # Safety
-/// Caller must ensure the ArrowArray and ArrowSchema pointers are valid.
-#[cfg(all(
-    feature = "default_categorical_8",
-    not(feature = "extended_categorical")
-))]
-unsafe fn import_categorical_narrow_to_u8(
-    arr: &ArrowArray,
-    sch: &ArrowSchema,
-    ownership: Option<Box<ArrowArray>>,
-) -> Arc<Array> {
-    let len = arr.length as usize;
-    let offset = arr.offset as usize;
-    let buffers = unsafe { slice::from_raw_parts(arr.buffers, 2) };
-    let null_ptr = buffers[0];
-    let codes_ptr = unsafe { (buffers[1] as *const i32).add(offset) };
-
-    // Import dictionary strings into Vec64<String>, same as import_categorical
-    let synthetic_schema;
-    let dict_sch_ptr: *const ArrowSchema = if !sch.dictionary.is_null() {
-        sch.dictionary as *const _
-    } else {
-        synthetic_schema = ArrowSchema {
-            format: b"u\0".as_ptr() as *const c_char,
-            name: b"\0".as_ptr() as *const c_char,
-            metadata: ptr::null(),
-            flags: 0,
-            n_children: 0,
-            children: ptr::null_mut(),
-            dictionary: ptr::null_mut(),
-            release: None,
-            private_data: ptr::null_mut(),
-        };
-        &synthetic_schema as *const _
-    };
-    let dict = unsafe { import_from_c(arr.dictionary as *const _, dict_sch_ptr) };
-    let dict_strings = match dict.as_ref() {
-        Array::TextArray(TextArray::String32(s)) => (0..s.len())
-            .map(|i| s.get(i).unwrap_or_default().to_string())
-            .collect(),
-        #[cfg(feature = "large_string")]
-        Array::TextArray(TextArray::String64(s)) => (0..s.len())
-            .map(|i| s.get(i).unwrap_or_default().to_string())
-            .collect(),
-        _ => panic!("Expected String32 dictionary"),
-    };
-
-    let null_mask = if !null_ptr.is_null() {
-        Some(unsafe { import_null_mask_offset(null_ptr, offset, len) })
-    } else {
-        None
-    };
-
-    // Read i32 codes and narrow to u8 (codes_ptr is already offset-adjusted).
-    let i32_codes = unsafe { slice::from_raw_parts(codes_ptr, len) };
-    let mut u8_codes = Vec64::<u8>::with_capacity(len);
-    for &code in i32_codes {
-        assert!(
-            code >= 0 && code <= u8::MAX as i32,
-            "Arrow dictionary index {} exceeds u8 range (0..255)",
-            code
-        );
-        u8_codes.push(code as u8);
-    }
-
-    // Release the source ArrowArray if we own it
-    if let Some(mut arr_box) = ownership {
-        if let Some(release) = arr_box.release {
-            unsafe { release(&mut *arr_box as *mut ArrowArray) };
-        }
-    }
-
-    let codes_buf: Buffer<u8> = u8_codes.into();
-    let cat = CategoricalArray::<u8>::new(codes_buf, dict_strings, null_mask);
-    Arc::new(Array::TextArray(TextArray::Categorical8(Arc::new(cat))))
 }
 
 /// Imports a datetime array from Arrow C format.
@@ -3578,18 +3444,7 @@ unsafe fn field_from_c_schema(schema: &ArrowSchema) -> crate::Field {
             b"c" | b"C" => CategoricalIndexType::UInt8,
             #[cfg(all(feature = "extended_numeric_types", feature = "extended_categorical"))]
             b"s" | b"S" => CategoricalIndexType::UInt16,
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             b"i" | b"I" => CategoricalIndexType::UInt32,
-            // When default_categorical_8 is on without extended_categorical,
-            // record as UInt8 for schema purposes - actual narrowing happens at import time
-            #[cfg(all(
-                feature = "default_categorical_8",
-                not(feature = "extended_categorical")
-            ))]
-            b"i" | b"I" => CategoricalIndexType::UInt8,
             #[cfg(all(feature = "extended_numeric_types", feature = "extended_categorical"))]
             b"l" | b"L" => CategoricalIndexType::UInt64,
             _ => panic!(
@@ -4886,13 +4741,7 @@ mod tests {
 
     /// Exercises offset propagation through `import_categorical`: codes
     /// buffer is windowed via `ArrowArray.offset`, dictionary stays full.
-    #[cfg(all(
-        feature = "views",
-        any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        )
-    ))]
+    #[cfg(feature = "views")]
     #[test]
     fn test_view_export_categorical_window() {
         use super::{export_view_to_c, import_from_c};
@@ -4925,6 +4774,79 @@ mod tests {
                 panic!("Expected Categorical32 array");
             }
 
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+    }
+
+    /// 32-bit dictionary indices with more than 256 dictionary entries import as
+    /// `Categorical32` under `default_categorical_8`.
+    #[cfg(all(feature = "views", feature = "default_categorical_8"))]
+    #[test]
+    fn test_dictionary_index_widths_import_per_width() {
+        use super::{export_view_to_c, import_from_c};
+        use crate::ffi::arrow_dtype::CategoricalIndexType;
+        use crate::CategoricalArray;
+
+        let labels: Vec<String> = (0..300).map(|i| format!("label_{i}")).collect();
+
+        let mut cat32 = CategoricalArray::<u32>::default();
+        for s in &labels {
+            cat32.push_str(s);
+        }
+        let array32 = Arc::new(Array::from_categorical32(cat32));
+        let schema = schema_for(
+            "c32",
+            ArrowType::Dictionary(CategoricalIndexType::UInt32),
+            false,
+        );
+        let (arr_ptr, sch_ptr) = export_view_to_c(array32, schema, 0, labels.len() as i64);
+        unsafe {
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            let Array::TextArray(crate::TextArray::Categorical32(c)) = imported.as_ref() else {
+                panic!("Expected Categorical32 array");
+            };
+            assert_eq!(c.data.len(), labels.len());
+            for (i, label) in labels.iter().enumerate() {
+                assert_eq!(c.get_str(i), Some(label.as_str()));
+            }
+            ((*arr_ptr).release.unwrap())(arr_ptr);
+            ((*sch_ptr).release.unwrap())(sch_ptr);
+        }
+
+    }
+
+    /// 8-bit dictionary indices import as `Categorical8` under `default_categorical_8`.
+    #[cfg(all(
+        feature = "views",
+        feature = "default_categorical_8",
+        feature = "extended_numeric_types"
+    ))]
+    #[test]
+    fn test_dictionary_index_8bit_imports_as_categorical8() {
+        use super::{export_view_to_c, import_from_c};
+        use crate::ffi::arrow_dtype::CategoricalIndexType;
+        use crate::CategoricalArray;
+
+        let mut cat8 = CategoricalArray::<u8>::default();
+        for s in ["x", "y", "x", "z"] {
+            cat8.push_str(s);
+        }
+        let array8 = Arc::new(Array::from_categorical8(cat8));
+        let schema = schema_for(
+            "c8",
+            ArrowType::Dictionary(CategoricalIndexType::UInt8),
+            false,
+        );
+        let (arr_ptr, sch_ptr) = export_view_to_c(array8, schema, 0, 4);
+        unsafe {
+            let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+            let Array::TextArray(crate::TextArray::Categorical8(c)) = imported.as_ref() else {
+                panic!("Expected Categorical8 array");
+            };
+            assert_eq!(c.get_str(0), Some("x"));
+            assert_eq!(c.get_str(1), Some("y"));
+            assert_eq!(c.get_str(3), Some("z"));
             ((*arr_ptr).release.unwrap())(arr_ptr);
             ((*sch_ptr).release.unwrap())(sch_ptr);
         }

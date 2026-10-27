@@ -74,13 +74,13 @@ parallel_proc = ["rayon"]
 # in your build pipeline, as it's mostly C-code.
 c_ffi_tests = ['cc']
 
-# Swaps the default categorical type from CategoricalArray<u32> to CategoricalArray<u8>.
-# When enabled, TextArray contains Categorical8 instead of Categorical32, keeping the
-# match arm count at 1.
+# Sets CategoricalArray<u8> as the default categorical width, in place of
+# CategoricalArray<u32>. TextArray contains both Categorical8 and Categorical32 when
+# enabled, and new categoricals use 8-bit codes.
 default_categorical_8 = []
 
-# Adds Categorical16, Categorical64, and whichever of Categorical8/Categorical32
-# is not the current default.
+# Adds Categorical16 and Categorical64 alongside the Categorical8 and Categorical32
+# widths that default_categorical_8 provides.
 #
 # Highly recommend keeping this off unless required, as it adds combinatorial
 # weight to the binary and enum match arms.

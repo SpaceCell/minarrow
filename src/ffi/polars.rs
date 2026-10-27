@@ -267,10 +267,6 @@ fn arrow_type_to_polars_dtype(dtype: &ArrowType) -> polars_arrow::datatypes::Arr
                 CategoricalIndexType::UInt8 => polars_arrow::datatypes::IntegerType::UInt8,
                 #[cfg(feature = "extended_categorical")]
                 CategoricalIndexType::UInt16 => polars_arrow::datatypes::IntegerType::UInt16,
-                #[cfg(any(
-                    not(feature = "default_categorical_8"),
-                    feature = "extended_categorical"
-                ))]
                 CategoricalIndexType::UInt32 => polars_arrow::datatypes::IntegerType::UInt32,
                 #[cfg(feature = "extended_categorical")]
                 CategoricalIndexType::UInt64 => polars_arrow::datatypes::IntegerType::UInt64,

@@ -509,10 +509,6 @@ pub fn create_field_for_array(
             TextArray::Categorical8(_) => ArrowType::Dictionary(CategoricalIndexType::UInt8),
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical16(_) => ArrowType::Dictionary(CategoricalIndexType::UInt16),
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             TextArray::Categorical32(_) => ArrowType::Dictionary(CategoricalIndexType::UInt32),
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical64(_) => ArrowType::Dictionary(CategoricalIndexType::UInt64),
@@ -1310,10 +1306,6 @@ macro_rules! fa_cat16 {
     }};
 }
 
-#[cfg(any(
-    not(feature = "default_categorical_8"),
-    feature = "extended_categorical"
-))]
 #[macro_export]
 macro_rules! fa_cat32 {
     ($name:expr, @vec64 $v:expr; $mask:expr) => {
@@ -1672,10 +1664,6 @@ macro_rules! fa_cat16_opt {
     }};
 }
 
-#[cfg(any(
-    not(feature = "default_categorical_8"),
-    feature = "extended_categorical"
-))]
 #[macro_export]
 macro_rules! fa_cat32_opt {
     ($name:expr, $first:expr, $($rest:expr),+ $(,)?) => {
@@ -2157,10 +2145,6 @@ mod fa_macro_tests {
         assert_eq!(fa.len(), 2);
     }
 
-    #[cfg(any(
-        not(feature = "default_categorical_8"),
-        feature = "extended_categorical"
-    ))]
     #[test]
     fn test_fa_cat32_literals() {
         use crate::ffi::arrow_dtype::CategoricalIndexType;

@@ -165,7 +165,6 @@ fn table_section() {
     table.add_col(FieldArray::from_arr("bool_col", col_bool));
     table.add_col(FieldArray::from_arr("utf8_col", col_str32));
 
-    #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
     {
         use minarrow::aliases::CatArr;
         let col_cat32 = CatArr::<u32>::from_values(

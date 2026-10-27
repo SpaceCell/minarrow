@@ -708,10 +708,6 @@ impl ArrayV {
             Array::TextArray(TextArray::Categorical8(arr)) => arr.get_str(self.offset + i),
             #[cfg(feature = "extended_categorical")]
             Array::TextArray(TextArray::Categorical16(arr)) => arr.get_str(self.offset + i),
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             Array::TextArray(TextArray::Categorical32(arr)) => arr.get_str(self.offset + i),
             #[cfg(feature = "extended_categorical")]
             Array::TextArray(TextArray::Categorical64(arr)) => arr.get_str(self.offset + i),
@@ -758,10 +754,6 @@ impl ArrayV {
                     Some(unsafe { arr.get_str_unchecked(self.offset + i) })
                 }
             }
-            #[cfg(any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            ))]
             Array::TextArray(TextArray::Categorical32(arr)) => {
                 if arr.is_null(self.offset + i) {
                     None
@@ -1055,10 +1047,6 @@ impl ArrayV {
                 TextArray::String64(_) => {
                     gather_idx_str!(self, indices, StringArray<u64>, Array::from_string64)
                 }
-                #[cfg(any(
-                    not(feature = "default_categorical_8"),
-                    feature = "extended_categorical"
-                ))]
                 TextArray::Categorical32(_) => {
                     gather_idx_str!(
                         self,
@@ -1286,10 +1274,6 @@ impl ArrayV {
                 TextArray::String64(_) => {
                     gather_pad_str!(self, indices, pad, StringArray<u64>, Array::from_string64)
                 }
-                #[cfg(any(
-                    not(feature = "default_categorical_8"),
-                    feature = "extended_categorical"
-                ))]
                 TextArray::Categorical32(_) => {
                     gather_pad_str!(
                         self,
@@ -1577,10 +1561,6 @@ impl ArrayV {
                 TextArray::String64(_) => {
                     gather_mask_str!(self, mask, len, kept, StringArray<u64>, Array::from_string64)
                 }
-                #[cfg(any(
-                    not(feature = "default_categorical_8"),
-                    feature = "extended_categorical"
-                ))]
                 TextArray::Categorical32(_) => {
                     gather_mask_str!(
                         self,

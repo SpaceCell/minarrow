@@ -792,10 +792,6 @@ impl Axis {
                     TextArray::Categorical8(a) => (0..n).find(|&i| a.get_str(i) == Some(target)),
                     #[cfg(feature = "extended_categorical")]
                     TextArray::Categorical16(a) => (0..n).find(|&i| a.get_str(i) == Some(target)),
-                    #[cfg(any(
-                        not(feature = "default_categorical_8"),
-                        feature = "extended_categorical"
-                    ))]
                     TextArray::Categorical32(a) => (0..n).find(|&i| a.get_str(i) == Some(target)),
                     #[cfg(feature = "extended_categorical")]
                     TextArray::Categorical64(a) => (0..n).find(|&i| a.get_str(i) == Some(target)),
@@ -898,10 +894,6 @@ impl Axis {
                     TextArray::Categorical8(a) => { coord_window_str!(a, n, lo, hi, start, end, count); }
                     #[cfg(feature = "extended_categorical")]
                     TextArray::Categorical16(a) => { coord_window_str!(a, n, lo, hi, start, end, count); }
-                    #[cfg(any(
-                        not(feature = "default_categorical_8"),
-                        feature = "extended_categorical"
-                    ))]
                     TextArray::Categorical32(a) => { coord_window_str!(a, n, lo, hi, start, end, count); }
                     #[cfg(feature = "extended_categorical")]
                     TextArray::Categorical64(a) => { coord_window_str!(a, n, lo, hi, start, end, count); }
@@ -1573,8 +1565,7 @@ mod tests {
     #[cfg(all(
         feature = "views",
         feature = "select",
-        feature = "scalar_type",
-        any(not(feature = "default_categorical_8"), feature = "extended_categorical")
+        feature = "scalar_type"
     ))]
     #[test]
     fn at_categorical_coords() {

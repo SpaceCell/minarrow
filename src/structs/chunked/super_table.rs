@@ -1289,10 +1289,6 @@ impl TryFrom<SuperTable> for Table {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(any(
-        not(feature = "default_categorical_8"),
-        feature = "extended_categorical"
-    ))]
     use crate::fa_cat32;
     use crate::ffi::arrow_dtype::ArrowType;
     use crate::{Array, Field, FieldArray, MaskedArray, NumericArray, Table};
@@ -1977,10 +1973,6 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        not(feature = "default_categorical_8"),
-        feature = "extended_categorical"
-    ))]
     #[test]
     fn test_consolidate_arena_categorical() {
         let b1 = Arc::new(table(vec![fa_cat32!("cat", "a", "b", "a")]));

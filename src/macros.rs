@@ -781,7 +781,6 @@ macro_rules! match_array {
                 TextArray::Categorical8(a)          => a.$method($($args),*),
                 #[cfg(feature = "extended_categorical")]
                 TextArray::Categorical16(a)         => a.$method($($args),*),
-                #[cfg(any(not(feature = "default_categorical_8"), feature = "extended_categorical"))]
                 TextArray::Categorical32(a)         => a.$method($($args),*),
                 #[cfg(feature = "extended_categorical")]
                 TextArray::Categorical64(a)         => a.$method($($args),*),

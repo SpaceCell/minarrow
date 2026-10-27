@@ -586,10 +586,6 @@ pub fn broadcast_scalar_to_text_arrayview(
         (Scalar::String32(val), TextArray::Categorical16(_)) => {
             Array::from_categorical16(CategoricalArray::<u16>::from_values(vec![val.as_str()]))
         }
-        #[cfg(any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        ))]
         (Scalar::String32(val), TextArray::Categorical32(_)) => {
             Array::from_categorical32(CategoricalArray::<u32>::from_values(vec![val.as_str()]))
         }
@@ -606,11 +602,7 @@ pub fn broadcast_scalar_to_text_arrayview(
             Array::from_categorical16(CategoricalArray::<u16>::from_values(vec![val.as_str()]))
         }
         #[cfg(all(
-            feature = "large_string",
-            any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            )
+            feature = "large_string"
         ))]
         (Scalar::String64(val), TextArray::Categorical32(_)) => {
             Array::from_categorical32(CategoricalArray::<u32>::from_values(vec![val.as_str()]))
@@ -702,10 +694,6 @@ pub fn broadcast_text_arrayview_to_scalar(
         (TextArray::Categorical16(_), Scalar::String32(val)) => {
             Array::from_categorical16(CategoricalArray::<u16>::from_values(vec![val.as_str()]))
         }
-        #[cfg(any(
-            not(feature = "default_categorical_8"),
-            feature = "extended_categorical"
-        ))]
         (TextArray::Categorical32(_), Scalar::String32(val)) => {
             Array::from_categorical32(CategoricalArray::<u32>::from_values(vec![val.as_str()]))
         }
@@ -722,11 +710,7 @@ pub fn broadcast_text_arrayview_to_scalar(
             Array::from_categorical16(CategoricalArray::<u16>::from_values(vec![val.as_str()]))
         }
         #[cfg(all(
-            feature = "large_string",
-            any(
-                not(feature = "default_categorical_8"),
-                feature = "extended_categorical"
-            )
+            feature = "large_string"
         ))]
         (TextArray::Categorical32(_), Scalar::String64(val)) => {
             Array::from_categorical32(CategoricalArray::<u32>::from_values(vec![val.as_str()]))

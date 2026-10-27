@@ -2214,10 +2214,6 @@ macro_rules! val_cat16 {
     };
 }
 
-#[cfg(any(
-    not(feature = "default_categorical_8"),
-    feature = "extended_categorical"
-))]
 #[macro_export]
 macro_rules! val_cat32 {
     ($($x:tt)*) => {

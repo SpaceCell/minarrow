@@ -205,7 +205,7 @@ print(result)  # PyArrow RecordBatch
 
 - `datetime` - Enable datetime/temporal type support (Date32, Date64, Timestamp, Duration, Time32, Time64)
 - `extended_numeric_types` - Enable i8, i16, u8, u16 types
-- `extended_categorical` - Enable Categorical8, Categorical16, Categorical64
+- `extended_categorical` - Enable Categorical16 and Categorical64 alongside Categorical8 and Categorical32
 
 All features are enabled by default.
 
