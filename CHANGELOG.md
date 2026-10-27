@@ -7,10 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Minarrow Rust
 
-## Unreleased
+## 0.19.0 - 2026-10-27
+
+## Breaking
+* `default_categorical_8` now includes `Categorical32` with `Categorical8`. Previously this feature gated out `Categorical32` completely. Note: This change is only breaking for users who previously had the `default_categorical_8` feature activated for 256 maximum categories at a lower memory footprint.
+* Column selection views have been optimised to replace expensive gathering with optimised Bitmask processing. As a result, `DataSelector::resolve_indices` has been replaced by `resolve_mask`, returning a `Bitmask`, and `resolve_range`.
+* `Matrix::extract_rows` is renamed `gather_rows`.
 
 ## Added
-* Scatter indices as write counterpart to gather indices for mask-based writes.
+* `Array::scatter_indices`, the write counterpart to `gather_indices`.
+* `adjacent_window` and `ptr_eq`, joining consecutive windows of one parent without copying.
+* `gather_rows_mask` on `Matrix` and `MatrixV`.
+* `Value::arrow_type`.
+* `DataSelector::to_owned`, and `DataSelector` for `Box<dyn DataSelector>`.
+* `logical_bytes` for `Matrix`, `NdArray`, `SuperNdArray`, `XArray` and their views.
+
+## Optimisations
+* Word-level `Bitmask` copy and append, and `Array::bool` packing.
+* Integer arithmetic for datetime period flooring.
+* Faster string to categorical interning.
+
+## Bugfixes
+* Several bitmask kernels have been corrected to accept input windows at any bit offset.
+* Scalar to scalar broadcasting arithmetic now correctly reflects the underlying `ArithmeticOperator`.
+* Fixed a regression on word-based mask bug-fixes for lengths ending part-way through a word affecting all-true and all-false masks.
+* Fixed a bug in table column order selections.
+
+## Maintenance
+* Upgraded vec64 to 0.5.4.
 
 ## 0.18.3 - 2026-10-01 Nightly Compatibility Release
 
@@ -187,6 +211,10 @@ overflow wraps consistently with add/subtract/multiply.
   the `table_metadata` feature is enabled.
 
 # Minarrow-py / Minarrow-pyo3
+
+## 0.19.0 - 2026-10-27
+* Versions aligned with minarrow 0.19.0.
+* minarrow-pyo3 now publishes its source root to dependent build scripts as `DEP_MINARROW_PYO3_ROOT`, and adds `From<PyArray> for Array`.
 
 ## 0.18.0 - 2026-09-09
 
