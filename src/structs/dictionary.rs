@@ -12,50 +12,50 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! # **Dictionary Module** - *Append-only shared string dictionary for categorical arrays*
+//! # Dictionary Module
 //!
-//! This module is available behind the `shared_dict` feature. Without
-//! that feature, `CategoricalArray<T>` stores its unique values directly
-//! as `unique_values: Vec64<String>` and no shared dictionary is used.
+//! Shared, append-only string dictionary for categorical arrays.
+//!
+//! Available with the `shared_dict` feature. Without this feature,
+//! `CategoricalArray<T>` stores unique values directly in
+//! `unique_values: Vec64<String>`.
 //!
 //! ## Structure
-//! `Dictionary<T>` is a lightweight handle around `Arc<DictionaryInner<T>>`.
-//! Cloning a dictionary is therefore just an `Arc` bump: every clone
-//! points at the same underlying storage and observes the same updates.
 //!
-//! The inner dictionary contains two data structures:
+//! `Dictionary<T>` holds an `Arc<DictionaryInner<T>>`. Cloning increments
+//! the reference count. All clones share the same storage and see updates.
 //!
-//! - `values: AppendOnlyVec<String>` - the code-indexed value array.
-//!   Values are stored in a fixed contiguous allocation that is never
-//!   reallocated, so published entries have stable addresses for the
-//!   lifetime of the dictionary. Readers access the published prefix
-//!   without taking a lock. Appenders reserve slots concurrently, then
-//!   publish in order so the readable prefix always remains contiguous.
+//! The inner dictionary contains:
 //!
-//! - `index: ShardedIndex<T>` - the reverse string-to-code lookup.
-//!   The index is split across 64 `Mutex<HashMap<_, _>>` shards, using
-//!   the candidate string's hash to select a shard and spread contention
-//!   across independent locks.
+//! - `values: AppendOnlyVec<String>` stores values by code in a fixed,
+//!   contiguous allocation. It never reallocates, so entries retain their
+//!   addresses for the dictionary's lifetime. Readers access published
+//!   entries without locking. Writers reserve slots concurrently and
+//!   publish them in order, keeping the readable entries contiguous.
 //!
-//! ## Intern flow
-//! 1. Hash the candidate string using the shared `ahash::RandomState`
-//!    when `fast_dict` is enabled, otherwise use `DefaultHasher`.
-//! 2. Use the low bits of the hash to select an index shard, then take
-//!    that shard's mutex.
-//! 3. Probe the shard's `HashMap<String, T>` for the candidate string.
-//!    With `fast_dict`, this uses `raw_entry_mut().from_hash(...)` and
-//!    the precomputed hash to avoid hashing the string a second time.
-//!    Without `fast_dict`, this uses the standard `HashMap::get` path.
-//! 4. If the string is already present, return its existing code.
-//! 5. Otherwise, append the string to `values`. The append path reserves
-//!    a slot with a cap-bounded CAS loop, so the dictionary's configured
-//!    capacity is honoured exactly even under concurrent writers.
-//! 6. Publish the new value, insert the string-to-code mapping into the
-//!    shard's `HashMap`, release the mutex, and return the new code.
+//! - `index: ShardedIndex<T>` maps strings to codes. It contains 64
+//!   `Mutex<HashMap<_, _>>` shards. A string's hash determines which shard
+//!   to use, allowing different shards to be accessed independently.
 //!
-//! ## Append-only invariant
-//! Once a string has been assigned a code, that mapping is permanent.
-//! Entries are never reordered, replaced, or removed.
+//! ## Adding a value
+//!
+//! 1. Hash the string using the shared `ahash::RandomState` with
+//!    `fast_dict`, or `DefaultHasher` otherwise.
+//! 2. Select a shard using the low bits of the hash and lock its mutex.
+//! 3. Look up the string in the shard's `HashMap<String, T>`.
+//!    With `fast_dict`, `raw_entry_mut().from_hash(...)` uses the
+//!    precomputed hash. Otherwise, lookup uses `HashMap::get`.
+//! 4. If the string exists, return its code.
+//! 5. Otherwise, reserve a slot and append the string to `values`.
+//!    Slot reservation uses a compare-and-swap loop that enforces the
+//!    configured capacity, including when writers append concurrently.
+//! 6. Publish the value, add its string-to-code mapping to the shard,
+//!    release the mutex and return the code.
+//!
+//! ## Permanent mappings
+//!
+//! After a string is assigned a code, the mapping remains unchanged.
+//! Entries are never reordered, replaced or removed.
 
 #[cfg(not(feature = "fast_dict"))]
 use std::collections::hash_map::DefaultHasher;
@@ -199,13 +199,17 @@ pub struct DictionaryInner<T: Integer> {
 
 impl<T: Integer> Default for DictionaryInner<T> {
     fn default() -> Self {
-        // Pre-allocate the value array to the type's natural cap.
-        // The cap is fixed for the dictionary's lifetime (the
-        // `AppendOnlyVec` never reallocates); `push` returns `None`
-        // when the cap is reached, which `add_cat` surfaces as
-        // `DictionaryError::Overflow`.
+        Self::with_capacity(max_cap::<T>())
+    }
+}
+
+impl<T: Integer> DictionaryInner<T> {
+    // The dictionary's capacity is fixed because `AppendOnlyVec` never reallocates.
+    // When full, `push` returns `None` and `add_cat` returns
+    // `DictionaryError::Overflow`.
+    fn with_capacity(cap: usize) -> Self {
         Self {
-            values: AppendOnlyVec::with_capacity(max_cap::<T>()),
+            values: AppendOnlyVec::with_capacity(cap),
             index: ShardedIndex::default(),
         }
     }
@@ -234,6 +238,32 @@ impl<T: Integer> Dictionary<T> {
     #[inline]
     pub fn new() -> Self {
         Self::default()
+    }
+    
+    /// Creates an empty dictionary in a new sharing group with a fixed capacity
+    /// of `cap` values.
+    ///
+    /// Use this when the dictionary may exceed the default capacity of
+    /// 1 048 576 values for `u32` and `u64` codes, such as a dictionary shared
+    /// across batches containing millions of distinct values.
+    ///
+    /// Unlike `Vec::with_capacity`, the capacity cannot grow. `add_cat` returns
+    /// `DictionaryError::Overflow` when the dictionary is full.
+    /// Address space for `cap` values is reserved at construction; memory is
+    /// committed as values are added.
+    ///
+    /// # Panics
+    /// Panics if `cap` exceeds the number of codes `T` can represent.
+    pub fn with_capacity(cap: usize) -> Self {
+        let codes = T::max_value().to_usize().saturating_add(1);
+        assert!(
+            cap <= codes,
+            "Dictionary capacity {cap} exceeds the {codes} codes of {}",
+            std::any::type_name::<T>()
+        );
+        Self {
+            inner: Arc::new(DictionaryInner::with_capacity(cap)),
+        }
     }
 
     /// Builds a dictionary from an ordered list of values. Deduplicates
@@ -333,10 +363,9 @@ impl<T: Integer> Dictionary<T> {
             let shard_idx = (hash as usize) & (N_INDEX_SHARDS - 1);
             let shard = &self.inner.index.shards[shard_idx];
             let g = shard.lock();
-            // Probe with the precomputed hash so the inner map does
-            // not re-hash on the lookup. The eq callback compares the
-            // stored `String` against the input directly - one
-            // contiguous cache line on the hash-bucket entry.
+            // Look up the entry using the precomputed hash to avoid rehashing.
+            // The equality callback compares the stored `String` directly
+            // against the input.
             g.raw_entry()
                 .from_hash(hash, |k: &String| k.as_str() == s)
                 .map(|(_, v)| *v)
@@ -605,8 +634,8 @@ impl<T: Integer, S: Into<String>> FromIterator<S> for Dictionary<T> {
 /// receive their natural cap; `u32`/`u64` receive a soft cap of
 /// `1 << 20` (1 048 576) entries because preallocating their natural
 /// cap would reserve ~100 GB+ of virtual address space per dictionary
-/// (allocators reject the request even with overcommit). Users who
-/// genuinely need a larger cap can pass it via `with_capacity`.
+/// (allocators reject the request even with overcommit). Dictionaries
+/// that need a larger cap must be created with `Dictionary::with_capacity`.
 ///
 /// `u8 -> 256`, `u16 -> 65 536`, `u32/u64 -> 1 048 576`.
 const DEFAULT_WIDE_CAP: usize = 1 << 20;
@@ -622,14 +651,13 @@ fn max_cap<T: Integer>() -> usize {
 }
 
 // =============================================================================
-// CategoryManagerT - width-erased holder used by parent containers.
+// CategoryManagerT - dictionary holder independent of code width.
 // =============================================================================
 
-/// Width-erased `Dictionary` so a parent container (`SuperTable`,
-/// `SuperArray`) can hold one entry per categorical column without being
-/// generic over each column's width. Each variant carries the column's
-/// typed `Dictionary`; cloning a `CategoryManagerT` is an Arc bump on the
-/// underlying inner.
+/// Holds a `Dictionary` of any supported code width, allowing parent containers
+/// (`SuperTable`, `SuperArray`) to store an entry per categorical column without
+/// a type parameter for each column's width. Each variant holds the column's
+/// typed `Dictionary`. Cloning increments the underlying `Arc` reference count.
 #[derive(Debug, Clone)]
 pub enum CategoryManagerT {
     #[cfg(feature = "default_categorical_8")]
@@ -697,7 +725,7 @@ impl CategoryManagerT {
     /// Dispatches on the dispatch variant and the array's categorical
     /// width, calling `Dictionary::add_remap_cat` on the matching pair.
     /// Width mismatch is a schema error upstream and is treated as a
-    /// no-op here. An array that already shares the dictionary is not
+    /// no-op here. Arrays that already share the dictionary are not
     /// copied.
     pub fn add_remap_cat(&self, array: &mut crate::Array) {
         use crate::{Array, TextArray};
@@ -954,5 +982,36 @@ mod tests {
         assert_eq!(shared.len(), 2);
         assert_eq!(cat.get_str(0), Some("y"));
         assert_eq!(cat.get_str(1), None);
+    }
+
+    // Dictionaries sized past the default cap holds every value, keep each
+    // value's code, and overflow once their capacity is reached.
+    #[test]
+    fn with_capacity_holds_values_past_the_default_cap() {
+        let n = 1_500_000;
+        let d: Dictionary<u32> = Dictionary::with_capacity(n);
+        for i in 0..n {
+            assert_eq!(d.add_cat(&format!("SYM{i:07}")), Ok(i as u32));
+        }
+        assert_eq!(d.len(), n);
+        assert_eq!(d.lookup("SYM1499999"), Some(1_499_999));
+        assert_eq!(d.add_cat("SYM0000000"), Ok(0));
+        assert_eq!(d.add_cat("one more"), Err(DictionaryError::Overflow));
+
+        // Codes past the default cap read back through a categorical array.
+        let cat = crate::CategoricalArray::new_existing_dict(
+            Vec64::from_slice(&[1_499_999u32, 1_048_576, 0]),
+            d.clone(),
+            None,
+        );
+        assert_eq!(cat.get_str(0), Some("SYM1499999"));
+        assert_eq!(cat.get_str(1), Some("SYM1048576"));
+        assert_eq!(cat.get_str(2), Some("SYM0000000"));
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds the 256 codes")]
+    fn with_capacity_beyond_the_code_width_panics() {
+        let _ = Dictionary::<u8>::with_capacity(257);
     }
 }
