@@ -251,8 +251,8 @@ impl SuperTable {
         for col_idx in 0..n_cols {
             let array = &incoming.cols[col_idx].array;
             // Non-categorical columns, and columns already in their
-            // manager's sharing group, need no work. A batch with no other
-            // columns is pushed without a copy.
+            // manager's sharing group do not require any work. Batches without any other
+            // columns are pushed without a copy.
             if !array.is_categorical_array() {
                 continue;
             }
