@@ -984,8 +984,8 @@ mod tests {
         assert_eq!(cat.get_str(1), None);
     }
 
-    // A dictionary sized past the default cap holds every value, keeps each
-    // value's code, and overflows once its capacity is reached.
+    // Dictionaries sized past the default cap holds every value, keep each
+    // value's code, and overflow once their capacity is reached.
     #[test]
     fn with_capacity_holds_values_past_the_default_cap() {
         let n = 1_500_000;
