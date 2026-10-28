@@ -670,8 +670,8 @@ impl CategoryManagerT {
         }
     }
 
-    /// True when `array` is a categorical array of this dispatch's width
-    /// whose dictionary is this dispatch's dictionary.
+    /// Returns true if `array` is categorical and has the same code width and
+    /// dictionary as this dispatch.
     pub fn shares_with(&self, array: &crate::Array) -> bool {
         use crate::{Array, TextArray};
         match (self, array) {
