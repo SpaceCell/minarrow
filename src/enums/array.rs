@@ -1592,11 +1592,10 @@ impl Array {
             }};
         }
 
-        // Copies codes when they are valid against this array's dictionary,
-        // which holds when the source dictionary is the same dictionary or a
-        // prefix of it. Otherwise each distinct source code is interned into
-        // this array's dictionary once, and later positions with that code
-        // reuse the interned code.
+        // Copies codes directly if the source dictionary matches this array's
+        // dictionary or is a prefix of it. Otherwise, interns the value for each
+        // distinct source code into this array's dictionary and reuses the
+        // resulting code for subsequent occurrences.
         macro_rules! scatter_cat {
             ($dst:expr, $src:expr) => {{
                 let dst = Arc::make_mut($dst);
