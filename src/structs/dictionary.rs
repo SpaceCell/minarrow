@@ -428,7 +428,7 @@ impl<T: Integer> Dictionary<T> {
     /// dictionary to a clone of `self`.
     ///
     /// ## Behaviour
-    /// - A chunk that already shares this dictionary is left unchanged.
+    /// - Chunks that already share this dictionary are left unchanged.
     /// - Only the values behind the chunk's non-null codes are interned,
     ///   which keeps the cost proportional to the chunk rather than to the
     ///   size of its dictionary.
