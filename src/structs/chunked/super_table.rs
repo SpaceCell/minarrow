@@ -244,16 +244,30 @@ impl SuperTable {
     /// rebind the batch's dictionary to the shared snapshot.
     #[cfg(feature = "shared_dict")]
     fn add_dict_categories(&mut self, incoming: &mut Arc<Table>) {
-        let table = Arc::make_mut(incoming);
-        if self.category_managers.len() < table.cols.len() {
-            self.category_managers
-                .resize_with(table.cols.len(), || None);
+        let n_cols = incoming.cols.len();
+        if self.category_managers.len() < n_cols {
+            self.category_managers.resize_with(n_cols, || None);
         }
-        for (col_idx, fa) in table.cols.iter_mut().enumerate() {
-            CategoryManagerT::add_remap_cats(
-                &mut self.category_managers[col_idx],
-                std::iter::once(&mut fa.array),
-            );
+        for col_idx in 0..n_cols {
+            let array = &incoming.cols[col_idx].array;
+            // Non-categorical columns, and columns already in their
+            // manager's sharing group do not require any work. Batches without any other
+            // columns are pushed without a copy.
+            if !array.is_categorical_array() {
+                continue;
+            }
+            match &self.category_managers[col_idx] {
+                Some(manager) if manager.shares_with(array) => {}
+                Some(manager) => {
+                    manager.add_remap_cat(&mut Arc::make_mut(incoming).cols[col_idx].array);
+                }
+                // The first categorical batch installs its own dictionary.
+                // This leaves the batch unchanged.
+                None => {
+                    self.category_managers[col_idx] =
+                        CategoryManagerT::install_from(&mut array.clone());
+                }
+            }
         }
     }
 
@@ -2099,6 +2113,40 @@ mod tests {
             }
             _ => panic!("Expected Datetime64"),
         }
+    }
+
+    // Batches with categorical columns that already share the column managers'
+    // dictionaries are pushed without a copy.
+    #[cfg(feature = "shared_dict")]
+    #[test]
+    fn test_push_keeps_a_batch_on_the_shared_dictionary_uncopied() {
+        let mut st = SuperTable::new("t".into());
+        st.push(Arc::new(Table::new(
+            "t",
+            Some(vec![fa_cat32!("sym", "a", "b"), fa_i64!("px", 1, 2)]),
+        )));
+        let Some(CategoryManagerT::U32(dictionary)) = st.category_manager(0).cloned() else {
+            panic!("Expected a u32 category manager");
+        };
+        let codes = crate::CategoricalArray::<u32>::new_existing_dict(
+            crate::Vec64::from_slice(&[1u32, 0]),
+            dictionary.clone(),
+            None,
+        );
+        let batch = Arc::new(Table::new(
+            "t",
+            Some(vec![
+                FieldArray::new(
+                    st.schema[0].as_ref().clone(),
+                    Array::from_categorical32(codes),
+                ),
+                fa_i64!("px", 3, 4),
+            ]),
+        ));
+        let sent = Arc::clone(&batch);
+        st.push(batch);
+        assert!(Arc::ptr_eq(&sent, &st.batches()[1]));
+        assert_eq!(dictionary.len(), 2);
     }
 }
 
