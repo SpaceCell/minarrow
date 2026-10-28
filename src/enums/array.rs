@@ -1154,17 +1154,16 @@ impl Array {
         Ok(())
     }
 
-    /// Sets every element in `range` to `value`, converting it to the element type.
+    /// Sets every element in `range` to `value`, converted to the array's element type.
     ///
-    /// The scalar converts once and each variant then writes through its own
-    /// typed buffer, so the per-element work carries no dispatch. A
-    /// `Scalar::Null` value masks the whole range null and leaves the buffer
-    /// contents in place. Categorical arrays intern the value into the
-    /// dictionary once and repeat its code across the range.
+    /// Converts the scalar before writing directly to the typed buffer, without
+    /// per-element dispatch. `Scalar::Null` marks the range as null without changing
+    /// the buffer contents. Categorical arrays intern the value and fill the range
+    /// with its dictionary code.
     ///
-    /// Returns an error when the value cannot be represented as the array's
-    /// type, when the range reaches past the array's length, or when the
-    /// array is `Null`. Mutation is copy-on-write.
+    /// Returns an error if the value cannot be represented by the element type,
+    /// the range extends beyond the array's length, or the array is `Null`.
+    /// Mutation uses copy-on-write.
     #[cfg(feature = "scalar_type")]
     pub fn set_range(
         &mut self,
