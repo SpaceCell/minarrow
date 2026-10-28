@@ -905,7 +905,7 @@ mod tests {
         )
     }
 
-    // A chunk already in the sharing group adds no entries and keeps its codes.
+    // Chunks already in the sharing group add no entries and keeps their codes.
     #[test]
     fn add_remap_cat_leaves_a_shared_chunk_unchanged() {
         let d: Dictionary<u32> = Dictionary::new();
