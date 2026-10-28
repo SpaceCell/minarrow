@@ -58,7 +58,9 @@ use crate::traits::shape::Shape;
 use crate::enums::collections::numeric_array::NumericArray;
 #[cfg(feature = "datetime")]
 use crate::enums::collections::temporal_array::TemporalArray;
-use crate::{Array, Bitmask, BitmaskV, FieldArray, MaskedArray, TextArray};
+#[cfg(feature = "select")]
+use crate::Bitmask;
+use crate::{Array, BitmaskV, FieldArray, MaskedArray, TextArray};
 
 /// Keeps a stride of gathered loads in flight so their memory latency
 /// overlaps rather than serialising, since gather indices land anywhere
