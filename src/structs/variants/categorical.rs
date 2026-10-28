@@ -56,28 +56,6 @@ use crate::{
 };
 use ::vec64::{Vec64, Vec64Alloc};
 
-/// Without `shared_dict`, returns the existing code for `value` if it
-/// is already in `unique_values`, else pushes it and returns the new
-/// code. Linear scan. Panics if the new cardinality would exceed the
-/// capacity of `T`.
-#[cfg(not(feature = "shared_dict"))]
-#[inline]
-fn add_category<T: Integer>(unique_values: &mut Vec64<String>, value: &str) -> T {
-    if let Some(pos) = unique_values.iter().position(|s| s.as_str() == value) {
-        return T::from_usize(pos);
-    }
-    let i = unique_values.len();
-    let c = T::try_from(i).ok().unwrap_or_else(|| {
-        panic!(
-            "Categorical cardinality exceeded the capacity of the index \
-             type {}. Consider a wider index width.",
-            std::any::type_name::<T>()
-        )
-    });
-    unique_values.push(value.to_owned());
-    c
-}
-
 /// # CategoricalArray
 ///
 /// Categorical array with unique string instances mapped to indices.
@@ -601,6 +579,39 @@ impl<T: Integer> CategoricalArray<T> {
             #[cfg(feature = "shared_dict")]
             dictionary: Dictionary::from(unique_values),
             null_mask,
+        }
+    }
+
+    /// Drops the dictionary entries that no non-null code refers to, and
+    /// rewrites the codes against the remaining entries.
+    ///
+    /// Entries keep the order of their first appearance in the array, and
+    /// null positions take code 0. The cost is one pass over the codes plus
+    /// one remap slot per dictionary entry.
+    ///
+    /// ## Shared dictionaries
+    ///
+    /// Under `shared_dict`, this array is detached from its sharing group
+    /// and holds a new dictionary of its own. The shared dictionary and the
+    /// other arrays in the group are unchanged, as their codes index into
+    /// the shared entries.
+    ///
+    /// After compaction, this array's codes diverge from the codes of every
+    /// other categorical array. Equal codes in two arrays no longer refer to
+    /// equal values, which makes code-level comparisons, joins and grouping
+    /// across arrays incorrect. Compare such arrays by value, or bring them
+    /// back to a common dictionary first, for example through `concat`,
+    /// which remaps divergent codes.
+    pub fn compact_dict(&mut self) {
+        let codes = self.data.as_mut_slice();
+        #[cfg(not(feature = "shared_dict"))]
+        {
+            self.unique_values = compact_codes(codes, self.null_mask.as_ref(), &self.unique_values);
+        }
+        #[cfg(feature = "shared_dict")]
+        {
+            let kept = compact_codes(codes, self.null_mask.as_ref(), self.dictionary.values());
+            self.dictionary = Dictionary::from(kept);
         }
     }
 
@@ -1236,6 +1247,57 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
     }
 }
 
+/// Without `shared_dict`, returns the existing code for `value` if it
+/// is already in `unique_values`, else pushes it and returns the new
+/// code. Linear scan. Panics if the new cardinality would exceed the
+/// capacity of `T`.
+#[cfg(not(feature = "shared_dict"))]
+#[inline]
+fn add_category<T: Integer>(unique_values: &mut Vec64<String>, value: &str) -> T {
+    if let Some(pos) = unique_values.iter().position(|s| s.as_str() == value) {
+        return T::from_usize(pos);
+    }
+    let i = unique_values.len();
+    let c = T::try_from(i).ok().unwrap_or_else(|| {
+        panic!(
+            "Categorical cardinality exceeded the capacity of the index \
+             type {}. Consider a wider index width.",
+            std::any::type_name::<T>()
+        )
+    });
+    unique_values.push(value.to_owned());
+    c
+}
+
+/// Remaps `codes` to a new dictionary containing only entries from `values`
+/// referenced by non-null codes, and returns the dictionary.
+///
+/// Entries follow their first appearance in `codes`. Null positions use code 0.
+/// Requires a single pass over `codes` and a remap slot for each entry in
+/// `values`, without string hashing or comparison.
+pub(crate) fn compact_codes<T: Integer>(
+    codes: &mut [T],
+    null_mask: Option<&Bitmask>,
+    values: &[String],
+) -> Vec64<String> {
+    const UNSEEN: usize = usize::MAX;
+    let mut remap = vec![UNSEEN; values.len()];
+    let mut kept = Vec64::new();
+    for (i, code) in codes.iter_mut().enumerate() {
+        if null_mask.is_some_and(|m| !m.get(i)) {
+            *code = T::default();
+            continue;
+        }
+        let old = code.to_usize();
+        if remap[old] == UNSEEN {
+            remap[old] = kept.len();
+            kept.push(values[old].clone());
+        }
+        *code = T::from_usize(remap[old]);
+    }
+    kept
+}
+
 #[cfg(feature = "parallel_proc")]
 impl<T: Integer + Send + Sync> CategoricalArray<T> {
     /// Parallel iterator over &str (null yields "").
@@ -1609,6 +1671,24 @@ mod tests {
         let arr = CategoricalArray::<u8>::default();
         assert!(arr.is_empty());
         assert!(arr.unique_values().is_empty());
+    }
+
+    // Entries no non-null code refers to are dropped, and the remaining
+    // entries follow their first appearance.
+    #[test]
+    fn compact_dict_keeps_only_referenced_entries() {
+        let values = vec64!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()];
+        let mut arr = CategoricalArray::<u32>::new(
+            vec64![3u32, 1, 2, 3],
+            values,
+            Some(bm(&[true, true, false, true])),
+        );
+        arr.compact_dict();
+        assert_eq!(arr.unique_values(), &["d".to_string(), "b".to_string()]);
+        assert_eq!(arr.get_str(0), Some("d"));
+        assert_eq!(arr.get_str(1), Some("b"));
+        assert_eq!(arr.get_str(2), None);
+        assert_eq!(arr.get_str(3), Some("d"));
     }
 
     #[test]

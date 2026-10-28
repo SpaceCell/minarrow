@@ -52,6 +52,8 @@ use crate::traits::concatenate::Concatenate;
 use crate::traits::print::MAX_PREVIEW;
 #[cfg(feature = "select")]
 use crate::traits::selection::{DataSelector, RowSelection};
+#[cfg(feature = "select")]
+use crate::structs::variants::categorical::compact_codes;
 use crate::traits::shape::Shape;
 use crate::enums::collections::numeric_array::NumericArray;
 #[cfg(feature = "datetime")]
@@ -896,6 +898,12 @@ impl ArrayV {
     /// only when the source does, with each gathered position's bit read
     /// from the source mask. The value under a null position is
     /// unspecified, matching the mask-driven gathers.
+    ///
+    /// Categorical outputs hold a new dictionary of only the gathered values,
+    /// compacted as
+    /// [`CategoricalArray::compact_dict`](crate::CategoricalArray::compact_dict)
+    /// describes. Under `shared_dict` the output is detached from the
+    /// source's sharing group, and its codes diverge from the source's codes.
     #[cfg(feature = "select")]
     pub fn gather_indices(&self, indices: &[usize]) -> Array {
         use crate::{
@@ -943,6 +951,18 @@ impl ArrayV {
                     m
                 });
                 (out, out_mask)
+            }};
+        }
+
+        // Gathers a categorical window's codes through `gather_idx_prim`.
+        // The output dictionary holds only the gathered values, through
+        // `compact_codes`.
+        macro_rules! gather_idx_cat {
+            ($self_:expr, $arr:expr, $indices:expr, $T:ty, $from:path) => {{
+                let (data, null_mask) = gather_idx_prim!($self_, $arr, $indices, $T);
+                let mut data = data;
+                let values = compact_codes(&mut data, null_mask.as_ref(), $arr.unique_values());
+                $from(CategoricalArray::from_parts(data, values, null_mask))
             }};
         }
 
@@ -1047,40 +1067,20 @@ impl ArrayV {
                 TextArray::String64(_) => {
                     gather_idx_str!(self, indices, StringArray<u64>, Array::from_string64)
                 }
-                TextArray::Categorical32(_) => {
-                    gather_idx_str!(
-                        self,
-                        indices,
-                        CategoricalArray<u32>,
-                        Array::from_categorical32
-                    )
+                TextArray::Categorical32(arr) => {
+                    gather_idx_cat!(self, arr, indices, u32, Array::from_categorical32)
                 }
                 #[cfg(feature = "default_categorical_8")]
-                TextArray::Categorical8(_) => {
-                    gather_idx_str!(
-                        self,
-                        indices,
-                        CategoricalArray<u8>,
-                        Array::from_categorical8
-                    )
+                TextArray::Categorical8(arr) => {
+                    gather_idx_cat!(self, arr, indices, u8, Array::from_categorical8)
                 }
                 #[cfg(feature = "extended_categorical")]
-                TextArray::Categorical16(_) => {
-                    gather_idx_str!(
-                        self,
-                        indices,
-                        CategoricalArray<u16>,
-                        Array::from_categorical16
-                    )
+                TextArray::Categorical16(arr) => {
+                    gather_idx_cat!(self, arr, indices, u16, Array::from_categorical16)
                 }
                 #[cfg(feature = "extended_categorical")]
-                TextArray::Categorical64(_) => {
-                    gather_idx_str!(
-                        self,
-                        indices,
-                        CategoricalArray<u64>,
-                        Array::from_categorical64
-                    )
+                TextArray::Categorical64(arr) => {
+                    gather_idx_cat!(self, arr, indices, u64, Array::from_categorical64)
                 }
                 TextArray::Null => Array::Null,
             },
@@ -1122,6 +1122,12 @@ impl ArrayV {
     /// preserved-side joins otherwise gather through a placeholder index
     /// and clear the padded bits afterwards, which costs a second index
     /// buffer and a mask combine that this function does not.
+    ///
+    /// Categorical outputs hold a new dictionary of only the gathered values,
+    /// compacted as
+    /// [`CategoricalArray::compact_dict`](crate::CategoricalArray::compact_dict)
+    /// describes. Under `shared_dict` the output is detached from the
+    /// source's sharing group, and its codes diverge from the source's codes.
     #[cfg(feature = "select")]
     pub fn gather_indices_padded(&self, indices: &[usize], pad: usize) -> Array {
         use crate::{
@@ -1169,6 +1175,18 @@ impl ArrayV {
                     }
                 }
                 (out, Some(mask))
+            }};
+        }
+
+        // Gathers a categorical window's codes through `gather_pad_prim`.
+        // The output dictionary holds only the gathered values, through
+        // `compact_codes`.
+        macro_rules! gather_pad_cat {
+            ($self_:expr, $arr:expr, $indices:expr, $pad:expr, $T:ty, $from:path) => {{
+                let (data, null_mask) = gather_pad_prim!($self_, $arr, $indices, $pad, $T);
+                let mut data = data;
+                let values = compact_codes(&mut data, null_mask.as_ref(), $arr.unique_values());
+                $from(CategoricalArray::from_parts(data, values, null_mask))
             }};
         }
 
@@ -1274,44 +1292,20 @@ impl ArrayV {
                 TextArray::String64(_) => {
                     gather_pad_str!(self, indices, pad, StringArray<u64>, Array::from_string64)
                 }
-                TextArray::Categorical32(_) => {
-                    gather_pad_str!(
-                        self,
-                        indices,
-                        pad,
-                        CategoricalArray<u32>,
-                        Array::from_categorical32
-                    )
+                TextArray::Categorical32(arr) => {
+                    gather_pad_cat!(self, arr, indices, pad, u32, Array::from_categorical32)
                 }
                 #[cfg(feature = "default_categorical_8")]
-                TextArray::Categorical8(_) => {
-                    gather_pad_str!(
-                        self,
-                        indices,
-                        pad,
-                        CategoricalArray<u8>,
-                        Array::from_categorical8
-                    )
+                TextArray::Categorical8(arr) => {
+                    gather_pad_cat!(self, arr, indices, pad, u8, Array::from_categorical8)
                 }
                 #[cfg(feature = "extended_categorical")]
-                TextArray::Categorical16(_) => {
-                    gather_pad_str!(
-                        self,
-                        indices,
-                        pad,
-                        CategoricalArray<u16>,
-                        Array::from_categorical16
-                    )
+                TextArray::Categorical16(arr) => {
+                    gather_pad_cat!(self, arr, indices, pad, u16, Array::from_categorical16)
                 }
                 #[cfg(feature = "extended_categorical")]
-                TextArray::Categorical64(_) => {
-                    gather_pad_str!(
-                        self,
-                        indices,
-                        pad,
-                        CategoricalArray<u64>,
-                        Array::from_categorical64
-                    )
+                TextArray::Categorical64(arr) => {
+                    gather_pad_cat!(self, arr, indices, pad, u64, Array::from_categorical64)
                 }
                 TextArray::Null => Array::Null,
             },
@@ -1357,6 +1351,12 @@ impl ArrayV {
     /// end to end with no index-list materialisation. The walk is word-based -
     /// zero words skip 64 elements at a time and fully-set words copy their whole
     /// run with one slice copy. Null mask bits carry through to gathered positions.
+    ///
+    /// Categorical outputs hold a new dictionary of only the gathered values,
+    /// compacted as
+    /// [`CategoricalArray::compact_dict`](crate::CategoricalArray::compact_dict)
+    /// describes. Under `shared_dict` the output is detached from the
+    /// source's sharing group, and its codes diverge from the source's codes.
     #[cfg(feature = "select")]
     pub fn gather_mask(&self, mask: &Bitmask) -> Array {
         use crate::{
@@ -1442,6 +1442,18 @@ impl ArrayV {
                     }
                 );
                 (out, out_mask)
+            }};
+        }
+
+        // Gathers a categorical window's codes through `gather_mask_prim`.
+        // The output dictionary holds only the gathered values, through
+        // `compact_codes`.
+        macro_rules! gather_mask_cat {
+            ($self_:expr, $arr:expr, $mask:expr, $kept:expr, $T:ty, $from:path) => {{
+                let (data, null_mask) = gather_mask_prim!($self_, $arr, $mask, $kept, $T);
+                let mut data = data;
+                let values = compact_codes(&mut data, null_mask.as_ref(), $arr.unique_values());
+                $from(CategoricalArray::from_parts(data, values, null_mask))
             }};
         }
 
@@ -1561,48 +1573,20 @@ impl ArrayV {
                 TextArray::String64(_) => {
                     gather_mask_str!(self, mask, len, kept, StringArray<u64>, Array::from_string64)
                 }
-                TextArray::Categorical32(_) => {
-                    gather_mask_str!(
-                        self,
-                        mask,
-                        len,
-                        kept,
-                        CategoricalArray<u32>,
-                        Array::from_categorical32
-                    )
+                TextArray::Categorical32(arr) => {
+                    gather_mask_cat!(self, arr, mask, kept, u32, Array::from_categorical32)
                 }
                 #[cfg(feature = "default_categorical_8")]
-                TextArray::Categorical8(_) => {
-                    gather_mask_str!(
-                        self,
-                        mask,
-                        len,
-                        kept,
-                        CategoricalArray<u8>,
-                        Array::from_categorical8
-                    )
+                TextArray::Categorical8(arr) => {
+                    gather_mask_cat!(self, arr, mask, kept, u8, Array::from_categorical8)
                 }
                 #[cfg(feature = "extended_categorical")]
-                TextArray::Categorical16(_) => {
-                    gather_mask_str!(
-                        self,
-                        mask,
-                        len,
-                        kept,
-                        CategoricalArray<u16>,
-                        Array::from_categorical16
-                    )
+                TextArray::Categorical16(arr) => {
+                    gather_mask_cat!(self, arr, mask, kept, u16, Array::from_categorical16)
                 }
                 #[cfg(feature = "extended_categorical")]
-                TextArray::Categorical64(_) => {
-                    gather_mask_str!(
-                        self,
-                        mask,
-                        len,
-                        kept,
-                        CategoricalArray<u64>,
-                        Array::from_categorical64
-                    )
+                TextArray::Categorical64(arr) => {
+                    gather_mask_cat!(self, arr, mask, kept, u64, Array::from_categorical64)
                 }
                 TextArray::Null => Array::Null,
             },
@@ -2187,6 +2171,45 @@ mod tests {
         // An all-false mask yields a typed empty array.
         let empty = view.gather_mask(&Bitmask::new_set_all(4, false));
         assert_eq!(empty.len(), 0);
+    }
+
+    // Categorical gathers hold only the gathered values in their dictionary,
+    // in order of first appearance.
+    #[test]
+    fn test_categorical_gathers_hold_only_the_gathered_values() {
+        use crate::CategoricalArray;
+
+        let mut arr = CategoricalArray::<u32>::from_values(["a", "b", "c", "a", "b"]);
+        arr.set_null(2);
+        // The view covers rows 1..5, which read ["b", null, "a", "b"].
+        let view = ArrayV::new(Array::from_categorical32(arr), 1, 4);
+
+        let check = |result: Array, values: &[Option<&str>], dictionary: &[&str]| {
+            let Array::TextArray(TextArray::Categorical32(out)) = &result else {
+                panic!("Expected Categorical32");
+            };
+            assert_eq!(out.unique_values(), dictionary);
+            assert_eq!(out.len(), values.len());
+            for (i, value) in values.iter().enumerate() {
+                assert_eq!(out.get_str(i), *value);
+            }
+        };
+
+        check(
+            view.gather_indices(&[3, 0, 2]),
+            &[Some("b"), Some("b"), Some("a")],
+            &["b", "a"],
+        );
+        check(view.gather_indices(&[1, 2]), &[None, Some("a")], &["a"]);
+        check(
+            view.gather_indices_padded(&[2, usize::MAX, 0], usize::MAX),
+            &[Some("a"), None, Some("b")],
+            &["a", "b"],
+        );
+        let mut mask = Bitmask::new_set_all(4, false);
+        mask.set(1, true);
+        mask.set(3, true);
+        check(view.gather_mask(&mask), &[None, Some("b")], &["b"]);
     }
 
     // Decimal ArrayV Tests
