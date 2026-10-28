@@ -261,8 +261,8 @@ impl SuperTable {
                 Some(manager) => {
                     manager.add_remap_cat(&mut Arc::make_mut(incoming).cols[col_idx].array);
                 }
-                // The first categorical batch installs its own dictionary,
-                // which leaves the batch itself unchanged.
+                // The first categorical batch installs its own dictionary.
+                // This leaves the batch unchanged.
                 None => {
                     self.category_managers[col_idx] =
                         CategoryManagerT::install_from(&mut array.clone());
