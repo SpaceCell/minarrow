@@ -2115,8 +2115,8 @@ mod tests {
         }
     }
 
-    // A batch whose categorical columns already share the column managers'
-    // dictionaries is pushed without a copy.
+    // Batches with categorical columns that already share the column managers'
+    // dictionaries are pushed without a copy.
     #[cfg(feature = "shared_dict")]
     #[test]
     fn test_push_keeps_a_batch_on_the_shared_dictionary_uncopied() {
