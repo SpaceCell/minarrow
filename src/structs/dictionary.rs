@@ -59,6 +59,7 @@
 
 #[cfg(not(feature = "fast_dict"))]
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fmt;
 #[cfg(not(feature = "fast_dict"))]
 use std::hash::{Hash, Hasher};
@@ -420,27 +421,47 @@ impl<T: Integer> Dictionary<T> {
         }
     }
 
-    /// Absorb `cat` into this sharing group. Interns every entry of
-    /// `cat`'s current dictionary into `self`, remaps `cat`'s data buffer
-    /// to the resulting codes if any code shifted, and rebinds `cat`'s
-    /// dictionary to a clone of `self` so the chunk joins the sharing
-    /// group.
+    /// Absorb `cat` into this sharing group.
+    ///
+    /// Interns the values that `cat`'s codes refer to, remaps `cat`'s data
+    /// buffer when any of those codes changed, and rebinds `cat`'s
+    /// dictionary to a clone of `self`.
+    ///
+    /// ## Behaviour
+    /// - A chunk that already shares this dictionary is left unchanged.
+    /// - Only the values behind the chunk's non-null codes are interned,
+    ///   which keeps the cost proportional to the chunk rather than to the
+    ///   size of its dictionary.
+    /// - Codes under null positions are left as they are.
+    /// - When interning overflows the code width, the chunk keeps its own
+    ///   dictionary.
     pub fn add_remap_cat(&self, cat: &mut crate::CategoricalArray<T>) {
-        let incoming = &cat.dictionary.inner.values;
+        if cat.dictionary.shares_with(self) {
+            return;
+        }
+        let incoming = cat.dictionary.values();
+        let null_mask = cat.null_mask.as_ref();
         let mut shifted = false;
-        let mut remap: Vec<T> = Vec::with_capacity(incoming.count());
-        for (incoming_code, s) in incoming.iter() {
-            let Ok(new_code) = self.add_cat(s) else {
+        let mut remap: HashMap<usize, T> = HashMap::new();
+        for (i, code) in cat.data.iter().enumerate() {
+            if null_mask.is_some_and(|m| !m.get(i)) {
+                continue;
+            }
+            let code = Integer::to_usize(*code);
+            if remap.contains_key(&code) {
+                continue;
+            }
+            let Ok(new_code) = self.add_cat(&incoming[code]) else {
                 return;
             };
-            if new_code.to_usize() != incoming_code {
-                shifted = true;
-            }
-            remap.push(new_code);
+            shifted |= new_code.to_usize() != code;
+            remap.insert(code, new_code);
         }
         if shifted {
-            for code in cat.data.iter_mut() {
-                *code = remap[code.to_usize()];
+            for (i, code) in cat.data.iter_mut().enumerate() {
+                if null_mask.is_none_or(|m| m.get(i)) {
+                    *code = remap[&Integer::to_usize(*code)];
+                }
             }
         }
         cat.dictionary = self.clone();
@@ -631,49 +652,78 @@ impl CategoryManagerT {
         use crate::{Array, TextArray};
         match array {
             Array::TextArray(TextArray::Categorical32(arc)) => {
-                let cat = Arc::make_mut(arc);
-                Some(CategoryManagerT::U32(cat.dictionary.clone()))
+                Some(CategoryManagerT::U32(arc.dictionary.clone()))
             }
             #[cfg(feature = "default_categorical_8")]
             Array::TextArray(TextArray::Categorical8(arc)) => {
-                let cat = Arc::make_mut(arc);
-                Some(CategoryManagerT::U8(cat.dictionary.clone()))
+                Some(CategoryManagerT::U8(arc.dictionary.clone()))
             }
             #[cfg(feature = "extended_categorical")]
             Array::TextArray(TextArray::Categorical16(arc)) => {
-                let cat = Arc::make_mut(arc);
-                Some(CategoryManagerT::U16(cat.dictionary.clone()))
+                Some(CategoryManagerT::U16(arc.dictionary.clone()))
             }
             #[cfg(feature = "extended_categorical")]
             Array::TextArray(TextArray::Categorical64(arc)) => {
-                let cat = Arc::make_mut(arc);
-                Some(CategoryManagerT::U64(cat.dictionary.clone()))
+                Some(CategoryManagerT::U64(arc.dictionary.clone()))
             }
             _ => None,
+        }
+    }
+
+    /// True when `array` is a categorical array of this dispatch's width
+    /// whose dictionary is this dispatch's dictionary.
+    pub fn shares_with(&self, array: &crate::Array) -> bool {
+        use crate::{Array, TextArray};
+        match (self, array) {
+            (CategoryManagerT::U32(d), Array::TextArray(TextArray::Categorical32(arc))) => {
+                arc.dictionary.shares_with(d)
+            }
+            #[cfg(feature = "default_categorical_8")]
+            (CategoryManagerT::U8(d), Array::TextArray(TextArray::Categorical8(arc))) => {
+                arc.dictionary.shares_with(d)
+            }
+            #[cfg(feature = "extended_categorical")]
+            (CategoryManagerT::U16(d), Array::TextArray(TextArray::Categorical16(arc))) => {
+                arc.dictionary.shares_with(d)
+            }
+            #[cfg(feature = "extended_categorical")]
+            (CategoryManagerT::U64(d), Array::TextArray(TextArray::Categorical64(arc))) => {
+                arc.dictionary.shares_with(d)
+            }
+            _ => false,
         }
     }
 
     /// Dispatches on the dispatch variant and the array's categorical
     /// width, calling `Dictionary::add_remap_cat` on the matching pair.
     /// Width mismatch is a schema error upstream and is treated as a
-    /// no-op here.
+    /// no-op here. An array that already shares the dictionary is not
+    /// copied.
     pub fn add_remap_cat(&self, array: &mut crate::Array) {
         use crate::{Array, TextArray};
         match (self, array) {
             (CategoryManagerT::U32(d), Array::TextArray(TextArray::Categorical32(arc))) => {
-                d.add_remap_cat(Arc::make_mut(arc));
+                if !arc.dictionary.shares_with(d) {
+                    d.add_remap_cat(Arc::make_mut(arc));
+                }
             }
             #[cfg(feature = "default_categorical_8")]
             (CategoryManagerT::U8(d), Array::TextArray(TextArray::Categorical8(arc))) => {
-                d.add_remap_cat(Arc::make_mut(arc));
+                if !arc.dictionary.shares_with(d) {
+                    d.add_remap_cat(Arc::make_mut(arc));
+                }
             }
             #[cfg(feature = "extended_categorical")]
             (CategoryManagerT::U16(d), Array::TextArray(TextArray::Categorical16(arc))) => {
-                d.add_remap_cat(Arc::make_mut(arc));
+                if !arc.dictionary.shares_with(d) {
+                    d.add_remap_cat(Arc::make_mut(arc));
+                }
             }
             #[cfg(feature = "extended_categorical")]
             (CategoryManagerT::U64(d), Array::TextArray(TextArray::Categorical64(arc))) => {
-                d.add_remap_cat(Arc::make_mut(arc));
+                if !arc.dictionary.shares_with(d) {
+                    d.add_remap_cat(Arc::make_mut(arc));
+                }
             }
             _ => {}
         }
@@ -845,5 +895,64 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(d.len(), 8 * 500);
+    }
+
+    fn categorical(codes: &[u32], dictionary: &Dictionary<u32>) -> crate::CategoricalArray<u32> {
+        crate::CategoricalArray::new_existing_dict(
+            Vec64::from_slice(codes),
+            dictionary.clone(),
+            None,
+        )
+    }
+
+    // A chunk already in the sharing group adds no entries and keeps its codes.
+    #[test]
+    fn add_remap_cat_leaves_a_shared_chunk_unchanged() {
+        let d: Dictionary<u32> = Dictionary::new();
+        for s in ["a", "b", "c"] {
+            d.add_cat(s).unwrap();
+        }
+        let mut cat = categorical(&[2, 0, 1], &d);
+        d.add_remap_cat(&mut cat);
+        assert_eq!(d.len(), 3);
+        assert_eq!(cat.indices(), &[2, 0, 1]);
+        assert!(cat.dictionary.shares_with(&d));
+    }
+
+    // Only the values the chunk's codes refer to are interned, and the codes
+    // are remapped onto the shared dictionary.
+    #[test]
+    fn add_remap_cat_interns_only_the_values_in_use() {
+        let shared: Dictionary<u32> = Dictionary::new();
+        shared.add_cat("x").unwrap();
+        let own: Dictionary<u32> = Dictionary::new();
+        for i in 0..10_000 {
+            own.add_cat(&format!("v{i}")).unwrap();
+        }
+        let mut cat = categorical(&[9_999, 5, 9_999], &own);
+        shared.add_remap_cat(&mut cat);
+        assert_eq!(shared.len(), 3);
+        assert_eq!(cat.indices(), &[1, 2, 1]);
+        assert_eq!(cat.get_str(0), Some("v9999"));
+        assert_eq!(cat.get_str(1), Some("v5"));
+        assert!(cat.dictionary.shares_with(&shared));
+    }
+
+    // Codes under null positions are not read, including out-of-range
+    // sentinels written by other producers.
+    #[test]
+    fn add_remap_cat_skips_codes_under_nulls() {
+        let shared: Dictionary<u32> = Dictionary::new();
+        shared.add_cat("x").unwrap();
+        let own: Dictionary<u32> = Dictionary::new();
+        own.add_cat("y").unwrap();
+        let mut cat = categorical(&[0, u32::MAX], &own);
+        let mut mask = crate::Bitmask::new_set_all(2, true);
+        mask.set(1, false);
+        cat.null_mask = Some(mask);
+        shared.add_remap_cat(&mut cat);
+        assert_eq!(shared.len(), 2);
+        assert_eq!(cat.get_str(0), Some("y"));
+        assert_eq!(cat.get_str(1), None);
     }
 }
