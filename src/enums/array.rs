@@ -47,13 +47,15 @@ use crate::DecimalArray;
 use crate::SuperArray;
 #[cfg(feature = "datetime")]
 use crate::TemporalArray;
+#[cfg(all(feature = "views", feature = "select"))]
+use crate::Integer;
 use crate::enums::error::MinarrowError;
 use crate::enums::shape_dim::ShapeDim;
 use crate::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::utils::{float_to_text_array, int_to_text_array};
 use crate::{
-    Bitmask, BooleanArray, CategoricalArray, Field, FieldArray, FloatArray, Integer, IntegerArray,
+    Bitmask, BooleanArray, CategoricalArray, Field, FieldArray, FloatArray, IntegerArray,
     MaskedArray, NumericArray, StringArray, TextArray, Vec64, match_array,
 };
 
