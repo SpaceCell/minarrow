@@ -199,13 +199,18 @@ pub struct DictionaryInner<T: Integer> {
 
 impl<T: Integer> Default for DictionaryInner<T> {
     fn default() -> Self {
-        // Pre-allocate the value array to the type's natural cap.
-        // The cap is fixed for the dictionary's lifetime (the
-        // `AppendOnlyVec` never reallocates); `push` returns `None`
-        // when the cap is reached, which `add_cat` surfaces as
-        // `DictionaryError::Overflow`.
+        Self::with_capacity(max_cap::<T>())
+    }
+}
+
+impl<T: Integer> DictionaryInner<T> {
+    // The cap is fixed for the dictionary's lifetime (the
+    // `AppendOnlyVec` never reallocates); `push` returns `None` when the
+    // cap is reached, which `add_cat` surfaces as
+    // `DictionaryError::Overflow`.
+    fn with_capacity(cap: usize) -> Self {
         Self {
-            values: AppendOnlyVec::with_capacity(max_cap::<T>()),
+            values: AppendOnlyVec::with_capacity(cap),
             index: ShardedIndex::default(),
         }
     }
@@ -234,6 +239,32 @@ impl<T: Integer> Dictionary<T> {
     #[inline]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Empty dictionary in a fresh sharing group, holding up to `cap`
+    /// values.
+    ///
+    /// Use this for dictionaries expected to exceed the default cap of
+    /// 1 048 576 values for `u32` and `u64` codes, for example one
+    /// dictionary shared by every batch of a feed with millions of
+    /// symbols. Unlike `Vec::with_capacity`, the capacity is fixed for the
+    /// dictionary's lifetime, and `add_cat` returns
+    /// `DictionaryError::Overflow` once it is reached.
+    /// Address space for `cap` values is reserved at construction, and
+    /// memory is committed only as values are added.
+    ///
+    /// # Panics
+    /// When `cap` exceeds the number of codes `T` can represent.
+    pub fn with_capacity(cap: usize) -> Self {
+        let codes = T::max_value().to_usize().saturating_add(1);
+        assert!(
+            cap <= codes,
+            "Dictionary capacity {cap} exceeds the {codes} codes of {}",
+            std::any::type_name::<T>()
+        );
+        Self {
+            inner: Arc::new(DictionaryInner::with_capacity(cap)),
+        }
     }
 
     /// Builds a dictionary from an ordered list of values. Deduplicates
@@ -605,8 +636,8 @@ impl<T: Integer, S: Into<String>> FromIterator<S> for Dictionary<T> {
 /// receive their natural cap; `u32`/`u64` receive a soft cap of
 /// `1 << 20` (1 048 576) entries because preallocating their natural
 /// cap would reserve ~100 GB+ of virtual address space per dictionary
-/// (allocators reject the request even with overcommit). Users who
-/// genuinely need a larger cap can pass it via `with_capacity`.
+/// (allocators reject the request even with overcommit). Dictionaries
+/// that need a larger cap are created with `Dictionary::with_capacity`.
 ///
 /// `u8 -> 256`, `u16 -> 65 536`, `u32/u64 -> 1 048 576`.
 const DEFAULT_WIDE_CAP: usize = 1 << 20;
@@ -954,5 +985,36 @@ mod tests {
         assert_eq!(shared.len(), 2);
         assert_eq!(cat.get_str(0), Some("y"));
         assert_eq!(cat.get_str(1), None);
+    }
+
+    // A dictionary sized past the default cap holds every value, keeps each
+    // value's code, and overflows once its capacity is reached.
+    #[test]
+    fn with_capacity_holds_values_past_the_default_cap() {
+        let n = 1_500_000;
+        let d: Dictionary<u32> = Dictionary::with_capacity(n);
+        for i in 0..n {
+            assert_eq!(d.add_cat(&format!("SYM{i:07}")), Ok(i as u32));
+        }
+        assert_eq!(d.len(), n);
+        assert_eq!(d.lookup("SYM1499999"), Some(1_499_999));
+        assert_eq!(d.add_cat("SYM0000000"), Ok(0));
+        assert_eq!(d.add_cat("one more"), Err(DictionaryError::Overflow));
+
+        // Codes past the default cap read back through a categorical array.
+        let cat = crate::CategoricalArray::new_existing_dict(
+            Vec64::from_slice(&[1_499_999u32, 1_048_576, 0]),
+            d.clone(),
+            None,
+        );
+        assert_eq!(cat.get_str(0), Some("SYM1499999"));
+        assert_eq!(cat.get_str(1), Some("SYM1048576"));
+        assert_eq!(cat.get_str(2), Some("SYM0000000"));
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds the 256 codes")]
+    fn with_capacity_beyond_the_code_width_panics() {
+        let _ = Dictionary::<u8>::with_capacity(257);
     }
 }
