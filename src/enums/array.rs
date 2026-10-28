@@ -53,7 +53,7 @@ use crate::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 use crate::traits::{concatenate::Concatenate, shape::Shape};
 use crate::utils::{float_to_text_array, int_to_text_array};
 use crate::{
-    Bitmask, BooleanArray, CategoricalArray, Field, FieldArray, FloatArray, IntegerArray,
+    Bitmask, BooleanArray, CategoricalArray, Field, FieldArray, FloatArray, Integer, IntegerArray,
     MaskedArray, NumericArray, StringArray, TextArray, Vec64, match_array,
 };
 
@@ -1465,8 +1465,9 @@ impl Array {
     ///   the cost scales with the number of indices.
     /// - String arrays rebuild their offsets and data once per call, so the
     ///   cost scales with the array length.
-    /// - Categorical arrays intern each written value into this array's
-    ///   dictionary.
+    /// - Categorical arrays copy codes when `src` shares this array's
+    ///   dictionary or a prefix of it. Otherwise each distinct source code
+    ///   is interned into this array's dictionary once.
     /// - This array gains a null mask only when `src` has one.
     ///
     /// Returns an error when `src` differs in array type, datetime unit, or
@@ -1592,19 +1593,46 @@ impl Array {
             }};
         }
 
-        // Interns each scattered value into the categorical dictionary.
+        // Copies codes when they are valid against this array's dictionary,
+        // which holds when the source dictionary is the same dictionary or a
+        // prefix of it. Otherwise each distinct source code is interned into
+        // this array's dictionary once, and later positions with that code
+        // reuse the interned code.
         macro_rules! scatter_cat {
-            ($dst:expr) => {{
+            ($dst:expr, $src:expr) => {{
                 let dst = Arc::make_mut($dst);
-                for (&d, &s) in dst_idx.iter().zip(src_idx) {
-                    match src.get_str(s) {
-                        Some(v) => dst.set_str(d, v),
-                        None => dst
-                            .null_mask
-                            .get_or_insert_with(|| Bitmask::new_set_all(dst_len, true))
-                            .set(d, false),
+                let src_data = &$src.data.as_slice()[offset..offset + window_len];
+                #[cfg(feature = "shared_dict")]
+                let codes_valid = dst.dictionary.shares_with(&$src.dictionary)
+                    || $src.dictionary.is_prefix_of(&dst.dictionary);
+                #[cfg(not(feature = "shared_dict"))]
+                let codes_valid = dst.unique_values.starts_with(&$src.unique_values);
+                if codes_valid {
+                    let data = dst.data.as_mut_slice();
+                    for (&d, &s) in dst_idx.iter().zip(src_idx) {
+                        data[d] = src_data[s];
+                    }
+                } else {
+                    let src_mask = $src.null_mask.as_ref();
+                    let src_values = $src.unique_values();
+                    let mut remap = vec![None; src_values.len()];
+                    for (&d, &s) in dst_idx.iter().zip(src_idx) {
+                        // Codes under null positions are unspecified, and
+                        // `scatter_mask` writes their null bits.
+                        if src_mask.is_some_and(|m| !m.get(offset + s)) {
+                            continue;
+                        }
+                        let code = Integer::to_usize(src_data[s]);
+                        match remap[code] {
+                            Some(mapped) => dst.data.as_mut_slice()[d] = mapped,
+                            None => {
+                                dst.set_str(d, &src_values[code]);
+                                remap[code] = Some(dst.data[d]);
+                            }
+                        }
                     }
                 }
+                scatter_mask!(dst.null_mask, $src.null_mask.as_ref());
             }};
         }
 
@@ -1653,12 +1681,12 @@ impl Array {
                     scatter_str!(d, StringArray<u64>)
                 }
                 #[cfg(feature = "default_categorical_8")]
-                (TextArray::Categorical8(d), TextArray::Categorical8(_)) => scatter_cat!(d),
+                (TextArray::Categorical8(d), TextArray::Categorical8(s)) => scatter_cat!(d, s),
                 #[cfg(feature = "extended_categorical")]
-                (TextArray::Categorical16(d), TextArray::Categorical16(_)) => scatter_cat!(d),
-                (TextArray::Categorical32(d), TextArray::Categorical32(_)) => scatter_cat!(d),
+                (TextArray::Categorical16(d), TextArray::Categorical16(s)) => scatter_cat!(d, s),
+                (TextArray::Categorical32(d), TextArray::Categorical32(s)) => scatter_cat!(d, s),
                 #[cfg(feature = "extended_categorical")]
-                (TextArray::Categorical64(d), TextArray::Categorical64(_)) => scatter_cat!(d),
+                (TextArray::Categorical64(d), TextArray::Categorical64(s)) => scatter_cat!(d, s),
                 _ => return Err(mismatch()),
             },
             (Array::BooleanArray(d), Array::BooleanArray(s)) => {
@@ -7665,6 +7693,8 @@ mod arr_macro_extensions_tests {
 
 #[cfg(all(test, feature = "views", feature = "select"))]
 mod scatter_tests {
+    use crate::{Array, TextArray};
+
     #[test]
     fn scatter_f64_writes_values_and_null_bits() {
         let mut dst = arr_f64_opt![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
@@ -7738,6 +7768,40 @@ mod scatter_tests {
         assert_eq!(dst.get_str(0), None);
         assert_eq!(dst.get_str(1), Some("y"));
         assert_eq!(dst.get_str(2), Some("z"));
+    }
+
+    // A source dictionary that is a prefix of the destination's leaves the
+    // destination dictionary unchanged.
+    #[test]
+    fn scatter_categorical_copies_codes_against_a_prefix_dictionary() {
+        let mut dst = arr_cat32!["x", "y", "x"];
+        let src = arr_cat32!["x", "x"];
+        dst.scatter_indices(&[1], &src.view(0, 2), &[1]).unwrap();
+        let Array::TextArray(TextArray::Categorical32(out)) = &dst else {
+            panic!("Expected Categorical32");
+        };
+        assert_eq!(out.unique_values(), &["x".to_string(), "y".to_string()]);
+        assert_eq!(out.indices(), &[0, 0, 0]);
+    }
+
+    // A divergent source dictionary interns each distinct scattered value once.
+    #[test]
+    fn scatter_categorical_interns_each_distinct_value_once() {
+        let mut dst = arr_cat32!["x", "x", "x", "x"];
+        let src = arr_cat32_opt![Some("z"), Some("w"), None::<&str>, Some("z")];
+        dst.scatter_indices(&[0, 1, 2, 3], &src.view(0, 4), &[0, 1, 2, 3])
+            .unwrap();
+        let Array::TextArray(TextArray::Categorical32(out)) = &dst else {
+            panic!("Expected Categorical32");
+        };
+        assert_eq!(
+            out.unique_values(),
+            &["x".to_string(), "z".to_string(), "w".to_string()]
+        );
+        assert_eq!(dst.get_str(0), Some("z"));
+        assert_eq!(dst.get_str(1), Some("w"));
+        assert_eq!(dst.get_str(2), None);
+        assert_eq!(dst.get_str(3), Some("z"));
     }
 
     #[test]
