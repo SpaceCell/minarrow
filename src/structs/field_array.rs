@@ -190,6 +190,26 @@ impl FieldArray {
         }
     }
 
+    /// Constructs a new `FieldArray` over `array` with this field's name and metadata.
+    ///
+    /// The dtype and nullability come from `array`, ensuring that the field
+    /// describes the new values when a computation changes their type or nulls.
+    /// Nullability follows `Array::is_nullable`, consistent with `from_arr`.
+    pub fn copy_field_to_array(&self, array: Array) -> FieldArray {
+        let null_count = array.null_count();
+        let field = Field {
+            name: self.field.name.clone(),
+            dtype: array.arrow_type(),
+            nullable: array.is_nullable(),
+            metadata: self.field.metadata.clone(),
+        };
+        FieldArray {
+            field: field.into(),
+            array,
+            null_count,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.array.len()
     }
@@ -1737,6 +1757,52 @@ mod tests {
         assert_eq!(field_array.field.nullable, true);
         assert_eq!(field_array.len(), 2);
         assert_eq!(field_array.array, array.into());
+    }
+
+    #[test]
+    fn test_copy_field_to_array_keeps_name_and_metadata() {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("unit".to_string(), "AUD".to_string());
+        let field = Field::new("amount", ArrowType::Int32, false, Some(metadata.clone()));
+        let source = FieldArray::new(field, crate::arr_i32![1, 2, 3]);
+
+        let copied = source.copy_field_to_array(crate::arr_i32![4, 5, 6]);
+
+        assert_eq!(copied.field.name, "amount");
+        assert_eq!(copied.field.metadata, metadata);
+        assert_eq!(copied.array, crate::arr_i32![4, 5, 6]);
+    }
+
+    #[test]
+    fn test_copy_field_to_array_takes_dtype_from_array() {
+        let field = Field::new("amount", ArrowType::Int32, false, None);
+        let source = FieldArray::new(field, crate::arr_i32![1, 2, 3]);
+
+        let copied = source.copy_field_to_array(crate::arr_f64![1.0, 2.0, 3.0]);
+
+        assert_eq!(copied.field.dtype, ArrowType::Float64);
+        assert_eq!(copied.arrow_type(), ArrowType::Float64);
+    }
+
+    #[test]
+    fn test_copy_field_to_array_takes_nulls_from_array() {
+        let field = Field::new("amount", ArrowType::Float64, false, None);
+        let source = FieldArray::new(field, crate::arr_f64![1.0, 2.0, 3.0]);
+
+        let copied =
+            source.copy_field_to_array(crate::arr_f64_opt![Some(1.0), None::<f64>, None::<f64>]);
+
+        assert_eq!(copied.null_count(), 2);
+        assert!(copied.field.nullable);
+
+        // The new array's nullability replaces the source field's nullability.
+        let nullable_field = Field::new("amount", ArrowType::Float64, true, None);
+        let nullable_source =
+            FieldArray::new(nullable_field, crate::arr_f64_opt![Some(1.0), None::<f64>]);
+        let non_null = nullable_source.copy_field_to_array(crate::arr_f64![1.0, 2.0]);
+
+        assert_eq!(non_null.null_count(), 0);
+        assert!(!non_null.field.nullable);
     }
 
     #[cfg(feature = "views")]
