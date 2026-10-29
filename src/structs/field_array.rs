@@ -192,9 +192,7 @@ impl FieldArray {
 
     /// Constructs a new `FieldArray` over `array` with this field's name and metadata.
     ///
-    /// The dtype and nullability come from `array`, ensuring that the field
-    /// describes the new values when a computation changes their type or nulls.
-    /// Nullability follows `Array::is_nullable`, consistent with `from_arr`.
+    /// The dtype and nullability come from `array`.
     pub fn copy_field_to_array(&self, array: Array) -> FieldArray {
         let null_count = array.null_count();
         let field = Field {
