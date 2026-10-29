@@ -1172,12 +1172,23 @@ impl TryFrom<Value> for ArrayV {
 
     /// Accepts any `Value` that resolves to an `Array`, which includes a
     /// `FieldArray`, a `Scalar`, chunked arrays and the recursive wrappers.
-    /// An incoming view passes through with its window intact rather than
+    ///
+    /// ## Behaviour
+    /// - incoming views pass through with their window intact rather than
     /// being materialised.
+    /// - Table views with one active column convert to that column's window without copying
+    /// - Recursive wrappers are unwrapped first and follow the same rules.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
+            Value::BoxValue(inner) => ArrayV::try_from(*inner),
+            Value::ArcValue(inner) => {
+                ArrayV::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
             Value::ArrayView(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::TableView(table) if table.n_cols() == 1 => {
+                Ok(table.cols[table.active_col_indices()[0]].clone())
             }
             other => Ok(ArrayV::from(Array::try_from(other)?)),
         }
