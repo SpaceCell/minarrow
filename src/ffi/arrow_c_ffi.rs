@@ -3145,8 +3145,7 @@ unsafe extern "C" fn rb_view_stream_release(stream: *mut ArrowArrayStream) {
 /// than materialised.
 ///
 /// # Panics
-/// Panics if the view has no field. Arrow streams have one schema, and
-/// views without a Field can hold slices of different types.
+/// Panics if the view doesn't have a field, or a chunk's data type differs from it.
 #[cfg(all(feature = "views", feature = "chunked"))]
 pub fn export_super_array_view_stream(view: &crate::SuperArrayV) -> Box<ArrowArrayStream> {
     let field = (**view.field.as_ref().expect("exporting a SuperArrayV requires field metadata")).clone();
