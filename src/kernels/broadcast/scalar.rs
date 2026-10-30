@@ -276,7 +276,7 @@ pub fn broadcast_scalar_to_superarrayview(
             )?;
             match chunk_result {
                 Value::Array(arr) => Ok(FieldArray::new(
-                    (*super_array_view.field).clone(),
+                    (**super_array_view.field.as_ref().expect("broadcasting a SuperArrayV requires field metadata")).clone(),
                     Arc::unwrap_or_clone(arr),
                 )),
                 _ => Err(MinarrowError::TypeError {
@@ -1237,7 +1237,7 @@ mod tests {
         ];
         let super_array_view = SuperArrayV {
             slices,
-            field: Arc::new(field),
+            field: Some(Arc::new(field)),
             len: 6,
         };
 

@@ -3100,9 +3100,12 @@ unsafe extern "C" fn rb_view_stream_release(stream: *mut ArrowArrayStream) {
 /// One Arrow array is yielded per underlying [`crate::ArrayV`] slice. Each
 /// slice's window is conveyed through `ArrowArray.offset`/`length` rather
 /// than materialised.
+///
+/// # Panics
+/// Panics if the view doesn't have a field, or a chunk's data type differs from it.
 #[cfg(all(feature = "views", feature = "chunked"))]
 pub fn export_super_array_view_stream(view: &crate::SuperArrayV) -> Box<ArrowArrayStream> {
-    let field = (*view.field).clone();
+    let field = (**view.field.as_ref().expect("exporting a SuperArrayV requires field metadata")).clone();
     export_array_view_stream(view.slices.clone(), field)
 }
 
@@ -4447,7 +4450,7 @@ mod tests {
         let super_view = SuperArrayV {
             slices: vec![v1, v2],
             len: 4,
-            field: field.clone(),
+            field: Some(field.clone()),
         };
 
         let stream = export_super_array_view_stream(&super_view);
@@ -4483,7 +4486,7 @@ mod tests {
         let super_view = SuperArrayV {
             slices: vec![v1, v2],
             len: 6,
-            field,
+            field: Some(field),
         };
 
         let _ = export_super_array_view_stream(&super_view);

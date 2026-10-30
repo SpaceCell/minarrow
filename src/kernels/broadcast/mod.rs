@@ -388,7 +388,7 @@ pub fn broadcast_value(
         #[cfg(all(feature = "chunked", feature = "views"))]
         (Value::SuperArray(l), Value::SuperArrayView(r)) => {
             let l_val = Arc::unwrap_or_clone(l);
-            let r_owned = SuperArray::from_slices(&r.slices, r.field.clone()); // Convert view to owned
+            let r_owned = SuperArray::from_slices(&r.slices, r.field.clone().expect("broadcasting a SuperArrayV requires field metadata")); // Convert view to owned
             route_super_array_broadcast(op, l_val, r_owned, None)
                 .map(|sa| Value::SuperArray(Arc::new(sa)))
         }
@@ -396,7 +396,7 @@ pub fn broadcast_value(
         #[cfg(all(feature = "chunked", feature = "views"))]
         (Value::SuperArrayView(l), Value::SuperArray(r)) => {
             let r_val = Arc::unwrap_or_clone(r);
-            let l_owned = SuperArray::from_slices(&l.slices, l.field.clone()); // Convert view to owned
+            let l_owned = SuperArray::from_slices(&l.slices, l.field.clone().expect("broadcasting a SuperArrayV requires field metadata")); // Convert view to owned
             route_super_array_broadcast(op, l_owned, r_val, None)
                 .map(|sa| Value::SuperArray(Arc::new(sa)))
         }
@@ -1523,15 +1523,17 @@ pub fn broadcast_value(
         }
         #[cfg(all(feature = "chunked", feature = "views"))]
         (Value::Array(l), Value::SuperArrayView(r)) => {
-            let r_super_array = SuperArray::from_slices(&r.slices, r.field.clone());
-            let l_super_array = create_aligned_chunks_from_array(Arc::unwrap_or_clone(l), &r_super_array, &r.field.name)?;
+            let r_field = r.field.clone().expect("broadcasting a SuperArrayV requires field metadata");
+            let r_super_array = SuperArray::from_slices(&r.slices, r_field.clone());
+            let l_super_array = create_aligned_chunks_from_array(Arc::unwrap_or_clone(l), &r_super_array, &r_field.name)?;
             route_super_array_broadcast(op, l_super_array, r_super_array, None)
                 .map(|sa| Value::SuperArray(Arc::new(sa)))
         }
         #[cfg(all(feature = "chunked", feature = "views"))]
         (Value::SuperArrayView(l), Value::Array(r)) => {
-            let l_super_array = SuperArray::from_slices(&l.slices, l.field.clone());
-            let r_super_array = create_aligned_chunks_from_array(Arc::unwrap_or_clone(r), &l_super_array, &l.field.name)?;
+            let l_field = l.field.clone().expect("broadcasting a SuperArrayV requires field metadata");
+            let l_super_array = SuperArray::from_slices(&l.slices, l_field.clone());
+            let r_super_array = create_aligned_chunks_from_array(Arc::unwrap_or_clone(r), &l_super_array, &l_field.name)?;
             route_super_array_broadcast(op, l_super_array, r_super_array, None)
                 .map(|sa| Value::SuperArray(Arc::new(sa)))
         }

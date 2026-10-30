@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ## Breaking
+
+* `SuperArrayV::field` is now `Option<Arc<Field>>`, matching `SuperArray`.
+* `SuperArray::resolve_batches` and `SuperArrayV::resolve_batches` without a field now resolve to the first chunk's type widened through `ArrowType::upcast` by the later chunks that share a common type with it. For example, Int64 and Float64 chunks resolve to Float64. 
+   Note: They previously resolved to the first chunk's type, which narrowed later chunks and biased type discovery..
+* `Array::check_unify_batch_dtype` receives the target `ArrowType` instead of `Field`.
+
 * DateTime type annotation ownership:
     - has been moved off `Field` in the first instance back to the source `DatetimeArray` so that it is self-describing.
     - `Dt` consolidates the temporal Arrow types: `Date32`, `Date64`, `Time32`, `Time64`, `Duration32`, `Duration64`, `Timestamp` and `Interval`.
@@ -19,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Bugfixes
 * `ArrayV` equality involving cached nulls. Identical windows previously compared unequal when (only) one had computed its cached null count.
 * `Bitmask::extend` length handling has been corrected for appended bits, which applies to null masks in `SuperArrayV` consolidation.
-* `TryFrom<Value>` for `Array` and `ArrayV` now resolves `SuperArrayView` chunks to the field type when `allow_mixed_array_batches` is enabled. Mixed chunk types previously caused a panic.
+* `TryFrom<Value>` for `Array` and `ArrayV` now resolves `SuperArrayView` chunks to the field type, or to the resolved common type without a field, when `allow_mixed_array_batches` is enabled. Mixed chunk types previously caused a panic.
 
 ## Optimisations
 * `TryFrom<Value> for ArrayV` from one-column `TableV` values and for views inside `BoxValue` and `ArcValue` are now zero-copy.

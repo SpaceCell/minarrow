@@ -2742,10 +2742,11 @@ mod super_array_view_tests {
     use crate::traits::masked_array::MaskedArray;
     use crate::{Field, NumericArray, arr_bool, arr_f64, arr_f64_opt, arr_i64, arr_str32, vec64};
 
-    fn view(chunks: Vec<Array>, dtype: ArrowType) -> SuperArrayV {
+    fn view(chunks: Vec<Array>, dtype: Option<ArrowType>) -> SuperArrayV {
         let slices: Vec<ArrayV> = chunks.into_iter().map(ArrayV::from).collect();
         let len = slices.iter().map(ArrayV::len).sum();
-        SuperArrayV { slices, len, field: Arc::new(Field::new("values", dtype, true, None)) }
+        let field = dtype.map(|dtype| Arc::new(Field::new("values", dtype, true, None)));
+        SuperArrayV { slices, len, field }
     }
 
     fn floats(array: &Array) -> Vec<Option<f64>> {
@@ -2756,7 +2757,7 @@ mod super_array_view_tests {
     }
 
     #[test]
-    fn mixed_super_array_view_converts_to_its_field_type() {
+    fn mixed_super_array_view_converts_to_its_first_chunk_type() {
         let mixed = view(
             vec![
                 arr_f64![1.0, 2.0],
@@ -2764,27 +2765,27 @@ mod super_array_view_tests {
                 arr_bool![true, false],
                 arr_f64![10.0, 20.0],
             ],
-            ArrowType::Float64,
+            None,
         );
 
         let array = ArrayV::try_from(Value::SuperArrayView(Arc::new(mixed)))
             .expect("the mixed view converts")
             .array;
 
-        let values = floats(&array);
-        assert_eq!(values.len(), 8);
-        assert_eq!(&values[0..2], &[Some(1.0), Some(2.0)]);
-        assert_eq!(&values[6..8], &[Some(10.0), Some(20.0)]);
+        assert_eq!(
+            floats(&array),
+            vec![Some(1.0), Some(2.0), None, None, None, None, Some(10.0), Some(20.0)]
+        );
     }
 
     #[test]
-    fn widening_super_array_view_converts_to_its_field_type() {
-        let widening = view(vec![arr_i64![1, 2, 3], arr_f64![0.5, 1.5]], ArrowType::Float64);
+    fn mixed_super_array_view_converts_as_its_super_array_does() {
+        let chunks = vec![arr_i64![1, 2, 3], arr_f64![0.5, 1.5], arr_str32!["x", "y"]];
+        let from_view = Array::try_from(Value::SuperArrayView(Arc::new(view(chunks.clone(), None))))
+            .expect("the view converts");
+        let from_super_array = ArrayV::from(SuperArray::from_arrays(chunks)).array;
 
-        let array = Array::try_from(Value::SuperArrayView(Arc::new(widening)))
-            .expect("the widening view converts");
-
-        assert_eq!(floats(&array), vec![Some(1.0), Some(2.0), Some(3.0), Some(0.5), Some(1.5)]);
+        assert_eq!(from_view, from_super_array);
     }
 
     #[test]
@@ -2795,7 +2796,7 @@ mod super_array_view_tests {
                 arr_f64_opt!(vec64![None::<f64>, None::<f64>]),
                 arr_f64![10.0, 20.0],
             ],
-            ArrowType::Float64,
+            Some(ArrowType::Float64),
         );
 
         let array = Array::try_from(Value::SuperArrayView(Arc::new(chunks)))

@@ -28,7 +28,7 @@
 //! ## Interop
 //! - Constructed by higher-level chunked containers (`SuperArray::slice`).
 //! - Can be materialised to a contiguous `Array` via [`SuperArrayV::consolidate`].
-//! - Preserves schema via an `Arc<Field>`; no schema cloning per row.
+//! - Preserves schema via an optional `Arc<Field>`; no schema cloning per row.
 //!
 //! ## Features
 //! - Zero-copy iteration over chunks: [`chunks`](SuperArrayV::chunks) / [`iter`](SuperArrayV::iter).
@@ -44,7 +44,9 @@
 //! ## Invariants
 //! - `len` is the logical row count of this view.
 //! - `slices` are ordered, non-overlapping, and cover at most `len` rows.
-//! - `field` is the schema for the underlying array and is shared by all slices.
+//! - `field`, when present, is the schema for the underlying array and
+//!   describes every slice. Under the `allow_mixed_array_batches` feature,
+//!   slices of different types are held without a field, matching `SuperArray`.
 use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
@@ -71,7 +73,9 @@ use crate::{TemporalArray, TemporalArrayV};
 /// ## Fields
 /// - `slices`: constituent `ArrayView` pieces spanning the window.
 /// - `len`: total logical row count for this view.
-/// - `field`: schema field associated with the array (shared).
+/// - `field`: optional schema field associated with the array (shared).
+///   Fields describe every slice, and slices of different types under the
+///   `allow_mixed_array_batches` feature have no field, as with `SuperArray`.
 ///
 /// ## Notes
 /// - Use [`chunks`](Self::chunks) / [`iter`](Self::iter) to walk chunk pieces,
@@ -82,7 +86,7 @@ use crate::{TemporalArray, TemporalArrayV};
 pub struct SuperArrayV {
     pub slices: Vec<ArrayV>,
     pub len: usize,
-    pub field: Arc<Field>,
+    pub field: Option<Arc<Field>>,
 }
 
 impl SuperArrayV {
@@ -102,44 +106,63 @@ impl SuperArrayV {
         self.slices.iter()
     }
 
-    /// Reports whether every slice's `ArrowType` matches this view's field.
+    /// Reports whether every slice has the same `ArrowType`, and the field's
+    /// type when a field is present.
     ///
     /// The fields on this struct are public, so a view can be assembled by
-    /// hand. This method verifies that the `field` describes every slice, for
-    /// callers that require uniformity (e.g. consolidation, FFI export)
-    /// before proceeding. Returns `true` for an empty view.
+    /// hand. This method verifies uniformity for callers that require it
+    /// (such as consolidation and FFI export) before proceeding. Returns `true` for
+    /// an empty view.
     #[cfg(feature = "allow_mixed_array_batches")]
     pub fn check_type_uniformity(&self) -> bool {
+        let dtype = match (&self.field, self.slices.first()) {
+            (Some(field), _) => field.dtype.clone(),
+            (None, Some(first)) => first.array.arrow_type(),
+            (None, None) => return true,
+        };
         self.slices
             .iter()
-            .all(|slice| slice.array.arrow_type() == self.field.dtype)
+            .all(|slice| slice.array.arrow_type() == dtype)
     }
 
-    /// Converts each batch to the dtype declared by this view's `Field` using
+    /// Resolves every slice to the view's target dtype using
     /// `Array::check_unify_batch_dtype`.
     ///
     /// ## Behaviour
-    ///
-    /// - Uses the view's field dtype as the conversion target.
-    /// - Reuses matching batches without copying.
-    /// - Returns a `SuperArrayV` with a consistent dtype across all batches.
-    /// - Merges categorical dictionaries after converting each batch.
+    /// - The target dtype is the Field when present. Without a Field, the
+    ///   target starts at the first slice's type and widens through
+    ///   `ArrowType::upcast` with each later slice that shares a common type
+    ///   with it, matching `SuperArray::resolve_batches`. Slices with no
+    ///   common type keep the target unchanged and become null when
+    ///   converted.
+    /// - The result keeps the view's field, or remains without a Field.
+    /// - Slices that already match the target pass through without copying.
+    /// - Merges categorical dictionaries after converting each slice.
     #[cfg(feature = "allow_mixed_array_batches")]
     pub fn resolve_batches(self) -> SuperArrayV {
         if self.slices.is_empty() {
             return self;
         }
 
-        // Fast path: all slices already match the Field dtype.
-        if self.check_type_uniformity() {
+        // Target dtype is the Field when present, otherwise the first slice's
+        // type widened by the later slices that share a common type with it.
+        let dtype = match self.field.as_ref() {
+            Some(field) => field.dtype.clone(),
+            None => self.slices[1..].iter().fold(self.slices[0].array.arrow_type(), |dtype, slice| {
+                dtype.upcast(&slice.array.arrow_type()).unwrap_or(dtype)
+            }),
+        };
+
+        // Fast path: all slices already match the target.
+        if self.slices.iter().all(|slice| slice.array.arrow_type() == dtype) {
             return self;
         }
 
-        let field = self.field.clone();
+        let field = self.field;
         let mut arrays: Vec<Array> = self
             .slices
             .into_iter()
-            .map(|slice| Array::check_unify_batch_dtype(slice.to_array(), &field))
+            .map(|slice| Array::check_unify_batch_dtype(slice.to_array(), &dtype))
             .collect();
 
         let len = arrays.iter().map(|a| a.len()).sum();
@@ -149,7 +172,7 @@ impl SuperArrayV {
         #[cfg(feature = "shared_dict")]
         {
             use crate::ffi::arrow_dtype::ArrowType;
-            if matches!(field.dtype, ArrowType::Dictionary(_)) {
+            if matches!(dtype, ArrowType::Dictionary(_)) {
                 let mut mgr: Option<crate::structs::dictionary::CategoryManagerT> = None;
                 crate::structs::dictionary::CategoryManagerT::add_remap_cats(
                     &mut mgr,
@@ -278,7 +301,10 @@ impl Consolidate for SuperArrayV {
     /// 3. Otherwise: directly extends from source data slices (single copy per element).
     fn consolidate(self) -> Array {
         if self.slices.is_empty() {
-            return Array::from_arrow_dtype(&self.field.dtype);
+            return match self.field.as_ref() {
+                Some(field) => Array::from_arrow_dtype(&field.dtype),
+                None => Array::Null,
+            };
         }
 
         // Single slice optimisation
@@ -366,7 +392,10 @@ impl From<SuperArrayV> for SuperArray {
     /// array, preserving the chunk boundaries the view carries.
     fn from(value: SuperArrayV) -> Self {
         let chunks: Vec<Array> = value.chunks().map(|slice| slice.to_array()).collect();
-        SuperArray::from_arrays_with_field(chunks, value.field)
+        match value.field {
+            Some(field) => SuperArray::from_arrays_with_field(chunks, field),
+            None => SuperArray::from_arrays(chunks),
+        }
     }
 }
 
@@ -438,11 +467,18 @@ impl From<SuperArrayV> for BooleanArrayV {
 
 impl Display for SuperArrayV {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "SuperArrayView \"{}\" [{} rows, {} slices] (dtype: {})",
-            self.field.name, self.len, self.n_slices(), self.field.dtype
-        )?;
+        match &self.field {
+            Some(field) => writeln!(
+                f,
+                "SuperArrayView \"{}\" [{} rows, {} slices] (dtype: {})",
+                field.name, self.len, self.n_slices(), field.dtype
+            )?,
+            None => writeln!(
+                f,
+                "SuperArrayView [{} rows, {} slices] (no field)",
+                self.len, self.n_slices()
+            )?,
+        }
         for (i, slice) in self.slices.iter().enumerate() {
             writeln!(f, "  ├─ Slice {i}: {} rows", slice.len())?;
             let indent = "    │ ";
@@ -467,17 +503,43 @@ mod tests {
         FieldArray::new(field, arr)
     }
 
-    /// A mixed field-free SuperArray cannot become a view: the conversion
-    /// synthesises a field from the first chunk and that field must describe
-    /// every chunk.
+    /// Mixed SuperArrays without a Field become views without a Field,
+    /// through both the conversion and `SuperArray::slice`.
     #[cfg(feature = "allow_mixed_array_batches")]
     #[test]
-    #[should_panic(expected = "cannot become a view")]
-    fn test_mixed_super_array_to_view_panics() {
+    fn test_mixed_super_array_becomes_a_view_without_a_field() {
         use crate::{arr_f64, arr_u64, SuperArray};
 
         let sa = SuperArray::from_arrays(vec![arr_u64![1u64, 2, 3], arr_f64![4.0, 5.0]]);
-        let _ = SuperArrayV::from(sa);
+        assert!(sa.slice(1, 3).field.is_none());
+
+        let view = SuperArrayV::from(sa);
+        assert!(view.field.is_none());
+        assert_eq!(view.len, 5);
+        assert!(!view.check_type_uniformity());
+    }
+
+    /// Views without a Field and with no common type across their slices
+    /// resolve to their first slice's type.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_view_without_a_field_resolves_to_its_first_slice_type() {
+        use crate::{arr_f64, arr_str32};
+
+        let view = SuperArrayV {
+            slices: vec![
+                ArrayV::new(arr_f64![1.0, 2.0], 0, 2),
+                ArrayV::new(arr_str32!["x", "y"], 0, 2),
+            ],
+            len: 4,
+            field: None,
+        };
+        let resolved = view.resolve_batches();
+        assert!(resolved.field.is_none(), "the view remains without a Field");
+        assert!(resolved.check_type_uniformity());
+        let array = resolved.consolidate();
+        assert_eq!(array.arrow_type(), ArrowType::Float64);
+        assert_eq!(array.null_count(), 2);
     }
 
     /// `check_type_uniformity` reports whether every slice matches the
@@ -491,14 +553,14 @@ mod tests {
         let empty = SuperArrayV {
             slices: Vec::new(),
             len: 0,
-            field: field.clone(),
+            field: Some(field.clone()),
         };
         assert!(empty.check_type_uniformity());
 
         let uniform = SuperArrayV {
             slices: vec![ArrayV::new(arr_u64![1u64, 2], 0, 2)],
             len: 2,
-            field: field.clone(),
+            field: Some(field.clone()),
         };
         assert!(uniform.check_type_uniformity());
 
@@ -508,7 +570,7 @@ mod tests {
                 ArrayV::new(arr_f64![3.0, 4.0], 0, 2),
             ],
             len: 4,
-            field,
+            field: Some(field),
         };
         assert!(!mixed.check_type_uniformity());
     }
@@ -519,7 +581,7 @@ mod tests {
         let empty = SuperArrayV {
             slices: Vec::new(),
             len: 0,
-            field: f.clone(),
+            field: Some(f.clone()),
         };
         assert!(empty.is_empty());
         assert_eq!(empty.n_slices(), 0);
@@ -528,7 +590,7 @@ mod tests {
         let non_empty = SuperArrayV {
             slices: Vec::from(vec![ArrayV::new(arr, 0, 3)]),
             len: 3,
-            field: f.clone(),
+            field: Some(f.clone()),
         };
         assert!(!non_empty.is_empty());
         assert_eq!(non_empty.n_slices(), 1);
@@ -683,9 +745,9 @@ mod tests {
         let fa1 = fa("field", &[1, 2, 3]);
         let ca = SuperArray::from_chunks(Vec::from(vec![fa1.clone()]));
         let slice = ca.slice(0, 3);
-        assert_eq!(slice.field.name, "field");
+        assert_eq!(slice.field.as_ref().unwrap().name, "field");
         let subslice = slice.slice(1, 2);
-        assert_eq!(subslice.field.name, "field");
+        assert_eq!(subslice.field.as_ref().unwrap().name, "field");
     }
 
     // Boolean Array Consolidation Tests
@@ -1353,7 +1415,7 @@ mod tests {
         let empty = SuperArrayV {
             slices: Vec::new(),
             len: 0,
-            field: f,
+            field: Some(f),
         };
         let result = empty.consolidate();
         assert_eq!(result.len(), 0);
@@ -1366,7 +1428,7 @@ mod tests {
         let empty = SuperArrayV {
             slices: Vec::new(),
             len: 0,
-            field: f,
+            field: Some(f),
         };
         let result = empty.consolidate();
         assert_eq!(result.len(), 0);
@@ -1381,9 +1443,7 @@ mod tests {
     #[test]
     fn test_check_unify_batch_dtype_pass_through_on_matching_type() {
         let arr = Array::from_int32(crate::IntegerArray::<i32>::from_slice(&[1, 2, 3]));
-        let field = Field::new("x", ArrowType::Int32, false, None);
-
-        let result = Array::check_unify_batch_dtype(arr, &field);
+        let result = Array::check_unify_batch_dtype(arr, &ArrowType::Int32);
         assert_eq!(result.len(), 3);
         assert_eq!(result.arrow_type(), ArrowType::Int32);
     }
@@ -1392,9 +1452,7 @@ mod tests {
     #[test]
     fn test_check_unify_batch_dtype_numeric_i32_to_f64() {
         let arr = Array::from_int32(crate::IntegerArray::<i32>::from_slice(&[1, 2, 3]));
-        let field = Field::new("x", ArrowType::Float64, false, None);
-
-        let result = Array::check_unify_batch_dtype(arr, &field);
+        let result = Array::check_unify_batch_dtype(arr, &ArrowType::Float64);
         assert_eq!(result.len(), 3);
         assert_eq!(result.arrow_type(), ArrowType::Float64);
         if let Array::NumericArray(NumericArray::Float64(f)) = &result {
@@ -1408,9 +1466,7 @@ mod tests {
     #[test]
     fn test_check_unify_batch_dtype_numeric_f64_to_i64() {
         let arr = Array::from_float64(crate::FloatArray::<f64>::from_slice(&[10.0, 20.0]));
-        let field = Field::new("x", ArrowType::Int64, false, None);
-
-        let result = Array::check_unify_batch_dtype(arr, &field);
+        let result = Array::check_unify_batch_dtype(arr, &ArrowType::Int64);
         assert_eq!(result.len(), 2);
         assert_eq!(result.arrow_type(), ArrowType::Int64);
     }
@@ -1421,9 +1477,7 @@ mod tests {
         use crate::MaskedArray;
 
         let arr = Array::from_string32(crate::StringArray::<u32>::from_slice(&["a", "b"]));
-        let field = Field::new("x", ArrowType::Int32, false, None);
-
-        let result = Array::check_unify_batch_dtype(arr, &field);
+        let result = Array::check_unify_batch_dtype(arr, &ArrowType::Int32);
         assert_eq!(result.len(), 2);
         assert_eq!(result.arrow_type(), ArrowType::Int32);
 
@@ -1439,9 +1493,7 @@ mod tests {
     #[test]
     fn test_check_unify_batch_dtype_empty_batch() {
         let arr = Array::from_int32(crate::IntegerArray::<i32>::from_slice(&[]));
-        let field = Field::new("x", ArrowType::Float64, false, None);
-
-        let result = Array::check_unify_batch_dtype(arr, &field);
+        let result = Array::check_unify_batch_dtype(arr, &ArrowType::Float64);
         assert_eq!(result.len(), 0);
         assert_eq!(result.arrow_type(), ArrowType::Float64);
     }
@@ -1450,9 +1502,7 @@ mod tests {
     #[test]
     fn test_check_unify_batch_dtype_string32_to_string64() {
         let arr = Array::from_string32(crate::StringArray::<u32>::from_slice(&["hello", "world"]));
-        let field = Field::new("x", ArrowType::LargeString, false, None);
-
-        let result = Array::check_unify_batch_dtype(arr, &field);
+        let result = Array::check_unify_batch_dtype(arr, &ArrowType::LargeString);
         assert_eq!(result.len(), 2);
         assert_eq!(result.arrow_type(), ArrowType::LargeString);
     }
@@ -1492,7 +1542,7 @@ mod tests {
                 )),
             ],
             len: 3,
-            field,
+            field: Some(field),
         };
 
         let resolved = view.resolve_batches();
@@ -1505,7 +1555,6 @@ mod tests {
     fn test_resolve_batches_numeric_straggler() {
         use crate::traits::consolidate::Consolidate;
 
-        let field = Arc::new(Field::new("x", ArrowType::Float64, false, None));
         let view = SuperArrayV {
             slices: vec![
                 ArrayV::from(Array::from_float64(
@@ -1519,7 +1568,7 @@ mod tests {
                 )),
             ],
             len: 5,
-            field,
+            field: None,
         };
 
         let resolved = view.resolve_batches();
@@ -1536,12 +1585,37 @@ mod tests {
         }
     }
 
+    /// Narrower first slices widen to the common type of the later slices,
+    /// keeping every value.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_resolve_batches_widens_to_the_common_type() {
+        use crate::{arr_f64, arr_i64, arr_str32, MaskedArray};
+
+        let view = SuperArrayV {
+            slices: vec![
+                ArrayV::from(arr_i64![1, 2, 3]),
+                ArrayV::from(arr_str32!["x", "y"]),
+                ArrayV::from(arr_f64![0.5, 1.5]),
+            ],
+            len: 7,
+            field: None,
+        };
+
+        let resolved = view.resolve_batches();
+        assert!(resolved.field.is_none(), "the view remains without a Field");
+        let Array::NumericArray(NumericArray::Float64(f)) = resolved.consolidate() else {
+            panic!("expected Float64");
+        };
+        let values: Vec<Option<f64>> = (0..f.len()).map(|i| f.get(i)).collect();
+        assert_eq!(values, vec![Some(1.0), Some(2.0), Some(3.0), None, None, Some(0.5), Some(1.5)]);
+    }
+
     #[cfg(feature = "allow_mixed_array_batches")]
     #[test]
     fn test_resolve_batches_text_straggler_becomes_null() {
         use crate::MaskedArray;
 
-        let field = Arc::new(Field::new("x", ArrowType::Float64, false, None));
         let view = SuperArrayV {
             slices: vec![
                 ArrayV::from(Array::from_float64(
@@ -1552,7 +1626,7 @@ mod tests {
                 )),
             ],
             len: 3,
-            field,
+            field: None,
         };
 
         let resolved = view.resolve_batches();
@@ -1576,7 +1650,7 @@ mod tests {
         let empty = SuperArrayV {
             slices: Vec::new(),
             len: 0,
-            field,
+            field: Some(field),
         };
         let resolved = empty.resolve_batches();
         assert!(resolved.slices.is_empty());
@@ -1601,7 +1675,7 @@ mod tests {
                 )),
             ],
             len: 3,
-            field,
+            field: Some(field),
         };
 
         let arr_v: ArrayV = view.into();
@@ -1617,7 +1691,7 @@ mod tests {
                 crate::FloatArray::<f64>::from_slice(&[1.0, 2.0]),
             ))],
             len: 2,
-            field,
+            field: Some(field),
         };
 
         let num_v: crate::NumericArrayV = view.into();
@@ -1632,7 +1706,7 @@ mod tests {
                 crate::BooleanArray::from_slice(&[true, false]),
             )))],
             len: 2,
-            field,
+            field: Some(field),
         };
 
         let bool_v: crate::BooleanArrayV = view.into();
@@ -1645,7 +1719,7 @@ mod tests {
         let empty = SuperArrayV {
             slices: Vec::new(),
             len: 0,
-            field,
+            field: Some(field),
         };
         let arr_v: ArrayV = empty.into();
         assert_eq!(arr_v.len(), 0);
@@ -1658,32 +1732,9 @@ impl From<SuperArray> for SuperArrayV {
     fn from(super_array: SuperArray) -> Self {
         let len = super_array.len();
 
-        // Get field from SuperArray or synthesise from first chunk. A
-        // SuperArrayV field describes every chunk, so a mixed field-free
-        // SuperArray cannot become a view.
-        let field = if let Some(f) = super_array.field.clone() {
-            f
-        } else if let Some(chunk) = super_array.chunks.first() {
-            #[cfg(feature = "allow_mixed_array_batches")]
-            for (i, sibling) in super_array.chunks.iter().enumerate().skip(1) {
-                assert_eq!(
-                    sibling.arrow_type(),
-                    chunk.arrow_type(),
-                    "Chunk {i} ArrowType mismatch: a SuperArrayV field describes \
-                     every chunk, so a mixed SuperArray cannot become a view. \
-                     Check `SuperArray::check_type_uniformity()` and coerce to \
-                     one type first."
-                );
-            }
-            Arc::new(Field::new(
-                "data",
-                chunk.arrow_type(),
-                chunk.is_nullable(),
-                None,
-            ))
-        } else {
-            panic!("Cannot convert empty SuperArray with no field to SuperArrayV")
-        };
+        // The view keeps the SuperArray's field, or doesn't when the
+        // SuperArray doesn't have one either.
+        let field = super_array.field.clone();
 
         let slices: Vec<ArrayV> = super_array.chunks.into_iter().map(ArrayV::from).collect();
 

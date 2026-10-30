@@ -133,7 +133,7 @@ pub fn broadcast_superarrayview_to_scalar(
             )?;
             match chunk_result {
                 Value::Array(arr) => Ok(FieldArray::new(
-                    (*super_array_view.field).clone(),
+                    (**super_array_view.field.as_ref().expect("broadcasting a SuperArrayV requires field metadata")).clone(),
                     Arc::unwrap_or_clone(arr),
                 )),
                 _ => Err(MinarrowError::TypeError {
@@ -399,7 +399,10 @@ pub fn broadcast_arrayview_to_superarrayview(
         match result {
             Value::Array(arr) => {
                 let field_array =
-                    FieldArray::new_arc(super_array_view.field.clone(), Arc::unwrap_or_clone(arr));
+                    FieldArray::new_arc(
+                        super_array_view.field.clone().expect("broadcasting a SuperArrayV requires field metadata"),
+                        Arc::unwrap_or_clone(arr),
+                    );
                 result_chunks.push(field_array);
             }
             _ => {
@@ -453,7 +456,10 @@ pub fn broadcast_superarrayview_to_arrayview(
         match result {
             Value::Array(arr) => {
                 let field_array =
-                    FieldArray::new_arc(super_array_view.field.clone(), Arc::unwrap_or_clone(arr));
+                    FieldArray::new_arc(
+                        super_array_view.field.clone().expect("broadcasting a SuperArrayV requires field metadata"),
+                        Arc::unwrap_or_clone(arr),
+                    );
                 result_chunks.push(field_array);
             }
             _ => {

@@ -25,7 +25,8 @@
 //!
 //! ## Field Metadata
 //! - Field metadata is stored once at the SuperArray level, not per-chunk.
-//! - Use `from_arrays()` when you don't need field metadata (e.g., Dam consolidation)
+//! - Use `from_arrays()` when the chunks have no field metadata, for example when
+//!   batches from a raw stream are combined.
 //! - Use `from_arrays_with_field()` when field metadata is required
 //!
 //! ## Mixed chunk types (`allow_mixed_array_batches` feature)
@@ -104,7 +105,8 @@ pub enum RechunkStrategy {
 ///
 /// ## Field Metadata
 /// - Field metadata is stored once at the SuperArray level.
-/// - For streaming consolidation (e.g., Dam output), field may be `None`.
+/// - Field may be `None` for chunks without field metadata, for example batches
+///   combined from a raw stream.
 /// - Use `field()` to access metadata optionally, `field_ref()` when metadata is required.
 ///
 /// ## Example
@@ -451,12 +453,13 @@ impl SuperArray {
     /// If the chunks are fragmented in memory, access patterns may result in
     /// degraded cache locality and reduced SIMD optimisation.
     ///
-    /// # Panics
-    /// Panics if field metadata is not present.
+    /// ## Behaviour
+    /// Has field: The view receives this SuperArray's field
+    /// No field:  The view has no field.
     #[cfg(feature = "views")]
     pub fn slice(&self, offset: usize, len: usize) -> SuperArrayV {
         assert!(offset + len <= self.len(), "slice out of bounds");
-        let field = self.field.clone().expect("slice() requires field metadata");
+        let field = self.field.clone();
 
         let mut remaining = len;
         let mut off = offset;
@@ -580,10 +583,9 @@ impl SuperArray {
     /// `push_with_null_count()` to avoid recomputation.
     ///
     /// # Panics
-    /// Panics if the chunk type does not match a `Field` this SuperArray
-    /// carries. A field-free SuperArray additionally panics on a mismatch
-    /// with the existing chunks, unless the `allow_mixed_array_batches`
-    /// feature is on.
+    /// - Panics if the chunk type does not match a `Field` held by this SuperArray
+    /// - SuperArrays without a Field additionally panic on a mismatch with the
+    ///   existing chunks, unless the `allow_mixed_array_batches` feature is activated.
     pub fn push(&mut self, chunk: Array) {
         if let Some(ref field) = self.field {
             assert_eq!(
@@ -656,10 +658,10 @@ impl SuperArray {
     ///
     /// # Panics
     /// Panics if the chunk does not match the expected type, nullability, or
-    /// field name. The first push onto a field-free SuperArray attaches the
-    /// chunk's field, so every existing chunk must already match that type. A
-    /// `Field` present on a SuperArray always describes every chunk, so these
-    /// checks hold with the `allow_mixed_array_batches` feature on as well.
+    /// field name. The first push onto a SuperArray without a Field attaches the
+    /// chunk's field, so every existing chunk must already match that type.
+    /// SuperArray fields always describe every chunk, so these checks hold
+    /// with the `allow_mixed_array_batches` feature on as well.
     /// `try_push_field_array` is the fallible equivalent.
     pub fn push_field_array(&mut self, chunk: FieldArray) {
         if let Err(e) = self.try_push_field_array(chunk) {
@@ -670,10 +672,12 @@ impl SuperArray {
     /// Fallible form of `push_field_array`.
     ///
     /// Returns an error instead of panicking when the chunk does not match
-    /// the SuperArray's field, or when attaching the chunk's field to a
-    /// field-free SuperArray whose existing chunks are not uniformly of its
-    /// type. This is appropriate for callers appending runtime data, where a mismatch is
-    /// an expected condition rather than a programming defect.
+    /// the SuperArray's field. On a SuperArray without a Field, it also returns an
+    /// error when the existing chunks do not all match the chunk's type, as
+    /// attaching the chunk's field would misdescribe them.
+    ///
+    /// This can suit callers appending runtime data, where mismatches are expected conditions
+    /// as opposed to programming defects.
     pub fn try_push_field_array(&mut self, chunk: FieldArray) -> Result<(), MinarrowError> {
         if let Some(ref field) = self.field {
             if chunk.field.dtype != field.dtype {
@@ -1142,10 +1146,15 @@ impl SuperArray {
     /// Resolves every chunk to the container's target dtype.
     ///
     /// ## Behaviour
-    /// - The target dtype is the Field when present, otherwise the type of
-    ///   the first batch.
-    /// - The result ends up with a Field that describes every chunk.
-    /// - For a field-free SuperArray, a Field is constructed from the first chunk's type.
+    /// - The target dtype is the Field when present. Without a Field, the
+    ///   target starts at the first chunk's type and widens through
+    ///   `ArrowType::upcast` with each later chunk that shares a common type
+    ///   with it. Chunks with no common type keep the target unchanged and
+    ///   become null when converted.
+    /// - The result keeps the SuperArray's field, or remains without a Field.
+    /// - For example, Int64 and Float64 chunks resolve to Float64, and
+    ///   Float64, String and Int64 chunks resolve to Float64 with the
+    ///   string values null.
     /// - Chunks that already match the target pass through without penalty.
     /// - The conversion per chunk delegates to `Array::check_unify_batch_dtype`.
     /// - Categorical dictionaries are merged across the resolved chunks
@@ -1156,44 +1165,32 @@ impl SuperArray {
             return self;
         }
 
-        // Target dtype is the Field when present, otherwise the first chunk.
-        let field = match self.field.clone() {
-            Some(f) => f,
-            None => {
-                let first = &self.chunks[0];
-                Arc::new(Field::new(
-                    "data",
-                    first.arrow_type(),
-                    first.is_nullable(),
-                    None,
-                ))
-            }
+        // Target dtype is the Field when present, otherwise the first chunk's
+        // type widened by the later chunks that share a common type with it.
+        let dtype = match self.field.as_ref() {
+            Some(field) => field.dtype.clone(),
+            None => self.chunks[1..].iter().fold(self.chunks[0].arrow_type(), |dtype, chunk| {
+                dtype.upcast(&chunk.arrow_type()).unwrap_or(dtype)
+            }),
         };
 
         // Fast path - all chunks already match the target.
-        if self
-            .chunks
-            .iter()
-            .all(|chunk| chunk.arrow_type() == field.dtype)
-        {
-            let mut sa = self;
-            if sa.field.is_none() {
-                sa.field = Some(field);
-            }
-            return sa;
+        if self.chunks.iter().all(|chunk| chunk.arrow_type() == dtype) {
+            return self;
         }
 
         // Convert each chunk through check_unify_batch_dtype.
+        let field = self.field;
         let chunks: Vec<Array> = self
             .chunks
             .into_iter()
-            .map(|chunk| Array::check_unify_batch_dtype(chunk, &field))
+            .map(|chunk| Array::check_unify_batch_dtype(chunk, &dtype))
             .collect();
 
         #[cfg_attr(not(feature = "shared_dict"), allow(unused_mut))]
         let mut sa = SuperArray {
             chunks,
-            field: Some(field),
+            field,
             null_counts: None,
             #[cfg(feature = "shared_dict")]
             category_manager: None,
@@ -1791,6 +1788,28 @@ mod tests {
         assert_eq!(sa.chunks[0].arrow_type(), ArrowType::UInt64);
         assert_eq!(sa.chunks[1].arrow_type(), ArrowType::String);
         assert_eq!(sa.chunks[2].arrow_type(), ArrowType::Float64);
+    }
+
+    /// SuperArrays without a Field resolve to the first chunk's type widened
+    /// by the later chunks that share a common type with it. Chunks with no
+    /// common type become null.
+    #[cfg(all(feature = "allow_mixed_array_batches", feature = "views"))]
+    #[test]
+    fn test_resolve_batches_widens_to_the_common_type() {
+        use crate::{arr_f64, arr_i64, arr_str32, Consolidate, MaskedArray, NumericArray};
+
+        let sa = SuperArray::from_arrays(vec![
+            arr_i64![1, 2],
+            arr_str32!["x", "y"],
+            arr_f64![0.5, 1.5],
+        ]);
+        let resolved = sa.resolve_batches();
+        assert!(resolved.field().is_none(), "the SuperArray remains without a Field");
+        let Array::NumericArray(NumericArray::Float64(f)) = resolved.consolidate() else {
+            panic!("expected Float64");
+        };
+        let values: Vec<Option<f64>> = (0..f.len()).map(|i| f.get(i)).collect();
+        assert_eq!(values, vec![Some(1.0), Some(2.0), None, None, Some(0.5), Some(1.5)]);
     }
 
     /// With `allow_mixed_array_batches`, `push` accepts a chunk whose type
