@@ -20,6 +20,8 @@
 //! own `ArrowType`, so the Python surface mirrors the Rust without invention.
 
 use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
+#[cfg(feature = "datetime")]
+use minarrow::ffi::arrow_dtype::Dt;
 use pyo3::prelude::*;
 
 /// minarrow's `Array` enum grouping.
@@ -142,8 +144,7 @@ pub fn dtype_from_arrow(at: &ArrowType) -> DType {
         LargeString => DType::String,
         Dictionary(_) => DType::Categorical,
         #[cfg(feature = "datetime")]
-        Date32 | Date64 | Time32(_) | Time64(_) | Duration32(_) | Duration64(_)
-        | Timestamp(_, _) | Interval(_) => DType::Datetime,
+        DateTime(_) => DType::Datetime,
     }
 }
 
@@ -172,11 +173,18 @@ pub fn width_from_arrow(at: &ArrowType) -> u32 {
         LargeString => 64,
         Dictionary(idx) => cat_index_width(idx),
         #[cfg(feature = "datetime")]
-        Date32 | Time32(_) | Duration32(_) => 32,
+        DateTime(
+            Dt::Date32 | Dt::Time32(_) | Dt::Duration32(_),
+        ) => 32,
         #[cfg(feature = "datetime")]
-        Date64 | Time64(_) | Duration64(_) | Timestamp(_, _) => 64,
+        DateTime(
+            Dt::Date64
+            | Dt::Time64(_)
+            | Dt::Duration64(_)
+            | Dt::Timestamp(_, _),
+        ) => 64,
         #[cfg(feature = "datetime")]
-        Interval(_) => 0,
+        DateTime(Dt::Interval(_)) => 0,
     }
 }
 

@@ -31,9 +31,13 @@
 //!
 //! ## Timezone Handling
 //! `DatetimeArray` stores raw UTC timestamps as integers. Timezone information is metadata-only
-//! and stored in `ArrowType::Timestamp(TimeUnit, Option<String>)` on the `Field` level.
+//! and held in `Dt::Timestamp(TimeUnit, Option<String>)`, on the array and its `Field`.
 //! For timezone operations, use `FieldArray::with_timezone()` and `FieldArray::to_utc()` which
 //! update metadata without modifying the underlying UTC data.
+//!
+//! ## Result types
+//! The arithmetic and truncation operations return arrays of the input's `Dt`.
+//! `cast_time_unit` keeps the type's variant and timezone, and changes its unit.
 //!
 //! ## Requirements
 //! Requires the `time` feature to be enabled.
@@ -52,6 +56,7 @@ use crate::{
         error::MinarrowError,
         time_units::{TimePeriod, TimeUnit},
     },
+    ffi::arrow_dtype::Dt,
     structs::variants::{boolean::BooleanArray, integer::IntegerArray},
     traits::{masked_array::MaskedArray, type_unions::Integer},
 };
@@ -114,7 +119,7 @@ impl<T: Integer + FromPrimitive> DatetimeArray<T> {
             return None;
         }
         let val_i64 = self.data[i].to_i64()?;
-        Self::i64_to_datetime(val_i64, self.time_unit)
+        Self::i64_to_datetime(val_i64, self.time_unit())
     }
 }
 
@@ -133,7 +138,7 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
         } else {
             None
         };
-        Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
+        Ok(Self::from_vec64(data, null_mask, self.dtype.clone()))
     }
 
     /// Subtracts a duration from all datetime values in the array.
@@ -164,7 +169,7 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
         } else {
             None
         };
-        Ok(Self::from_vec64(data, null_mask, Some(self.time_unit)))
+        Ok(Self::from_vec64(data, null_mask, self.dtype.clone()))
     }
 
     /// Adds a number of years to all datetime values.
@@ -562,7 +567,7 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
         } else {
             None
         };
-        Self::from_vec64(data, null_mask, Some(self.time_unit))
+        Self::from_vec64(data, null_mask, self.dtype.clone())
     }
 
     // Truncation Shorthand Methods
@@ -606,9 +611,43 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Cast this DatetimeArray to a different TimeUnit.
     ///
     /// This converts the internal representation while preserving the logical datetime values.
+    ///
+    /// The result keeps the `Dt` variant and timezone, with the new unit.
+    ///
+    /// ## Dates
+    /// - Dates have a fixed unit, and casting `Date32` or `Date64` to its own unit
+    ///   keeps the type.
+    /// - Casting `Date64` to another unit returns a `Timestamp` without a timezone.
+    /// - Casting `Date32` to another unit returns an error, as no 32-bit temporal
+    ///   type represents instants at a sub-day unit.
     fn cast_time_unit(&self, new_unit: TimeUnit) -> Result<Self, MinarrowError> {
-        let mut result =
-            Self::with_capacity(self.len(), self.is_nullable(), Some(new_unit.clone()));
+        let dtype = match &self.dtype {
+            Dt::Date32 if new_unit == TimeUnit::Days => Dt::Date32,
+            Dt::Date32 => {
+                return Err(MinarrowError::IncompatibleTypeError {
+                    from: "Date32",
+                    to: "DatetimeArray<i32>",
+                    message: Some(format!(
+                        "Date32 values cannot be cast to {new_unit}: no 32-bit temporal type holds instants at that unit"
+                    )),
+                });
+            }
+            Dt::Date64 if new_unit == TimeUnit::Milliseconds => Dt::Date64,
+            Dt::Date64 => Dt::Timestamp(new_unit, None),
+            Dt::Time32(_) => Dt::Time32(new_unit),
+            Dt::Time64(_) => Dt::Time64(new_unit),
+            Dt::Duration32(_) => Dt::Duration32(new_unit),
+            Dt::Duration64(_) => Dt::Duration64(new_unit),
+            Dt::Timestamp(_, tz) => Dt::Timestamp(new_unit, tz.clone()),
+            Dt::Interval(_) => {
+                return Err(MinarrowError::IncompatibleTypeError {
+                    from: "Interval",
+                    to: "DatetimeArray",
+                    message: Some("DatetimeArray does not hold interval data".to_string()),
+                });
+            }
+        };
+        let mut result = Self::with_capacity(self.len(), self.is_nullable(), dtype);
 
         for i in 0..self.len() {
             if self.is_null(i) {
@@ -652,7 +691,10 @@ mod tests {
 
     #[test]
     fn test_add_duration() {
-        let arr = DatetimeArray::<i64>::from_slice(&[1000, 2000, 3000], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[1000, 2000, 3000],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_duration(Duration::seconds(10)).unwrap();
 
         assert_eq!(result.value(0), Some(1010));
@@ -662,7 +704,10 @@ mod tests {
 
     #[test]
     fn test_sub_duration() {
-        let arr = DatetimeArray::<i64>::from_slice(&[1000, 2000, 3000], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[1000, 2000, 3000],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.sub_duration(Duration::seconds(10)).unwrap();
 
         assert_eq!(result.value(0), Some(990));
@@ -672,7 +717,10 @@ mod tests {
 
     #[test]
     fn test_add_days() {
-        let arr = DatetimeArray::<i64>::from_slice(&[0, 86400, 172800], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[0, 86400, 172800],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_days(1).unwrap();
 
         assert_eq!(result.value(0), Some(86400));
@@ -682,8 +730,14 @@ mod tests {
 
     #[test]
     fn test_is_before() {
-        let arr1 = DatetimeArray::<i64>::from_slice(&[1000, 2000, 3000], Some(TimeUnit::Seconds));
-        let arr2 = DatetimeArray::<i64>::from_slice(&[1500, 2500, 2500], Some(TimeUnit::Seconds));
+        let arr1 = DatetimeArray::<i64>::from_slice(
+            &[1000, 2000, 3000],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
+        let arr2 = DatetimeArray::<i64>::from_slice(
+            &[1500, 2500, 2500],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr1.is_before(&arr2).unwrap();
 
@@ -694,8 +748,14 @@ mod tests {
 
     #[test]
     fn test_is_after() {
-        let arr1 = DatetimeArray::<i64>::from_slice(&[1000, 2000, 3000], Some(TimeUnit::Seconds));
-        let arr2 = DatetimeArray::<i64>::from_slice(&[1500, 2500, 2500], Some(TimeUnit::Seconds));
+        let arr1 = DatetimeArray::<i64>::from_slice(
+            &[1000, 2000, 3000],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
+        let arr2 = DatetimeArray::<i64>::from_slice(
+            &[1500, 2500, 2500],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr1.is_after(&arr2).unwrap();
 
@@ -708,7 +768,10 @@ mod tests {
     fn test_component_extraction() {
         // 2023-11-14 22:13:20 UTC
         let timestamp = 1_700_000_000i64;
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         assert_eq!(arr.year().get(0), Some(2023));
         assert_eq!(arr.month().get(0), Some(11));
@@ -724,7 +787,10 @@ mod tests {
     fn test_add_months() {
         // 2023-01-15 -> add 2 months -> 2023-03-15
         let timestamp = 1_673_740_800i64; // 2023-01-15 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_months(2).unwrap();
 
         // Verify we got March 15th, 2023
@@ -737,7 +803,10 @@ mod tests {
     fn test_add_months_overflow_year() {
         // 2023-11-15 -> add 3 months -> 2024-02-15
         let timestamp = 1_700_006_400i64; // 2023-11-15 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_months(3).unwrap();
 
         assert_eq!(result.year().get(0), Some(2024));
@@ -749,7 +818,10 @@ mod tests {
     fn test_add_months_end_of_month() {
         // 2023-01-31 -> add 1 month -> 2023-02-28 (not 02-31)
         let timestamp = 1_675_123_200i64; // 2023-01-31 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_months(1).unwrap();
 
         assert_eq!(result.year().get(0), Some(2023));
@@ -760,7 +832,10 @@ mod tests {
     #[test]
     fn test_add_years() {
         let timestamp = 1_700_000_000i64; // 2023-11-14 22:13:20 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_years(2).unwrap();
 
         assert_eq!(result.year().get(0), Some(2025));
@@ -772,8 +847,14 @@ mod tests {
 
     #[test]
     fn test_diff() {
-        let arr1 = DatetimeArray::<i64>::from_slice(&[1000, 2000, 3000], Some(TimeUnit::Seconds));
-        let arr2 = DatetimeArray::<i64>::from_slice(&[1500, 2500, 2500], Some(TimeUnit::Seconds));
+        let arr1 = DatetimeArray::<i64>::from_slice(
+            &[1000, 2000, 3000],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
+        let arr2 = DatetimeArray::<i64>::from_slice(
+            &[1500, 2500, 2500],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr1.diff(&arr2, TimeUnit::Seconds).unwrap();
 
@@ -784,8 +865,14 @@ mod tests {
 
     #[test]
     fn test_abs_diff() {
-        let arr1 = DatetimeArray::<i64>::from_slice(&[1000, 2000, 3000], Some(TimeUnit::Seconds));
-        let arr2 = DatetimeArray::<i64>::from_slice(&[1500, 2500, 2500], Some(TimeUnit::Seconds));
+        let arr1 = DatetimeArray::<i64>::from_slice(
+            &[1000, 2000, 3000],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
+        let arr2 = DatetimeArray::<i64>::from_slice(
+            &[1500, 2500, 2500],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr1.abs_diff(&arr2, TimeUnit::Seconds).unwrap();
 
@@ -796,10 +883,14 @@ mod tests {
 
     #[test]
     fn test_diff_different_units() {
-        let arr1 =
-            DatetimeArray::<i64>::from_slice(&[1_000_000, 2_000_000], Some(TimeUnit::Milliseconds));
-        let arr2 =
-            DatetimeArray::<i64>::from_slice(&[1_500_000, 2_500_000], Some(TimeUnit::Milliseconds));
+        let arr1 = DatetimeArray::<i64>::from_slice(
+            &[1_000_000, 2_000_000],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
+        let arr2 = DatetimeArray::<i64>::from_slice(
+            &[1_500_000, 2_500_000],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
 
         let result = arr1.diff(&arr2, TimeUnit::Milliseconds).unwrap();
 
@@ -811,12 +902,18 @@ mod tests {
 
     #[test]
     fn test_between() {
-        let arr =
-            DatetimeArray::<i64>::from_slice(&[1000, 2000, 3000, 4000], Some(TimeUnit::Seconds));
-        let start =
-            DatetimeArray::<i64>::from_slice(&[1500, 1500, 1500, 1500], Some(TimeUnit::Seconds));
-        let end =
-            DatetimeArray::<i64>::from_slice(&[3500, 3500, 3500, 3500], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[1000, 2000, 3000, 4000],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
+        let start = DatetimeArray::<i64>::from_slice(
+            &[1500, 1500, 1500, 1500],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
+        let end = DatetimeArray::<i64>::from_slice(
+            &[3500, 3500, 3500, 3500],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr.between(&start, &end).unwrap();
 
@@ -832,7 +929,10 @@ mod tests {
     fn test_weekday() {
         // 2023-11-14 is a Tuesday (1=Sunday, 2=Monday, 3=Tuesday, ...)
         let timestamp = 1_700_000_000i64;
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         assert_eq!(arr.weekday().get(0), Some(3)); // Tuesday = 3
     }
@@ -849,7 +949,10 @@ mod tests {
             1_700_179_200i64, // 2023-11-17 Friday
             1_700_265_600i64, // 2023-11-18 Saturday
         ];
-        let arr = DatetimeArray::<i64>::from_slice(&timestamps, Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &timestamps,
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let weekdays = arr.weekday();
 
         assert_eq!(weekdays.get(0), Some(1)); // Sunday
@@ -865,7 +968,10 @@ mod tests {
     fn test_day_of_year() {
         // 2023-11-14 is the 318th day of the year
         let timestamp = 1_700_000_000i64;
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         assert_eq!(arr.day_of_year().get(0), Some(318));
     }
@@ -874,7 +980,10 @@ mod tests {
     fn test_iso_week() {
         // 2023-11-14 is in ISO week 46
         let timestamp = 1_700_000_000i64;
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         assert_eq!(arr.iso_week().get(0), Some(46));
     }
@@ -887,7 +996,10 @@ mod tests {
             1_688_169_600i64, // 2023-07-01 -> Q3
             1_696_118_400i64, // 2023-10-01 -> Q4
         ];
-        let arr = DatetimeArray::<i64>::from_slice(&timestamps, Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &timestamps,
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let quarters = arr.quarter();
 
         assert_eq!(quarters.get(0), Some(1));
@@ -900,7 +1012,10 @@ mod tests {
     fn test_week_of_year() {
         // 2023-11-14 is in week 46
         let timestamp = 1_700_000_000i64;
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let week = arr.week_of_year().get(0).unwrap();
         assert!(week >= 45 && week <= 47); // Allow some variation in week calculation
@@ -912,7 +1027,10 @@ mod tests {
             1_672_531_200i64, // 2023-01-01 -> not leap
             1_704_067_200i64, // 2024-01-01 -> leap year
         ];
-        let arr = DatetimeArray::<i64>::from_slice(&timestamps, Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &timestamps,
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let leap_years = arr.is_leap_year();
 
         assert_eq!(leap_years.get(0), Some(false));
@@ -924,7 +1042,10 @@ mod tests {
     #[test]
     fn test_truncate_to_year() {
         let timestamp = 1_700_000_000i64; // 2023-11-14 22:13:20 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr.truncate(TimePeriod::Year);
 
@@ -939,7 +1060,10 @@ mod tests {
     #[test]
     fn test_truncate_to_month() {
         let timestamp = 1_700_000_000i64; // 2023-11-14 22:13:20 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr.truncate(TimePeriod::Month);
 
@@ -952,7 +1076,10 @@ mod tests {
     #[test]
     fn test_truncate_to_day() {
         let timestamp = 1_700_000_000i64; // 2023-11-14 22:13:20 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr.truncate(TimePeriod::Day);
 
@@ -964,7 +1091,10 @@ mod tests {
     #[test]
     fn test_truncate_to_hour() {
         let timestamp = 1_700_000_000i64; // 2023-11-14 22:13:20 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr.truncate(TimePeriod::Hour);
 
@@ -976,7 +1106,10 @@ mod tests {
     #[test]
     fn test_truncate_shorthand_methods() {
         let timestamp = 1_700_000_000i64;
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         // Test sec(), min(), hr()
         let sec_result = arr.sec();
@@ -994,7 +1127,10 @@ mod tests {
     fn test_truncate_week() {
         // 2023-11-14 is a Tuesday; week should start on Sunday 2023-11-12
         let timestamp = 1_700_000_000i64; // 2023-11-14 22:13:20 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr.week();
 
@@ -1005,7 +1141,10 @@ mod tests {
 
     #[test]
     fn test_truncate_subsecond_us() {
-        let arr = DatetimeArray::<i64>::from_slice(&[1_234_567], Some(TimeUnit::Nanoseconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[1_234_567],
+            Dt::Timestamp(TimeUnit::Nanoseconds, None),
+        );
         let result = arr.us();
 
         // Should truncate to nearest microsecond (1000 ns)
@@ -1014,7 +1153,10 @@ mod tests {
 
     #[test]
     fn test_truncate_subsecond_ms() {
-        let arr = DatetimeArray::<i64>::from_slice(&[1_234_567_890], Some(TimeUnit::Nanoseconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[1_234_567_890],
+            Dt::Timestamp(TimeUnit::Nanoseconds, None),
+        );
         let result = arr.ms();
 
         // Should truncate to nearest millisecond (1_000_000 ns)
@@ -1025,32 +1167,40 @@ mod tests {
 
     #[test]
     fn test_cast_time_unit_seconds_to_milliseconds() {
-        let arr = DatetimeArray::<i64>::from_slice(&[1, 2, 3], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[1, 2, 3],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.cast_time_unit(TimeUnit::Milliseconds).unwrap();
 
         assert_eq!(result.value(0), Some(1_000));
         assert_eq!(result.value(1), Some(2_000));
         assert_eq!(result.value(2), Some(3_000));
-        assert_eq!(result.time_unit, TimeUnit::Milliseconds);
+        assert_eq!(result.time_unit(), TimeUnit::Milliseconds);
     }
 
     #[test]
     fn test_cast_time_unit_milliseconds_to_seconds() {
-        let arr =
-            DatetimeArray::<i64>::from_slice(&[1_000, 2_000, 3_000], Some(TimeUnit::Milliseconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[1_000, 2_000, 3_000],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let result = arr.cast_time_unit(TimeUnit::Seconds).unwrap();
 
         assert_eq!(result.value(0), Some(1));
         assert_eq!(result.value(1), Some(2));
         assert_eq!(result.value(2), Some(3));
-        assert_eq!(result.time_unit, TimeUnit::Seconds);
+        assert_eq!(result.time_unit(), TimeUnit::Seconds);
     }
 
     #[test]
     fn test_cast_time_unit_preserves_datetime() {
         // Cast should preserve the actual datetime, just change representation
         let timestamp = 1_700_000_000i64;
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let as_ms = arr.cast_time_unit(TimeUnit::Milliseconds).unwrap();
         let back_to_sec = as_ms.cast_time_unit(TimeUnit::Seconds).unwrap();
@@ -1068,7 +1218,7 @@ mod tests {
         let arr = DatetimeArray::new(
             vec64![1000i64, 2000, 3000],
             Some(mask),
-            Some(TimeUnit::Seconds),
+            Dt::Timestamp(TimeUnit::Seconds, None),
         );
 
         let result = arr.add_duration(Duration::seconds(10)).unwrap();
@@ -1086,10 +1236,13 @@ mod tests {
         let arr1 = DatetimeArray::new(
             vec64![1000i64, 2000, 3000],
             Some(mask1),
-            Some(TimeUnit::Seconds),
+            Dt::Timestamp(TimeUnit::Seconds, None),
         );
 
-        let arr2 = DatetimeArray::<i64>::from_slice(&[1500, 2500, 2500], Some(TimeUnit::Seconds));
+        let arr2 = DatetimeArray::<i64>::from_slice(
+            &[1500, 2500, 2500],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr1.is_before(&arr2).unwrap();
 
@@ -1100,8 +1253,14 @@ mod tests {
 
     #[test]
     fn test_diff_length_mismatch() {
-        let arr1 = DatetimeArray::<i64>::from_slice(&[1000, 2000], Some(TimeUnit::Seconds));
-        let arr2 = DatetimeArray::<i64>::from_slice(&[1500], Some(TimeUnit::Seconds));
+        let arr1 = DatetimeArray::<i64>::from_slice(
+            &[1000, 2000],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
+        let arr2 = DatetimeArray::<i64>::from_slice(
+            &[1500],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr1.diff(&arr2, TimeUnit::Seconds);
         assert!(result.is_err());
@@ -1115,7 +1274,7 @@ mod tests {
         let arr = DatetimeArray::new(
             vec64![1_700_000_000i64, 1_700_086_400],
             Some(mask),
-            Some(TimeUnit::Seconds),
+            Dt::Timestamp(TimeUnit::Seconds, None),
         );
 
         let years = arr.year();
@@ -1129,7 +1288,10 @@ mod tests {
     fn test_leap_year_feb_29() {
         // 2024-02-29 00:00:00 UTC (leap year)
         let timestamp = 1_709_164_800i64;
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         assert_eq!(arr.year().get(0), Some(2024));
         assert_eq!(arr.month().get(0), Some(2));
@@ -1141,7 +1303,10 @@ mod tests {
     fn test_add_months_leap_year_feb_29() {
         // 2024-02-29 -> add 1 month -> 2024-03-29
         let timestamp = 1_709_164_800i64; // 2024-02-29 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_months(1).unwrap();
 
         assert_eq!(result.year().get(0), Some(2024));
@@ -1153,7 +1318,10 @@ mod tests {
     fn test_add_months_leap_year_to_non_leap() {
         // 2024-02-29 -> add 12 months -> 2025-02-28 (clamped, not leap year)
         let timestamp = 1_709_164_800i64; // 2024-02-29 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_months(12).unwrap();
 
         assert_eq!(result.year().get(0), Some(2025));
@@ -1166,7 +1334,10 @@ mod tests {
     fn test_add_years_leap_year() {
         // 2024-02-29 -> add 4 years -> 2028-02-29 (both leap years)
         let timestamp = 1_709_164_800i64; // 2024-02-29 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_years(4).unwrap();
 
         assert_eq!(result.year().get(0), Some(2028));
@@ -1178,7 +1349,10 @@ mod tests {
     fn test_add_years_leap_to_non_leap() {
         // 2024-02-29 -> add 1 year -> 2025-02-28 (clamped)
         let timestamp = 1_709_164_800i64; // 2024-02-29 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_years(1).unwrap();
 
         assert_eq!(result.year().get(0), Some(2025));
@@ -1190,7 +1364,10 @@ mod tests {
     fn test_year_boundary_dec_31_to_jan_1() {
         // 2023-12-31 -> add 1 day -> 2024-01-01
         let timestamp = 1_704_067_199i64; // 2023-12-31 23:59:59 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_days(1).unwrap();
 
         assert_eq!(result.year().get(0), Some(2024));
@@ -1202,7 +1379,10 @@ mod tests {
     fn test_month_boundary_jan_31_to_feb_1() {
         // 2024-01-31 -> add 1 day -> 2024-02-01
         let timestamp = 1_706_659_200i64; // 2024-01-31 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_days(1).unwrap();
 
         assert_eq!(result.year().get(0), Some(2024));
@@ -1214,7 +1394,10 @@ mod tests {
     fn test_negative_months() {
         // 2023-03-15 -> subtract 3 months -> 2022-12-15
         let timestamp = 1_678_838_400i64; // 2023-03-15 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_months(-3).unwrap();
 
         assert_eq!(result.year().get(0), Some(2022));
@@ -1226,7 +1409,10 @@ mod tests {
     fn test_negative_years() {
         // 2023-11-14 -> subtract 5 years -> 2018-11-14
         let timestamp = 1_700_000_000i64;
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let result = arr.add_years(-5).unwrap();
 
         assert_eq!(result.year().get(0), Some(2018));
@@ -1238,7 +1424,10 @@ mod tests {
     fn test_century_leap_year_2000() {
         // 2000 is a leap year (divisible by 400)
         let timestamp = 951_868_800i64; // 2000-03-01 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let prev_day = arr.add_days(-1).unwrap();
 
         assert_eq!(prev_day.year().get(0), Some(2000));
@@ -1251,7 +1440,10 @@ mod tests {
         // 1900 was not a leap year (divisible by 100 but not 400)
         // March 1, 1900 minus 1 day should be Feb 28, not Feb 29
         let timestamp = -2_203_891_200i64; // 1900-03-01 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let prev_day = arr.add_days(-1).unwrap();
 
         assert_eq!(prev_day.year().get(0), Some(1900));
@@ -1263,7 +1455,10 @@ mod tests {
     fn test_extreme_timestamp_min() {
         // Test with a very old date (year 1)
         let timestamp = -62_135_596_800i64; // 0001-01-01 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         assert_eq!(arr.year().get(0), Some(1));
         assert_eq!(arr.month().get(0), Some(1));
@@ -1274,7 +1469,10 @@ mod tests {
     fn test_extreme_timestamp_far_future() {
         // Test with a far future date (year 3000)
         let timestamp = 32_503_680_000i64; // 3000-01-01 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         assert_eq!(arr.year().get(0), Some(3000));
         assert_eq!(arr.month().get(0), Some(1));
@@ -1284,7 +1482,10 @@ mod tests {
     #[test]
     fn test_different_time_units_precision() {
         // Test that different time units maintain precision correctly
-        let arr_sec = DatetimeArray::<i64>::from_slice(&[1_700_000_000], Some(TimeUnit::Seconds));
+        let arr_sec = DatetimeArray::<i64>::from_slice(
+            &[1_700_000_000],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
         let arr_ms = arr_sec.cast_time_unit(TimeUnit::Milliseconds).unwrap();
         let arr_us = arr_ms.cast_time_unit(TimeUnit::Microseconds).unwrap();
         let arr_ns = arr_us.cast_time_unit(TimeUnit::Nanoseconds).unwrap();
@@ -1299,7 +1500,10 @@ mod tests {
     fn test_week_start_on_sunday() {
         // 2023-11-12 is Sunday, week should start on itself
         let timestamp = 1_699_747_200i64; // 2023-11-12 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr.week();
 
@@ -1311,7 +1515,10 @@ mod tests {
     fn test_week_start_on_saturday() {
         // 2023-11-18 is Saturday, week should start on Sunday 2023-11-12
         let timestamp = 1_700_265_600i64; // 2023-11-18 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[timestamp], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[timestamp],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         let result = arr.week();
 
@@ -1323,7 +1530,10 @@ mod tests {
         // Test adding months across months of different lengths
         // Jan (31) -> Feb (28/29) -> Mar (31) -> Apr (30)
         let jan_31 = 1_675_123_200i64; // 2023-01-31 00:00:00 UTC
-        let arr = DatetimeArray::<i64>::from_slice(&[jan_31], Some(TimeUnit::Seconds));
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[jan_31],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
 
         // Jan 31 + 1 month = Feb 28 (clamped)
         let feb = arr.add_months(1).unwrap();
@@ -1334,5 +1544,99 @@ mod tests {
         let mar = feb.add_months(1).unwrap();
         assert_eq!(mar.month().get(0), Some(3));
         assert_eq!(mar.day().get(0), Some(28));
+    }
+
+    // Result types
+
+    #[test]
+    fn arithmetic_and_truncation_keep_the_input_type() {
+        let types = [
+            Dt::Timestamp(TimeUnit::Seconds, None),
+            Dt::Timestamp(TimeUnit::Milliseconds, Some("UTC".to_string())),
+            Dt::Date64,
+            Dt::Time64(TimeUnit::Nanoseconds),
+            Dt::Duration64(TimeUnit::Microseconds),
+        ];
+        for dtype in types {
+            let arr = DatetimeArray::<i64>::from_slice(&[1_700_000_000_000], dtype.clone());
+            assert_eq!(arr.add_duration(Duration::seconds(1)).unwrap().dtype, dtype);
+            assert_eq!(arr.sub_duration(Duration::seconds(1)).unwrap().dtype, dtype);
+            assert_eq!(arr.add_days(1).unwrap().dtype, dtype);
+            assert_eq!(arr.add_months(1).unwrap().dtype, dtype);
+            assert_eq!(arr.add_years(1).unwrap().dtype, dtype);
+            assert_eq!(arr.truncate(TimePeriod::Day).dtype, dtype);
+            assert_eq!(arr.sec().dtype, dtype);
+        }
+        for dtype in [
+            Dt::Date32,
+            Dt::Time32(TimeUnit::Seconds),
+            Dt::Duration32(TimeUnit::Milliseconds),
+        ] {
+            let arr = DatetimeArray::<i32>::from_slice(&[19_000], dtype.clone());
+            assert_eq!(arr.add_days(1).unwrap().dtype, dtype);
+            assert_eq!(arr.add_months(1).unwrap().dtype, dtype);
+            assert_eq!(arr.truncate(TimePeriod::Day).dtype, dtype);
+        }
+    }
+
+    #[test]
+    fn cast_time_unit_keeps_variant_and_timezone() {
+        let cases = [
+            (
+                Dt::Timestamp(TimeUnit::Seconds, Some("Asia/Tokyo".to_string())),
+                Dt::Timestamp(TimeUnit::Nanoseconds, Some("Asia/Tokyo".to_string())),
+            ),
+            (
+                Dt::Timestamp(TimeUnit::Milliseconds, None),
+                Dt::Timestamp(TimeUnit::Nanoseconds, None),
+            ),
+            (
+                Dt::Time64(TimeUnit::Microseconds),
+                Dt::Time64(TimeUnit::Nanoseconds),
+            ),
+            (
+                Dt::Duration64(TimeUnit::Microseconds),
+                Dt::Duration64(TimeUnit::Nanoseconds),
+            ),
+            (
+                Dt::Date64,
+                Dt::Timestamp(TimeUnit::Nanoseconds, None),
+            ),
+        ];
+        for (from, to) in cases {
+            let arr = DatetimeArray::<i64>::from_slice(&[1_000], from);
+            let cast = arr.cast_time_unit(TimeUnit::Nanoseconds).unwrap();
+            assert_eq!(cast.dtype, to);
+            assert_eq!(cast.time_unit(), TimeUnit::Nanoseconds);
+        }
+
+        let date64 = DatetimeArray::<i64>::from_slice(&[1_000], Dt::Date64);
+        assert_eq!(
+            date64.cast_time_unit(TimeUnit::Milliseconds).unwrap().dtype,
+            Dt::Date64
+        );
+
+        let time32 =
+            DatetimeArray::<i32>::from_slice(&[1], Dt::Time32(TimeUnit::Seconds));
+        assert_eq!(
+            time32.cast_time_unit(TimeUnit::Milliseconds).unwrap().dtype,
+            Dt::Time32(TimeUnit::Milliseconds)
+        );
+        let duration32 =
+            DatetimeArray::<i32>::from_slice(&[1], Dt::Duration32(TimeUnit::Seconds));
+        assert_eq!(
+            duration32
+                .cast_time_unit(TimeUnit::Milliseconds)
+                .unwrap()
+                .dtype,
+            Dt::Duration32(TimeUnit::Milliseconds)
+        );
+
+        let date32 = DatetimeArray::<i32>::from_slice(&[19_000], Dt::Date32);
+        assert_eq!(
+            date32.cast_time_unit(TimeUnit::Days).unwrap().dtype,
+            Dt::Date32
+        );
+        assert!(date32.cast_time_unit(TimeUnit::Seconds).is_err());
     }
 }

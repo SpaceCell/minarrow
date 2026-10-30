@@ -28,7 +28,7 @@ use crate::{Array, ArrayV, Bitmask, FieldArray, Table, Value};
 #[cfg(feature = "scalar_type")]
 use crate::{BooleanArray, FloatArray, IntegerArray, Scalar, StringArray};
 #[cfg(all(feature = "datetime", feature = "scalar_type"))]
-use crate::DatetimeArray;
+use crate::{Dt, DatetimeArray};
 use std::sync::Arc;
 
 /// Broadcast addition: `lhs + rhs` with automatic scalar expansion.
@@ -166,11 +166,11 @@ pub fn broadcast_array_to_scalar(
 
         #[cfg(feature = "datetime")]
         Scalar::Datetime32(val) => {
-            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], Dt::Date32))
         }
         #[cfg(feature = "datetime")]
         Scalar::Datetime64(val) => {
-            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], Dt::Date64))
         }
         #[cfg(feature = "decimal")]
         Scalar::Decimal32(val, p, s) => {

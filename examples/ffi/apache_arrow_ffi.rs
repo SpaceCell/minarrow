@@ -36,7 +36,7 @@ mod apache_arrow_test {
     use minarrow::ffi::schema::Schema;
     use minarrow::{Array, ArrowType, Field, FieldArray, NumericArray, Table, TextArray};
     #[cfg(feature = "datetime")]
-    use minarrow::{TemporalArray, TimeUnit};
+    use minarrow::{Dt, TemporalArray};
 
     pub(crate) fn run_example() {
         // ---- 1. Build a Minarrow Table with all types ----
@@ -92,7 +92,7 @@ mod apache_arrow_test {
                 1_600_000_002 / 86_400,
             ]),
             null_mask: None,
-            time_unit: TimeUnit::Days,
+            dtype: Dt::Date32,
         });
         #[cfg(feature = "datetime")]
         let arr_datetime64 = Arc::new(minarrow::DatetimeArray::<i64> {
@@ -102,7 +102,7 @@ mod apache_arrow_test {
                 1_600_000_000_002,
             ]),
             null_mask: None,
-            time_unit: TimeUnit::Milliseconds,
+            dtype: Dt::Date64,
         }) as Arc<_>;
 
         // ---- 2. Wrap into Array enums ----
@@ -153,9 +153,19 @@ mod apache_arrow_test {
         );
 
         #[cfg(feature = "datetime")]
-        let field_datetime32 = Field::new("dt32", ArrowType::Date32, false, None);
+        let field_datetime32 = Field::new(
+            "dt32",
+            ArrowType::DateTime(Dt::Date32),
+            false,
+            None,
+        );
         #[cfg(feature = "datetime")]
-        let field_datetime64 = Field::new("dt64", ArrowType::Date64, false, None);
+        let field_datetime64 = Field::new(
+            "dt64",
+            ArrowType::DateTime(Dt::Date64),
+            false,
+            None,
+        );
 
         // ---- 4. Build FieldArrays ----
         #[cfg(feature = "extended_numeric_types")]

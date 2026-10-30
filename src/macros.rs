@@ -720,7 +720,7 @@ macro_rules! impl_from_vec_primitive {
             pub fn from_vec64(
                 data: $crate::Vec64<T>,
                 null_mask: Option<$crate::structs::bitmask::Bitmask>,
-                $($extra)?  // e.g. time_unit for DatetimeArray
+                $($extra)?  // e.g. dtype for DatetimeArray
             ) -> Self {
                 Self {
                     data: data.into(),

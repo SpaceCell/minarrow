@@ -2080,19 +2080,19 @@ mod tests {
     #[test]
     fn test_consolidate_arena_datetime() {
         use crate::enums::collections::temporal_array::TemporalArray;
-        use crate::{DatetimeArray, TimeUnit};
+        use crate::{Dt, DatetimeArray, TimeUnit};
 
         let fa_dt = |name: &str, vals: &[i64]| -> FieldArray {
             let arr =
                 Array::TemporalArray(TemporalArray::Datetime64(Arc::new(DatetimeArray::new(
                     crate::Buffer::from_vec64(vals.into()),
                     None,
-                    Some(TimeUnit::Milliseconds),
+                    Dt::Timestamp(TimeUnit::Milliseconds, None),
                 ))));
             FieldArray::new(
                 Field::new(
                     name.to_string(),
-                    ArrowType::Timestamp(TimeUnit::Milliseconds, None),
+                    ArrowType::DateTime(Dt::Timestamp(TimeUnit::Milliseconds, None)),
                     false,
                     None,
                 ),
@@ -2109,7 +2109,8 @@ mod tests {
         match &result.cols[0].array {
             Array::TemporalArray(TemporalArray::Datetime64(arr)) => {
                 assert_eq!(arr.data.as_slice(), &[1000i64, 2000, 3000, 4000, 5000]);
-                assert_eq!(arr.time_unit, TimeUnit::Milliseconds);
+                assert_eq!(arr.time_unit(), TimeUnit::Milliseconds);
+                assert_eq!(arr.dtype, Dt::Timestamp(TimeUnit::Milliseconds, None));
             }
             _ => panic!("Expected Datetime64"),
         }
