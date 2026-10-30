@@ -680,6 +680,73 @@ mod tests {
         assert_eq!(whole.len(), 10);
     }
 
+    #[cfg(feature = "views")]
+    fn two_column_table() -> Table {
+        Table::new(
+            "t".to_string(),
+            Some(vec![
+                FieldArray::from_arr("a", seq_array(10)),
+                FieldArray::from_arr("b", seq_array(10)),
+            ]),
+        )
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn one_column_table_views_convert_to_array_views_without_copying() {
+        let table = two_column_table();
+        let one_column = Table::new("t".to_string(), Some(vec![table.cols[1].clone()]));
+        let window = Value::Table(Arc::new(one_column)).slice(2, 5);
+
+        let view = ArrayV::try_from(window).expect("one-column views convert");
+        assert_eq!((view.offset, view.len()), (2, 5));
+        // Shares the parent's buffer.
+        assert!(view.array.ptr_eq(&table.cols[1].array));
+    }
+
+    #[cfg(all(feature = "views", feature = "select"))]
+    #[test]
+    fn one_active_column_of_a_wider_table_view_converts_without_copying() {
+        use crate::traits::selection::ColumnSelection;
+
+        let table = two_column_table();
+        let projected = table.slice(2, 5).c(&["b"]);
+
+        let view = ArrayV::try_from(Value::TableView(Arc::new(projected))).unwrap();
+        assert_eq!((view.offset, view.len()), (2, 5));
+        assert!(view.array.ptr_eq(&table.cols[1].array));
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn wrapped_views_convert_through_the_same_paths() {
+        let table = two_column_table();
+        let one_column = Table::new("t".to_string(), Some(vec![table.cols[1].clone()]));
+        let table_window = Value::Table(Arc::new(one_column)).slice(2, 5);
+        let array_window = Value::ArrayView(Arc::new(ArrayV::new(table.cols[0].array.clone(), 3, 4)));
+
+        for (value, parent, window) in [
+            (table_window, &table.cols[1].array, (2, 5)),
+            (array_window, &table.cols[0].array, (3, 4)),
+        ] {
+            for wrapped in [
+                Value::BoxValue(Box::new(value.clone())),
+                Value::ArcValue(Arc::new(value.clone())),
+            ] {
+                let view = ArrayV::try_from(wrapped).expect("wrapped views convert");
+                assert_eq!((view.offset, view.len()), window);
+                assert!(view.array.ptr_eq(parent));
+            }
+        }
+    }
+
+    #[cfg(feature = "views")]
+    #[test]
+    fn table_views_with_several_columns_do_not_convert() {
+        let window = Value::Table(Arc::new(two_column_table())).slice(2, 5);
+        assert!(ArrayV::try_from(window).is_err());
+    }
+
     #[cfg(all(feature = "matrix", feature = "views"))]
     mod matrix_view_variant {
         use std::sync::Arc;

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Bugfixes
 * `ArrayV` equality involving cached nulls. Identical windows previously compared unequal when (only) one had computed its cached null count.
 
+## Optimisations
+* `TryFrom<Value> for ArrayV` from one-column `TableV` values and for views inside `BoxValue` and `ArcValue` are now zero-copy.
+
 ## 0.19.0 - 2026-10-27
 
 ## Breaking
