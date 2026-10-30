@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## Breaking
+* DateTime type annotation ownership:
+    - has been moved off `Field` in the first instance back to the source `DatetimeArray` so that it is self-describing.
+    - `Dt` consolidates the temporal Arrow types: `Date32`, `Date64`, `Time32`, `Time64`, `Duration32`, `Duration64`, `Timestamp` and `Interval`.
+    - `DatetimeArray` holds its temporal type in `dtype: Dt`, replacing the more limited `time_unit` field.
+    - The `arr_dt32!`, `arr_dt64!`, `fa_dt32!` and `fa_dt64!` macros received a `Dt` argument in place of a `TimeUnit`.
+
 ## Bugfixes
 * `ArrayV` equality involving cached nulls. Identical windows previously compared unequal when (only) one had computed its cached null count.
 * `Bitmask::extend` length handling has been corrected for appended bits, which applies to null masks in `SuperArrayV` consolidation.

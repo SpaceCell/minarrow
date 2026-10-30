@@ -101,15 +101,15 @@ fn arrays_section() {
     // Datetime - various time units
     #[cfg(feature = "datetime")]
     {
-        use minarrow::DatetimeArray;
         use minarrow::enums::time_units::TimeUnit;
+        use minarrow::{Dt, DatetimeArray};
 
         println!("\n===== Datetime arrays (various time units) =====\n");
 
         // Seconds since the Unix epoch (1970-01-01 00:00:00 UTC)
         let dt_seconds = DatetimeArray::<i64>::from_slice(
             &[1_700_000_000, 1_700_086_400, 1_700_172_800],
-            Some(TimeUnit::Seconds),
+            Dt::Timestamp(TimeUnit::Seconds, None),
         );
         println!("Seconds:");
         dt_seconds.print();
@@ -117,14 +117,14 @@ fn arrays_section() {
 
         let dt_millis = DatetimeArray::<i64>::from_slice(
             &[1_700_000_000_000, 1_700_086_400_000, 1_700_172_800_000],
-            Some(TimeUnit::Milliseconds),
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
         );
         println!("Milliseconds:");
         dt_millis.print();
         println!();
 
         let dt_days =
-            DatetimeArray::<i32>::from_slice(&[19_670, 19_671, 19_672], Some(TimeUnit::Days));
+            DatetimeArray::<i32>::from_slice(&[19_670, 19_671, 19_672], Dt::Date32);
         println!("Days:");
         dt_days.print();
 
@@ -132,7 +132,10 @@ fn arrays_section() {
         #[cfg(feature = "datetime_ops")]
         {
             println!("\n===== Datetime with timezone conversions =====\n");
-            let utc_dt = DatetimeArray::<i64>::from_slice(&[1_700_000_000], Some(TimeUnit::Seconds));
+            let utc_dt = DatetimeArray::<i64>::from_slice(
+                &[1_700_000_000],
+                Dt::Timestamp(TimeUnit::Seconds, None),
+            );
             println!("America/New_York:");
             utc_dt.tz("America/New_York").print();
             println!("\nAustralia/Sydney:");
@@ -175,11 +178,11 @@ fn table_section() {
 
     #[cfg(feature = "datetime")]
     {
-        use minarrow::DatetimeArray;
         use minarrow::enums::time_units::TimeUnit;
+        use minarrow::{Dt, DatetimeArray};
         let col_dt64 = DatetimeArray::<i64>::from_slice(
             &[1_000_000_000, 2_000_000_000, 3_000_000_000, 4_000_000_000, 5_000_000_000],
-            Some(TimeUnit::Nanoseconds),
+            Dt::Timestamp(TimeUnit::Nanoseconds, None),
         );
         table.add_col(FieldArray::from_arr("datetime64_col", col_dt64));
     }

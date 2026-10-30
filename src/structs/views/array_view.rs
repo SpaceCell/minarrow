@@ -1104,11 +1104,11 @@ impl ArrayV {
             Array::TemporalArray(temp_arr) => match temp_arr {
                 TemporalArray::Datetime32(arr) => {
                     let (d, m) = gather_idx_prim!(self, arr, indices, i32);
-                    Array::from_datetime_i32(DatetimeArray::new(d, m, Some(arr.time_unit)))
+                    Array::from_datetime_i32(DatetimeArray::new(d, m, arr.dtype.clone()))
                 }
                 TemporalArray::Datetime64(arr) => {
                     let (d, m) = gather_idx_prim!(self, arr, indices, i64);
-                    Array::from_datetime_i64(DatetimeArray::new(d, m, Some(arr.time_unit)))
+                    Array::from_datetime_i64(DatetimeArray::new(d, m, arr.dtype.clone()))
                 }
                 TemporalArray::Null => Array::Null,
             },
@@ -1335,11 +1335,11 @@ impl ArrayV {
             Array::TemporalArray(temp_arr) => match temp_arr {
                 TemporalArray::Datetime32(arr) => {
                     let (d, m) = gather_pad_prim!(self, arr, indices, pad, i32);
-                    Array::from_datetime_i32(DatetimeArray::new(d, m, Some(arr.time_unit)))
+                    Array::from_datetime_i32(DatetimeArray::new(d, m, arr.dtype.clone()))
                 }
                 TemporalArray::Datetime64(arr) => {
                     let (d, m) = gather_pad_prim!(self, arr, indices, pad, i64);
-                    Array::from_datetime_i64(DatetimeArray::new(d, m, Some(arr.time_unit)))
+                    Array::from_datetime_i64(DatetimeArray::new(d, m, arr.dtype.clone()))
                 }
                 TemporalArray::Null => Array::Null,
             },
@@ -1621,11 +1621,11 @@ impl ArrayV {
             Array::TemporalArray(temp_arr) => match temp_arr {
                 TemporalArray::Datetime32(arr) => {
                     let (d, m) = gather_mask_prim!(self, arr, mask, kept, i32);
-                    Array::from_datetime_i32(DatetimeArray::new(d, m, Some(arr.time_unit)))
+                    Array::from_datetime_i32(DatetimeArray::new(d, m, arr.dtype.clone()))
                 }
                 TemporalArray::Datetime64(arr) => {
                     let (d, m) = gather_mask_prim!(self, arr, mask, kept, i64);
-                    Array::from_datetime_i64(DatetimeArray::new(d, m, Some(arr.time_unit)))
+                    Array::from_datetime_i64(DatetimeArray::new(d, m, arr.dtype.clone()))
                 }
                 TemporalArray::Null => Array::Null,
             },

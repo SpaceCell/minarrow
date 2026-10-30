@@ -328,6 +328,8 @@ pub use structs::views::matrix_view::MatrixV;
 pub use structs::views::ndarray_view::NdArrayV;
 
 pub use ffi::arrow_dtype::ArrowType;
+#[cfg(feature = "datetime")]
+pub use ffi::arrow_dtype::Dt;
 #[cfg(feature = "dlpack")]
 pub use ffi::dlpack::{DLPackTensor, DLPackTensorVersioned};
 pub use structs::column::{Column, column};

@@ -71,7 +71,7 @@ use crate::{
 use num_traits::FromPrimitive;
 
 #[cfg(feature = "datetime")]
-use crate::{DatetimeArray, TemporalArray};
+use crate::{Dt, DatetimeArray, TemporalArray, TimeUnit};
 
 #[cfg(feature = "scalar_type")]
 use crate::Scalar;
@@ -877,10 +877,31 @@ impl<T: Copy> From<&DatetimeArray<T>> for IntegerArray<T> {
 }
 
 // Datetime <-> Datetime
+//
+// Width conversions keep the stored values and their time unit. Times of day and
+// durations keep their variant at the new width. Widened `Date32` values are typed
+// `Timestamp` in days, and narrow back to `Date32`. `Date64` and other `Timestamp`
+// types have no 32-bit form, and narrowing them returns an error.
 #[cfg(feature = "datetime")]
 impl TryFrom<&DatetimeArray<i64>> for DatetimeArray<i32> {
     type Error = MinarrowError;
     fn try_from(src: &DatetimeArray<i64>) -> Result<Self, Self::Error> {
+        let dtype = match &src.dtype {
+            Dt::Time64(unit) => Dt::Time32(*unit),
+            Dt::Duration64(unit) => Dt::Duration32(*unit),
+            Dt::Timestamp(TimeUnit::Days, _) => Dt::Date32,
+            // 32-bit types pass through unchanged.
+            Dt::Date32 | Dt::Time32(_) | Dt::Duration32(_) => {
+                src.dtype.clone()
+            }
+            Dt::Date64 | Dt::Timestamp(_, _) | Dt::Interval(_) => {
+                return Err(MinarrowError::IncompatibleTypeError {
+                    from: "DatetimeArray<i64>",
+                    to: "DatetimeArray<i32>",
+                    message: Some(format!("{} has no 32-bit temporal type", src.dtype)),
+                });
+            }
+        };
         let mut data = Vec64::with_capacity(src.data.len());
         for &v in &src.data {
             if v < i32::MIN as i64 || v > i32::MAX as i64 {
@@ -894,7 +915,7 @@ impl TryFrom<&DatetimeArray<i64>> for DatetimeArray<i32> {
         Ok(DatetimeArray {
             data: data.into(),
             null_mask: src.null_mask.clone(),
-            time_unit: src.time_unit.clone(),
+            dtype,
         })
     }
 }
@@ -902,11 +923,23 @@ impl TryFrom<&DatetimeArray<i64>> for DatetimeArray<i32> {
 #[cfg(feature = "datetime")]
 impl From<&DatetimeArray<i32>> for DatetimeArray<i64> {
     fn from(src: &DatetimeArray<i32>) -> Self {
+        let dtype = match &src.dtype {
+            // 64-bit day counts are typed `Timestamp` in days, as `Date64` is in milliseconds.
+            Dt::Date32 => Dt::Timestamp(TimeUnit::Days, None),
+            Dt::Time32(unit) => Dt::Time64(*unit),
+            Dt::Duration32(unit) => Dt::Duration64(*unit),
+            // 64-bit types pass through unchanged.
+            Dt::Date64
+            | Dt::Time64(_)
+            | Dt::Duration64(_)
+            | Dt::Timestamp(_, _)
+            | Dt::Interval(_) => src.dtype.clone(),
+        };
         let data = src.data.iter().map(|&v| v as i64).collect();
         DatetimeArray {
             data,
             null_mask: src.null_mask.clone(),
-            time_unit: src.time_unit.clone(),
+            dtype,
         }
     }
 }
@@ -1531,9 +1564,13 @@ impl From<Scalar> for Array {
             #[cfg(feature = "large_string")]
             String64(v) => Array::from_string64(StringArray::from_slice(&[v.as_str()])),
             #[cfg(feature = "datetime")]
-            Datetime32(v) => Array::from_datetime_i32(DatetimeArray::from_slice(&[v], None)),
+            Datetime32(v) => {
+                Array::from_datetime_i32(DatetimeArray::from_slice(&[v], Dt::Date32))
+            }
             #[cfg(feature = "datetime")]
-            Datetime64(v) => Array::from_datetime_i64(DatetimeArray::from_slice(&[v], None)),
+            Datetime64(v) => {
+                Array::from_datetime_i64(DatetimeArray::from_slice(&[v], Dt::Date64))
+            }
             #[cfg(feature = "datetime")]
             Interval => Array::from_int32(IntegerArray::from_slice(&[0i32])),
             #[cfg(feature = "decimal")]

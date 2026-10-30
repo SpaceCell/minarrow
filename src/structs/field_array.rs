@@ -57,7 +57,7 @@ use crate::traits::selection::{DataSelector, RowSelection};
 use crate::traits::shape::Shape;
 use crate::{Array, Field, NumericArray, TextArray};
 #[cfg(feature = "datetime")]
-use crate::{TemporalArray, TimeUnit};
+use crate::{Dt, TemporalArray};
 
 /// # FieldArray
 ///
@@ -215,7 +215,8 @@ impl FieldArray {
     /// Returns a new FieldArray with updated timezone metadata.
     ///
     /// The underlying timestamp data (always UTC) remains unchanged. Only the timezone
-    /// metadata in the Field's ArrowType is updated for interpretation/display purposes.
+    /// in the Field's ArrowType, and in the array's `Timestamp` type, is updated for
+    /// interpretation/display purposes.
     ///
     /// # Arguments
     /// * `tz` - Timezone string in Arrow format (IANA like "America/New_York" or offset like "+05:00")
@@ -225,12 +226,26 @@ impl FieldArray {
     #[cfg(feature = "datetime")]
     pub fn tz(&self, tz: &str) -> Result<Self, MinarrowError> {
         match &self.field.dtype {
-            ArrowType::Timestamp(unit, _) => {
+            ArrowType::DateTime(Dt::Timestamp(unit, _)) => {
                 let mut new_field = (*self.field).clone();
-                new_field.dtype = ArrowType::Timestamp(*unit, Some(tz.to_string()));
+                new_field.dtype =
+                    ArrowType::DateTime(Dt::Timestamp(*unit, Some(tz.to_string())));
+                // Set the same timezone on the array's `Timestamp` type.
+                let array = match &self.array {
+                    Array::TemporalArray(TemporalArray::Datetime64(arr)) => match &arr.dtype {
+                        Dt::Timestamp(array_unit, _) => {
+                            let mut timestamps = (**arr).clone();
+                            timestamps.dtype =
+                                Dt::Timestamp(*array_unit, Some(tz.to_string()));
+                            Array::from_datetime_i64(timestamps)
+                        }
+                        _ => self.array.clone(),
+                    },
+                    _ => self.array.clone(),
+                };
                 Ok(FieldArray {
                     field: Arc::new(new_field),
-                    array: self.array.clone(),
+                    array,
                     null_count: self.null_count,
                 })
             }
@@ -245,7 +260,7 @@ impl FieldArray {
     /// Returns a new FieldArray with timezone metadata set to "UTC".
     ///
     /// The underlying timestamp data (always UTC) remains unchanged. Only the timezone
-    /// metadata in the Field's ArrowType is updated.
+    /// in the Field's ArrowType, and in the array's `Timestamp` type, is updated.
     ///
     /// # Errors
     /// Returns an error if the array is not a Timestamp type.
@@ -514,21 +529,9 @@ pub fn create_field_for_array(
             TextArray::Categorical64(_) => ArrowType::Dictionary(CategoricalIndexType::UInt64),
             TextArray::Null => ArrowType::Null,
         },
+        // Temporal arrays report the `Dt` they hold.
         #[cfg(feature = "datetime")]
-        Array::TemporalArray(temp_arr) => match temp_arr {
-            TemporalArray::Datetime32(dt_arr) => match &dt_arr.time_unit {
-                TimeUnit::Days => ArrowType::Date32,
-                unit => ArrowType::Time32(unit.clone()),
-            },
-            TemporalArray::Datetime64(dt_arr) => match &dt_arr.time_unit {
-                TimeUnit::Milliseconds => ArrowType::Date64,
-                TimeUnit::Microseconds | TimeUnit::Nanoseconds => {
-                    ArrowType::Time64(dt_arr.time_unit.clone())
-                }
-                unit => ArrowType::Timestamp(unit.clone(), None), // TODO: extract timezone from metadata
-            },
-            TemporalArray::Null => ArrowType::Null,
-        },
+        Array::TemporalArray(temp_arr) => temp_arr.arrow_type(),
         Array::BooleanArray(_) => ArrowType::Boolean,
         Array::Null => ArrowType::Null,
     };
@@ -551,7 +554,8 @@ impl Display for FieldArray {
 
         // For Timestamp types with timezone, use custom printing
         #[cfg(feature = "datetime")]
-        if let ArrowType::Timestamp(_unit, Some(ref tz)) = self.field.dtype {
+        if let ArrowType::DateTime(Dt::Timestamp(_unit, Some(ref tz))) = self.field.dtype
+        {
             return format_field_array_with_timezone(f, self, tz);
         }
 
@@ -576,7 +580,10 @@ fn format_field_array_with_timezone(
         writeln!(
             f,
             "DatetimeArray [{} values] (dtype: datetime[{:?}], timezone: {}, nulls: {})",
-            len, dt.time_unit, timezone, nulls
+            len,
+            dt.time_unit(),
+            timezone,
+            nulls
         )?;
 
         write!(f, "[")?;
@@ -594,7 +601,10 @@ fn format_field_array_with_timezone(
         writeln!(
             f,
             "DatetimeArray [{} values] (dtype: datetime[{:?}], timezone: {}, nulls: {})",
-            len, dt.time_unit, timezone, nulls
+            len,
+            dt.time_unit(),
+            timezone,
+            nulls
         )?;
 
         write!(f, "[")?;
@@ -727,7 +737,7 @@ impl RowSelection for FieldArray {
 //   fa_i32!("col", my_vec64)        // from a Vec64
 //   fa_i32!("col")                  // empty array
 //   fa_i32_opt!("col", Some(1), None, Some(3))  // nullable
-//   fa_dt64!("col", TimeUnit::Seconds; 1, 2)    // datetime, unit required
+//   fa_dt64!("col", Dt::Timestamp(TimeUnit::Seconds, None); 1, 2)  // datetime, type required
 // ============================================================
 
 // ======== numeric ========
@@ -870,31 +880,32 @@ macro_rules! fa_i64 {
 
 /// Build a named `FieldArray` of i32-backed datetimes.
 ///
-/// The time unit is required. It follows the column name and is separated
-/// from the values by `;`.
+/// The `Dt` is required, and must be a 32-bit type: `Date32`, `Time32`
+/// or `Duration32`. It follows the column name and is separated from the values
+/// by `;`. The Field uses the same type.
 ///
 /// ```ignore
-/// use minarrow::{fa_dt32, vec64, TimeUnit};
-/// let a = fa_dt32!("day", TimeUnit::Days; 20_454, 20_455);
-/// let b = fa_dt32!("day", TimeUnit::Days; 20_454);
-/// let c = fa_dt32!("clock", TimeUnit::Milliseconds; @vec64 vec64![1, 2, 3]);
-/// let d = fa_dt32!("day", TimeUnit::Days;);
+/// use minarrow::{fa_dt32, vec64, Dt, TimeUnit};
+/// let a = fa_dt32!("day", Dt::Date32; 20_454, 20_455);
+/// let b = fa_dt32!("day", Dt::Date32; 20_454);
+/// let c = fa_dt32!("clock", Dt::Time32(TimeUnit::Milliseconds); @vec64 vec64![1, 2, 3]);
+/// let d = fa_dt32!("day", Dt::Date32;);
 /// ```
 #[cfg(feature = "datetime")]
 #[macro_export]
 macro_rules! fa_dt32 {
-    ($name:expr, $unit:expr; @vec64 $v:expr $(,)?) => {
-        $crate::FieldArray::from_arr($name, $crate::arr_dt32!($unit; $v))
+    ($name:expr, $dtype:expr; @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_dt32!($dtype; $v))
     };
-    ($name:expr, $unit:expr; $first:expr, $($rest:expr),+ $(,)?) => {
-        $crate::FieldArray::from_arr($name, $crate::arr_dt32!($unit; $first, $($rest),+))
+    ($name:expr, $dtype:expr; $first:expr, $($rest:expr),+ $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_dt32!($dtype; $first, $($rest),+))
     };
-    ($name:expr, $unit:expr; $v:expr $(,)?) => {{
+    ($name:expr, $dtype:expr; $v:expr $(,)?) => {{
         use $crate::vec64;
-        $crate::FieldArray::from_arr($name, $crate::arr_dt32!($unit; vec64![$v]))
+        $crate::FieldArray::from_arr($name, $crate::arr_dt32!($dtype; vec64![$v]))
     }};
-    ($name:expr, $unit:expr;) => {
-        $crate::FieldArray::from_arr($name, $crate::arr_dt32!($unit;))
+    ($name:expr, $dtype:expr;) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_dt32!($dtype;))
     };
 }
 
@@ -902,31 +913,32 @@ macro_rules! fa_dt32 {
 
 /// Build a named `FieldArray` of i64-backed datetimes.
 ///
-/// The time unit is required. It follows the column name and is separated
-/// from the values by `;`.
+/// The `Dt` is required, and must be a 64-bit type: `Date64`, `Time64`,
+/// `Duration64` or `Timestamp`. It follows the column name and is separated from
+/// the values by `;`. The Field uses the same type.
 ///
 /// ```ignore
-/// use minarrow::{fa_dt64, vec64, TimeUnit};
-/// let a = fa_dt64!("ts", TimeUnit::Seconds; 1_768_521_600, 1_775_865_600);
-/// let b = fa_dt64!("ts", TimeUnit::Seconds; 1_768_521_600);
-/// let c = fa_dt64!("ts", TimeUnit::Milliseconds; @vec64 vec64![1, 2, 3]);
-/// let d = fa_dt64!("ts", TimeUnit::Seconds;);
+/// use minarrow::{fa_dt64, vec64, Dt, TimeUnit};
+/// let a = fa_dt64!("ts", Dt::Timestamp(TimeUnit::Seconds, None); 1_768_521_600, 1_775_865_600);
+/// let b = fa_dt64!("ts", Dt::Timestamp(TimeUnit::Seconds, None); 1_768_521_600);
+/// let c = fa_dt64!("day", Dt::Date64; @vec64 vec64![1, 2, 3]);
+/// let d = fa_dt64!("ts", Dt::Timestamp(TimeUnit::Seconds, None););
 /// ```
 #[cfg(feature = "datetime")]
 #[macro_export]
 macro_rules! fa_dt64 {
-    ($name:expr, $unit:expr; @vec64 $v:expr $(,)?) => {
-        $crate::FieldArray::from_arr($name, $crate::arr_dt64!($unit; $v))
+    ($name:expr, $dtype:expr; @vec64 $v:expr $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_dt64!($dtype; $v))
     };
-    ($name:expr, $unit:expr; $first:expr, $($rest:expr),+ $(,)?) => {
-        $crate::FieldArray::from_arr($name, $crate::arr_dt64!($unit; $first, $($rest),+))
+    ($name:expr, $dtype:expr; $first:expr, $($rest:expr),+ $(,)?) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_dt64!($dtype; $first, $($rest),+))
     };
-    ($name:expr, $unit:expr; $v:expr $(,)?) => {{
+    ($name:expr, $dtype:expr; $v:expr $(,)?) => {{
         use $crate::vec64;
-        $crate::FieldArray::from_arr($name, $crate::arr_dt64!($unit; vec64![$v]))
+        $crate::FieldArray::from_arr($name, $crate::arr_dt64!($dtype; vec64![$v]))
     }};
-    ($name:expr, $unit:expr;) => {
-        $crate::FieldArray::from_arr($name, $crate::arr_dt64!($unit;))
+    ($name:expr, $dtype:expr;) => {
+        $crate::FieldArray::from_arr($name, $crate::arr_dt64!($dtype;))
     };
 }
 
@@ -2016,6 +2028,8 @@ mod concat_tests {
 
 #[cfg(test)]
 mod fa_macro_tests {
+    #[cfg(feature = "datetime")]
+    use crate::Dt;
     use crate::ffi::arrow_dtype::ArrowType;
 
     #[test]
@@ -2040,23 +2054,27 @@ mod fa_macro_tests {
     fn test_fa_dt32_literals() {
         use crate::{TimeUnit, vec64};
 
-        let fa = fa_dt32!("day", TimeUnit::Days; 20_454, 20_455);
+        let fa = fa_dt32!("day", Dt::Date32; 20_454, 20_455);
         assert_eq!(fa.field.name, "day");
-        assert_eq!(fa.field.dtype, ArrowType::Date32);
+        assert_eq!(fa.field.dtype, ArrowType::DateTime(Dt::Date32));
         assert_eq!(fa.len(), 2);
         assert!(!fa.field.nullable);
 
-        let from_vec64 = fa_dt32!("clock", TimeUnit::Milliseconds; @vec64 vec64![1i32, 2, 3]);
-        assert_eq!(from_vec64.field.dtype, ArrowType::Date32);
+        let clock = Dt::Time32(TimeUnit::Milliseconds);
+        let from_vec64 = fa_dt32!("clock", clock.clone(); @vec64 vec64![1i32, 2, 3]);
+        assert_eq!(from_vec64.field.dtype, ArrowType::DateTime(clock));
         assert_eq!(from_vec64.len(), 3);
 
-        let single = fa_dt32!("day", TimeUnit::Days; 20_454i32);
-        assert_eq!(single.field.dtype, ArrowType::Date32);
+        let single = fa_dt32!("day", Dt::Date32; 20_454i32);
+        assert_eq!(
+            single.field.dtype,
+            ArrowType::DateTime(Dt::Date32)
+        );
         assert_eq!(single.len(), 1);
 
-        let empty = fa_dt32!("day", TimeUnit::Days;);
+        let empty = fa_dt32!("day", Dt::Date32;);
         assert_eq!(empty.len(), 0);
-        assert_eq!(empty.field.dtype, ArrowType::Date32);
+        assert_eq!(empty.field.dtype, ArrowType::DateTime(Dt::Date32));
     }
 
     #[cfg(feature = "datetime")]
@@ -2064,28 +2082,34 @@ mod fa_macro_tests {
     fn test_fa_dt64_literals() {
         use crate::{Array, TemporalArray, TimeUnit, vec64};
 
-        let fa = fa_dt64!("ts", TimeUnit::Seconds; 1_768_521_600i64, 1_775_865_600);
+        let seconds = Dt::Timestamp(TimeUnit::Seconds, None);
+        let fa = fa_dt64!("ts", seconds.clone(); 1_768_521_600i64, 1_775_865_600);
         assert_eq!(fa.field.name, "ts");
-        assert_eq!(fa.field.dtype, ArrowType::Date64);
+        assert_eq!(fa.field.dtype, ArrowType::DateTime(seconds.clone()));
         assert_eq!(fa.len(), 2);
 
         match &fa.array {
             Array::TemporalArray(TemporalArray::Datetime64(a)) => {
-                assert_eq!(a.time_unit, TimeUnit::Seconds)
+                assert_eq!(a.time_unit(), TimeUnit::Seconds);
+                assert_eq!(a.dtype, seconds);
             }
             other => panic!("expected Datetime64, got {other:?}"),
         }
 
-        let from_vec64 = fa_dt64!("ts", TimeUnit::Milliseconds; @vec64 vec64![1i64, 2, 3]);
-        assert_eq!(from_vec64.field.dtype, ArrowType::Date64);
+        let from_vec64 = fa_dt64!("day", Dt::Date64; @vec64 vec64![1i64, 2, 3]);
+        assert_eq!(
+            from_vec64.field.dtype,
+            ArrowType::DateTime(Dt::Date64)
+        );
         assert_eq!(from_vec64.len(), 3);
 
-        let single = fa_dt64!("ts", TimeUnit::Seconds; 1_768_521_600i64);
-        assert_eq!(single.field.dtype, ArrowType::Date64);
+        let single = fa_dt64!("ts", seconds.clone(); 1_768_521_600i64);
+        assert_eq!(single.field.dtype, ArrowType::DateTime(seconds.clone()));
         assert_eq!(single.len(), 1);
 
-        let empty = fa_dt64!("ts", TimeUnit::Seconds;);
+        let empty = fa_dt64!("ts", seconds.clone(););
         assert_eq!(empty.len(), 0);
+        assert_eq!(empty.field.dtype, ArrowType::DateTime(seconds));
     }
 
     #[test]

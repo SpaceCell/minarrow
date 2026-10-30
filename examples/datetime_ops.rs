@@ -23,7 +23,9 @@
 #[cfg(feature = "datetime_ops")]
 fn main() {
     use minarrow::ffi::arrow_dtype::ArrowType;
-    use minarrow::{DatetimeArray, DatetimeOps, FieldArray, MaskedArray, Print, TimeUnit};
+    use minarrow::{
+        Dt, DatetimeArray, DatetimeOps, FieldArray, MaskedArray, Print, TimeUnit,
+    };
     use time::Duration;
 
     println!("  Minarrow Datetime Operations Example");
@@ -35,7 +37,10 @@ fn main() {
         1_700_086_400, // 2023-11-15 22:13:20 UTC
         1_700_172_800, // 2023-11-16 22:13:20 UTC
     ];
-    let arr = DatetimeArray::<i64>::from_slice(&timestamps, Some(TimeUnit::Seconds));
+    let arr = DatetimeArray::<i64>::from_slice(
+        &timestamps,
+        Dt::Timestamp(TimeUnit::Seconds, None),
+    );
 
     println!("Original datetime array:");
     for i in 0..arr.len() {
@@ -81,7 +86,7 @@ fn main() {
             1_700_086_400, // Same as arr[1]
             1_700_173_900, // 100 seconds AFTER arr[2]
         ],
-        Some(TimeUnit::Seconds),
+        Dt::Timestamp(TimeUnit::Seconds, None),
     );
 
     // diff() returns signed difference i.e. arr2 - arr
@@ -107,8 +112,10 @@ fn main() {
 
     // Create a high-precision datetime array to show all granularities
     // 2023-11-14 22:13:20.123456789 UTC
-    let precise_dt =
-        DatetimeArray::<i64>::from_slice(&[1_700_000_000_123_456_789], Some(TimeUnit::Nanoseconds));
+    let precise_dt = DatetimeArray::<i64>::from_slice(
+        &[1_700_000_000_123_456_789],
+        Dt::Timestamp(TimeUnit::Nanoseconds, None),
+    );
 
     let years = precise_dt.year();
     let months = precise_dt.month();
@@ -200,17 +207,19 @@ fn main() {
 
     // Example 1: Single FieldArray with timezone
     println!("\n1. FieldArray with Sydney timezone:");
+    let sydney_type =
+        Dt::Timestamp(TimeUnit::Seconds, Some("Australia/Sydney".to_string()));
     let sydney_events = DatetimeArray::<i64>::from_slice(
         &[
             1_700_000_000, // 2023-11-14 22:13:20 UTC = 2023-11-15 09:13:20 AEDT
             1_700_086_400, // 2023-11-15 22:13:20 UTC = 2023-11-16 09:13:20 AEDT
             1_700_172_800, // 2023-11-16 22:13:20 UTC = 2023-11-17 09:13:20 AEDT
         ],
-        Some(TimeUnit::Seconds),
+        sydney_type.clone(),
     );
     let sydney_field_array = FieldArray::from_parts(
         "event_time",
-        ArrowType::Timestamp(TimeUnit::Seconds, Some("Australia/Sydney".to_string())),
+        ArrowType::DateTime(sydney_type),
         Some(false), // not nullable
         None,        // no additional metadata
         sydney_events.into(),
@@ -225,34 +234,40 @@ fn main() {
     println!("\n2. Multiple FieldArrays with different timezones:");
 
     // New York events (EST/EDT)
+    let ny_type = Dt::Timestamp(TimeUnit::Seconds, Some("America/New_York".to_string()));
     let ny_events =
-        DatetimeArray::<i64>::from_slice(&[1_700_000_000, 1_700_086_400], Some(TimeUnit::Seconds));
+        DatetimeArray::<i64>::from_slice(&[1_700_000_000, 1_700_086_400], ny_type.clone());
     let ny_field_array = FieldArray::from_parts(
         "ny_time",
-        ArrowType::Timestamp(TimeUnit::Seconds, Some("America/New_York".to_string())),
+        ArrowType::DateTime(ny_type),
         Some(false),
         None,
         ny_events.into(),
     );
 
     // Tokyo events (JST)
+    let tokyo_type = Dt::Timestamp(TimeUnit::Seconds, Some("Asia/Tokyo".to_string()));
     let tokyo_events =
-        DatetimeArray::<i64>::from_slice(&[1_700_000_000, 1_700_086_400], Some(TimeUnit::Seconds));
+        DatetimeArray::<i64>::from_slice(&[1_700_000_000, 1_700_086_400], tokyo_type.clone());
     let tokyo_field_array = FieldArray::from_parts(
         "tokyo_time",
-        ArrowType::Timestamp(TimeUnit::Seconds, Some("Asia/Tokyo".to_string())),
+        ArrowType::DateTime(tokyo_type),
         Some(false),
         None,
         tokyo_events.into(),
     );
 
     // Extract timezone from ArrowType for display
-    let ny_tz = if let ArrowType::Timestamp(_, Some(tz)) = &ny_field_array.field.dtype {
+    let ny_tz = if let ArrowType::DateTime(Dt::Timestamp(_, Some(tz))) =
+        &ny_field_array.field.dtype
+    {
         tz.as_str()
     } else {
         "UTC"
     };
-    let tokyo_tz = if let ArrowType::Timestamp(_, Some(tz)) = &tokyo_field_array.field.dtype {
+    let tokyo_tz = if let ArrowType::DateTime(Dt::Timestamp(_, Some(tz))) =
+        &tokyo_field_array.field.dtype
+    {
         tz.as_str()
     } else {
         "UTC"
@@ -269,10 +284,11 @@ fn main() {
 
     // Example 3: FieldArray with unusual offset
     println!("\n3. FieldArray with unusual timezone offset:");
-    let nepal_events = DatetimeArray::<i64>::from_slice(&[1_700_000_000], Some(TimeUnit::Seconds));
+    let nepal_type = Dt::Timestamp(TimeUnit::Seconds, Some("Asia/Kathmandu".to_string()));
+    let nepal_events = DatetimeArray::<i64>::from_slice(&[1_700_000_000], nepal_type.clone());
     let nepal_field_array = FieldArray::from_parts(
         "nepal_event",
-        ArrowType::Timestamp(TimeUnit::Seconds, Some("Asia/Kathmandu".to_string())),
+        ArrowType::DateTime(nepal_type),
         Some(false),
         None,
         nepal_events.into(),
@@ -308,7 +324,10 @@ fn main() {
     println!("  3. Direct offset strings (e.g., '+10:00', '-05:00')");
 
     // Use the first timestamp for timezone examples
-    let utc_dt = DatetimeArray::<i64>::from_slice(&[timestamps[0]], Some(TimeUnit::Seconds));
+    let utc_dt = DatetimeArray::<i64>::from_slice(
+        &[timestamps[0]],
+        Dt::Timestamp(TimeUnit::Seconds, None),
+    );
 
     println!("\nOriginal UTC time: 2023-11-14 22:13:20 UTC");
     println!("\n1. IANA Timezone Identifiers:");

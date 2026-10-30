@@ -26,6 +26,10 @@
 //! - Specifies the integer size of dictionary keys for categorical arrays.
 //! - Supports multiple unsigned integer widths depending on feature flags.
 //!
+//! ## Dt
+//! - Defines the temporal Arrow types, held by `ArrowType::DateTime` and by `DatetimeArray`.
+//! - Fields built from temporal arrays use the array's `Dt`.
+//!
 //! ## Display
 //! - Human-readable type names are produced for all variants.
 //! - Temporal types include their units in the rendered output.
@@ -51,6 +55,41 @@ use crate::DatetimeArray;
 use crate::enums::time_units::{IntervalUnit, TimeUnit};
 use crate::{BooleanArray, CategoricalArray, Float, FloatArray, Integer, StringArray};
 
+/// # Dt
+///
+/// Temporal *Apache Arrow* types supported by Minarrow.
+///
+/// ## Role
+/// - Held by `ArrowType::DateTime` on a `Field`, and by `DatetimeArray` as its `dtype`.
+/// - Gives the temporal type one definition, shared by the schema and the array.
+/// - Distinguishes dates, times of day, durations, timestamps and intervals that
+///   share the same physical storage.
+///
+/// ## Storage
+/// - `Date32`, `Time32` and `Duration32` use 32-bit storage, `DatetimeArray<i32>`.
+/// - `Date64`, `Time64`, `Duration64` and `Timestamp` use 64-bit storage, `DatetimeArray<i64>`.
+/// - `Date32` values are days since the UNIX epoch, and `Date64` values are milliseconds
+///   since the UNIX epoch.
+/// - `Interval` is available for schema descriptions. `DatetimeArray` does not hold
+///   interval data.
+///
+/// ## Timezones
+/// The optional timezone on `Timestamp` is an Arrow timezone string, such as "UTC" or
+/// "America/New_York". Stored values remain UTC, and the timezone affects only
+/// interpretation and display.
+#[cfg(feature = "datetime")]
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+pub enum Dt {
+    Date32,
+    Date64,
+    Time32(TimeUnit),
+    Time64(TimeUnit),
+    Duration32(TimeUnit),
+    Duration64(TimeUnit),
+    Timestamp(TimeUnit, Option<String>),
+    Interval(IntervalUnit),
+}
+
 /// # ArrowType
 ///
 /// Unified representation of supported *Apache Arrow* data types in Minarrow.
@@ -65,7 +104,8 @@ use crate::{BooleanArray, CategoricalArray, Float, FloatArray, Integer, StringAr
 /// - **Core primitives**: integer, floating-point, boolean.
 /// - **Strings**: UTF-8 (`String`) and optionally large UTF-8 (`LargeString`).
 /// - **Dictionary-encoded strings**: via `Dictionary(CategoricalIndexType)`.
-/// - **Optional temporal types**: `date`, `time`, `duration`, `timestamp`, and `interval` with explicit units.
+/// - **Optional temporal types**: `date`, `time`, `duration`, `timestamp`, and `interval`
+///   with their units, via `DateTime(Dt)`.
 /// - **`Null`**: placeholder or metadata-only fields.
 ///
 /// ## Interoperability
@@ -74,8 +114,9 @@ use crate::{BooleanArray, CategoricalArray, Float, FloatArray, Integer, StringAr
 /// - Simplifies Minarrow’s type system *(e.g., one `DatetimeArray` type)* while tagging `ArrowType` on `Field` for ecosystem compatibility.
 ///
 /// ## Notes
-/// - For `DatetimeArray` types, `ArrowType` reflects only the physical encoding.
-///   Logical distinctions (e.g., interpreting a `Date64` as a timestamp vs. a duration) are stored in `Field` metadata.
+/// - Temporal types are defined by [`Dt`], which both `ArrowType::DateTime`
+///   and `DatetimeArray` hold. Temporal arrays therefore report the same `ArrowType`
+///   as their Fields.
 /// - Dictionary key widths are defined by the associated `CategoricalIndexType`.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum ArrowType {
@@ -95,22 +136,9 @@ pub enum ArrowType {
     UInt64,
     Float32,
     Float64,
+    // Dates, times of day, durations, timestamps and intervals.
     #[cfg(feature = "datetime")]
-    Date32,
-    #[cfg(feature = "datetime")]
-    Date64,
-    #[cfg(feature = "datetime")]
-    Time32(TimeUnit),
-    #[cfg(feature = "datetime")]
-    Time64(TimeUnit),
-    #[cfg(feature = "datetime")]
-    Duration32(TimeUnit),
-    #[cfg(feature = "datetime")]
-    Duration64(TimeUnit),
-    #[cfg(feature = "datetime")]
-    Timestamp(TimeUnit, Option<String>), // TimeUnit + optional timezone string (e.g., "UTC", "America/New_York")
-    #[cfg(feature = "datetime")]
-    Interval(IntervalUnit),
+    DateTime(Dt),
     String,
     #[cfg(feature = "large_string")]
     LargeString,
@@ -153,14 +181,7 @@ impl ArrowType {
             | ArrowType::Decimal64(_, _)
             | ArrowType::Decimal128(_, _) => "Numeric",
             #[cfg(feature = "datetime")]
-            ArrowType::Date32
-            | ArrowType::Date64
-            | ArrowType::Time32(_)
-            | ArrowType::Time64(_)
-            | ArrowType::Duration32(_)
-            | ArrowType::Duration64(_)
-            | ArrowType::Timestamp(_, _)
-            | ArrowType::Interval(_) => "Datetime",
+            ArrowType::DateTime(_) => "Datetime",
             ArrowType::String | ArrowType::Utf8View => "Text",
             #[cfg(feature = "large_string")]
             ArrowType::LargeString => "Text",
@@ -239,14 +260,7 @@ impl ArrowType {
                 #[cfg(feature = "large_string")]
                 ArrowType::LargeString => None,
                 #[cfg(feature = "datetime")]
-                ArrowType::Date32
-                | ArrowType::Date64
-                | ArrowType::Time32(_)
-                | ArrowType::Time64(_)
-                | ArrowType::Duration32(_)
-                | ArrowType::Duration64(_)
-                | ArrowType::Timestamp(_, _)
-                | ArrowType::Interval(_) => None,
+                ArrowType::DateTime(_) => None,
             }
         }
         fn signed(bits: u32) -> ArrowType {
@@ -337,32 +351,36 @@ impl ArrowType {
                 }
             }
 
-            match (self, other) {
-                (Date32, Date32) => return Some(Date32),
-                (Date32, Date64) | (Date64, Date32) | (Date64, Date64) => return Some(Date64),
-                (Time32(a), Time32(b)) => return Some(Time32(finer(a, b))),
-                (Time64(a), Time64(b)) | (Time32(a), Time64(b)) | (Time64(a), Time32(b)) => {
-                    return Some(Time64(finer(a, b)));
-                }
-                (Duration32(a), Duration32(b)) => return Some(Duration32(finer(a, b))),
-                (Duration64(a), Duration64(b))
-                | (Duration32(a), Duration64(b))
-                | (Duration64(a), Duration32(b)) => return Some(Duration64(finer(a, b))),
-                (Timestamp(a, tz_a), Timestamp(b, tz_b)) => {
-                    return if tz_a == tz_b {
-                        Some(Timestamp(finer(a, b), tz_a.clone()))
+            if let (DateTime(a), DateTime(b)) = (self, other) {
+                use Dt as D;
+                let upcast = match (a, b) {
+                    (D::Date32, D::Date32) => Some(D::Date32),
+                    (D::Date32, D::Date64) | (D::Date64, D::Date32) | (D::Date64, D::Date64) => {
+                        Some(D::Date64)
+                    }
+                    (D::Time32(a), D::Time32(b)) => Some(D::Time32(finer(a, b))),
+                    (D::Time64(a), D::Time64(b))
+                    | (D::Time32(a), D::Time64(b))
+                    | (D::Time64(a), D::Time32(b)) => Some(D::Time64(finer(a, b))),
+                    (D::Duration32(a), D::Duration32(b)) => Some(D::Duration32(finer(a, b))),
+                    (D::Duration64(a), D::Duration64(b))
+                    | (D::Duration32(a), D::Duration64(b))
+                    | (D::Duration64(a), D::Duration32(b)) => Some(D::Duration64(finer(a, b))),
+                    (D::Timestamp(a, tz_a), D::Timestamp(b, tz_b)) => {
+                        if tz_a == tz_b {
+                            Some(D::Timestamp(finer(a, b), tz_a.clone()))
+                        } else {
+                            None
+                        }
+                    }
+                    (D::Interval(a), D::Interval(b)) => Some(if a == b {
+                        D::Interval(a.clone())
                     } else {
-                        None
-                    };
-                }
-                (Interval(a), Interval(b)) => {
-                    return Some(if a == b {
-                        Interval(a.clone())
-                    } else {
-                        Interval(IntervalUnit::MonthDaysNs)
-                    });
-                }
-                _ => {}
+                        D::Interval(IntervalUnit::MonthDaysNs)
+                    }),
+                    _ => None,
+                };
+                return upcast.map(DateTime);
             }
         }
 
@@ -372,28 +390,7 @@ impl ArrowType {
         // does not compile until it is placed.
         match (self, other) {
             #[cfg(feature = "datetime")]
-            (
-                Date32
-                | Date64
-                | Time32(_)
-                | Time64(_)
-                | Duration32(_)
-                | Duration64(_)
-                | Timestamp(_, _)
-                | Interval(_),
-                _,
-            )
-            | (
-                _,
-                Date32
-                | Date64
-                | Time32(_)
-                | Time64(_)
-                | Duration32(_)
-                | Duration64(_)
-                | Timestamp(_, _)
-                | Interval(_),
-            ) => None,
+            (DateTime(_), _) | (_, DateTime(_)) => None,
             (Null | Boolean | String | Utf8View | Dictionary(_), _)
             | (_, Null | Boolean | String | Utf8View | Dictionary(_)) => None,
             #[cfg(feature = "large_string")]
@@ -479,18 +476,17 @@ impl CategoricalIndexType {
 //
 // Whilst `arrow_type()` could be on a trait, the ergonomics of using one aren't great
 // due to then needing to import the trait at every usage point, for one method.
-// Additionally, for cases like `DateTime`, the user is required to select a type when
-// preparing `Field` metadata, and thus it is misleading. For this reason, they are
-// here on the main objects as regular methods, so that they are available for most
-// individual cases, but uniform dispatch methods that then don't work for datetime
-// exceptions are implicitly discouraged. Adding it to MaskedArray as a method is also not a great
-// option as the above still applies but then customising it per type and variant would
-// require extra type storage on the MaskedArray trait which is too much for this.
+// For this reason, they are here on the main objects as regular methods, so that they
+// are available for most individual cases. Adding it to MaskedArray as a method is also
+// not a great option, as customising it per type and variant would require extra type
+// storage on the MaskedArray trait which is too much for this.
 // The other option is to use our types, rather than Arrow's for `Field`s, but that complicates
 // FFI, as it's much better that once that's written it's compatible, so we settle on the below,
 // which means the experience is:
 // - "Field::new("myfield", existing_arr.arrow_type(), false, None)",
-// - "Field::new("key", ArrowType::Date32, false, None)" when working with dates.
+// - "Field::new("key", ArrowType::DateTime(Dt::Date32), false, None)" when working with dates.
+// `DatetimeArray::arrow_type()` returns the array's `Dt` wrapped in
+// `ArrowType::DateTime`.
 
 impl BooleanArray<()> {
     /// The arrow type that backs this array
@@ -553,12 +549,9 @@ impl<T: Integer> StringArray<T> {
 
 #[cfg(feature = "datetime")]
 impl<T: Integer> DatetimeArray<T> {
-    /// For DateTime, the logical type is undocumented until attached to the type with a `Field` via `Field::new`.
-    /// At this stage, one can convert the array into a `FieldArray` which makes it immutable and hooks it into Arrow FFI-ready
-    /// format. This helps enable reducing 8 separate logical *Arrow* types down to 1 `DateTimeArray` data structure,
-    /// keeping *MinArrow* minimal whilst retaining a compatibility path.
-    pub fn arrow_type() -> ArrowType {
-        ArrowType::Null
+    /// The arrow type that backs this array, read from its `dtype`.
+    pub fn arrow_type(&self) -> ArrowType {
+        ArrowType::DateTime(self.dtype.clone())
     }
 }
 
@@ -593,28 +586,7 @@ impl Display for ArrowType {
             ArrowType::Decimal128(p, s) => write!(f, "Decimal128({p}, {s})"),
 
             #[cfg(feature = "datetime")]
-            ArrowType::Date32 => f.write_str("Date32"),
-            #[cfg(feature = "datetime")]
-            ArrowType::Date64 => f.write_str("Date64"),
-
-            #[cfg(feature = "datetime")]
-            ArrowType::Time32(unit) => write!(f, "Time32({unit})"),
-            #[cfg(feature = "datetime")]
-            ArrowType::Time64(unit) => write!(f, "Time64({unit})"),
-            #[cfg(feature = "datetime")]
-            ArrowType::Duration32(unit) => write!(f, "Duration32({unit})"),
-            #[cfg(feature = "datetime")]
-            ArrowType::Duration64(unit) => write!(f, "Duration64({unit})"),
-            #[cfg(feature = "datetime")]
-            ArrowType::Timestamp(unit, tz) => {
-                if let Some(tz_str) = tz {
-                    write!(f, "Timestamp({unit}, {})", tz_str)
-                } else {
-                    write!(f, "Timestamp({unit})")
-                }
-            }
-            #[cfg(feature = "datetime")]
-            ArrowType::Interval(interval) => write!(f, "Interval({interval})"),
+            ArrowType::DateTime(dtype) => Display::fmt(dtype, f),
 
             ArrowType::String => f.write_str("String"),
             #[cfg(feature = "large_string")]
@@ -622,6 +594,29 @@ impl Display for ArrowType {
             ArrowType::Utf8View => f.write_str("Utf8View"),
 
             ArrowType::Dictionary(key_type) => write!(f, "Dictionary({key_type})"),
+        }
+    }
+}
+
+#[cfg(feature = "datetime")]
+impl Display for Dt {
+    /// Render the Dt as its variant name, including associated units where applicable.
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Dt::Date32 => f.write_str("Date32"),
+            Dt::Date64 => f.write_str("Date64"),
+            Dt::Time32(unit) => write!(f, "Time32({unit})"),
+            Dt::Time64(unit) => write!(f, "Time64({unit})"),
+            Dt::Duration32(unit) => write!(f, "Duration32({unit})"),
+            Dt::Duration64(unit) => write!(f, "Duration64({unit})"),
+            Dt::Timestamp(unit, tz) => {
+                if let Some(tz_str) = tz {
+                    write!(f, "Timestamp({unit}, {})", tz_str)
+                } else {
+                    write!(f, "Timestamp({unit})")
+                }
+            }
+            Dt::Interval(interval) => write!(f, "Interval({interval})"),
         }
     }
 }
@@ -725,39 +720,70 @@ mod tests {
     #[test]
     fn upcast_temporal_families() {
         use crate::enums::time_units::TimeUnit;
-        use ArrowType::*;
-        assert_eq!(Date32.upcast(&Date64), Some(Date64));
-        assert_eq!(Date32.upcast(&Date32), Some(Date32));
+        use ArrowType::DateTime;
+        use Dt::*;
+        assert_eq!(DateTime(Date32).upcast(&DateTime(Date64)), Some(DateTime(Date64)));
+        assert_eq!(DateTime(Date32).upcast(&DateTime(Date32)), Some(DateTime(Date32)));
         assert_eq!(
-            Time32(TimeUnit::Seconds).upcast(&Time64(TimeUnit::Nanoseconds)),
-            Some(Time64(TimeUnit::Nanoseconds))
+            DateTime(Time32(TimeUnit::Seconds)).upcast(&DateTime(Time64(TimeUnit::Nanoseconds))),
+            Some(DateTime(Time64(TimeUnit::Nanoseconds)))
         );
         assert_eq!(
-            Time32(TimeUnit::Seconds).upcast(&Time32(TimeUnit::Milliseconds)),
-            Some(Time32(TimeUnit::Milliseconds))
+            DateTime(Time32(TimeUnit::Seconds)).upcast(&DateTime(Time32(TimeUnit::Milliseconds))),
+            Some(DateTime(Time32(TimeUnit::Milliseconds)))
         );
         assert_eq!(
-            Duration32(TimeUnit::Seconds).upcast(&Duration64(TimeUnit::Microseconds)),
-            Some(Duration64(TimeUnit::Microseconds))
+            DateTime(Duration32(TimeUnit::Seconds))
+                .upcast(&DateTime(Duration64(TimeUnit::Microseconds))),
+            Some(DateTime(Duration64(TimeUnit::Microseconds)))
         );
         assert_eq!(
-            Timestamp(TimeUnit::Milliseconds, Some("UTC".into()))
-                .upcast(&Timestamp(TimeUnit::Nanoseconds, Some("UTC".into()))),
-            Some(Timestamp(TimeUnit::Nanoseconds, Some("UTC".into())))
+            DateTime(Timestamp(TimeUnit::Milliseconds, Some("UTC".into())))
+                .upcast(&DateTime(Timestamp(TimeUnit::Nanoseconds, Some("UTC".into())))),
+            Some(DateTime(Timestamp(TimeUnit::Nanoseconds, Some("UTC".into()))))
         );
         assert_eq!(
-            Timestamp(TimeUnit::Milliseconds, Some("UTC".into())).upcast(&Timestamp(
-                TimeUnit::Milliseconds,
-                Some("America/New_York".into())
+            DateTime(Timestamp(TimeUnit::Milliseconds, Some("UTC".into()))).upcast(&DateTime(
+                Timestamp(TimeUnit::Milliseconds, Some("America/New_York".into()))
             )),
             None
         );
         assert_eq!(
-            Interval(IntervalUnit::YearMonth).upcast(&Interval(IntervalUnit::DaysTime)),
-            Some(Interval(IntervalUnit::MonthDaysNs))
+            DateTime(Interval(IntervalUnit::YearMonth))
+                .upcast(&DateTime(Interval(IntervalUnit::DaysTime))),
+            Some(DateTime(Interval(IntervalUnit::MonthDaysNs)))
         );
-        assert_eq!(Date32.upcast(&Time32(TimeUnit::Seconds)), None);
-        assert_eq!(Date64.upcast(&Int64), None);
+        assert_eq!(DateTime(Date32).upcast(&DateTime(Time32(TimeUnit::Seconds))), None);
+        assert_eq!(DateTime(Date64).upcast(&ArrowType::Int64), None);
+    }
+
+    #[cfg(feature = "datetime")]
+    #[test]
+    fn datetime_display_matches_variant_names() {
+        use crate::enums::time_units::TimeUnit;
+        use Dt::*;
+        let cases = [
+            (Date32, "Date32"),
+            (Date64, "Date64"),
+            (Time32(TimeUnit::Seconds), "Time32(Seconds)"),
+            (Time64(TimeUnit::Nanoseconds), "Time64(Nanoseconds)"),
+            (Duration32(TimeUnit::Milliseconds), "Duration32(Milliseconds)"),
+            (Duration64(TimeUnit::Microseconds), "Duration64(Microseconds)"),
+            (Timestamp(TimeUnit::Seconds, None), "Timestamp(Seconds)"),
+            (
+                Timestamp(TimeUnit::Milliseconds, Some("UTC".into())),
+                "Timestamp(Milliseconds, UTC)",
+            ),
+            (Interval(IntervalUnit::YearMonth), "Interval(YearMonth)"),
+        ];
+        for (dtype, expected) in cases {
+            assert_eq!(dtype.to_string(), expected);
+            assert_eq!(ArrowType::DateTime(dtype.clone()).to_string(), expected);
+            assert_eq!(
+                ArrowType::DateTime(dtype).minarrow_category_label(),
+                "Datetime"
+            );
+        }
     }
 
     #[test]

@@ -427,6 +427,7 @@ macro_rules! impl_apply_fma_float {
 /// Generates datetime arithmetic functions with SIMD/scalar dispatch.
 /// Creates functions that operate on `DatetimeArray<T>` types, delegating to integer kernels
 /// for the underlying temporal data while preserving datetime semantics.
+/// Results use the left-hand array's `Dt`.
 #[cfg(feature = "datetime")]
 macro_rules! impl_apply_datetime {
     ($fn_name:ident, $ty:ty, $lanes:expr) => {
@@ -475,7 +476,11 @@ macro_rules! impl_apply_datetime {
                             &mut result_mask,
                         );
                     }
-                    Ok(DatetimeArray::from_vec64(out, Some(result_mask), None))
+                    Ok(DatetimeArray::from_vec64(
+                        out,
+                        Some(result_mask),
+                        larr.dtype.clone(),
+                    ))
                 }
                 None => {
                     #[cfg(feature = "simd")]
@@ -486,7 +491,7 @@ macro_rules! impl_apply_datetime {
                     {
                         int_dense_body_std::<$ty>(op, ldata, rdata, &mut out);
                     }
-                    Ok(DatetimeArray::from_vec64(out, None, None))
+                    Ok(DatetimeArray::from_vec64(out, None, larr.dtype.clone()))
                 }
             }
         }

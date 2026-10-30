@@ -34,12 +34,13 @@ use crate::enums::error::MinarrowError;
 ///
 /// ## Purpose
 /// - Combines time units for both `DatetimeArray32` and `DatetimeArray64`.
-/// - Confirm time since epoch units, or a raw duration value *(depending on the `ArrowType`
-/// that's attached to `Field` during `FieldArray` construction)*.
+/// - Confirm time since epoch units, or a raw duration value *(depending on the `Dt`
+/// held by the `DatetimeArray` and its `Field`)*.
 /// - Avoids proliferating variants that require explicit handling throughout match statements.
 ///
 /// ## Behaviour
-/// - Unit values are stored on the `DatetimeArray`, enabling variant-specific logic.
+/// - Unit values are held within the `DatetimeArray`'s `Dt`, and read through
+///   `DatetimeArray::time_unit()`, enabling variant-specific logic.
 /// - When transmitted over FFI, an `Apache Arrow`- produces compatible native format.
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug, Default)]
 pub enum TimeUnit {

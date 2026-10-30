@@ -53,7 +53,7 @@
 //! library is located. Set PYTHONHOME to the Python prefix, e.g. `/usr/local` or
 //! `/usr`. You can find this via: `python3 -c "import sys; print(sys.prefix)"`
 
-use minarrow::ffi::arrow_dtype::ArrowType;
+use minarrow::ffi::arrow_dtype::{ArrowType, Dt};
 use minarrow::{
     Array, BooleanArray, Field, FieldArray, FloatArray, IntegerArray, MaskedArray, NumericArray,
     StringArray, SuperArray, SuperTable, Table, TextArray,
@@ -1161,10 +1161,10 @@ fn roundtrip_field_array(py: Python<'_>, fa: FieldArray) -> Result<FieldArray, S
 }
 
 fn test_date32_roundtrip(py: Python<'_>) -> Result<(), String> {
-    use minarrow::{DatetimeArray, TimeUnit};
-    let arr = DatetimeArray::<i32>::from_slice(&[0, 1, 100, 19000], Some(TimeUnit::Days));
+    use minarrow::DatetimeArray;
+    let arr = DatetimeArray::<i32>::from_slice(&[0, 1, 100, 19000], Dt::Date32);
     let array = Array::from_datetime_i32(arr);
-    let field = Field::new("d", ArrowType::Date32, false, None);
+    let field = Field::new("d", ArrowType::DateTime(Dt::Date32), false, None);
     let result = roundtrip_field_array(py, FieldArray::new(field, array))?;
     match &result.array {
         Array::TemporalArray(minarrow::TemporalArray::Datetime32(a)) => {
@@ -1173,15 +1173,15 @@ fn test_date32_roundtrip(py: Python<'_>) -> Result<(), String> {
         }
         _ => return Err(format!("Expected Datetime32, got {:?}", "unexpected")),
     }
-    assert_eq!(result.field.dtype, ArrowType::Date32);
+    assert_eq!(result.field.dtype, ArrowType::DateTime(Dt::Date32));
     Ok(())
 }
 
 fn test_date64_roundtrip(py: Python<'_>) -> Result<(), String> {
-    use minarrow::{DatetimeArray, TimeUnit};
-    let arr = DatetimeArray::<i64>::from_slice(&[0, 86400000, 172800000], Some(TimeUnit::Milliseconds));
+    use minarrow::DatetimeArray;
+    let arr = DatetimeArray::<i64>::from_slice(&[0, 86400000, 172800000], Dt::Date64);
     let array = Array::from_datetime_i64(arr);
-    let field = Field::new("d", ArrowType::Date64, false, None);
+    let field = Field::new("d", ArrowType::DateTime(Dt::Date64), false, None);
     let result = roundtrip_field_array(py, FieldArray::new(field, array))?;
     match &result.array {
         Array::TemporalArray(minarrow::TemporalArray::Datetime64(a)) => {
@@ -1190,18 +1190,26 @@ fn test_date64_roundtrip(py: Python<'_>) -> Result<(), String> {
         }
         _ => return Err(format!("Expected Datetime64, got {:?}", "unexpected")),
     }
-    assert_eq!(result.field.dtype, ArrowType::Date64);
+    assert_eq!(result.field.dtype, ArrowType::DateTime(Dt::Date64));
     Ok(())
 }
 
 fn test_timestamp_roundtrip(py: Python<'_>) -> Result<(), String> {
     use minarrow::{DatetimeArray, TimeUnit};
-    let arr = DatetimeArray::<i64>::from_slice(&[1_000_000, 2_000_000, 3_000_000], Some(TimeUnit::Microseconds));
+    let arr = DatetimeArray::<i64>::from_slice(
+        &[1_000_000, 2_000_000, 3_000_000],
+        Dt::Timestamp(TimeUnit::Microseconds, None),
+    );
     let array = Array::from_datetime_i64(arr);
-    let field = Field::new("ts", ArrowType::Timestamp(TimeUnit::Microseconds, None), false, None);
+    let field = Field::new(
+        "ts",
+        ArrowType::DateTime(Dt::Timestamp(TimeUnit::Microseconds, None)),
+        false,
+        None,
+    );
     let result = roundtrip_field_array(py, FieldArray::new(field, array))?;
     match &result.field.dtype {
-        ArrowType::Timestamp(TimeUnit::Microseconds, None) => {}
+        ArrowType::DateTime(Dt::Timestamp(TimeUnit::Microseconds, None)) => {}
         _ => return Err(format!("Expected Timestamp(us), got unexpected variant")),
     }
     Ok(())
@@ -1209,12 +1217,13 @@ fn test_timestamp_roundtrip(py: Python<'_>) -> Result<(), String> {
 
 fn test_timestamp_tz_roundtrip(py: Python<'_>) -> Result<(), String> {
     use minarrow::{DatetimeArray, TimeUnit};
-    let arr = DatetimeArray::<i64>::from_slice(&[1_000_000, 2_000_000], Some(TimeUnit::Microseconds));
+    let utc = Dt::Timestamp(TimeUnit::Microseconds, Some("UTC".to_string()));
+    let arr = DatetimeArray::<i64>::from_slice(&[1_000_000, 2_000_000], utc.clone());
     let array = Array::from_datetime_i64(arr);
-    let field = Field::new("ts", ArrowType::Timestamp(TimeUnit::Microseconds, Some("UTC".to_string())), false, None);
+    let field = Field::new("ts", ArrowType::DateTime(utc), false, None);
     let result = roundtrip_field_array(py, FieldArray::new(field, array))?;
     match &result.field.dtype {
-        ArrowType::Timestamp(TimeUnit::Microseconds, Some(tz)) if tz == "UTC" => {}
+        ArrowType::DateTime(Dt::Timestamp(TimeUnit::Microseconds, Some(tz))) if tz == "UTC" => {}
         _ => return Err(format!("Expected Timestamp(us, UTC), got unexpected variant")),
     }
     Ok(())
@@ -1222,12 +1231,20 @@ fn test_timestamp_tz_roundtrip(py: Python<'_>) -> Result<(), String> {
 
 fn test_duration_roundtrip(py: Python<'_>) -> Result<(), String> {
     use minarrow::{DatetimeArray, TimeUnit};
-    let arr = DatetimeArray::<i64>::from_slice(&[1_000_000, 2_000_000], Some(TimeUnit::Microseconds));
+    let arr = DatetimeArray::<i64>::from_slice(
+        &[1_000_000, 2_000_000],
+        Dt::Duration64(TimeUnit::Microseconds),
+    );
     let array = Array::from_datetime_i64(arr);
-    let field = Field::new("dur", ArrowType::Duration64(TimeUnit::Microseconds), false, None);
+    let field = Field::new(
+        "dur",
+        ArrowType::DateTime(Dt::Duration64(TimeUnit::Microseconds)),
+        false,
+        None,
+    );
     let result = roundtrip_field_array(py, FieldArray::new(field, array))?;
     match &result.field.dtype {
-        ArrowType::Duration64(TimeUnit::Microseconds) => {}
+        ArrowType::DateTime(Dt::Duration64(TimeUnit::Microseconds)) => {}
         _ => return Err(format!("Expected Duration64(us), got unexpected variant")),
     }
     Ok(())
@@ -1301,7 +1318,7 @@ fn test_import_date32(py: Python<'_>) -> Result<(), String> {
     let result = to_rust::try_capsule_array(&py_arr)
         .ok_or("__arrow_c_array__ not available")?
         .map_err(|e| format!("{}", e))?;
-    assert_eq!(result.field.dtype, ArrowType::Date32);
+    assert_eq!(result.field.dtype, ArrowType::DateTime(Dt::Date32));
     match &result.array {
         Array::TemporalArray(minarrow::TemporalArray::Datetime32(a)) => {
             assert_eq!(a.len(), 4);
@@ -1320,7 +1337,7 @@ fn test_import_timestamp(py: Python<'_>) -> Result<(), String> {
         .ok_or("__arrow_c_array__ not available")?
         .map_err(|e| format!("{}", e))?;
     match &result.field.dtype {
-        ArrowType::Timestamp(minarrow::TimeUnit::Microseconds, None) => {}
+        ArrowType::DateTime(Dt::Timestamp(minarrow::TimeUnit::Microseconds, None)) => {}
         _ => return Err(format!("Expected Timestamp(us), got unexpected variant")),
     }
     Ok(())
@@ -1334,7 +1351,7 @@ fn test_import_timestamp_tz(py: Python<'_>) -> Result<(), String> {
         .ok_or("__arrow_c_array__ not available")?
         .map_err(|e| format!("{}", e))?;
     match &result.field.dtype {
-        ArrowType::Timestamp(minarrow::TimeUnit::Microseconds, Some(tz)) if tz == "UTC" => {}
+        ArrowType::DateTime(Dt::Timestamp(minarrow::TimeUnit::Microseconds, Some(tz))) if tz == "UTC" => {}
         _ => return Err(format!("Expected Timestamp(us, UTC), got unexpected variant")),
     }
     Ok(())
@@ -1348,7 +1365,7 @@ fn test_import_duration(py: Python<'_>) -> Result<(), String> {
         .ok_or("__arrow_c_array__ not available")?
         .map_err(|e| format!("{}", e))?;
     match &result.field.dtype {
-        ArrowType::Duration64(minarrow::TimeUnit::Microseconds) => {}
+        ArrowType::DateTime(Dt::Duration64(minarrow::TimeUnit::Microseconds)) => {}
         _ => return Err(format!("Expected Duration64(us), got unexpected variant")),
     }
     Ok(())

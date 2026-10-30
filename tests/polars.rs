@@ -23,7 +23,7 @@ use minarrow::{
     fa_str32, fa_u32,
 };
 #[cfg(feature = "datetime")]
-use minarrow::{TemporalArray, TimeUnit};
+use minarrow::{Dt, TemporalArray, TimeUnit};
 use polars_core::prelude::*;
 
 // ----- helpers -----
@@ -86,12 +86,12 @@ fn test_array_to_polars_string() {
 
 #[cfg(feature = "datetime")]
 #[test]
-fn test_array_to_polars_datetime_infer_date32() {
+fn test_array_to_polars_datetime_date32() {
     let a = Array::TemporalArray(TemporalArray::Datetime32(Arc::new(
         minarrow::DatetimeArray::<i32> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000 / 86_400; 3]),
             null_mask: None,
-            time_unit: TimeUnit::Days,
+            dtype: Dt::Date32,
         },
     )));
     let s = a.to_polars("d32");
@@ -102,12 +102,12 @@ fn test_array_to_polars_datetime_infer_date32() {
 
 #[cfg(feature = "datetime")]
 #[test]
-fn test_array_to_polars_datetime_infer_time32s() {
+fn test_array_to_polars_datetime_time32s() {
     let a = Array::TemporalArray(TemporalArray::Datetime32(Arc::new(
         minarrow::DatetimeArray::<i32> {
             data: minarrow::Buffer::from_slice(&[1, 2, 3]),
             null_mask: None,
-            time_unit: TimeUnit::Seconds,
+            dtype: Dt::Time32(TimeUnit::Seconds),
         },
     )));
     let s = a.to_polars("t32s");
@@ -117,12 +117,12 @@ fn test_array_to_polars_datetime_infer_time32s() {
 
 #[cfg(feature = "datetime")]
 #[test]
-fn test_array_to_polars_datetime_infer_date64_or_ts() {
+fn test_array_to_polars_datetime_date64_or_ts() {
     let a_ms = Array::TemporalArray(TemporalArray::Datetime64(Arc::new(
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000_000, 1_600_000_000_001]),
             null_mask: None,
-            time_unit: TimeUnit::Milliseconds,
+            dtype: Dt::Date64,
         },
     )));
     let s_ms = a_ms.to_polars("d64");
@@ -133,7 +133,7 @@ fn test_array_to_polars_datetime_infer_date64_or_ts() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1, 2, 3]),
             null_mask: None,
-            time_unit: TimeUnit::Nanoseconds,
+            dtype: Dt::Timestamp(TimeUnit::Nanoseconds, None),
         },
     )));
     let s_ns = a_ns.to_polars("ts_ns");
@@ -452,6 +452,87 @@ fn rt_polars_categorical32_element_equal() {
 
 // ----- Datetime logical types (via FieldArray) -----
 
+/// Every temporal type with a valid Arrow representation.
+#[cfg(feature = "datetime")]
+fn temporal_types() -> Vec<Dt> {
+    vec![
+        Dt::Date32,
+        Dt::Date64,
+        Dt::Time32(TimeUnit::Seconds),
+        Dt::Time32(TimeUnit::Milliseconds),
+        Dt::Time64(TimeUnit::Microseconds),
+        Dt::Time64(TimeUnit::Nanoseconds),
+        Dt::Duration32(TimeUnit::Seconds),
+        Dt::Duration32(TimeUnit::Milliseconds),
+        Dt::Duration64(TimeUnit::Microseconds),
+        Dt::Duration64(TimeUnit::Nanoseconds),
+        Dt::Timestamp(TimeUnit::Seconds, None),
+        Dt::Timestamp(TimeUnit::Milliseconds, None),
+        Dt::Timestamp(TimeUnit::Microseconds, None),
+        Dt::Timestamp(TimeUnit::Nanoseconds, None),
+        Dt::Timestamp(TimeUnit::Milliseconds, Some("UTC".to_string())),
+        Dt::Timestamp(TimeUnit::Nanoseconds, Some("America/New_York".to_string())),
+    ]
+}
+
+/// Builds a three-row temporal array of the given type.
+#[cfg(feature = "datetime")]
+fn test_array_dt(dtype: &Dt) -> Array {
+    match dtype {
+        Dt::Date32 | Dt::Time32(_) | Dt::Duration32(_) => {
+            Array::from_datetime_i32(minarrow::DatetimeArray::<i32>::from_slice(
+                &[1, 2, 3],
+                dtype.clone(),
+            ))
+        }
+        _ => Array::from_datetime_i64(minarrow::DatetimeArray::<i64>::from_slice(
+            &[1, 2, 3],
+            dtype.clone(),
+        )),
+    }
+}
+
+/// The type Polars returns for a temporal type. Polars normalises `Date64` to
+/// millisecond timestamps, times of day to nanoseconds, and second-unit
+/// durations and timestamps to milliseconds.
+#[cfg(feature = "datetime")]
+fn polars_returned_type(dtype: &Dt) -> Dt {
+    match dtype {
+        Dt::Date64 => Dt::Timestamp(TimeUnit::Milliseconds, None),
+        Dt::Time32(_) | Dt::Time64(_) => {
+            Dt::Time64(TimeUnit::Nanoseconds)
+        }
+        Dt::Duration32(TimeUnit::Seconds) => {
+            Dt::Duration32(TimeUnit::Milliseconds)
+        }
+        Dt::Timestamp(TimeUnit::Seconds, tz) => {
+            Dt::Timestamp(TimeUnit::Milliseconds, tz.clone())
+        }
+        other => other.clone(),
+    }
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_polars_every_temporal_type_keeps_its_type() {
+    for dtype in temporal_types() {
+        let returned = ArrowType::DateTime(polars_returned_type(&dtype));
+        let array = test_array_dt(&dtype);
+
+        // Through a FieldArray built from the array.
+        let fa = FieldArray::from_arr("t", array.clone());
+        assert_eq!(fa.field.dtype, ArrowType::DateTime(dtype.clone()));
+        let back = FieldArray::from_polars(&fa.to_polars());
+        assert_eq!(back.field.dtype, returned, "field type of {dtype}");
+        assert_eq!(back.array.arrow_type(), returned, "array type of {dtype}");
+
+        // Through the array without a Field.
+        let back = Array::from_polars(&array.to_polars("t"));
+        assert_eq!(back.arrow_type(), returned, "field-less export of {dtype}");
+    }
+}
+
+
 #[cfg(feature = "datetime")]
 #[test]
 fn rt_polars_date32() {
@@ -459,10 +540,13 @@ fn rt_polars_date32() {
         minarrow::DatetimeArray::<i32> {
             data: minarrow::Buffer::from_slice(&[18000_i32, 18500, 19000]),
             null_mask: None,
-            time_unit: TimeUnit::Days,
+            dtype: Dt::Date32,
         },
     )));
-    let fa = FieldArray::new(Field::new("d32", ArrowType::Date32, false, None), a);
+    let fa = FieldArray::new(
+        Field::new("d32", ArrowType::DateTime(Dt::Date32), false, None),
+        a,
+    );
     round_trip_field_array_polars(fa);
 }
 
@@ -478,17 +562,20 @@ fn rt_polars_date64_promotes_to_timestamp_ms() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&original_data),
             null_mask: None,
-            time_unit: TimeUnit::Milliseconds,
+            dtype: Dt::Date64,
         },
     )));
-    let fa = FieldArray::new(Field::new("d64", ArrowType::Date64, false, None), a.clone());
+    let fa = FieldArray::new(
+        Field::new("d64", ArrowType::DateTime(Dt::Date64), false, None),
+        a.clone(),
+    );
     let s = fa.to_polars();
     let back = FieldArray::from_polars(&s);
 
     assert_eq!(back.field.name, "d64", "name lost");
     assert_eq!(
         back.field.dtype,
-        ArrowType::Timestamp(TimeUnit::Milliseconds, None),
+        ArrowType::DateTime(Dt::Timestamp(TimeUnit::Milliseconds, None)),
         "polars is expected to promote Date64 -> Timestamp(Milliseconds, None); if this changes, the remap layer needs updating"
     );
 
@@ -498,7 +585,7 @@ fn rt_polars_date64_promotes_to_timestamp_ms() {
             Array::TemporalArray(TemporalArray::Datetime64(lhs)),
             Array::TemporalArray(TemporalArray::Datetime64(rhs)),
         ) => {
-            assert_eq!(rhs.time_unit, TimeUnit::Milliseconds, "time_unit drifted");
+            assert_eq!(rhs.time_unit(), TimeUnit::Milliseconds, "time_unit drifted");
             assert_eq!(&rhs.data[..], &original_data[..], "i64 ms payload changed");
             assert_eq!(lhs.null_mask, rhs.null_mask, "null mask changed");
         }
@@ -513,13 +600,13 @@ fn rt_polars_timestamp_ns() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000_000_000_000_i64]),
             null_mask: None,
-            time_unit: TimeUnit::Nanoseconds,
+            dtype: Dt::Timestamp(TimeUnit::Nanoseconds, None),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "ts_ns",
-            ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Nanoseconds, None)),
             false,
             None,
         ),
@@ -535,13 +622,13 @@ fn rt_polars_timestamp_us() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000_000_000_i64]),
             null_mask: None,
-            time_unit: TimeUnit::Microseconds,
+            dtype: Dt::Timestamp(TimeUnit::Microseconds, None),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "ts_us",
-            ArrowType::Timestamp(TimeUnit::Microseconds, None),
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Microseconds, None)),
             false,
             None,
         ),
@@ -557,13 +644,13 @@ fn rt_polars_duration_ns() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_000_000_i64, 2_000_000]),
             null_mask: None,
-            time_unit: TimeUnit::Nanoseconds,
+            dtype: Dt::Duration64(TimeUnit::Nanoseconds),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "dur_ns",
-            ArrowType::Duration64(TimeUnit::Nanoseconds),
+            ArrowType::DateTime(Dt::Duration64(TimeUnit::Nanoseconds)),
             false,
             None,
         ),
@@ -782,12 +869,12 @@ fn assert_time_promotes_to_ns_i64(fa: FieldArray, name: &str, expected_ns: &[i64
     assert_eq!(back.field.name, name, "name lost");
     assert_eq!(
         back.field.dtype,
-        ArrowType::Time64(TimeUnit::Nanoseconds),
+        ArrowType::DateTime(Dt::Time64(TimeUnit::Nanoseconds)),
         "polars is expected to promote all Time* to Time64(Nanoseconds)"
     );
     match &back.array {
         Array::TemporalArray(TemporalArray::Datetime64(d)) => {
-            assert_eq!(d.time_unit, TimeUnit::Nanoseconds, "time_unit drifted");
+            assert_eq!(d.time_unit(), TimeUnit::Nanoseconds, "time_unit drifted");
             assert_eq!(&d.data[..], expected_ns, "rescaled ns payload mismatch");
             assert!(d.null_mask.is_none(), "no nulls expected");
         }
@@ -799,12 +886,17 @@ fn assert_time_promotes_to_ns_i64(fa: FieldArray, name: &str, expected_ns: &[i64
 #[test]
 fn rt_polars_time32_sec_promotes_to_time64_ns() {
     let fa = FieldArray::new(
-        Field::new("t32s", ArrowType::Time32(TimeUnit::Seconds), false, None),
+        Field::new(
+            "t32s",
+            ArrowType::DateTime(Dt::Time32(TimeUnit::Seconds)),
+            false,
+            None,
+        ),
         Array::TemporalArray(TemporalArray::Datetime32(Arc::new(
             minarrow::DatetimeArray::<i32> {
                 data: minarrow::Buffer::from_slice(&[0_i32, 3600, 86399]),
                 null_mask: None,
-                time_unit: TimeUnit::Seconds,
+                dtype: Dt::Time32(TimeUnit::Seconds),
             },
         ))),
     );
@@ -817,7 +909,7 @@ fn rt_polars_time32_ms_promotes_to_time64_ns() {
     let fa = FieldArray::new(
         Field::new(
             "t32m",
-            ArrowType::Time32(TimeUnit::Milliseconds),
+            ArrowType::DateTime(Dt::Time32(TimeUnit::Milliseconds)),
             false,
             None,
         ),
@@ -825,7 +917,7 @@ fn rt_polars_time32_ms_promotes_to_time64_ns() {
             minarrow::DatetimeArray::<i32> {
                 data: minarrow::Buffer::from_slice(&[0_i32, 1000, 86_399_000]),
                 null_mask: None,
-                time_unit: TimeUnit::Milliseconds,
+                dtype: Dt::Time32(TimeUnit::Milliseconds),
             },
         ))),
     );
@@ -838,7 +930,7 @@ fn rt_polars_time64_us_promotes_to_time64_ns() {
     let fa = FieldArray::new(
         Field::new(
             "t64u",
-            ArrowType::Time64(TimeUnit::Microseconds),
+            ArrowType::DateTime(Dt::Time64(TimeUnit::Microseconds)),
             false,
             None,
         ),
@@ -846,7 +938,7 @@ fn rt_polars_time64_us_promotes_to_time64_ns() {
             minarrow::DatetimeArray::<i64> {
                 data: minarrow::Buffer::from_slice(&[0_i64, 1_000_000, 86_399_000_000]),
                 null_mask: None,
-                time_unit: TimeUnit::Microseconds,
+                dtype: Dt::Time64(TimeUnit::Microseconds),
             },
         ))),
     );
@@ -860,7 +952,7 @@ fn rt_polars_time64_ns() {
     let fa = FieldArray::new(
         Field::new(
             "t64n",
-            ArrowType::Time64(TimeUnit::Nanoseconds),
+            ArrowType::DateTime(Dt::Time64(TimeUnit::Nanoseconds)),
             false,
             None,
         ),
@@ -868,7 +960,7 @@ fn rt_polars_time64_ns() {
             minarrow::DatetimeArray::<i64> {
                 data: minarrow::Buffer::from_slice(&[0_i64, 1_000_000_000, 86_399_000_000_000]),
                 null_mask: None,
-                time_unit: TimeUnit::Nanoseconds,
+                dtype: Dt::Time64(TimeUnit::Nanoseconds),
             },
         ))),
     );
@@ -885,7 +977,7 @@ fn rt_polars_date64_preserves_null_mask_through_timestamp_promotion() {
     let mut data = minarrow::DatetimeArray::<i64> {
         data: minarrow::Buffer::from_slice(&[1_600_000_000_000_i64, 0, 1_700_000_000_000]),
         null_mask: None,
-        time_unit: TimeUnit::Milliseconds,
+        dtype: Dt::Date64,
     };
     // Mark index 1 as null
     let mut mask = minarrow::Bitmask::new_set_all(3, true);
@@ -893,13 +985,16 @@ fn rt_polars_date64_preserves_null_mask_through_timestamp_promotion() {
     data.null_mask = Some(mask);
 
     let a = Array::TemporalArray(TemporalArray::Datetime64(Arc::new(data)));
-    let fa = FieldArray::new(Field::new("d64n", ArrowType::Date64, true, None), a);
+    let fa = FieldArray::new(
+        Field::new("d64n", ArrowType::DateTime(Dt::Date64), true, None),
+        a,
+    );
     let s = fa.to_polars();
     let back = FieldArray::from_polars(&s);
 
     assert_eq!(
         back.field.dtype,
-        ArrowType::Timestamp(TimeUnit::Milliseconds, None)
+        ArrowType::DateTime(Dt::Timestamp(TimeUnit::Milliseconds, None))
     );
     match &back.array {
         Array::TemporalArray(TemporalArray::Datetime64(d)) => {
@@ -922,7 +1017,7 @@ fn rt_polars_time32_sec_preserves_null_mask_through_promotion() {
     let mut data = minarrow::DatetimeArray::<i32> {
         data: minarrow::Buffer::from_slice(&[0_i32, 0, 3600]),
         null_mask: None,
-        time_unit: TimeUnit::Seconds,
+        dtype: Dt::Time32(TimeUnit::Seconds),
     };
     let mut mask = minarrow::Bitmask::new_set_all(3, true);
     unsafe { mask.set_unchecked(1, false) };
@@ -930,13 +1025,18 @@ fn rt_polars_time32_sec_preserves_null_mask_through_promotion() {
 
     let a = Array::TemporalArray(TemporalArray::Datetime32(Arc::new(data)));
     let fa = FieldArray::new(
-        Field::new("t32sn", ArrowType::Time32(TimeUnit::Seconds), true, None),
+        Field::new(
+            "t32sn",
+            ArrowType::DateTime(Dt::Time32(TimeUnit::Seconds)),
+            true,
+            None,
+        ),
         a,
     );
     let s = fa.to_polars();
     let back = FieldArray::from_polars(&s);
 
-    assert_eq!(back.field.dtype, ArrowType::Time64(TimeUnit::Nanoseconds));
+    assert_eq!(back.field.dtype, ArrowType::DateTime(Dt::Time64(TimeUnit::Nanoseconds)));
     match &back.array {
         Array::TemporalArray(TemporalArray::Datetime64(d)) => {
             let mask = d
@@ -960,7 +1060,7 @@ fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
     let mut data = minarrow::DatetimeArray::<i64> {
         data: minarrow::Buffer::from_slice(&[0_i64, 0, 1_000_000]),
         null_mask: None,
-        time_unit: TimeUnit::Microseconds,
+        dtype: Dt::Time64(TimeUnit::Microseconds),
     };
     let mut mask = minarrow::Bitmask::new_set_all(3, true);
     unsafe { mask.set_unchecked(1, false) };
@@ -970,7 +1070,7 @@ fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
     let fa = FieldArray::new(
         Field::new(
             "t64un",
-            ArrowType::Time64(TimeUnit::Microseconds),
+            ArrowType::DateTime(Dt::Time64(TimeUnit::Microseconds)),
             true,
             None,
         ),
@@ -979,7 +1079,7 @@ fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
     let s = fa.to_polars();
     let back = FieldArray::from_polars(&s);
 
-    assert_eq!(back.field.dtype, ArrowType::Time64(TimeUnit::Nanoseconds));
+    assert_eq!(back.field.dtype, ArrowType::DateTime(Dt::Time64(TimeUnit::Nanoseconds)));
     match &back.array {
         Array::TemporalArray(TemporalArray::Datetime64(d)) => {
             let mask = d

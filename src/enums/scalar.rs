@@ -30,7 +30,7 @@ use num_traits::Pow;
 
 #[cfg(feature = "datetime")]
 #[cfg(feature = "scalar_type")]
-use crate::DatetimeArray;
+use crate::{Dt, DatetimeArray};
 #[cfg(feature = "datetime")]
 #[cfg(feature = "scalar_type")]
 use crate::IntervalUnit;
@@ -1688,11 +1688,13 @@ impl Scalar {
             #[cfg(feature = "large_string")]
             Scalar::String64(_) => ArrowType::LargeString,
             #[cfg(feature = "datetime")]
-            Scalar::Datetime32(_) => ArrowType::Date32,
+            Scalar::Datetime32(_) => ArrowType::DateTime(Dt::Date32),
             #[cfg(feature = "datetime")]
-            Scalar::Datetime64(_) => ArrowType::Date64,
+            Scalar::Datetime64(_) => ArrowType::DateTime(Dt::Date64),
             #[cfg(feature = "datetime")]
-            Scalar::Interval => ArrowType::Interval(IntervalUnit::MonthDaysNs)
+            Scalar::Interval => {
+                ArrowType::DateTime(Dt::Interval(IntervalUnit::MonthDaysNs))
+            }
         }
     }
 
@@ -1831,7 +1833,7 @@ impl Scalar {
             }
             #[cfg(feature = "datetime")]
             Scalar::Datetime32(v) => {
-                let mut arr = DatetimeArray::<i32>::with_capacity(len, false, None);
+                let mut arr = DatetimeArray::<i32>::with_capacity(len, false, Dt::Date32);
                 for _ in 0..len {
                     arr.push(v.try_into().unwrap());
                 }
@@ -1839,7 +1841,7 @@ impl Scalar {
             }
             #[cfg(feature = "datetime")]
             Scalar::Datetime64(v) => {
-                let mut arr = DatetimeArray::<i64>::with_capacity(len, false, None);
+                let mut arr = DatetimeArray::<i64>::with_capacity(len, false, Dt::Date64);
                 for _ in 0..len {
                     arr.push(v.try_into().unwrap());
                 }
@@ -2525,11 +2527,17 @@ mod tests {
 
         #[cfg(feature = "datetime")]
         {
-            assert_eq!(Scalar::Datetime32(1).arrow_type(), ArrowType::Date32);
-            assert_eq!(Scalar::Datetime64(1).arrow_type(), ArrowType::Date64);
+            assert_eq!(
+                Scalar::Datetime32(1).arrow_type(),
+                ArrowType::DateTime(Dt::Date32),
+            );
+            assert_eq!(
+                Scalar::Datetime64(1).arrow_type(),
+                ArrowType::DateTime(Dt::Date64),
+            );
             assert_eq!(
                 Scalar::Interval.arrow_type(),
-                ArrowType::Interval(IntervalUnit::MonthDaysNs)
+                ArrowType::DateTime(Dt::Interval(IntervalUnit::MonthDaysNs))
             );
         }
 

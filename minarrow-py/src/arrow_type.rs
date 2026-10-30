@@ -16,6 +16,8 @@
 //! parameter enums `TimeUnit`, `IntervalUnit`, `CategoricalIndexType`. The
 //! variants and feature gates match `minarrow::ArrowType`, and conversions run
 //! both ways so `.arrow_type` reads it and `Field` construction accepts it.
+//! On the Python side, the temporal types are top-level variants, and convert to
+//! `minarrow::ArrowType::DateTime(Dt)`.
 //!
 //! pyo3 represents a data-carrying enum with callable variants, so a variant is
 //! built with a call: `ArrowType.Int64()`, `ArrowType.Timestamp(unit, tz)`.
@@ -23,6 +25,8 @@
 use minarrow::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 #[cfg(feature = "datetime")]
 use minarrow::enums::time_units::{IntervalUnit, TimeUnit};
+#[cfg(feature = "datetime")]
+use minarrow::ffi::arrow_dtype::Dt;
 use pyo3::prelude::*;
 
 /// The unit of a temporal type. Mirrors `minarrow::TimeUnit`.
@@ -146,7 +150,9 @@ impl From<PyCategoricalIndexType> for CategoricalIndexType {
 
 /// Declares `PyArrowType` and its conversions to and from `minarrow::ArrowType` from the
 /// variant list. `Name()` mirrors a unit `ArrowType` variant. `Name { field: Type, .. }`
-/// mirrors a tuple `ArrowType` variant with members in field order.
+/// mirrors a tuple `ArrowType` variant with members in field order. Variants with a
+/// `DateTime::` prefix mirror the same shapes on `Dt`, which
+/// `ArrowType::DateTime` holds, and remain top-level variants on the Python side.
 macro_rules! define_py_arrow_type {
     ([$($variants:tt)*]) => {
         define_py_arrow_type!(@build [$($variants)*] [] [] []);
@@ -154,7 +160,8 @@ macro_rules! define_py_arrow_type {
 
     (@build [] [$($variant:tt)*] [$($into_py:tt)*] [$($from_py:tt)*]) => {
         /// The Arrow logical type. A 1:1 mirror of `minarrow::ArrowType`, including its
-        /// feature gates. Construct it for a `Field`, or read it from `Array.arrow_type`.
+        /// feature gates, with the `Dt` variants at the top level. Construct it
+        /// for a `Field`, or read it from `Array.arrow_type`.
         /// pyo3 makes each variant callable, so a non-parametric type is built with a
         /// call: `ArrowType.Int64()`.
         #[pyclass(from_py_object, eq, name = "ArrowType", module = "minarrow")]
@@ -182,6 +189,32 @@ macro_rules! define_py_arrow_type {
                 }
             }
         }
+    };
+
+    (@build
+        [DateTime :: $name:ident (), $($rest:tt)*]
+        [$($variant:tt)*] [$($into_py:tt)*] [$($from_py:tt)*]
+    ) => {
+        define_py_arrow_type!(
+            @build [$($rest)*]
+            [$($variant)* $name(),]
+            [$($into_py)* ArrowType::DateTime(Dt::$name) => PyArrowType::$name(),]
+            [$($from_py)* PyArrowType::$name() => ArrowType::DateTime(Dt::$name),]
+        );
+    };
+
+    (@build
+        [DateTime :: $name:ident { $($field:ident : $ty:ty),+ }, $($rest:tt)*]
+        [$($variant:tt)*] [$($into_py:tt)*] [$($from_py:tt)*]
+    ) => {
+        define_py_arrow_type!(
+            @build [$($rest)*]
+            [$($variant)* $name { $($field: $ty),+ },]
+            [$($into_py)* ArrowType::DateTime(Dt::$name($($field),+)) =>
+                PyArrowType::$name { $($field: $field.into()),+ },]
+            [$($from_py)* PyArrowType::$name { $($field),+ } =>
+                ArrowType::DateTime(Dt::$name($($field.into()),+)),]
+        );
     };
 
     (@build [$name:ident (), $($rest:tt)*] [$($variant:tt)*] [$($into_py:tt)*] [$($from_py:tt)*]) => {
@@ -230,13 +263,13 @@ macro_rules! py_arrow_type_datetime {
     ([$($acc:tt)*]) => {
         py_arrow_type_large_string!([
             $($acc)*
-            Date32(), Date64(),
-            Time32 { unit: PyTimeUnit },
-            Time64 { unit: PyTimeUnit },
-            Duration32 { unit: PyTimeUnit },
-            Duration64 { unit: PyTimeUnit },
-            Timestamp { unit: PyTimeUnit, tz: Option<String> },
-            Interval { unit: PyIntervalUnit },
+            DateTime::Date32(), DateTime::Date64(),
+            DateTime::Time32 { unit: PyTimeUnit },
+            DateTime::Time64 { unit: PyTimeUnit },
+            DateTime::Duration32 { unit: PyTimeUnit },
+            DateTime::Duration64 { unit: PyTimeUnit },
+            DateTime::Timestamp { unit: PyTimeUnit, tz: Option<String> },
+            DateTime::Interval { unit: PyIntervalUnit },
         ]);
     };
 }

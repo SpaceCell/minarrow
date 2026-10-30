@@ -97,7 +97,7 @@ use crate::enums::collections::numeric_array::NumericArray;
 use crate::enums::collections::temporal_array::TemporalArray;
 use crate::enums::collections::text_array::TextArray;
 #[cfg(feature = "datetime")]
-use crate::enums::time_units::TimeUnit;
+use crate::ffi::arrow_dtype::Dt;
 use crate::ffi::arrow_dtype::{ArrowType, CategoricalIndexType};
 use crate::structs::shared_buffer::SharedBuffer;
 use crate::utils::align64;
@@ -558,12 +558,12 @@ pub enum AAMaker {
         mask: Option<ArenaRegion>,
         unique_values: Vec64<String>,
     },
-    /// Datetime array with time unit metadata.
+    /// Datetime array with its temporal type.
     #[cfg(feature = "datetime")]
     Temporal {
         data: ArenaRegion,
         mask: Option<ArenaRegion>,
-        time_unit: TimeUnit,
+        dtype: Dt,
     },
 }
 
@@ -761,35 +761,33 @@ impl AAMaker {
             }
 
             // --- Datetime ---
+            // The Field type determines the storage width, and the temporal type
+            // comes from the source chunks.
             #[cfg(feature = "datetime")]
             (
-                ArrowType::Date32 | ArrowType::Time32(_) | ArrowType::Duration32(_),
-                AAMaker::Temporal {
-                    data,
-                    mask,
-                    time_unit,
-                },
+                ArrowType::DateTime(
+                    Dt::Date32 | Dt::Time32(_) | Dt::Duration32(_),
+                ),
+                AAMaker::Temporal { data, mask, dtype },
             ) => {
                 let m = mask.map(|r| r.to_bitmask(shared, n_rows));
                 Array::TemporalArray(TemporalArray::Datetime32(Arc::new(
-                    crate::DatetimeArray::new(data.to_buffer::<i32>(shared), m, Some(time_unit)),
+                    crate::DatetimeArray::new(data.to_buffer::<i32>(shared), m, dtype),
                 )))
             }
             #[cfg(feature = "datetime")]
             (
-                ArrowType::Date64
-                | ArrowType::Time64(_)
-                | ArrowType::Duration64(_)
-                | ArrowType::Timestamp(_, _),
-                AAMaker::Temporal {
-                    data,
-                    mask,
-                    time_unit,
-                },
+                ArrowType::DateTime(
+                    Dt::Date64
+                    | Dt::Time64(_)
+                    | Dt::Duration64(_)
+                    | Dt::Timestamp(_, _),
+                ),
+                AAMaker::Temporal { data, mask, dtype },
             ) => {
                 let m = mask.map(|r| r.to_bitmask(shared, n_rows));
                 Array::TemporalArray(TemporalArray::Datetime64(Arc::new(
-                    crate::DatetimeArray::new(data.to_buffer::<i64>(shared), m, Some(time_unit)),
+                    crate::DatetimeArray::new(data.to_buffer::<i64>(shared), m, dtype),
                 )))
             }
 
@@ -1167,17 +1165,14 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                         })
                         .collect();
                     let aa = arena.write_slices::<$ty>(&slices, n_rows, has_nulls);
-                    let tu = if let Array::TemporalArray(TemporalArray::$variant(inner)) = first {
-                        inner.time_unit.clone()
-                    } else {
-                        unreachable!()
-                    };
+                    let dtype =
+                        if let Array::TemporalArray(TemporalArray::$variant(inner)) = first {
+                            inner.dtype.clone()
+                        } else {
+                            unreachable!()
+                        };
                     if let AAMaker::Primitive { data, mask } = aa {
-                        AAMaker::Temporal {
-                            data,
-                            mask,
-                            time_unit: tu,
-                        }
+                        AAMaker::Temporal { data, mask, dtype }
                     } else {
                         unreachable!()
                     }
@@ -1595,19 +1590,15 @@ pub(crate) fn consolidate_tables_arena(
                             })
                             .collect();
                         let aa = arena.write_slices::<$ty>(&slices, n_rows, has_nulls);
-                        let tu = if let Array::TemporalArray(TemporalArray::$variant(a)) =
+                        let dtype = if let Array::TemporalArray(TemporalArray::$variant(a)) =
                             &tables[0].cols[col_idx].array
                         {
-                            a.time_unit.clone()
+                            a.dtype.clone()
                         } else {
                             unreachable!()
                         };
                         if let AAMaker::Primitive { data, mask } = aa {
-                            AAMaker::Temporal {
-                                data,
-                                mask,
-                                time_unit: tu,
-                            }
+                            AAMaker::Temporal { data, mask, dtype }
                         } else {
                             unreachable!()
                         }
