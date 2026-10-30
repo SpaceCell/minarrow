@@ -99,7 +99,7 @@ fn prefetch_read<T>(ptr: *const T) {
 /// ## Notes
 /// - Use [`slice`](Self::slice) to derive smaller views without data copy.
 /// - Use [`to_array`](Self::to_array) to materialise as an owned array.
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub struct ArrayV {
     /// The **outer array** that this view is derived from - we retain a reference to it.
     /// Importantly, this is the ***full array*** - not the *view*, and thus should not be
@@ -1850,6 +1850,15 @@ impl_numeric_to_array_view!(i32, i64, u32, u64, f32, f64);
 // We do not implement `Index` as `ArrayView` cannot safely return
 // a reference to an element.
 
+/// Compares the data window only, which is the backing array, offset and
+/// length. The cached null count is not part of equality, and identical
+/// windows compare equal whether or not either has computed its null count.
+impl PartialEq for ArrayV {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset == other.offset && self.len == other.len && self.array == other.array
+    }
+}
+
 impl Debug for ArrayV {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ArrayView")
@@ -2331,5 +2340,23 @@ mod tests {
                 panic!("Expected Decimal64 Array");
             }
         }
+    }
+
+    #[test]
+    fn identical_windows_compare_equal_whatever_their_cached_null_count() {
+        let mut arr = IntegerArray::<i32>::default();
+        for value in [1, 2, 3, 4, 5] {
+            arr.push(value);
+        }
+        let array = Array::NumericArray(NumericArray::Int32(Arc::new(arr)));
+        let counted = ArrayV::new(array.clone(), 1, 3);
+        let uncounted = ArrayV::new(array.clone(), 1, 3);
+
+        // Only one window has computed its null count.
+        assert_eq!(counted.null_count(), 0);
+        assert_eq!(counted, uncounted);
+
+        // Different windows over the same array are not equal.
+        assert_ne!(counted, ArrayV::new(array, 2, 3));
     }
 }
