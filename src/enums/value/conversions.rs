@@ -1116,7 +1116,9 @@ impl TryFrom<Value> for Array {
             #[cfg(all(feature = "chunked", feature = "views"))]
             Value::SuperArrayView(inner) => {
                 let view = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-                Array::try_from(SuperArray::from(view))
+                // Converts through `ArrayV`, which resolves chunks of another
+                // type to the view's field before consolidating
+                Ok(ArrayV::from(view).array)
             }
             #[cfg(feature = "chunked")]
             Value::SuperTable(_) => Array::try_from(Table::try_from(v)?),
@@ -2730,5 +2732,75 @@ mod vecvalue_terminal_coercion_tests {
         let v = Value::VecValue(Arc::new(vec![inner]));
         let res = Array::try_from(v);
         assert!(res.is_err());
+    }
+}
+
+#[cfg(all(test, feature = "chunked", feature = "views", feature = "allow_mixed_array_batches"))]
+mod super_array_view_tests {
+    use super::*;
+    use crate::ffi::arrow_dtype::ArrowType;
+    use crate::traits::masked_array::MaskedArray;
+    use crate::{Field, NumericArray, arr_bool, arr_f64, arr_f64_opt, arr_i64, arr_str32, vec64};
+
+    fn view(chunks: Vec<Array>, dtype: ArrowType) -> SuperArrayV {
+        let slices: Vec<ArrayV> = chunks.into_iter().map(ArrayV::from).collect();
+        let len = slices.iter().map(ArrayV::len).sum();
+        SuperArrayV { slices, len, field: Arc::new(Field::new("values", dtype, true, None)) }
+    }
+
+    fn floats(array: &Array) -> Vec<Option<f64>> {
+        let Array::NumericArray(NumericArray::Float64(values)) = array else {
+            panic!("expected Float64, got {:?}", array.arrow_type());
+        };
+        (0..values.len()).map(|i| values.get(i)).collect()
+    }
+
+    #[test]
+    fn mixed_super_array_view_converts_to_its_field_type() {
+        let mixed = view(
+            vec![
+                arr_f64![1.0, 2.0],
+                arr_str32!["7", "x"],
+                arr_bool![true, false],
+                arr_f64![10.0, 20.0],
+            ],
+            ArrowType::Float64,
+        );
+
+        let array = ArrayV::try_from(Value::SuperArrayView(Arc::new(mixed)))
+            .expect("the mixed view converts")
+            .array;
+
+        let values = floats(&array);
+        assert_eq!(values.len(), 8);
+        assert_eq!(&values[0..2], &[Some(1.0), Some(2.0)]);
+        assert_eq!(&values[6..8], &[Some(10.0), Some(20.0)]);
+    }
+
+    #[test]
+    fn widening_super_array_view_converts_to_its_field_type() {
+        let widening = view(vec![arr_i64![1, 2, 3], arr_f64![0.5, 1.5]], ArrowType::Float64);
+
+        let array = Array::try_from(Value::SuperArrayView(Arc::new(widening)))
+            .expect("the widening view converts");
+
+        assert_eq!(floats(&array), vec![Some(1.0), Some(2.0), Some(3.0), Some(0.5), Some(1.5)]);
+    }
+
+    #[test]
+    fn consolidated_null_mask_follows_its_chunks() {
+        let chunks = view(
+            vec![
+                arr_f64![1.0, 2.0],
+                arr_f64_opt!(vec64![None::<f64>, None::<f64>]),
+                arr_f64![10.0, 20.0],
+            ],
+            ArrowType::Float64,
+        );
+
+        let array = Array::try_from(Value::SuperArrayView(Arc::new(chunks)))
+            .expect("the view converts");
+
+        assert_eq!(floats(&array), vec![Some(1.0), Some(2.0), None, None, Some(10.0), Some(20.0)]);
     }
 }

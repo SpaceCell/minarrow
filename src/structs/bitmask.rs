@@ -773,9 +773,9 @@ impl Bitmask {
     /// The new bits are appended after the current length.
     #[inline]
     pub fn extend<I: IntoIterator<Item = bool>>(&mut self, iter: I) {
+        // `set` grows the length to cover the appended bit
         for bit in iter {
             self.set(self.len, bit);
-            self.len += 1;
         }
         self.mask_trailing_bits();
     }
@@ -1697,6 +1697,15 @@ mod tests {
         assert!(result.get(6));
         assert!(!result.get(7));
         assert!(result.get(8));
+    }
+
+    #[test]
+    fn test_extend_appends_each_bit_after_the_current_length() {
+        let mut mask = Bitmask::new_set_all(2, true);
+        mask.extend([false, true, false]);
+        assert_eq!(mask.len(), 5);
+        let bits: Vec<bool> = (0..mask.len()).map(|i| mask.get(i)).collect();
+        assert_eq!(bits, vec![true, true, false, true, false]);
     }
 }
 
