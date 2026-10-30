@@ -62,7 +62,7 @@ MinArrow uses a single `StringArray<u32>` representation with contiguous offsets
 
 ### Temporal types (feature `datetime`)
 
-MinArrow stores temporal data in `DatetimeArray<i32>` or `DatetimeArray<i64>` with a `TimeUnit` discriminator. The Arrow type is determined by the `ArrowType` in the `Field`, not the storage type alone.
+MinArrow stores temporal data in `DatetimeArray<i32>` or `DatetimeArray<i64>` together with its `Dt`. The `ArrowType` column below lists that `Dt`, which the `Field` holds as `ArrowType::DateTime`.
 
 | MinArrow inner type | `ArrowType` | Arrow format | PyArrow type |
 |---------------------|-------------|--------------|--------------|

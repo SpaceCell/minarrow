@@ -1041,10 +1041,11 @@ mod tests {
     fn fa_datetime64(name: &str, vals: &[i64]) -> FieldArray {
         use crate::enums::time_units::TimeUnit;
         use crate::traits::masked_array::MaskedArray;
+        use crate::Dt;
         let mut arr = crate::DatetimeArray::<i64>::with_capacity(
             vals.len(),
             false,
-            Some(TimeUnit::Milliseconds),
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
         );
         for &v in vals {
             arr.push(v);
@@ -1052,7 +1053,7 @@ mod tests {
         let arr = Array::from_datetime_i64(arr);
         let field = Field::new(
             name,
-            ArrowType::Timestamp(TimeUnit::Milliseconds, None),
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Milliseconds, None)),
             false,
             None,
         );
@@ -1504,6 +1505,23 @@ mod tests {
         let result = Array::check_unify_batch_dtype(arr, &ArrowType::LargeString);
         assert_eq!(result.len(), 2);
         assert_eq!(result.arrow_type(), ArrowType::LargeString);
+    }
+
+    #[cfg(all(feature = "allow_mixed_array_batches", feature = "datetime"))]
+    #[test]
+    fn test_check_unify_batch_dtype_timestamp_matches_its_field() {
+        use crate::{Dt, DatetimeArray, TimeUnit};
+        let dtype = Dt::Timestamp(TimeUnit::Milliseconds, Some("UTC".to_string()));
+        let arr = Array::from_datetime_i64(DatetimeArray::<i64>::from_slice(
+            &[1_000, 2_000],
+            dtype.clone(),
+        ));
+        let field = Field::new("ts", ArrowType::DateTime(dtype.clone()), false, None);
+
+        assert_eq!(arr.arrow_type(), field.dtype);
+        let result = Array::check_unify_batch_dtype(arr.clone(), &field);
+        assert!(result.ptr_eq(&arr));
+        assert_eq!(result.arrow_type(), ArrowType::DateTime(dtype));
     }
 
     // ---------------------------------------------------------------

@@ -10,9 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ## Breaking
-* `SuperArrayV::field` is now `Option<Arc<Field>>`, matching `SuperArray`, ensuring consistency with SuperArray, to support both Array and FieldArray workloads without duplicative abstraction tax.
-* `SuperArray::resolve_batches` and `SuperArrayV::resolve_batches` without a field now resolve to the first chunk's type widened through `ArrowType::upcast` by the later chunks that share a common type with it. For example, Int64 and Float64 chunks resolve to Float64. They previously resolved to the first chunk's type, which narrowed later chunks and biased type discovery, with potentially unpredictable consequences.
+
+* `SuperArrayV::field` is now `Option<Arc<Field>>`, matching `SuperArray`.
+* `SuperArray::resolve_batches` and `SuperArrayV::resolve_batches` without a field now resolve to the first chunk's type widened through `ArrowType::upcast` by the later chunks that share a common type with it. For example, Int64 and Float64 chunks resolve to Float64. 
+   Note: They previously resolved to the first chunk's type, which narrowed later chunks and biased type discovery..
 * `Array::check_unify_batch_dtype` receives the target `ArrowType` instead of `Field`.
+
+* DateTime type annotation ownership:
+    - has been moved off `Field` in the first instance back to the source `DatetimeArray` so that it is self-describing.
+    - `Dt` consolidates the temporal Arrow types: `Date32`, `Date64`, `Time32`, `Time64`, `Duration32`, `Duration64`, `Timestamp` and `Interval`.
+    - `DatetimeArray` holds its temporal type in `dtype: Dt`, replacing the more limited `time_unit` field.
+    - The `arr_dt32!`, `arr_dt64!`, `fa_dt32!` and `fa_dt64!` macros received a `Dt` argument in place of a `TimeUnit`.
 
 ## Bugfixes
 * `ArrayV` equality involving cached nulls. Identical windows previously compared unequal when (only) one had computed its cached null count.

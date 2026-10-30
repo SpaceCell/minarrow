@@ -559,6 +559,8 @@ mod tests {
     // Datetime Kernels
     #[cfg(feature = "datetime")]
     use crate::structs::variants::datetime::DatetimeArray;
+    #[cfg(feature = "datetime")]
+    use crate::{Dt, TimeUnit};
 
     #[cfg(feature = "datetime")]
     use crate::kernels::arithmetic::dispatch::apply_datetime_i64;
@@ -566,8 +568,14 @@ mod tests {
     #[cfg(feature = "datetime")]
     #[test]
     fn datetime_add() {
-        let lhs = DatetimeArray::<i64>::from_slice(&[1_000i64, 2_000, 3_000], None);
-        let rhs = DatetimeArray::<i64>::from_slice(&[10, 20, 30], None);
+        let lhs = DatetimeArray::<i64>::from_slice(
+            &[1_000i64, 2_000, 3_000],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
+        let rhs = DatetimeArray::<i64>::from_slice(
+            &[10, 20, 30],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let lhs_slice = (&lhs, 0, lhs.len());
         let rhs_slice = (&rhs, 0, rhs.len());
         let out = apply_datetime_i64(lhs_slice, rhs_slice, ArithmeticOperator::Add).unwrap();
@@ -578,8 +586,14 @@ mod tests {
     #[cfg(feature = "datetime")]
     #[test]
     fn datetime_all_ops() {
-        let lhs = DatetimeArray::<i64>::from_slice(&[10, 20, 30, 40], None);
-        let rhs = DatetimeArray::<i64>::from_slice(&[1, 2, 3, 4], None);
+        let lhs = DatetimeArray::<i64>::from_slice(
+            &[10, 20, 30, 40],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
+        let rhs = DatetimeArray::<i64>::from_slice(
+            &[1, 2, 3, 4],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let lhs_slice = (&lhs, 0, lhs.len());
         let rhs_slice = (&rhs, 0, rhs.len());
 
@@ -608,8 +622,14 @@ mod tests {
     #[cfg(feature = "datetime")]
     #[test]
     fn datetime_masked_and_empty() {
-        let lhs = DatetimeArray::<i64>::from_slice(&[10, 20, 30, 40], None);
-        let rhs = DatetimeArray::<i64>::from_slice(&[1, 2, 3, 4], None);
+        let lhs = DatetimeArray::<i64>::from_slice(
+            &[10, 20, 30, 40],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
+        let rhs = DatetimeArray::<i64>::from_slice(
+            &[1, 2, 3, 4],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let mask = bitmask(&[true, false, true, true]);
         let lhs_slice = (&lhs, 0, lhs.len());
         let rhs_slice = (&rhs, 0, rhs.len());
@@ -633,8 +653,14 @@ mod tests {
         );
 
         // Empty
-        let lhs_empty = DatetimeArray::<i64>::from_slice(&[], None);
-        let rhs_empty = DatetimeArray::<i64>::from_slice(&[], None);
+        let lhs_empty = DatetimeArray::<i64>::from_slice(
+            &[],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
+        let rhs_empty = DatetimeArray::<i64>::from_slice(
+            &[],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let lhs_slice = (&lhs_empty, 0, lhs_empty.len());
         let rhs_slice = (&rhs_empty, 0, rhs_empty.len());
         let out = apply_datetime_i64(lhs_slice, rhs_slice, ArithmeticOperator::Add).unwrap();
@@ -645,8 +671,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "apply_datetime: length mismatch")]
     fn datetime_len_mismatch_panics() {
-        let lhs = DatetimeArray::<i64>::from_slice(&[1_000i64, 2_000], None);
-        let rhs = DatetimeArray::<i64>::from_slice(&[10], None);
+        let lhs = DatetimeArray::<i64>::from_slice(
+            &[1_000i64, 2_000],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
+        let rhs = DatetimeArray::<i64>::from_slice(
+            &[10],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let lhs_slice = (&lhs, 0, lhs.len());
         let rhs_slice = (&rhs, 0, rhs.len());
         let _ = apply_datetime_i64(lhs_slice, rhs_slice, ArithmeticOperator::Add).unwrap();

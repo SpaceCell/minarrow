@@ -186,7 +186,7 @@ pub fn parse_iso8601_utc(s: &str, unit: TimeUnit) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DatetimeArray;
+    use crate::{Dt, DatetimeArray};
 
     // 2026-06-09T07:48:36Z is 1_780_991_316 seconds since the Unix epoch.
     const EPOCH_SECONDS: i64 = 1_780_991_316;
@@ -272,8 +272,11 @@ mod tests {
             .iter()
             .map(|s| parse_iso8601_utc(s, TimeUnit::Microseconds).unwrap())
             .collect();
-        let array = DatetimeArray::<i64>::from_slice(&values, Some(TimeUnit::Microseconds));
-        assert_eq!(array.time_unit, TimeUnit::Microseconds);
+        let array = DatetimeArray::<i64>::from_slice(
+            &values,
+            Dt::Timestamp(TimeUnit::Microseconds, None),
+        );
+        assert_eq!(array.time_unit(), TimeUnit::Microseconds);
         assert_eq!(
             array.data.as_slice()[0],
             EPOCH_SECONDS * 1_000_000 + 123_456

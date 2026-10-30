@@ -40,6 +40,8 @@ use crate::ArrayV;
 #[cfg(feature = "views")]
 use crate::ArrayVT;
 #[cfg(feature = "datetime")]
+use crate::Dt;
+#[cfg(feature = "datetime")]
 use crate::DatetimeArray;
 #[cfg(feature = "decimal")]
 use crate::DecimalArray;
@@ -740,7 +742,6 @@ impl Array {
     /// Panics on `Null`. Consider the try variant for a safe alternative.
     #[cfg(feature = "datetime")]
     pub fn dt(&self) -> TemporalArray {
-        use crate::enums::time_units::TimeUnit;
         match self {
             Array::TemporalArray(arr) => arr.clone(),
             Array::NumericArray(arr) => match arr {
@@ -748,42 +749,42 @@ impl Array {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
                         a.data.iter().map(|v| *v as i64).collect(),
                         a.null_mask.clone(),
-                        Some(TimeUnit::Milliseconds),
+                        Dt::Date64,
                     )))
                 }
                 NumericArray::Int64(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
                         a.data.iter().copied().collect(),
                         a.null_mask.clone(),
-                        Some(TimeUnit::Milliseconds),
+                        Dt::Date64,
                     )))
                 }
                 NumericArray::UInt32(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
                         a.data.iter().map(|v| *v as i64).collect(),
                         a.null_mask.clone(),
-                        Some(TimeUnit::Milliseconds),
+                        Dt::Date64,
                     )))
                 }
                 NumericArray::UInt64(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
                         a.data.iter().map(|v| *v as i64).collect(),
                         a.null_mask.clone(),
-                        Some(TimeUnit::Milliseconds),
+                        Dt::Date64,
                     )))
                 }
                 NumericArray::Float32(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
                         a.data.iter().map(|v| *v as i64).collect(),
                         a.null_mask.clone(),
-                        Some(TimeUnit::Milliseconds),
+                        Dt::Date64,
                     )))
                 }
                 NumericArray::Float64(a) => {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
                         a.data.iter().map(|v| *v as i64).collect(),
                         a.null_mask.clone(),
-                        Some(TimeUnit::Milliseconds),
+                        Dt::Date64,
                     )))
                 }
                 _ => TemporalArray::Null,
@@ -816,7 +817,7 @@ impl Array {
                     TemporalArray::Datetime64(Arc::new(DatetimeArray::<i64>::from_vec64(
                         out,
                         Some(null_mask),
-                        Some(TimeUnit::Milliseconds),
+                        Dt::Date64,
                     )))
                 }
                 _ => TemporalArray::Null,
@@ -1471,7 +1472,7 @@ impl Array {
     ///   is interned into this array's dictionary once.
     /// - This array gains a null mask only when `src` has one.
     ///
-    /// Returns an error when `src` differs in array type, datetime unit, or
+    /// Returns an error when `src` differs in array type, temporal type, or
     /// decimal precision and scale, when `dst_idx` and `src_idx` differ in
     /// length, or when the array is `Null`. Panics when an index is out of
     /// bounds. Mutation is copy-on-write.
@@ -1704,12 +1705,12 @@ impl Array {
             #[cfg(feature = "datetime")]
             (Array::TemporalArray(dst), Array::TemporalArray(src_temp)) => match (dst, src_temp) {
                 (TemporalArray::Datetime32(d), TemporalArray::Datetime32(s))
-                    if d.time_unit == s.time_unit =>
+                    if d.dtype == s.dtype =>
                 {
                     scatter_prim!(d, s)
                 }
                 (TemporalArray::Datetime64(d), TemporalArray::Datetime64(s))
-                    if d.time_unit == s.time_unit =>
+                    if d.dtype == s.dtype =>
                 {
                     scatter_prim!(d, s)
                 }
@@ -2757,7 +2758,7 @@ impl Array {
     /// Create an all-null array of the given ArrowType with `n_rows` elements.
     ///
     /// The data buffer is zero-filled and every element is masked as null.
-    /// For datetime types, set the time_unit on the returned array afterwards.
+    /// Temporal arrays take their `Dt` from `arrow_type`.
     pub fn null_array(arrow_type: &ArrowType, n_rows: usize) -> Array {
         let mask = Bitmask::with_capacity(n_rows);
         match arrow_type {
@@ -2837,28 +2838,32 @@ impl Array {
                 }
             }
             #[cfg(feature = "datetime")]
-            ArrowType::Date32 | ArrowType::Time32(_) | ArrowType::Duration32(_) => {
-                Array::TemporalArray(crate::TemporalArray::Datetime32(Arc::new(
-                    crate::DatetimeArray::new(
-                        Vec64::from_slice(&vec![0i32; n_rows]),
-                        Some(mask),
-                        None,
-                    ),
-                )))
-            }
+            ArrowType::DateTime(
+                dtype @ (Dt::Date32
+                | Dt::Time32(_)
+                | Dt::Duration32(_)),
+            ) => Array::TemporalArray(crate::TemporalArray::Datetime32(Arc::new(
+                crate::DatetimeArray::new(
+                    Vec64::from_slice(&vec![0i32; n_rows]),
+                    Some(mask),
+                    dtype.clone(),
+                ),
+            ))),
             #[cfg(feature = "datetime")]
-            ArrowType::Date64
-            | ArrowType::Time64(_)
-            | ArrowType::Duration64(_)
-            | ArrowType::Timestamp(_, _) => Array::TemporalArray(crate::TemporalArray::Datetime64(
-                Arc::new(crate::DatetimeArray::new(
+            ArrowType::DateTime(
+                dtype @ (Dt::Date64
+                | Dt::Time64(_)
+                | Dt::Duration64(_)
+                | Dt::Timestamp(_, _)),
+            ) => Array::TemporalArray(crate::TemporalArray::Datetime64(Arc::new(
+                crate::DatetimeArray::new(
                     Vec64::from_slice(&vec![0i64; n_rows]),
                     Some(mask),
-                    None,
-                )),
-            )),
+                    dtype.clone(),
+                ),
+            ))),
             #[cfg(feature = "datetime")]
-            ArrowType::Interval(_) => Array::Null,
+            ArrowType::DateTime(Dt::Interval(_)) => Array::Null,
             ArrowType::Utf8View => {
                 let strs: Vec<&str> = vec![""; n_rows];
                 let mut arr = StringArray::<u32>::from_slice(&strs);
@@ -2945,26 +2950,25 @@ impl Array {
                 _ => Array::Null,
             },
             #[cfg(feature = "datetime")]
-            ArrowType::Date32 | ArrowType::Time32(_) | ArrowType::Duration32(_) => {
-                Array::TemporalArray(crate::TemporalArray::Datetime32(Arc::new(
-                    crate::DatetimeArray::<i32>::default(),
-                )))
-            }
+            ArrowType::DateTime(
+                dtype @ (Dt::Date32
+                | Dt::Time32(_)
+                | Dt::Duration32(_)),
+            ) => Array::TemporalArray(crate::TemporalArray::Datetime32(Arc::new(
+                crate::DatetimeArray::<i32>::with_default_unit(dtype.clone()),
+            ))),
             #[cfg(feature = "datetime")]
-            ArrowType::Date64
-            | ArrowType::Time64(_)
-            | ArrowType::Duration64(_)
-            | ArrowType::Timestamp(_, _) => Array::TemporalArray(crate::TemporalArray::Datetime64(
-                Arc::new(crate::DatetimeArray::<i64>::default()),
-            )),
+            ArrowType::DateTime(
+                dtype @ (Dt::Date64
+                | Dt::Time64(_)
+                | Dt::Duration64(_)
+                | Dt::Timestamp(_, _)),
+            ) => Array::TemporalArray(crate::TemporalArray::Datetime64(Arc::new(
+                crate::DatetimeArray::<i64>::with_default_unit(dtype.clone()),
+            ))),
+            // `DatetimeArray` does not hold interval data.
             #[cfg(feature = "datetime")]
-            ArrowType::Interval(crate::IntervalUnit::YearMonth) => Array::TemporalArray(
-                crate::TemporalArray::Datetime32(Arc::new(crate::DatetimeArray::<i32>::default())),
-            ),
-            #[cfg(feature = "datetime")]
-            ArrowType::Interval(_) => Array::TemporalArray(crate::TemporalArray::Datetime64(
-                Arc::new(crate::DatetimeArray::<i64>::default()),
-            )),
+            ArrowType::DateTime(Dt::Interval(_)) => Array::Null,
             #[cfg(feature = "decimal")]
             ArrowType::Decimal32(p, s) => {
                 Array::NumericArray(NumericArray::Decimal32(Arc::new(
@@ -3044,10 +3048,12 @@ impl Array {
             (Array::TemporalArray(temp), target)
                 if matches!(
                     target,
-                    ArrowType::Date64
-                        | ArrowType::Time64(_)
-                        | ArrowType::Duration64(_)
-                        | ArrowType::Timestamp(_, _)
+                    ArrowType::DateTime(
+                        Dt::Date64
+                            | Dt::Time64(_)
+                            | Dt::Duration64(_)
+                            | Dt::Timestamp(_, _)
+                    )
                 ) =>
             {
                 temp.try_dt64()
@@ -3060,7 +3066,9 @@ impl Array {
             (Array::TemporalArray(temp), target)
                 if matches!(
                     target,
-                    ArrowType::Date32 | ArrowType::Time32(_) | ArrowType::Duration32(_)
+                    ArrowType::DateTime(
+                        Dt::Date32 | Dt::Time32(_) | Dt::Duration32(_)
+                    )
                 ) =>
             {
                 temp.try_dt32()
@@ -3296,11 +3304,12 @@ impl Array {
                     }
                 }
                 let has_nulls = mask.count_zeros() > 0;
+                // Temporal scalars have no `Dt`, and the result is typed `Date32`.
                 Array::TemporalArray(crate::TemporalArray::Datetime32(Arc::new(
                     crate::DatetimeArray::new(
                         crate::Buffer::from_vec64(data),
                         if has_nulls { Some(mask) } else { None },
-                        None,
+                        Dt::Date32,
                     ),
                 )))
             }
@@ -3319,11 +3328,12 @@ impl Array {
                     }
                 }
                 let has_nulls = mask.count_zeros() > 0;
+                // Temporal scalars have no `Dt`, and the result is typed `Date64`.
                 Array::TemporalArray(crate::TemporalArray::Datetime64(Arc::new(
                     crate::DatetimeArray::new(
                         crate::Buffer::from_vec64(data),
                         if has_nulls { Some(mask) } else { None },
-                        None,
+                        Dt::Date64,
                     ),
                 )))
             }
@@ -4296,17 +4306,14 @@ impl Array {
     // Apache Arrow bridge - tested under tests/apache_arrow.rs
     // ===========================================================
     //
-    // For specific logical types such as Timestamp/Time/Duration/Interval,
-    // wrap the array in a `FieldArray` with the desired `Field` and
-    // call `FieldArray::to_apache_arrow()`.
+    // Temporal arrays export with their `Dt`.
 
     /// Build an arrow-rs `ArrayRef`, deriving a `Field` from the array shape.
     ///
     /// Panics on FFI failure. For a fallible variant returning
     /// `Result<_, MinarrowError>`, see [`Array::try_to_apache_arrow`].
     ///
-    /// For Timestamp/Time/Duration/Interval, wrap in a `FieldArray` with the
-    /// desired `Field` and use `FieldArray::to_apache_arrow()`.
+    /// Temporal arrays export with their `Dt`.
     #[cfg(feature = "cast_arrow")]
     #[inline]
     pub fn to_apache_arrow(&self, name: &str) -> ArrayRef {
@@ -4333,8 +4340,7 @@ impl Array {
     /// Panics on FFI failure. For a fallible variant, see
     /// [`Array::try_to_polars`].
     ///
-    /// For Timestamp/Time/Duration/Interval, wrap in a `FieldArray` with the
-    /// desired `Field` and use `FieldArray::to_polars()`.
+    /// Temporal arrays export with their `Dt`.
     #[cfg(feature = "cast_polars")]
     pub fn to_polars(&self, name: &str) -> polars_core::prelude::Series {
         self.try_to_polars(name).expect("Array::to_polars failed")
@@ -4343,36 +4349,8 @@ impl Array {
     /// Fallible variant of [`Array::to_polars`].
     #[cfg(feature = "cast_polars")]
     pub fn try_to_polars(&self, name: &str) -> Result<polars_core::prelude::Series, MinarrowError> {
-        // Map physical Datetime variants to a sensible Arrow logical type for
-        // export; specific Timestamp/Time/Duration/Interval semantics need a
-        // FieldArray with an explicit Field.
-        #[cfg(feature = "datetime")]
-        use crate::{TemporalArray, TimeUnit, ffi::arrow_dtype::ArrowType};
-
-        let field = match self {
-            #[cfg(feature = "datetime")]
-            Array::TemporalArray(TemporalArray::Datetime32(a)) => {
-                let ty = match a.time_unit {
-                    TimeUnit::Days => ArrowType::Date32,
-                    TimeUnit::Seconds => ArrowType::Time32(TimeUnit::Seconds),
-                    TimeUnit::Milliseconds => ArrowType::Time32(TimeUnit::Milliseconds),
-                    _ => ArrowType::Date32,
-                };
-                Field::new(name.to_string(), ty, a.is_nullable(), None)
-            }
-            #[cfg(feature = "datetime")]
-            Array::TemporalArray(TemporalArray::Datetime64(a)) => {
-                let ty = match a.time_unit {
-                    TimeUnit::Milliseconds => ArrowType::Date64,
-                    TimeUnit::Seconds => ArrowType::Timestamp(TimeUnit::Seconds, None),
-                    TimeUnit::Microseconds => ArrowType::Timestamp(TimeUnit::Microseconds, None),
-                    TimeUnit::Nanoseconds => ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
-                    TimeUnit::Days => ArrowType::Date64,
-                };
-                Field::new(name.to_string(), ty, a.is_nullable(), None)
-            }
-            _ => Field::from_array(name.to_string(), self, None),
-        };
+        // `Field::from_array` reads the temporal type from the array's `dtype`.
+        let field = Field::from_array(name.to_string(), self, None);
 
         crate::ffi::polars::export(Arc::new(self.clone()), name, Schema::from(vec![field]))
     }
@@ -4823,68 +4801,70 @@ macro_rules! arr_i64 {
 
 // ======== Datetime (i32) ========
 
-/// Build an `Array` of i32-backed datetimes. The time unit is
-/// required and precedes the values, separated by `;`.
+/// Build an `Array` of i32-backed datetimes. The `Dt` is
+/// required and precedes the values, separated by `;`. It must be a
+/// 32-bit type: `Date32`, `Time32` or `Duration32`.
 ///
 /// ```ignore
-/// use minarrow::{arr_dt32, vec64, TimeUnit};
-/// let a = arr_dt32![TimeUnit::Seconds; 1_768_521_600, 1_775_865_600];
-/// let b = arr_dt32![TimeUnit::Milliseconds; vec64![1, 2, 3]];
+/// use minarrow::{arr_dt32, vec64, Dt, TimeUnit};
+/// let a = arr_dt32![Dt::Date32; 20_454, 20_455];
+/// let b = arr_dt32![Dt::Time32(TimeUnit::Milliseconds); vec64![1, 2, 3]];
 /// ```
 #[cfg(feature = "datetime")]
 #[macro_export]
 macro_rules! arr_dt32 {
-    ($unit:expr; $v:expr) => {
+    ($dtype:expr; $v:expr) => {
         $crate::Array::from_datetime_i32($crate::DatetimeArray::<i32>::from_vec64(
-            $v, None, Some($unit),
+            $v, None, $dtype,
         ))
     };
-    ($unit:expr; $($x:expr),+ $(,)?) => {{
+    ($dtype:expr; $($x:expr),+ $(,)?) => {{
         use $crate::vec64;
         let temp_vec = vec64![$($x),+];
         $crate::Array::from_datetime_i32($crate::DatetimeArray::<i32>::from_vec64(
-            temp_vec, None, Some($unit),
+            temp_vec, None, $dtype,
         ))
     }};
-    ($unit:expr;) => {
+    ($dtype:expr;) => {
         $crate::Array::from_datetime_i32($crate::DatetimeArray::<i32>::from_vec64(
             $crate::Vec64::new(),
             None,
-            Some($unit),
+            $dtype,
         ))
     };
 }
 
 // ======== Datetime (i64) ========
 
-/// Build an `Array` of i64-backed datetimes. The time unit is
-/// required and precedes the values, separated by `;`.
+/// Build an `Array` of i64-backed datetimes. The `Dt` is
+/// required and precedes the values, separated by `;`. It must be a
+/// 64-bit type: `Date64`, `Time64`, `Duration64` or `Timestamp`.
 ///
 /// ```ignore
-/// use minarrow::{arr_dt64, vec64, TimeUnit};
-/// let a = arr_dt64![TimeUnit::Seconds; 1_768_521_600, 1_775_865_600];
-/// let b = arr_dt64![TimeUnit::Milliseconds; vec64![1, 2, 3]];
+/// use minarrow::{arr_dt64, vec64, Dt, TimeUnit};
+/// let a = arr_dt64![Dt::Timestamp(TimeUnit::Seconds, None); 1_768_521_600, 1_775_865_600];
+/// let b = arr_dt64![Dt::Date64; vec64![1, 2, 3]];
 /// ```
 #[cfg(feature = "datetime")]
 #[macro_export]
 macro_rules! arr_dt64 {
-    ($unit:expr; $v:expr) => {
+    ($dtype:expr; $v:expr) => {
         $crate::Array::from_datetime_i64($crate::DatetimeArray::<i64>::from_vec64(
-            $v, None, Some($unit),
+            $v, None, $dtype,
         ))
     };
-    ($unit:expr; $($x:expr),+ $(,)?) => {{
+    ($dtype:expr; $($x:expr),+ $(,)?) => {{
         use $crate::vec64;
         let temp_vec = vec64![$($x),+];
         $crate::Array::from_datetime_i64($crate::DatetimeArray::<i64>::from_vec64(
-            temp_vec, None, Some($unit),
+            temp_vec, None, $dtype,
         ))
     }};
-    ($unit:expr;) => {
+    ($dtype:expr;) => {
         $crate::Array::from_datetime_i64($crate::DatetimeArray::<i64>::from_vec64(
             $crate::Vec64::new(),
             None,
-            Some($unit),
+            $dtype,
         ))
     };
 }
@@ -6260,7 +6240,10 @@ mod tests {
     fn test_num_from_datetime_i32() {
         use crate::TimeUnit;
 
-        let dt = DatetimeArray::<i32>::from_slice(&[123, 456, 789], Some(TimeUnit::Milliseconds));
+        let dt = DatetimeArray::<i32>::from_slice(
+            &[123, 456, 789],
+            Dt::Time32(TimeUnit::Milliseconds),
+        );
         let array = Array::from_datetime_i32(dt.clone());
         let out = array.num();
         match out {
@@ -7807,6 +7790,38 @@ mod scatter_tests {
         let mut dst = arr_i64![1, 2];
         let src = arr_f64![&[1.0]];
         assert!(dst.scatter_indices(&[0], &src.view(0, 1), &[0]).is_err());
+    }
+
+    #[cfg(feature = "datetime")]
+    #[test]
+    fn scatter_temporal_type_mismatch_errors() {
+        use crate::{Dt, DatetimeArray, TimeUnit};
+
+        let mut dst = Array::from_datetime_i64(DatetimeArray::<i64>::from_slice(
+            &[1, 2],
+            Dt::Timestamp(TimeUnit::Microseconds, None),
+        ));
+        // Same storage width and unit, with a different variant or timezone.
+        for dtype in [
+            Dt::Time64(TimeUnit::Microseconds),
+            Dt::Timestamp(TimeUnit::Microseconds, Some("UTC".to_string())),
+        ] {
+            let src = Array::from_datetime_i64(DatetimeArray::<i64>::from_slice(&[9], dtype));
+            assert!(dst.scatter_indices(&[0], &src.view(0, 1), &[0]).is_err());
+        }
+
+        let src = Array::from_datetime_i64(DatetimeArray::<i64>::from_slice(
+            &[9],
+            Dt::Timestamp(TimeUnit::Microseconds, None),
+        ));
+        dst.scatter_indices(&[0], &src.view(0, 1), &[0]).unwrap();
+        assert_eq!(
+            dst,
+            Array::from_datetime_i64(DatetimeArray::<i64>::from_slice(
+                &[9, 2],
+                Dt::Timestamp(TimeUnit::Microseconds, None),
+            ))
+        );
     }
 
     #[test]

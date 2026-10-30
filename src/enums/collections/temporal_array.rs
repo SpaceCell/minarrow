@@ -65,13 +65,12 @@ use crate::{
 /// ### Handling Times, Durations, etc.
 /// We use one Physical type to hold all datetime variants,
 /// i.e., the *Apache Arrow* types `DATE32`, `TIME32`, `DURATION` etc.,
-/// and the Logical type is stored on the `Field` as metadata, given they
-/// otherwise have the same underlying data representation. To treat
-/// them differently in API usage, you can use the `TimeUnit` and `IntervalUnit`,
-/// along with the `ArrowType` that is stored on the `Field` in `Minarrow`,
-/// and match on these for any desired behaviour. The `Field` is packaged together
-/// with `Array` *(which then drill-down accesses `TemporalArray` on the fly, or
-/// in dispatch routing scenarios)*.
+/// given they have the same underlying data representation. The logical type of
+/// each `DatetimeArray` is held in its `dtype` as a `Dt`, which includes
+/// the `TimeUnit` and, for timestamps, the timezone. To treat them differently in
+/// API usage, match on the array's `dtype`, or on `arrow_type()`, which returns the
+/// same value wrapped in `ArrowType::DateTime`. Fields built from temporal arrays
+/// use the same type.
 ///
 /// ### Typecasting behaviour
 /// - If the enum already holds the given type *(which should be known at compile-time)*,
@@ -83,8 +82,8 @@ use crate::{
 #[repr(C, align(64))]
 #[derive(PartialEq, Clone, Debug, Default)]
 pub enum TemporalArray {
-    // The datetimes are chunked by their common memory layout rather than logical type
-    // These can be casted to the relevant Arrow type at the FFI layer as needed
+    // The datetimes are chunked by their common memory layout, with the logical type
+    // of each array held in its `Dt`.
     Datetime32(Arc<DatetimeArray<i32>>), // DATE32, TIME32, DURATION(s), DURATION(ms) (32-bit)
     // DATE64, TIMESTAMP (ms/us/ns), DURATION (ms/us/ns), TIME64, DURATION(us), DURATION(ns)
     Datetime64(Arc<DatetimeArray<i64>>),
@@ -93,11 +92,11 @@ pub enum TemporalArray {
 }
 
 impl TemporalArray {
-    /// Returns the Arrow physical type for this temporal array.
+    /// Returns the Arrow type of this temporal array, read from the array's `Dt`.
     pub fn arrow_type(&self) -> ArrowType {
         match self {
-            TemporalArray::Datetime32(_) => ArrowType::Date32,
-            TemporalArray::Datetime64(_) => ArrowType::Date64,
+            TemporalArray::Datetime32(arr) => arr.arrow_type(),
+            TemporalArray::Datetime64(arr) => arr.arrow_type(),
             TemporalArray::Null => ArrowType::Null,
         }
     }
@@ -120,8 +119,8 @@ impl TemporalArray {
     #[inline]
     pub fn time_unit(&self) -> Option<TimeUnit> {
         match self {
-            TemporalArray::Datetime32(arr) => Some(arr.time_unit),
-            TemporalArray::Datetime64(arr) => Some(arr.time_unit),
+            TemporalArray::Datetime32(arr) => Some(arr.time_unit()),
+            TemporalArray::Datetime64(arr) => Some(arr.time_unit()),
             TemporalArray::Null => None,
         }
     }

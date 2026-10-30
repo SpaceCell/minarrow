@@ -65,7 +65,7 @@ use crate::{
     IntegerArray, MaskedArray, StringArray, TextArray, Vec64, vec64,
 };
 #[cfg(feature = "datetime")]
-use crate::{DatetimeArray, IntervalUnit, TemporalArray, TimeUnit};
+use crate::{Dt, DatetimeArray, IntervalUnit, TemporalArray, TimeUnit};
 #[cfg(feature = "decimal")]
 use crate::DecimalArray;
 
@@ -286,7 +286,7 @@ pub fn fmt_c(dtype: ArrowType) -> CString {
     }
 
     #[cfg(feature = "datetime")]
-    if let ArrowType::Timestamp(u, tz) = &dtype {
+    if let ArrowType::DateTime(Dt::Timestamp(u, tz)) = &dtype {
         let unit_str = match u {
             TimeUnit::Seconds => "tss:",
             TimeUnit::Milliseconds => "tsm:",
@@ -326,43 +326,43 @@ pub fn fmt_c(dtype: ArrowType) -> CString {
 
         // ---- datetime ----
         #[cfg(feature = "datetime")]
-        ArrowType::Date32 => b"tdD",
+        ArrowType::DateTime(Dt::Date32) => b"tdD",
         #[cfg(feature = "datetime")]
-        ArrowType::Date64 => b"tdm",
+        ArrowType::DateTime(Dt::Date64) => b"tdm",
 
         #[cfg(feature = "datetime")]
-        ArrowType::Time32(u) => match u {
+        ArrowType::DateTime(Dt::Time32(u)) => match u {
             TimeUnit::Seconds => b"tts",
             TimeUnit::Milliseconds => b"ttm",
             _ => panic!("Time32 supports Seconds or Milliseconds only"),
         },
         #[cfg(feature = "datetime")]
-        ArrowType::Time64(u) => match u {
+        ArrowType::DateTime(Dt::Time64(u)) => match u {
             TimeUnit::Microseconds => b"ttu",
             TimeUnit::Nanoseconds => b"ttn",
             _ => panic!("Time64 supports Microseconds or Nanoseconds only"),
         },
 
         #[cfg(feature = "datetime")]
-        ArrowType::Duration32(u) => match u {
+        ArrowType::DateTime(Dt::Duration32(u)) => match u {
             TimeUnit::Seconds => b"tDs",
             TimeUnit::Milliseconds => b"tDm",
             _ => panic!("Duration32 supports Seconds or Milliseconds only"),
         },
         #[cfg(feature = "datetime")]
-        ArrowType::Duration64(u) => match u {
+        ArrowType::DateTime(Dt::Duration64(u)) => match u {
             TimeUnit::Microseconds => b"tDu",
             TimeUnit::Nanoseconds => b"tDn",
             _ => panic!("Duration64 supports Microseconds or Nanoseconds only"),
         },
 
         #[cfg(feature = "datetime")]
-        ArrowType::Timestamp(_, _) => {
+        ArrowType::DateTime(Dt::Timestamp(_, _)) => {
             unreachable!("Timestamp case handled above")
         }
 
         #[cfg(feature = "datetime")]
-        ArrowType::Interval(u) => match u {
+        ArrowType::DateTime(Dt::Interval(u)) => match u {
             IntervalUnit::YearMonth => b"tiM",
             IntervalUnit::DaysTime => b"tiD",
             IntervalUnit::MonthDaysNs => b"tin",
@@ -388,70 +388,35 @@ pub fn fmt_c(dtype: ArrowType) -> CString {
     CString::new(bytes).expect("CString formatting failed: invalid bytes")
 }
 
+/// Validates that a temporal Field describes the array's own `Dt` before export.
+///
+/// The variant and time unit must match. The exported schema uses the timezone of
+/// a `Timestamp` Field without comparing it, as the timezone affects interpretation
+/// only. `Interval` Fields are not validated, because `DatetimeArray` does not hold
+/// interval types and the Field describes its raw values.
 #[cfg(feature = "datetime")]
 fn validate_temporal_field(array: &Array, dtype: &ArrowType) {
-    use crate::{TemporalArray, TimeUnit};
-
-    match (array, dtype) {
-        // Date32 requires days since epoch in i32
-        (Array::TemporalArray(TemporalArray::Datetime32(arr)), ArrowType::Date32) => {
-            assert!(
-                arr.time_unit == TimeUnit::Days,
-                "FFI export: Field=Date32 requires Datetime32(Days); got {:?}",
-                arr.time_unit
-            );
-        }
-        // Date64 requires milliseconds since epoch in i64
-        (Array::TemporalArray(TemporalArray::Datetime64(arr)), ArrowType::Date64) => {
-            assert!(
-                arr.time_unit == TimeUnit::Milliseconds,
-                "FFI export: Field=Date64 requires Datetime64(Milliseconds); got {:?}",
-                arr.time_unit
-            );
-        }
-        // Time32 requires i32 with the exact unit
-        (Array::TemporalArray(TemporalArray::Datetime32(arr)), ArrowType::Time32(u)) => {
-            assert!(
-                arr.time_unit == *u,
-                "FFI export: Field=Time32({u:?}) requires Datetime32({u:?}); got {:?}",
-                arr.time_unit
-            );
-        }
-        // Time64 requires i64 with the exact unit
-        (Array::TemporalArray(TemporalArray::Datetime64(arr)), ArrowType::Time64(u)) => {
-            assert!(
-                arr.time_unit == *u,
-                "FFI export: Field=Time64({u:?}) requires Datetime64({u:?}); got {:?}",
-                arr.time_unit
-            );
-        }
-        // Timestamp requires i64 with the exact unit
-        (Array::TemporalArray(TemporalArray::Datetime64(arr)), ArrowType::Timestamp(u, _tz)) => {
-            assert!(
-                arr.time_unit == *u,
-                "FFI export: Field=Timestamp({u:?}) requires Datetime64({u:?}); got {:?}",
-                arr.time_unit
-            );
-        }
-        // Duration32 requires i32 with the exact unit
-        (Array::TemporalArray(TemporalArray::Datetime32(arr)), ArrowType::Duration32(u)) => {
-            assert!(
-                arr.time_unit == *u,
-                "FFI export: Field=Duration32({u:?}) requires Datetime32({u:?}); got {:?}",
-                arr.time_unit
-            );
-        }
-        // Duration64 requires i64 with the exact unit
-        (Array::TemporalArray(TemporalArray::Datetime64(arr)), ArrowType::Duration64(u)) => {
-            assert!(
-                arr.time_unit == *u,
-                "FFI export: Field=Duration64({u:?}) requires Datetime64({u:?}); got {:?}",
-                arr.time_unit
-            );
-        }
-        // Interval mapping enforced at type-selection time; nothing to assert here yet.
-        _ => {}
+    let ArrowType::DateTime(field_type) = dtype else {
+        return;
+    };
+    if matches!(field_type, Dt::Interval(_)) {
+        return;
     }
+    let array_type = match array {
+        Array::TemporalArray(TemporalArray::Datetime32(arr)) => &arr.dtype,
+        Array::TemporalArray(TemporalArray::Datetime64(arr)) => &arr.dtype,
+        _ => return,
+    };
+    let matches = match (field_type, array_type) {
+        (Dt::Timestamp(field_unit, _), Dt::Timestamp(array_unit, _)) => {
+            field_unit == array_unit
+        }
+        (field_type, array_type) => field_type == array_type,
+    };
+    assert!(
+        matches,
+        "FFI export: Field={field_type} does not match the array's type {array_type}"
+    );
 }
 
 fn validate_numeric_field(array: &Array, dtype: &ArrowType) {
@@ -757,31 +722,31 @@ pub unsafe fn import_from_c(arr_ptr: *const ArrowArray, sch_ptr: *const ArrowSch
         b"U" => ArrowType::LargeString,
         b"vu" => ArrowType::Utf8View,
         #[cfg(feature = "datetime")]
-        b"tdD" => ArrowType::Date32,
+        b"tdD" => ArrowType::DateTime(Dt::Date32),
         #[cfg(feature = "datetime")]
-        b"tdm" => ArrowType::Date64,
+        b"tdm" => ArrowType::DateTime(Dt::Date64),
         #[cfg(feature = "datetime")]
-        b"tts" => ArrowType::Time32(crate::TimeUnit::Seconds),
+        b"tts" => ArrowType::DateTime(Dt::Time32(crate::TimeUnit::Seconds)),
         #[cfg(feature = "datetime")]
-        b"ttm" => ArrowType::Time32(crate::TimeUnit::Milliseconds),
+        b"ttm" => ArrowType::DateTime(Dt::Time32(crate::TimeUnit::Milliseconds)),
         #[cfg(feature = "datetime")]
-        b"ttu" => ArrowType::Time64(crate::TimeUnit::Microseconds),
+        b"ttu" => ArrowType::DateTime(Dt::Time64(crate::TimeUnit::Microseconds)),
         #[cfg(feature = "datetime")]
-        b"ttn" => ArrowType::Time64(crate::TimeUnit::Nanoseconds),
+        b"ttn" => ArrowType::DateTime(Dt::Time64(crate::TimeUnit::Nanoseconds)),
         #[cfg(feature = "datetime")]
-        b"tDs" => ArrowType::Duration32(crate::TimeUnit::Seconds),
+        b"tDs" => ArrowType::DateTime(Dt::Duration32(crate::TimeUnit::Seconds)),
         #[cfg(feature = "datetime")]
-        b"tDm" => ArrowType::Duration32(crate::TimeUnit::Milliseconds),
+        b"tDm" => ArrowType::DateTime(Dt::Duration32(crate::TimeUnit::Milliseconds)),
         #[cfg(feature = "datetime")]
-        b"tDu" => ArrowType::Duration64(crate::TimeUnit::Microseconds),
+        b"tDu" => ArrowType::DateTime(Dt::Duration64(crate::TimeUnit::Microseconds)),
         #[cfg(feature = "datetime")]
-        b"tDn" => ArrowType::Duration64(crate::TimeUnit::Nanoseconds),
+        b"tDn" => ArrowType::DateTime(Dt::Duration64(crate::TimeUnit::Nanoseconds)),
         #[cfg(feature = "datetime")]
-        b"tiM" => ArrowType::Interval(IntervalUnit::YearMonth),
+        b"tiM" => ArrowType::DateTime(Dt::Interval(IntervalUnit::YearMonth)),
         #[cfg(feature = "datetime")]
-        b"tiD" => ArrowType::Interval(IntervalUnit::DaysTime),
+        b"tiD" => ArrowType::DateTime(Dt::Interval(IntervalUnit::DaysTime)),
         #[cfg(feature = "datetime")]
-        b"tin" => ArrowType::Interval(IntervalUnit::MonthDaysNs),
+        b"tin" => ArrowType::DateTime(Dt::Interval(IntervalUnit::MonthDaysNs)),
         #[cfg(feature = "datetime")]
         _ if fmt.starts_with(b"tss")
             || fmt.starts_with(b"tsm")
@@ -806,7 +771,7 @@ pub unsafe fn import_from_c(arr_ptr: *const ArrowArray, sch_ptr: *const ArrowSch
             } else {
                 None
             };
-            ArrowType::Timestamp(unit, tz)
+            ArrowType::DateTime(Dt::Timestamp(unit, tz))
         }
         #[cfg(feature = "decimal")]
         _ if fmt.starts_with(b"d:") => parse_decimal_format(fmt),
@@ -879,26 +844,22 @@ pub unsafe fn import_from_c(arr_ptr: *const ArrowArray, sch_ptr: *const ArrowSch
             #[cfg(feature = "large_string")]
             ArrowType::LargeString => unsafe { import_utf8::<u64>(arr, None) },
             ArrowType::Utf8View => unsafe { import_utf8_view(arr, None) },
+            // The schema provides the imported array's type.
             #[cfg(feature = "datetime")]
-            ArrowType::Date32 => unsafe {
-                import_datetime::<i32>(arr, None, crate::TimeUnit::Days)
-            },
+            ArrowType::DateTime(
+                dtype @ (Dt::Date32
+                | Dt::Time32(_)
+                | Dt::Duration32(_)),
+            ) => unsafe { import_datetime::<i32>(arr, None, dtype) },
             #[cfg(feature = "datetime")]
-            ArrowType::Date64 => unsafe {
-                import_datetime::<i64>(arr, None, crate::TimeUnit::Milliseconds)
-            },
+            ArrowType::DateTime(
+                dtype @ (Dt::Date64
+                | Dt::Time64(_)
+                | Dt::Duration64(_)
+                | Dt::Timestamp(_, _)),
+            ) => unsafe { import_datetime::<i64>(arr, None, dtype) },
             #[cfg(feature = "datetime")]
-            ArrowType::Time32(u) => unsafe { import_datetime::<i32>(arr, None, u) },
-            #[cfg(feature = "datetime")]
-            ArrowType::Time64(u) => unsafe { import_datetime::<i64>(arr, None, u) },
-            #[cfg(feature = "datetime")]
-            ArrowType::Timestamp(u, _tz) => unsafe { import_datetime::<i64>(arr, None, u) },
-            #[cfg(feature = "datetime")]
-            ArrowType::Duration32(u) => unsafe { import_datetime::<i32>(arr, None, u) },
-            #[cfg(feature = "datetime")]
-            ArrowType::Duration64(u) => unsafe { import_datetime::<i64>(arr, None, u) },
-            #[cfg(feature = "datetime")]
-            ArrowType::Interval(_u) => {
+            ArrowType::DateTime(Dt::Interval(_u)) => {
                 panic!("FFI import_from_c: Arrow Interval types are not yet supported");
             }
             #[cfg(feature = "decimal")]
@@ -1033,24 +994,22 @@ pub unsafe fn import_from_c_owned(
             #[cfg(feature = "large_string")]
             ArrowType::LargeString => import_utf8::<u64>(arr, Some(arr_box)),
             ArrowType::Utf8View => import_utf8_view(arr, Some(arr_box)),
+            // The schema provides the imported array's type.
             #[cfg(feature = "datetime")]
-            ArrowType::Date32 => import_datetime::<i32>(arr, Some(arr_box), crate::TimeUnit::Days),
+            ArrowType::DateTime(
+                dtype @ (Dt::Date32
+                | Dt::Time32(_)
+                | Dt::Duration32(_)),
+            ) => import_datetime::<i32>(arr, Some(arr_box), dtype),
             #[cfg(feature = "datetime")]
-            ArrowType::Date64 => {
-                import_datetime::<i64>(arr, Some(arr_box), crate::TimeUnit::Milliseconds)
-            }
+            ArrowType::DateTime(
+                dtype @ (Dt::Date64
+                | Dt::Time64(_)
+                | Dt::Duration64(_)
+                | Dt::Timestamp(_, _)),
+            ) => import_datetime::<i64>(arr, Some(arr_box), dtype),
             #[cfg(feature = "datetime")]
-            ArrowType::Time32(u) => import_datetime::<i32>(arr, Some(arr_box), u),
-            #[cfg(feature = "datetime")]
-            ArrowType::Time64(u) => import_datetime::<i64>(arr, Some(arr_box), u),
-            #[cfg(feature = "datetime")]
-            ArrowType::Timestamp(u, ref _tz) => import_datetime::<i64>(arr, Some(arr_box), u),
-            #[cfg(feature = "datetime")]
-            ArrowType::Duration32(u) => import_datetime::<i32>(arr, Some(arr_box), u),
-            #[cfg(feature = "datetime")]
-            ArrowType::Duration64(u) => import_datetime::<i64>(arr, Some(arr_box), u),
-            #[cfg(feature = "datetime")]
-            ArrowType::Interval(_u) => {
+            ArrowType::DateTime(Dt::Interval(_u)) => {
                 panic!("FFI import_from_c_owned: Arrow Interval types are not yet supported");
             }
             #[cfg(feature = "decimal")]
@@ -1155,24 +1114,22 @@ unsafe fn import_array_zero_copy(
             #[cfg(feature = "large_string")]
             ArrowType::LargeString => import_utf8::<u64>(arr, Some(arr_box)),
             ArrowType::Utf8View => import_utf8_view(arr, Some(arr_box)),
+            // The schema provides the imported array's type.
             #[cfg(feature = "datetime")]
-            ArrowType::Date32 => import_datetime::<i32>(arr, Some(arr_box), crate::TimeUnit::Days),
+            ArrowType::DateTime(
+                dtype @ (Dt::Date32
+                | Dt::Time32(_)
+                | Dt::Duration32(_)),
+            ) => import_datetime::<i32>(arr, Some(arr_box), dtype),
             #[cfg(feature = "datetime")]
-            ArrowType::Date64 => {
-                import_datetime::<i64>(arr, Some(arr_box), crate::TimeUnit::Milliseconds)
-            }
+            ArrowType::DateTime(
+                dtype @ (Dt::Date64
+                | Dt::Time64(_)
+                | Dt::Duration64(_)
+                | Dt::Timestamp(_, _)),
+            ) => import_datetime::<i64>(arr, Some(arr_box), dtype),
             #[cfg(feature = "datetime")]
-            ArrowType::Time32(u) => import_datetime::<i32>(arr, Some(arr_box), u),
-            #[cfg(feature = "datetime")]
-            ArrowType::Time64(u) => import_datetime::<i64>(arr, Some(arr_box), u),
-            #[cfg(feature = "datetime")]
-            ArrowType::Timestamp(u, ref _tz) => import_datetime::<i64>(arr, Some(arr_box), u),
-            #[cfg(feature = "datetime")]
-            ArrowType::Duration32(u) => import_datetime::<i32>(arr, Some(arr_box), u),
-            #[cfg(feature = "datetime")]
-            ArrowType::Duration64(u) => import_datetime::<i64>(arr, Some(arr_box), u),
-            #[cfg(feature = "datetime")]
-            ArrowType::Interval(_u) => {
+            ArrowType::DateTime(Dt::Interval(_u)) => {
                 panic!("import_array_zero_copy: Interval types are not yet supported");
             }
             #[cfg(feature = "decimal")]
@@ -1741,7 +1698,7 @@ unsafe fn import_categorical(
 /// * `ownership` - If `Some(box)`, takes ownership and does zero-copy via ForeignBuffer.
 ///                 If `None`, copies the data. This is needed for dictionary arrays inside
 ///                 categoricals, where the parent's release callback owns the child memory.
-/// * `unit` - The time unit for the datetime values
+/// * `dtype` - The temporal type from the schema, with a storage width matching `T`.
 ///
 /// # Safety
 /// `arr` must contain valid time values and optional null mask.
@@ -1749,7 +1706,7 @@ unsafe fn import_categorical(
 unsafe fn import_datetime<T: Integer>(
     arr: &ArrowArray,
     ownership: Option<Box<ArrowArray>>,
-    unit: crate::TimeUnit,
+    dtype: Dt,
 ) -> Arc<Array> {
     let len = arr.length as usize;
     let offset = arr.offset as usize;
@@ -1783,7 +1740,7 @@ unsafe fn import_datetime<T: Integer>(
     let dt_arr = DatetimeArray::<T> {
         data: buffer,
         null_mask,
-        time_unit: unit,
+        dtype,
     };
 
     if std::any::TypeId::of::<T>() == std::any::TypeId::of::<i64>() {
@@ -3521,31 +3478,31 @@ fn parse_arrow_format(fmt: &[u8]) -> ArrowType {
         b"U" => ArrowType::LargeString,
         b"vu" => ArrowType::Utf8View,
         #[cfg(feature = "datetime")]
-        b"tdD" => ArrowType::Date32,
+        b"tdD" => ArrowType::DateTime(Dt::Date32),
         #[cfg(feature = "datetime")]
-        b"tdm" => ArrowType::Date64,
+        b"tdm" => ArrowType::DateTime(Dt::Date64),
         #[cfg(feature = "datetime")]
-        b"tts" => ArrowType::Time32(crate::TimeUnit::Seconds),
+        b"tts" => ArrowType::DateTime(Dt::Time32(crate::TimeUnit::Seconds)),
         #[cfg(feature = "datetime")]
-        b"ttm" => ArrowType::Time32(crate::TimeUnit::Milliseconds),
+        b"ttm" => ArrowType::DateTime(Dt::Time32(crate::TimeUnit::Milliseconds)),
         #[cfg(feature = "datetime")]
-        b"ttu" => ArrowType::Time64(crate::TimeUnit::Microseconds),
+        b"ttu" => ArrowType::DateTime(Dt::Time64(crate::TimeUnit::Microseconds)),
         #[cfg(feature = "datetime")]
-        b"ttn" => ArrowType::Time64(crate::TimeUnit::Nanoseconds),
+        b"ttn" => ArrowType::DateTime(Dt::Time64(crate::TimeUnit::Nanoseconds)),
         #[cfg(feature = "datetime")]
-        b"tDs" => ArrowType::Duration32(crate::TimeUnit::Seconds),
+        b"tDs" => ArrowType::DateTime(Dt::Duration32(crate::TimeUnit::Seconds)),
         #[cfg(feature = "datetime")]
-        b"tDm" => ArrowType::Duration32(crate::TimeUnit::Milliseconds),
+        b"tDm" => ArrowType::DateTime(Dt::Duration32(crate::TimeUnit::Milliseconds)),
         #[cfg(feature = "datetime")]
-        b"tDu" => ArrowType::Duration64(crate::TimeUnit::Microseconds),
+        b"tDu" => ArrowType::DateTime(Dt::Duration64(crate::TimeUnit::Microseconds)),
         #[cfg(feature = "datetime")]
-        b"tDn" => ArrowType::Duration64(crate::TimeUnit::Nanoseconds),
+        b"tDn" => ArrowType::DateTime(Dt::Duration64(crate::TimeUnit::Nanoseconds)),
         #[cfg(feature = "datetime")]
-        b"tiM" => ArrowType::Interval(crate::IntervalUnit::YearMonth),
+        b"tiM" => ArrowType::DateTime(Dt::Interval(crate::IntervalUnit::YearMonth)),
         #[cfg(feature = "datetime")]
-        b"tiD" => ArrowType::Interval(crate::IntervalUnit::DaysTime),
+        b"tiD" => ArrowType::DateTime(Dt::Interval(crate::IntervalUnit::DaysTime)),
         #[cfg(feature = "datetime")]
-        b"tin" => ArrowType::Interval(crate::IntervalUnit::MonthDaysNs),
+        b"tin" => ArrowType::DateTime(Dt::Interval(crate::IntervalUnit::MonthDaysNs)),
         b"+s" => ArrowType::Null, // struct marker (handled at stream level)
         #[cfg(feature = "decimal")]
         _ if fmt.starts_with(b"d:") => {
@@ -3575,7 +3532,7 @@ fn parse_arrow_format(fmt: &[u8]) -> ArrowType {
             } else {
                 None
             };
-            ArrowType::Timestamp(unit, tz)
+            ArrowType::DateTime(Dt::Timestamp(unit, tz))
         }
         o => panic!(
             "unsupported Arrow format {:?}",
@@ -3592,7 +3549,7 @@ mod tests {
     use std::sync::Arc;
 
     #[cfg(feature = "datetime")]
-    use crate::DatetimeArray;
+    use crate::{Dt, DatetimeArray};
     use crate::ffi::arrow_c_ffi::export_to_c;
     #[cfg(feature = "datetime")]
     use crate::ffi::arrow_c_ffi::import_from_c;
@@ -3817,14 +3774,13 @@ mod tests {
     #[cfg(feature = "datetime")]
     #[test]
     fn test_arrow_c_export_datetime() {
-        use crate::TimeUnit;
         let mut dt = DatetimeArray::<i64>::default();
         dt.push(1);
         dt.push(2);
-        dt.time_unit = TimeUnit::Milliseconds;
+        dt.dtype = Dt::Date64;
 
         let array = Arc::new(Array::from_datetime_i64(dt));
-        let schema = schema_for("dt", ArrowType::Date64, false);
+        let schema = schema_for("dt", ArrowType::DateTime(Dt::Date64), false);
 
         let (arr_ptr, sch_ptr) = export_to_c(array, schema);
 
@@ -3844,12 +3800,15 @@ mod tests {
         let mut dt = DatetimeArray::<i64>::default();
         dt.push(1609459200);
         dt.push(1640995200);
-        dt.time_unit = TimeUnit::Seconds;
+        dt.dtype = Dt::Timestamp(TimeUnit::Seconds, Some("UTC".to_string()));
 
         let array = Arc::new(Array::from_datetime_i64(dt));
         let schema = schema_for(
             "ts",
-            ArrowType::Timestamp(TimeUnit::Seconds, Some("UTC".to_string())),
+            ArrowType::DateTime(Dt::Timestamp(
+                TimeUnit::Seconds,
+                Some("UTC".to_string()),
+            )),
             false,
         );
 
@@ -3865,7 +3824,11 @@ mod tests {
                 imported.as_ref()
             {
                 assert_eq!(imported_dt.len(), 2);
-                assert_eq!(imported_dt.time_unit, TimeUnit::Seconds);
+                assert_eq!(imported_dt.time_unit(), TimeUnit::Seconds);
+                assert_eq!(
+                    imported_dt.dtype,
+                    Dt::Timestamp(TimeUnit::Seconds, Some("UTC".to_string()))
+                );
             } else {
                 panic!("Expected Datetime64 array");
             }
@@ -3882,13 +3845,13 @@ mod tests {
         let mut dt = DatetimeArray::<i64>::default();
         dt.push(1609459200000);
         dt.push(1640995200000);
-        dt.time_unit = TimeUnit::Milliseconds;
+        let tz = "America/New_York".to_string();
+        dt.dtype = Dt::Timestamp(TimeUnit::Milliseconds, Some(tz.clone()));
 
         let array = Arc::new(Array::from_datetime_i64(dt));
-        let tz = "America/New_York".to_string();
         let schema = schema_for(
             "ts",
-            ArrowType::Timestamp(TimeUnit::Milliseconds, Some(tz.clone())),
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Milliseconds, Some(tz.clone()))),
             false,
         );
 
@@ -3907,7 +3870,11 @@ mod tests {
                 imported.as_ref()
             {
                 assert_eq!(imported_dt.len(), 2);
-                assert_eq!(imported_dt.time_unit, TimeUnit::Milliseconds);
+                assert_eq!(imported_dt.time_unit(), TimeUnit::Milliseconds);
+                assert_eq!(
+                    imported_dt.dtype,
+                    Dt::Timestamp(TimeUnit::Milliseconds, Some(tz.clone()))
+                );
             } else {
                 panic!("Expected Datetime64 array");
             }
@@ -3923,13 +3890,13 @@ mod tests {
         use crate::TimeUnit;
         let mut dt = DatetimeArray::<i64>::default();
         dt.push(1609459200000000);
-        dt.time_unit = TimeUnit::Microseconds;
+        let tz = "+05:30".to_string();
+        dt.dtype = Dt::Timestamp(TimeUnit::Microseconds, Some(tz.clone()));
 
         let array = Arc::new(Array::from_datetime_i64(dt));
-        let tz = "+05:30".to_string();
         let schema = schema_for(
             "ts",
-            ArrowType::Timestamp(TimeUnit::Microseconds, Some(tz.clone())),
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Microseconds, Some(tz.clone()))),
             false,
         );
 
@@ -3948,7 +3915,11 @@ mod tests {
                 imported.as_ref()
             {
                 assert_eq!(imported_dt.len(), 1);
-                assert_eq!(imported_dt.time_unit, TimeUnit::Microseconds);
+                assert_eq!(imported_dt.time_unit(), TimeUnit::Microseconds);
+                assert_eq!(
+                    imported_dt.dtype,
+                    Dt::Timestamp(TimeUnit::Microseconds, Some(tz.clone()))
+                );
             } else {
                 panic!("Expected Datetime64 array");
             }
@@ -3964,10 +3935,14 @@ mod tests {
         use crate::TimeUnit;
         let mut dt = DatetimeArray::<i64>::default();
         dt.push(1609459200);
-        dt.time_unit = TimeUnit::Seconds;
+        dt.dtype = Dt::Timestamp(TimeUnit::Seconds, None);
 
         let array = Arc::new(Array::from_datetime_i64(dt));
-        let schema = schema_for("ts", ArrowType::Timestamp(TimeUnit::Seconds, None), false);
+        let schema = schema_for(
+            "ts",
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Seconds, None)),
+            false,
+        );
 
         let (arr_ptr, sch_ptr) = export_to_c(array.clone(), schema);
 
@@ -4719,12 +4694,12 @@ mod tests {
         for v in [1_000, 2_000, 3_000, 4_000, 5_000, 6_000] {
             dt.push(v);
         }
-        dt.time_unit = TimeUnit::Milliseconds;
+        dt.dtype = Dt::Date64;
 
         let array = Arc::new(Array::from_datetime_i64(dt));
         let view = ArrayV::new((*array).clone(), 2, 3); // [3_000, 4_000, 5_000]
 
-        let schema = schema_for("ts", ArrowType::Date64, false);
+        let schema = schema_for("ts", ArrowType::DateTime(Dt::Date64), false);
         let (arr_ptr, sch_ptr) =
             export_view_to_c(array.clone(), schema, view.offset as i64, view.len() as i64);
 
@@ -4732,7 +4707,8 @@ mod tests {
             let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
             if let Array::TemporalArray(crate::TemporalArray::Datetime64(d)) = imported.as_ref() {
                 assert_eq!(d.data.as_slice(), &[3_000, 4_000, 5_000]);
-                assert_eq!(d.time_unit, TimeUnit::Milliseconds);
+                assert_eq!(d.time_unit(), TimeUnit::Milliseconds);
+                assert_eq!(d.dtype, Dt::Date64);
             } else {
                 panic!("Expected Datetime64 array");
             }
@@ -4740,6 +4716,117 @@ mod tests {
             ((*arr_ptr).release.unwrap())(arr_ptr);
             ((*sch_ptr).release.unwrap())(sch_ptr);
         }
+    }
+
+    /// Every temporal type with a valid Arrow C format, paired with that format.
+    #[cfg(feature = "datetime")]
+    fn temporal_type_formats() -> Vec<(Dt, &'static str)> {
+        use crate::TimeUnit;
+        vec![
+            (Dt::Date32, "tdD"),
+            (Dt::Date64, "tdm"),
+            (Dt::Time32(TimeUnit::Seconds), "tts"),
+            (Dt::Time32(TimeUnit::Milliseconds), "ttm"),
+            (Dt::Time64(TimeUnit::Microseconds), "ttu"),
+            (Dt::Time64(TimeUnit::Nanoseconds), "ttn"),
+            (Dt::Duration32(TimeUnit::Seconds), "tDs"),
+            (Dt::Duration32(TimeUnit::Milliseconds), "tDm"),
+            (Dt::Duration64(TimeUnit::Microseconds), "tDu"),
+            (Dt::Duration64(TimeUnit::Nanoseconds), "tDn"),
+            (Dt::Timestamp(TimeUnit::Seconds, None), "tss:"),
+            (Dt::Timestamp(TimeUnit::Milliseconds, None), "tsm:"),
+            (Dt::Timestamp(TimeUnit::Microseconds, None), "tsu:"),
+            (Dt::Timestamp(TimeUnit::Nanoseconds, None), "tsn:"),
+            (
+                Dt::Timestamp(TimeUnit::Milliseconds, Some("UTC".to_string())),
+                "tsm:UTC",
+            ),
+            (
+                Dt::Timestamp(TimeUnit::Nanoseconds, Some("Asia/Kolkata".to_string())),
+                "tsn:Asia/Kolkata",
+            ),
+        ]
+    }
+
+    /// Builds a three-row temporal array of the given type.
+    #[cfg(feature = "datetime")]
+    fn test_array_dt(dtype: &Dt) -> Array {
+        match dtype {
+            Dt::Date32 | Dt::Time32(_) | Dt::Duration32(_) => {
+                Array::from_datetime_i32(
+                    DatetimeArray::<i32>::from_slice(&[1, 2, 3], dtype.clone()),
+                )
+            }
+            _ => Array::from_datetime_i64(DatetimeArray::<i64>::from_slice(
+                &[1, 2, 3],
+                dtype.clone(),
+            )),
+        }
+    }
+
+    #[cfg(feature = "datetime")]
+    #[test]
+    fn test_temporal_types_round_trip_through_c_data_interface() {
+        use super::import_from_c_owned;
+
+        for (dtype, format) in temporal_type_formats() {
+            let arrow_type = ArrowType::DateTime(dtype.clone());
+            let array = Arc::new(test_array_dt(&dtype));
+            assert_eq!(array.arrow_type(), arrow_type);
+
+            // Copying import.
+            let (arr_ptr, sch_ptr) =
+                export_to_c(array.clone(), schema_for("t", arrow_type.clone(), false));
+            unsafe {
+                let fmt = std::ffi::CStr::from_ptr((*sch_ptr).format).to_bytes();
+                assert_eq!(fmt, format.as_bytes(), "format for {dtype}");
+                let imported = import_from_c(arr_ptr as *const _, sch_ptr as *const _);
+                assert_eq!(imported.arrow_type(), arrow_type, "copied import of {dtype}");
+                assert_eq!(*imported, *array);
+                ((*arr_ptr).release.unwrap())(arr_ptr);
+                ((*sch_ptr).release.unwrap())(sch_ptr);
+            }
+
+            // Owned zero-copy import.
+            let (arr_ptr, sch_ptr) =
+                export_to_c(array.clone(), schema_for("t", arrow_type.clone(), false));
+            let (imported, field) =
+                unsafe { import_from_c_owned(Box::from_raw(arr_ptr), Box::from_raw(sch_ptr)) };
+            assert_eq!(field.dtype, arrow_type, "owned import field of {dtype}");
+            assert_eq!(imported.arrow_type(), arrow_type, "owned import of {dtype}");
+            assert_eq!(*imported, *array);
+        }
+    }
+
+    #[cfg(feature = "datetime")]
+    #[test]
+    #[should_panic(expected = "does not match the array's type")]
+    fn test_temporal_export_rejects_field_of_another_variant() {
+        use crate::TimeUnit;
+        let array = Arc::new(test_array_dt(&Dt::Date64));
+        let schema = schema_for(
+            "t",
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Milliseconds, None)),
+            false,
+        );
+        let _ = export_to_c(array, schema);
+    }
+
+    #[cfg(feature = "datetime")]
+    #[test]
+    #[should_panic(expected = "does not match the array's type")]
+    fn test_temporal_export_rejects_field_of_another_unit() {
+        use crate::TimeUnit;
+        let array = Arc::new(test_array_dt(&Dt::Timestamp(
+            TimeUnit::Seconds,
+            None,
+        )));
+        let schema = schema_for(
+            "t",
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Milliseconds, None)),
+            false,
+        );
+        let _ = export_to_c(array, schema);
     }
 
     /// Exercises offset propagation through `import_categorical`: codes

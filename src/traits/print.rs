@@ -311,7 +311,7 @@ where
         use crate::TimeUnit;
         use time::OffsetDateTime;
 
-        let utc_dt = match arr.time_unit {
+        let utc_dt = match arr.time_unit() {
             TimeUnit::Seconds => {
                 let secs = arr.data[idx].to_i64().unwrap();
                 OffsetDateTime::from_unix_timestamp(secs).ok()
@@ -346,7 +346,7 @@ where
             }
         } else {
             let v = arr.data[idx];
-            let suffix = match arr.time_unit {
+            let suffix = match arr.time_unit() {
                 TimeUnit::Seconds => "s",
                 TimeUnit::Milliseconds => "ms",
                 TimeUnit::Microseconds => "µs",
@@ -368,7 +368,7 @@ where
         }
 
         let v = arr.data[idx];
-        let suffix = match arr.time_unit {
+        let suffix = match arr.time_unit() {
             TimeUnit::Seconds => "s",
             TimeUnit::Milliseconds => "ms",
             TimeUnit::Microseconds => "µs",

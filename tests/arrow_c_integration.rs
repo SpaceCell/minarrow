@@ -22,7 +22,7 @@ mod arrow_c_integration {
     use std::sync::Arc;
 
     #[cfg(feature = "datetime")]
-    use minarrow::TimeUnit;
+    use minarrow::Dt;
     use minarrow::ffi::arrow_c_ffi::{ArrowArray, ArrowSchema, export_to_c};
     use minarrow::ffi::schema::Schema;
     use minarrow::{
@@ -68,9 +68,9 @@ mod arrow_c_integration {
             ArrowType::Boolean => b"b",
             ArrowType::String => b"u",
             #[cfg(feature = "datetime")]
-            ArrowType::Date32 => b"tdD",
+            ArrowType::DateTime(Dt::Date32) => b"tdD",
             #[cfg(feature = "datetime")]
-            ArrowType::Date64 => b"tdm",
+            ArrowType::DateTime(Dt::Date64) => b"tdm",
             // For dictionary, Arrow C format is the *index* physical code.
             ArrowType::Dictionary(_k) => b"I",
             _ => panic!("format mapping not covered for {:?}", ty),
@@ -196,10 +196,10 @@ mod arrow_c_integration {
         let mut dt = minarrow::DatetimeArray::<i64>::default();
         dt.push(1);
         dt.push(2);
-        dt.time_unit = TimeUnit::Milliseconds; // Date64 == ms since epoch
+        dt.dtype = Dt::Date64; // Date64 == ms since epoch
         roundtrip!(
             Array::from_datetime_i64(dt),
-            ArrowType::Date64,
+            ArrowType::DateTime(Dt::Date64),
             false,
             c_arrow_check_dt64
         );

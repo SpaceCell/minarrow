@@ -22,7 +22,7 @@ use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
 #[cfg(feature = "datetime")]
-use crate::DatetimeArray;
+use crate::{Dt, DatetimeArray};
 
 /// Implements `PartialEq` for `Value`
 ///
@@ -312,12 +312,12 @@ impl Concatenate for Value {
                     // Datetime types
                     #[cfg(feature = "datetime")]
                     (Datetime32(a), Datetime32(b)) => {
-                        let arr = DatetimeArray::from_slice(&[a, b], None);
+                        let arr = DatetimeArray::from_slice(&[a, b], Dt::Date32);
                         Ok(Value::Array(Arc::new(crate::Array::from_datetime_i32(arr))))
                     }
                     #[cfg(feature = "datetime")]
                     (Datetime64(a), Datetime64(b)) => {
-                        let arr = DatetimeArray::from_slice(&[a, b], None);
+                        let arr = DatetimeArray::from_slice(&[a, b], Dt::Date64);
                         Ok(Value::Array(Arc::new(crate::Array::from_datetime_i64(arr))))
                     }
                     // Null + Null

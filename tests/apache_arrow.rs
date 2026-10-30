@@ -31,7 +31,7 @@ use minarrow::{
 };
 
 #[cfg(feature = "datetime")]
-use minarrow::{TemporalArray, TimeUnit};
+use minarrow::{Dt, TemporalArray, TimeUnit};
 
 // ----- helpers -----
 
@@ -94,13 +94,13 @@ fn test_array_to_arrow_string() {
 
 #[cfg(feature = "datetime")]
 #[test]
-fn test_array_to_arrow_datetime_infer_date32() {
+fn test_array_to_arrow_datetime_date32() {
     // Date32 = days since epoch
     let a = MArray::TemporalArray(TemporalArray::Datetime32(Arc::new(
         minarrow::DatetimeArray::<i32> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000 / 86_400; 3]),
             null_mask: None,
-            time_unit: TimeUnit::Days,
+            dtype: Dt::Date32,
         },
     )));
     let ar = a.to_apache_arrow("d32");
@@ -112,16 +112,21 @@ fn test_array_to_arrow_datetime_infer_date32() {
 
 #[cfg(feature = "datetime")]
 #[test]
-fn test_array_to_arrow_datetime_infer_time32s() {
-    // Time32(Second) - use explicit Field so logical type matches Seconds
+fn test_array_to_arrow_datetime_time32s() {
+    // Time32(Second) through a Field of the same type
     let a = MArray::TemporalArray(TemporalArray::Datetime32(Arc::new(
         minarrow::DatetimeArray::<i32> {
             data: minarrow::Buffer::from_slice(&[1, 2, 3]),
             null_mask: None,
-            time_unit: TimeUnit::Seconds,
+            dtype: Dt::Time32(TimeUnit::Seconds),
         },
     )));
-    let f = Field::new("t32s", ArrowType::Time32(TimeUnit::Seconds), false, None);
+    let f = Field::new(
+        "t32s",
+        ArrowType::DateTime(Dt::Time32(TimeUnit::Seconds)),
+        false,
+        None,
+    );
     let ar = FieldArray::new(f, a).to_apache_arrow();
 
     assert_eq!(ar.data_type(), &ADataType::Time32(ATimeUnit::Second));
@@ -134,13 +139,13 @@ fn test_array_to_arrow_datetime_infer_time32s() {
 
 #[cfg(feature = "datetime")]
 #[test]
-fn test_array_to_arrow_datetime_infer_date64_and_ts_ns() {
+fn test_array_to_arrow_datetime_date64_and_ts_ns() {
     // Date64 = ms since epoch
     let a_ms = MArray::TemporalArray(TemporalArray::Datetime64(Arc::new(
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000_000, 1_600_000_000_001]),
             null_mask: None,
-            time_unit: TimeUnit::Milliseconds,
+            dtype: Dt::Date64,
         },
     )));
     let ar_ms = a_ms.to_apache_arrow("d64");
@@ -155,12 +160,12 @@ fn test_array_to_arrow_datetime_infer_date64_and_ts_ns() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1, 2, 3]),
             null_mask: None,
-            time_unit: TimeUnit::Nanoseconds,
+            dtype: Dt::Timestamp(TimeUnit::Nanoseconds, None),
         },
     )));
     let f_tsns = Field::new(
         "ts_ns",
-        ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
+        ArrowType::DateTime(Dt::Timestamp(TimeUnit::Nanoseconds, None)),
         false,
         None,
     );
@@ -253,12 +258,12 @@ fn test_field_array_from_arrow_round_trip_timestamp() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1, 2, 3]),
             null_mask: None,
-            time_unit: TimeUnit::Nanoseconds,
+            dtype: Dt::Timestamp(TimeUnit::Nanoseconds, None),
         },
     )));
     let field = Field::new(
         "ts_ns",
-        ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
+        ArrowType::DateTime(Dt::Timestamp(TimeUnit::Nanoseconds, None)),
         false,
         None,
     );
@@ -270,7 +275,7 @@ fn test_field_array_from_arrow_round_trip_timestamp() {
     assert_eq!(back.field.name, "ts_ns");
     assert_eq!(
         back.field.dtype,
-        ArrowType::Timestamp(TimeUnit::Nanoseconds, None)
+        ArrowType::DateTime(Dt::Timestamp(TimeUnit::Nanoseconds, None))
     );
 }
 
@@ -488,6 +493,68 @@ fn rt_arrow_categorical32() {
 
 // ----- Datetime logical types (via FieldArray) -----
 
+/// Every temporal type with a valid Arrow representation.
+#[cfg(feature = "datetime")]
+fn temporal_types() -> Vec<Dt> {
+    vec![
+        Dt::Date32,
+        Dt::Date64,
+        Dt::Time32(TimeUnit::Seconds),
+        Dt::Time32(TimeUnit::Milliseconds),
+        Dt::Time64(TimeUnit::Microseconds),
+        Dt::Time64(TimeUnit::Nanoseconds),
+        Dt::Duration32(TimeUnit::Seconds),
+        Dt::Duration32(TimeUnit::Milliseconds),
+        Dt::Duration64(TimeUnit::Microseconds),
+        Dt::Duration64(TimeUnit::Nanoseconds),
+        Dt::Timestamp(TimeUnit::Seconds, None),
+        Dt::Timestamp(TimeUnit::Milliseconds, None),
+        Dt::Timestamp(TimeUnit::Microseconds, None),
+        Dt::Timestamp(TimeUnit::Nanoseconds, None),
+        Dt::Timestamp(TimeUnit::Milliseconds, Some("UTC".to_string())),
+        Dt::Timestamp(TimeUnit::Nanoseconds, Some("America/New_York".to_string())),
+    ]
+}
+
+/// Builds a three-row temporal array of the given type.
+#[cfg(feature = "datetime")]
+fn test_array_dt(dtype: &Dt) -> MArray {
+    match dtype {
+        Dt::Date32 | Dt::Time32(_) | Dt::Duration32(_) => {
+            MArray::from_datetime_i32(minarrow::DatetimeArray::<i32>::from_slice(
+                &[1, 2, 3],
+                dtype.clone(),
+            ))
+        }
+        _ => MArray::from_datetime_i64(minarrow::DatetimeArray::<i64>::from_slice(
+            &[1, 2, 3],
+            dtype.clone(),
+        )),
+    }
+}
+
+#[cfg(feature = "datetime")]
+#[test]
+fn rt_arrow_every_temporal_type_keeps_its_type() {
+    for dtype in temporal_types() {
+        let arrow_type = ArrowType::DateTime(dtype.clone());
+        let array = test_array_dt(&dtype);
+
+        // Through a FieldArray built from the array.
+        let fa = FieldArray::from_arr("t", array.clone());
+        assert_eq!(fa.field.dtype, arrow_type);
+        let back = FieldArray::from_apache_arrow("t", &fa.to_apache_arrow());
+        assert_eq!(back.field.dtype, arrow_type, "field type of {dtype}");
+        assert_eq!(back.array.arrow_type(), arrow_type, "array type of {dtype}");
+        assert_eq!(back.array, array);
+
+        // Through the array without a Field.
+        let back = MArray::from_apache_arrow(&array.to_apache_arrow("t"));
+        assert_eq!(back.arrow_type(), arrow_type, "field-less export of {dtype}");
+    }
+}
+
+
 #[cfg(feature = "datetime")]
 #[test]
 fn rt_arrow_date32() {
@@ -495,10 +562,13 @@ fn rt_arrow_date32() {
         minarrow::DatetimeArray::<i32> {
             data: minarrow::Buffer::from_slice(&[18000, 18500, 19000]),
             null_mask: None,
-            time_unit: TimeUnit::Days,
+            dtype: Dt::Date32,
         },
     )));
-    let fa = FieldArray::new(Field::new("d32", ArrowType::Date32, false, None), a);
+    let fa = FieldArray::new(
+        Field::new("d32", ArrowType::DateTime(Dt::Date32), false, None),
+        a,
+    );
     round_trip_field_array(fa);
 }
 
@@ -509,10 +579,13 @@ fn rt_arrow_date64() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000_000_i64, 1_700_000_000_000]),
             null_mask: None,
-            time_unit: TimeUnit::Milliseconds,
+            dtype: Dt::Date64,
         },
     )));
-    let fa = FieldArray::new(Field::new("d64", ArrowType::Date64, false, None), a);
+    let fa = FieldArray::new(
+        Field::new("d64", ArrowType::DateTime(Dt::Date64), false, None),
+        a,
+    );
     round_trip_field_array(fa);
 }
 
@@ -523,11 +596,16 @@ fn rt_arrow_time32_sec() {
         minarrow::DatetimeArray::<i32> {
             data: minarrow::Buffer::from_slice(&[0_i32, 3600, 86399]),
             null_mask: None,
-            time_unit: TimeUnit::Seconds,
+            dtype: Dt::Time32(TimeUnit::Seconds),
         },
     )));
     let fa = FieldArray::new(
-        Field::new("t32s", ArrowType::Time32(TimeUnit::Seconds), false, None),
+        Field::new(
+            "t32s",
+            ArrowType::DateTime(Dt::Time32(TimeUnit::Seconds)),
+            false,
+            None,
+        ),
         a,
     );
     round_trip_field_array(fa);
@@ -540,13 +618,13 @@ fn rt_arrow_time32_ms() {
         minarrow::DatetimeArray::<i32> {
             data: minarrow::Buffer::from_slice(&[0_i32, 1000, 86_399_000]),
             null_mask: None,
-            time_unit: TimeUnit::Milliseconds,
+            dtype: Dt::Time32(TimeUnit::Milliseconds),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "t32m",
-            ArrowType::Time32(TimeUnit::Milliseconds),
+            ArrowType::DateTime(Dt::Time32(TimeUnit::Milliseconds)),
             false,
             None,
         ),
@@ -562,13 +640,13 @@ fn rt_arrow_time64_us() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[0_i64, 1_000_000, 86_399_000_000]),
             null_mask: None,
-            time_unit: TimeUnit::Microseconds,
+            dtype: Dt::Time64(TimeUnit::Microseconds),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "t64u",
-            ArrowType::Time64(TimeUnit::Microseconds),
+            ArrowType::DateTime(Dt::Time64(TimeUnit::Microseconds)),
             false,
             None,
         ),
@@ -584,13 +662,13 @@ fn rt_arrow_time64_ns() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[0_i64, 1_000_000_000, 86_399_000_000_000]),
             null_mask: None,
-            time_unit: TimeUnit::Nanoseconds,
+            dtype: Dt::Time64(TimeUnit::Nanoseconds),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "t64n",
-            ArrowType::Time64(TimeUnit::Nanoseconds),
+            ArrowType::DateTime(Dt::Time64(TimeUnit::Nanoseconds)),
             false,
             None,
         ),
@@ -606,13 +684,13 @@ fn rt_arrow_timestamp_s() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000_i64, 1_700_000_000]),
             null_mask: None,
-            time_unit: TimeUnit::Seconds,
+            dtype: Dt::Timestamp(TimeUnit::Seconds, None),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "ts_s",
-            ArrowType::Timestamp(TimeUnit::Seconds, None),
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Seconds, None)),
             false,
             None,
         ),
@@ -628,13 +706,13 @@ fn rt_arrow_timestamp_ms() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000_000_i64]),
             null_mask: None,
-            time_unit: TimeUnit::Milliseconds,
+            dtype: Dt::Timestamp(TimeUnit::Milliseconds, None),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "ts_ms",
-            ArrowType::Timestamp(TimeUnit::Milliseconds, None),
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Milliseconds, None)),
             false,
             None,
         ),
@@ -650,13 +728,13 @@ fn rt_arrow_timestamp_us() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000_000_000_i64]),
             null_mask: None,
-            time_unit: TimeUnit::Microseconds,
+            dtype: Dt::Timestamp(TimeUnit::Microseconds, None),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "ts_us",
-            ArrowType::Timestamp(TimeUnit::Microseconds, None),
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Microseconds, None)),
             false,
             None,
         ),
@@ -672,13 +750,15 @@ fn rt_arrow_timestamp_ns_with_tz() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_600_000_000_000_000_000_i64]),
             null_mask: None,
-            time_unit: TimeUnit::Nanoseconds,
+            dtype: Dt::Timestamp(TimeUnit::Nanoseconds, Some("UTC".to_string())),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "ts_ns_utc",
-            ArrowType::Timestamp(TimeUnit::Nanoseconds, Some("UTC".to_string())),
+            ArrowType::DateTime(
+                Dt::Timestamp(TimeUnit::Nanoseconds, Some("UTC".to_string())),
+            ),
             false,
             None,
         ),
@@ -694,13 +774,13 @@ fn rt_arrow_duration32_sec() {
         minarrow::DatetimeArray::<i32> {
             data: minarrow::Buffer::from_slice(&[10_i32, 20, 30]),
             null_mask: None,
-            time_unit: TimeUnit::Seconds,
+            dtype: Dt::Duration32(TimeUnit::Seconds),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "dur32s",
-            ArrowType::Duration32(TimeUnit::Seconds),
+            ArrowType::DateTime(Dt::Duration32(TimeUnit::Seconds)),
             false,
             None,
         ),
@@ -716,13 +796,13 @@ fn rt_arrow_duration64_ns() {
         minarrow::DatetimeArray::<i64> {
             data: minarrow::Buffer::from_slice(&[1_000_000_i64, 2_000_000]),
             null_mask: None,
-            time_unit: TimeUnit::Nanoseconds,
+            dtype: Dt::Duration64(TimeUnit::Nanoseconds),
         },
     )));
     let fa = FieldArray::new(
         Field::new(
             "dur64n",
-            ArrowType::Duration64(TimeUnit::Nanoseconds),
+            ArrowType::DateTime(Dt::Duration64(TimeUnit::Nanoseconds)),
             false,
             None,
         ),

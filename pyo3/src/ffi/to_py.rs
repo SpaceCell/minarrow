@@ -32,6 +32,8 @@ use minarrow::ffi::arrow_c_ffi::{
 use minarrow::ffi::arrow_dtype::ArrowType;
 #[cfg(feature = "datetime")]
 use minarrow::enums::time_units::TimeUnit;
+#[cfg(feature = "datetime")]
+use minarrow::ffi::arrow_dtype::Dt;
 use minarrow::ffi::schema::Schema;
 use minarrow::{
     Array, ArrayV, Field, SuperArray, SuperArrayV, SuperTable, SuperTableV, Table, TableV,
@@ -93,38 +95,38 @@ fn arrow_type_to_pyarrow<'py>(
         ArrowType::Utf8View => pa.call_method0("utf8"),
 
         #[cfg(feature = "datetime")]
-        ArrowType::Date32 => pa.call_method0("date32"),
+        ArrowType::DateTime(Dt::Date32) => pa.call_method0("date32"),
         #[cfg(feature = "datetime")]
-        ArrowType::Date64 => pa.call_method0("date64"),
+        ArrowType::DateTime(Dt::Date64) => pa.call_method0("date64"),
 
         #[cfg(feature = "datetime")]
-        ArrowType::Time32(unit) => {
+        ArrowType::DateTime(Dt::Time32(unit)) => {
             let unit_str = time_unit_to_str(unit);
             pa.call_method1("time32", (unit_str,))
         }
         #[cfg(feature = "datetime")]
-        ArrowType::Time64(unit) => {
+        ArrowType::DateTime(Dt::Time64(unit)) => {
             let unit_str = time_unit_to_str(unit);
             pa.call_method1("time64", (unit_str,))
         }
         #[cfg(feature = "datetime")]
-        ArrowType::Duration32(unit) => {
+        ArrowType::DateTime(Dt::Duration32(unit)) => {
             let unit_str = time_unit_to_str(unit);
             pa.call_method1("duration", (unit_str,))
         }
         #[cfg(feature = "datetime")]
-        ArrowType::Duration64(unit) => {
+        ArrowType::DateTime(Dt::Duration64(unit)) => {
             let unit_str = time_unit_to_str(unit);
             pa.call_method1("duration", (unit_str,))
         }
         #[cfg(feature = "datetime")]
-        ArrowType::Timestamp(unit, tz) => {
+        ArrowType::DateTime(Dt::Timestamp(unit, tz)) => {
             let unit_str = time_unit_to_str(unit);
             let tz_str = tz.as_deref().unwrap_or("");
             pa.call_method1("timestamp", (unit_str, tz_str))
         }
         #[cfg(feature = "datetime")]
-        ArrowType::Interval(_) => {
+        ArrowType::DateTime(Dt::Interval(_)) => {
             // PyArrow doesn't have a direct interval type constructor — fall back to null
             pa.call_method0("null")
         }

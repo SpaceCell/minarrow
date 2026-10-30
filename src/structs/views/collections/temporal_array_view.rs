@@ -350,9 +350,9 @@ impl Display for TemporalArrayV {
             use time::OffsetDateTime;
 
             let unit = match &self.array {
-                TemporalArray::Datetime32(arr) => &arr.time_unit,
-                TemporalArray::Datetime64(arr) => &arr.time_unit,
-                TemporalArray::Null => &TimeUnit::Milliseconds,
+                TemporalArray::Datetime32(arr) => arr.time_unit(),
+                TemporalArray::Datetime64(arr) => arr.time_unit(),
+                TemporalArray::Null => TimeUnit::Milliseconds,
             };
             for i in 0..max {
                 match self.get_i64(i) {
@@ -400,9 +400,9 @@ impl Display for TemporalArrayV {
         #[cfg(not(feature = "datetime_ops"))]
         {
             let unit = match &self.array {
-                TemporalArray::Datetime32(arr) => &arr.time_unit,
-                TemporalArray::Datetime64(arr) => &arr.time_unit,
-                TemporalArray::Null => &TimeUnit::Milliseconds,
+                TemporalArray::Datetime32(arr) => arr.time_unit(),
+                TemporalArray::Datetime64(arr) => arr.time_unit(),
+                TemporalArray::Null => TimeUnit::Milliseconds,
             };
             let suffix = match unit {
                 TimeUnit::Seconds => "s",
@@ -474,7 +474,7 @@ macro_rules! windowed_component_inner {
             if $arr.is_null(i) {
                 result.push_null();
             } else if let Some(val_i64) = $arr.data[i].to_i64() {
-                if let Some(dt) = DatetimeArray::<i64>::i64_to_datetime(val_i64, $arr.time_unit) {
+                if let Some(dt) = DatetimeArray::<i64>::i64_to_datetime(val_i64, $arr.time_unit()) {
                     #[allow(clippy::redundant_closure_call)]
                     result.push(($extract)(&dt));
                 } else {
@@ -708,7 +708,7 @@ fn is_leap_year_windowed<T: crate::Integer + FromPrimitive>(
         if arr.is_null(i) {
             result.push_null();
         } else if let Some(val_i64) = arr.data[i].to_i64() {
-            if let Some(dt) = DatetimeArray::<i64>::i64_to_datetime(val_i64, arr.time_unit) {
+            if let Some(dt) = DatetimeArray::<i64>::i64_to_datetime(val_i64, arr.time_unit()) {
                 result.push(time::util::is_leap_year(dt.year()));
             } else {
                 result.push_null();
@@ -751,11 +751,14 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::{Bitmask, DatetimeArray, TemporalArray};
+    use crate::{Bitmask, Dt, DatetimeArray, TemporalArray};
 
     #[test]
     fn test_temporal_array_view_basic_indexing_and_slice() {
-        let arr = DatetimeArray::<i64>::from_slice(&[10_000, 20_000, 30_000, 40_000], None);
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[10_000, 20_000, 30_000, 40_000],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let temporal = TemporalArray::Datetime64(Arc::new(arr));
         let view = TemporalArrayV::new(temporal, 1, 2);
 
@@ -773,7 +776,10 @@ mod tests {
 
     #[test]
     fn test_temporal_array_view_null_count_and_cache() {
-        let mut arr = DatetimeArray::<i64>::from_slice(&[1, 2, 3, 4], None);
+        let mut arr = DatetimeArray::<i64>::from_slice(
+            &[1, 2, 3, 4],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let mut mask = Bitmask::new_set_all(4, true);
         mask.set(2, false);
         arr.null_mask = Some(mask);
@@ -791,7 +797,10 @@ mod tests {
 
     #[test]
     fn test_temporal_array_view_with_supplied_null_count() {
-        let arr = DatetimeArray::<i64>::from_slice(&[5, 6], None);
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[5, 6],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let temporal = TemporalArray::Datetime64(Arc::new(arr));
         let view = TemporalArrayV::new_nc(temporal, 0, 2, 99);
         assert_eq!(view.null_count(), 99);
@@ -803,7 +812,10 @@ mod tests {
 
     #[test]
     fn test_temporal_array_view_to_temporal_array_and_as_tuple() {
-        let arr = DatetimeArray::<i64>::from_slice(&(10..20).collect::<Vec<_>>(), None);
+        let arr = DatetimeArray::<i64>::from_slice(
+            &(10..20).collect::<Vec<_>>(),
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let temporal = TemporalArray::Datetime64(Arc::new(arr));
         let view = TemporalArrayV::new(temporal.clone(), 4, 3);
         let arr2 = view.to_temporal_array();
@@ -820,7 +832,10 @@ mod tests {
 
     #[test]
     fn test_temporal_array_view_null_mask_view() {
-        let mut arr = DatetimeArray::<i64>::from_slice(&[2, 4, 6], None);
+        let mut arr = DatetimeArray::<i64>::from_slice(
+            &[2, 4, 6],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let mut mask = Bitmask::new_set_all(3, true);
         mask.set(0, false);
         arr.null_mask = Some(mask);
@@ -835,7 +850,10 @@ mod tests {
 
     #[test]
     fn test_temporal_array_view_from_temporal_array_and_array() {
-        let arr = DatetimeArray::<i64>::from_slice(&[1, 2], None);
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[1, 2],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let temporal = TemporalArray::Datetime64(Arc::new(arr));
         let view_from_temporal = TemporalArrayV::from(temporal.clone());
         assert_eq!(view_from_temporal.len(), 2);
@@ -856,7 +874,10 @@ mod tests {
 
     #[test]
     fn test_to_temporal_array_full_coverage_shares_arc() {
-        let arr = DatetimeArray::<i64>::from_slice(&[10, 20, 30], None);
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[10, 20, 30],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let src = Arc::new(arr);
         let temporal = TemporalArray::Datetime64(src.clone());
 
@@ -874,7 +895,10 @@ mod tests {
 
     #[test]
     fn test_to_temporal_array_windowed_copies() {
-        let arr = DatetimeArray::<i64>::from_slice(&[10, 20, 30], None);
+        let arr = DatetimeArray::<i64>::from_slice(
+            &[10, 20, 30],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let src = Arc::new(arr);
         let temporal = TemporalArray::Datetime64(src.clone());
 

@@ -57,7 +57,7 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
     out: &mut [T],
     mut out_mask: Option<&mut Bitmask>,
 ) {
-    let time_unit = src.time_unit;
+    let time_unit = src.time_unit();
     let len = out.len();
 
     // Resolve the unit scaling and sub-second divisor once for the whole window.
@@ -223,7 +223,7 @@ pub fn add_duration_into<T: Integer + FromPrimitive>(
     out: &mut [T],
     mut out_mask: Option<&mut Bitmask>,
 ) -> Result<(), MinarrowError> {
-    let duration_value: i64 = match src.time_unit {
+    let duration_value: i64 = match src.time_unit() {
         TimeUnit::Seconds => duration.whole_seconds(),
         TimeUnit::Milliseconds => {
             duration
@@ -292,7 +292,7 @@ pub fn add_months_into<T: Integer + FromPrimitive>(
     out: &mut [T],
     mut out_mask: Option<&mut Bitmask>,
 ) {
-    let time_unit = src.time_unit;
+    let time_unit = src.time_unit();
     for i in 0..out.len() {
         let original = src.data[src_offset + i];
         out[i] = original;
@@ -343,7 +343,7 @@ fn extract_i32_into<T, F>(
     T: Integer + FromPrimitive,
     F: Fn(time::OffsetDateTime) -> i32,
 {
-    let time_unit = src.time_unit;
+    let time_unit = src.time_unit();
     for i in 0..out.len() {
         let dt = if src.is_null(src_offset + i) {
             None
@@ -455,7 +455,7 @@ pub fn extract_bool_into<T, F>(
     T: Integer + FromPrimitive,
     F: Fn(time::OffsetDateTime) -> bool,
 {
-    let time_unit = src.time_unit;
+    let time_unit = src.time_unit();
     for i in 0..out_bits.len() {
         match src.data[src_offset + i]
             .to_i64()
@@ -530,8 +530,8 @@ fn binary_bool_into<T, U, F>(
     U: Integer + FromPrimitive,
     F: Fn(time::OffsetDateTime, time::OffsetDateTime) -> bool,
 {
-    let lhs_unit = lhs.time_unit;
-    let rhs_unit = rhs.time_unit;
+    let lhs_unit = lhs.time_unit();
+    let rhs_unit = rhs.time_unit();
     for i in 0..out_bits.len() {
         let a = lhs.data[lhs_offset + i]
             .to_i64()
@@ -607,9 +607,9 @@ pub fn between_into<T, U, V>(
     U: Integer + FromPrimitive,
     V: Integer + FromPrimitive,
 {
-    let value_unit = value.time_unit;
-    let start_unit = start.time_unit;
-    let end_unit = end.time_unit;
+    let value_unit = value.time_unit();
+    let start_unit = start.time_unit();
+    let end_unit = end.time_unit();
     for i in 0..out_bits.len() {
         let v = value.data[value_offset + i]
             .to_i64()
@@ -647,8 +647,8 @@ pub fn diff_into<T, U>(
     T: Integer + FromPrimitive,
     U: Integer + FromPrimitive,
 {
-    let lhs_unit = lhs.time_unit;
-    let rhs_unit = rhs.time_unit;
+    let lhs_unit = lhs.time_unit();
+    let rhs_unit = rhs.time_unit();
     for i in 0..out.len() {
         let a = lhs.data[lhs_offset + i]
             .to_i64()
@@ -680,6 +680,7 @@ pub fn diff_into<T, U>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Dt;
 
     /// `truncate_into` reads the source from `src_offset` for the output slice's
     /// length, leaving rows outside the window untouched. Under the old whole-array
@@ -695,7 +696,10 @@ mod tests {
             1_710_086_400_000_000,
             1_710_100_000_000_000,
         ];
-        let src = DatetimeArray::<i64>::from_slice(&vals, Some(TimeUnit::Microseconds));
+        let src = DatetimeArray::<i64>::from_slice(
+            &vals,
+            Dt::Timestamp(TimeUnit::Microseconds, None),
+        );
         let mut out = [0i64; 3];
         let mut mask = Bitmask::new_set_all(3, true);
         truncate_into(&src, 2, TimePeriod::Day, &mut out, Some(&mut mask));
@@ -716,7 +720,7 @@ mod floor_tests {
     use std::time::{Duration as StdDuration, Instant};
 
     use super::*;
-    use crate::Vec64;
+    use crate::{Dt, Vec64};
 
     /// Calendar periods tested against the `time::OffsetDateTime` reference.
     const PERIODS: [TimePeriod; 7] = [
@@ -739,7 +743,7 @@ mod floor_tests {
         out: &mut [T],
         mut out_mask: Option<&mut Bitmask>,
     ) {
-        let time_unit = src.time_unit;
+        let time_unit = src.time_unit();
         let len = out.len();
         let trunc: fn(time::OffsetDateTime) -> Option<time::OffsetDateTime> = match period {
             TimePeriod::Year => |dt| {
@@ -938,10 +942,16 @@ mod floor_tests {
     fn floor_matches_reference_at_boundaries() {
         for unit in UNITS {
             for v in boundary_values(unit) {
-                let src = DatetimeArray::<i64>::from_slice(&[v], Some(unit));
+                let src = DatetimeArray::<i64>::from_slice(
+                    &[v],
+                    Dt::Timestamp(unit, None),
+                );
                 assert_same(&src, 0, 1, &format!("i64 unit={unit:?} v={v}"));
                 if let Ok(v32) = i32::try_from(v) {
-                    let src = DatetimeArray::<i32>::from_slice(&[v32], Some(unit));
+                    let src = DatetimeArray::<i32>::from_slice(
+                        &[v32],
+                        Dt::Duration32(unit),
+                    );
                     assert_same(&src, 0, 1, &format!("i32 unit={unit:?} v={v32}"));
                 }
             }
@@ -975,7 +985,11 @@ mod floor_tests {
                         }
                         m
                     });
-                    let src = DatetimeArray::<i64>::new(Vec64::from_slice(&values), mask, Some(unit));
+                    let src = DatetimeArray::<i64>::new(
+                        Vec64::from_slice(&values),
+                        mask,
+                        Dt::Timestamp(unit, None),
+                    );
                     let n = values.len();
                     for (offset, len) in [(0, n), (3, n - 3), (65, 1000), (n, 0)] {
                         assert_same(
@@ -988,7 +1002,11 @@ mod floor_tests {
                     let values32: Vec<i32> = values.iter().map(|v| *v as i32).collect();
                     let mask32 = src.null_mask.clone();
                     let src32 =
-                        DatetimeArray::<i32>::new(Vec64::from_slice(&values32), mask32, Some(unit));
+                        DatetimeArray::<i32>::new(
+                            Vec64::from_slice(&values32),
+                            mask32,
+                            Dt::Duration32(unit),
+                        );
                     assert_same(&src32, 0, n, &format!("i32 unit={unit:?} scenario={scenario}"));
                 }
             }
@@ -999,7 +1017,10 @@ mod floor_tests {
     fn floor_large_completes_within_bound() {
         let len = 1usize << 24;
         let values: Vec<i64> = (0..len as i64).map(|i| i * 61_000).collect();
-        let src = DatetimeArray::<i64>::from_slice(&values, Some(TimeUnit::Milliseconds));
+        let src = DatetimeArray::<i64>::from_slice(
+            &values,
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
         let mut out = vec![0i64; len];
         let mut mask = Bitmask::new_set_all(len, true);
         let start = Instant::now();
@@ -1010,7 +1031,10 @@ mod floor_tests {
 
     #[test]
     fn sub_second_floors_toward_negative_infinity() {
-        let src = DatetimeArray::<i64>::from_slice(&[-1_500, 1_500], Some(TimeUnit::Microseconds));
+        let src = DatetimeArray::<i64>::from_slice(
+            &[-1_500, 1_500],
+            Dt::Timestamp(TimeUnit::Microseconds, None),
+        );
         let mut out = vec![0i64; 2];
         truncate_into(&src, 0, TimePeriod::Millisecond, &mut out, None);
         assert_eq!(out, vec![-2_000, 1_000]);
@@ -1021,7 +1045,10 @@ mod floor_tests {
         // Every period floors `i64::MIN` and `i64::MIN + 1` nanoseconds below the
         // `i64` range.
         let values = [i64::MIN, i64::MIN + 1, 0];
-        let src = DatetimeArray::<i64>::from_slice(&values, Some(TimeUnit::Nanoseconds));
+        let src = DatetimeArray::<i64>::from_slice(
+            &values,
+            Dt::Timestamp(TimeUnit::Nanoseconds, None),
+        );
         let periods = PERIODS
             .into_iter()
             .chain([TimePeriod::Millisecond, TimePeriod::Microsecond]);

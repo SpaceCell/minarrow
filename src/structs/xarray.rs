@@ -1616,10 +1616,11 @@ mod tests {
     ))]
     #[test]
     fn at_datetime_coords() {
-        use crate::arr_dt64;
         use crate::enums::time_units::TimeUnit;
+        use crate::{Dt, arr_dt64};
         let mut xa = XArray::new(make_2d(), &["time", "feat"]);
-        xa.assign_coords("time", arr_dt64!(TimeUnit::Milliseconds; 1_000, 2_000, 3_000));
+        let millis = Dt::Timestamp(TimeUnit::Milliseconds, None);
+        xa.assign_coords("time", arr_dt64!(millis; 1_000, 2_000, 3_000));
         let result = xa.at("time", 2_000);
         assert_eq!(result.ndim(), 1);
         let vals: Vec<f64> = (&result).into_iter().collect();
@@ -1635,10 +1636,11 @@ mod tests {
     ))]
     #[test]
     fn between_datetime_coords() {
-        use crate::arr_dt64;
         use crate::enums::time_units::TimeUnit;
+        use crate::{Dt, arr_dt64};
         let mut xa = XArray::new(make_2d(), &["time", "feat"]);
-        xa.assign_coords("time", arr_dt64!(TimeUnit::Milliseconds; 1_000, 2_000, 3_000));
+        let millis = Dt::Timestamp(TimeUnit::Milliseconds, None);
+        xa.assign_coords("time", arr_dt64!(millis; 1_000, 2_000, 3_000));
         let result = xa.between("time", 1_500, 3_500);
         assert_eq!(result.shape(), vec![2, 2]);
         let vals: Vec<f64> = (&result).into_iter().take(2).collect();
@@ -1653,10 +1655,11 @@ mod tests {
     ))]
     #[test]
     fn nearest_datetime_coords() {
-        use crate::arr_dt64;
         use crate::enums::time_units::TimeUnit;
+        use crate::{Dt, arr_dt64};
         let mut xa = XArray::new(make_2d(), &["time", "feat"]);
-        xa.assign_coords("time", arr_dt64!(TimeUnit::Milliseconds; 1_000, 2_000, 4_000));
+        let millis = Dt::Timestamp(TimeUnit::Milliseconds, None);
+        xa.assign_coords("time", arr_dt64!(millis; 1_000, 2_000, 4_000));
         let result = xa.nearest("time", 2_700);
         let vals: Vec<f64> = (&result).into_iter().collect();
         assert_eq!(vals, vec![2.0, 5.0]);

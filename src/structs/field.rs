@@ -49,7 +49,8 @@ static UNNAMED_FIELD_COUNTER: AtomicUsize = AtomicUsize::new(1);
 /// ### Tips:
 /// - `Field` is *cloned often*, so it is best kept any metadata
 ///   lightweight to avoid performance penalties. `SuperTable` wraps it in Arc.
-/// - For `Datetime` arrays, `Field` carries the logical `Arrow` type.
+/// - For `Datetime` arrays, `Field` holds the logical `Arrow` type as
+///   `ArrowType::DateTime(Dt)`, the same value the array holds.
 ///   The physical type remains a single integer-backed `Datetime`, while
 ///   the logical type specifies its intended semantics.
 ///     i.e.:
@@ -59,7 +60,7 @@ static UNNAMED_FIELD_COUNTER: AtomicUsize = AtomicUsize::new(1);
 ///     `Time64(TimeUnit)`
 ///     `Duration32(TimeUnit)`
 ///     `Duration64(TimeUnit)`
-///     `Timestamp(TimeUnit)`
+///     `Timestamp(TimeUnit, Option<String>)`
 ///     `Interval(IntervalUnit)`
 ///
 /// - This ensures that when sent over Arrow C-FFI (or `to_apache_arrow()`),
@@ -99,7 +100,7 @@ impl Field {
     /// Constructs a new `Field` from an `Array` enum instance.
     /// Derives the dtype and nullability directly from the inner array.
     ///
-    /// For `Duration`, `Time`, `Timestamp` and `Interval` types, use `Field::new()`.
+    /// For temporal arrays, the dtype is the array's `Dt`.
     pub fn from_array(
         name: impl Into<String>,
         array: &Array,
@@ -204,16 +205,10 @@ impl Field {
             #[cfg(feature = "datetime")]
             Array::TemporalArray(inner) => match inner {
                 TemporalArray::Datetime32(a) => {
-                    println!(
-                        "Warning: Datetime requires creating fields via `Field::new` and setting the desired arrow logical type.\nSetting ArrowType::Date32. If you need a `Timestamp`, `Duration`, or `Time` field, please use `Field::new`."
-                    );
-                    return Field::new(name, ArrowType::Date32, a.is_nullable(), Some(metadata));
+                    Field::new(name, a.arrow_type(), a.is_nullable(), Some(metadata))
                 }
                 TemporalArray::Datetime64(a) => {
-                    println!(
-                        "Warning: Datetime requires creating fields via `Field::new` and setting the desired arrow logical type.\nSetting ArrowType::Date64. If you need a `Timestamp`, `Duration`, or `Time` field, please use `Field::new`."
-                    );
-                    Field::new(name, ArrowType::Date64, a.is_nullable(), Some(metadata))
+                    Field::new(name, a.arrow_type(), a.is_nullable(), Some(metadata))
                 }
                 TemporalArray::Null => Field::new(name, ArrowType::Null, false, Some(metadata)),
             },

@@ -46,14 +46,16 @@
 //! | `Time32(Seconds)` (i32)             | `Time64(Nanoseconds)` (i64)         | Payload rescaled: `n * 1_000_000_000`.             |
 //! | `Time32(Milliseconds)` (i32)        | `Time64(Nanoseconds)` (i64)         | Payload rescaled: `n * 1_000_000`.                 |
 //! | `Time64(Microseconds)` (i64)        | `Time64(Nanoseconds)` (i64)         | Payload rescaled: `n * 1_000`.                     |
+//! | `Duration32(Seconds)` (i32)         | `Duration32(Milliseconds)` (i32)    | Payload rescaled: `n * 1_000`.                     |
+//! | `Timestamp(Seconds, tz)` (i64)      | `Timestamp(Milliseconds, tz)` (i64) | Payload rescaled: `n * 1_000`. Timezone preserved. |
 //! | `String` / `LargeString` (utf8)     | may return as the other offset width| Polars normalises to its preferred offset width;   |
 //! |                                     |                                     | bytes/text content preserved.                      |
 //!
 //! All other tested logical types - `Int8/16/32/64`, `UInt8/16/32/64`,
-//! `Float32/64`, `Boolean`, `Date32`, `Time64(Nanoseconds)`, all `Timestamp`
-//! units with and without a timezone, `Duration32`, `Duration64`, and
-//! `Dictionary` (categorical) - return with their dtype and payload bytes
-//! unchanged.
+//! `Float32/64`, `Boolean`, `Date32`, `Time64(Nanoseconds)`, `Timestamp` in
+//! milliseconds, microseconds and nanoseconds with and without a timezone,
+//! `Duration32(Milliseconds)`, `Duration64`, and `Dictionary` (categorical) -
+//! return with their dtype and payload bytes unchanged.
 //!
 //! ## Null masks
 //!
@@ -69,6 +71,8 @@ use polars_core::prelude::Series;
 use crate::enums::error::MinarrowError;
 use crate::ffi::arrow_c_ffi::{ArrowArray, ArrowSchema, export_to_c, import_from_c_owned};
 use crate::ffi::arrow_dtype::ArrowType;
+#[cfg(feature = "datetime")]
+use crate::ffi::arrow_dtype::Dt;
 use crate::ffi::schema::Schema;
 use crate::{Array, Field};
 
@@ -210,51 +214,65 @@ fn arrow_type_to_polars_dtype(dtype: &ArrowType) -> polars_arrow::datatypes::Arr
         ArrowType::Utf8View => polars_arrow::datatypes::ArrowDataType::Utf8,
 
         #[cfg(feature = "datetime")]
-        ArrowType::Date32 => polars_arrow::datatypes::ArrowDataType::Date32,
+        ArrowType::DateTime(Dt::Date32) => polars_arrow::datatypes::ArrowDataType::Date32,
         #[cfg(feature = "datetime")]
-        ArrowType::Date64 => polars_arrow::datatypes::ArrowDataType::Date64,
+        ArrowType::DateTime(Dt::Date64) => polars_arrow::datatypes::ArrowDataType::Date64,
 
         #[cfg(feature = "datetime")]
-        ArrowType::Time32(u) => polars_arrow::datatypes::ArrowDataType::Time32(match u {
-            crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
-            crate::TimeUnit::Milliseconds => polars_arrow::datatypes::TimeUnit::Millisecond,
-            _ => panic!("Time32 supports Seconds or Milliseconds only"),
-        }),
-        #[cfg(feature = "datetime")]
-        ArrowType::Time64(u) => polars_arrow::datatypes::ArrowDataType::Time64(match u {
-            crate::TimeUnit::Microseconds => polars_arrow::datatypes::TimeUnit::Microsecond,
-            crate::TimeUnit::Nanoseconds => polars_arrow::datatypes::TimeUnit::Nanosecond,
-            _ => panic!("Time64 supports Microseconds or Nanoseconds only"),
-        }),
-        #[cfg(feature = "datetime")]
-        ArrowType::Duration32(u) => polars_arrow::datatypes::ArrowDataType::Duration(match u {
-            crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
-            crate::TimeUnit::Milliseconds => polars_arrow::datatypes::TimeUnit::Millisecond,
-            _ => panic!("Duration32 supports Seconds or Milliseconds only"),
-        }),
-        #[cfg(feature = "datetime")]
-        ArrowType::Duration64(u) => polars_arrow::datatypes::ArrowDataType::Duration(match u {
-            crate::TimeUnit::Microseconds => polars_arrow::datatypes::TimeUnit::Microsecond,
-            crate::TimeUnit::Nanoseconds => polars_arrow::datatypes::TimeUnit::Nanosecond,
-            _ => panic!("Duration64 supports Microseconds or Nanoseconds only"),
-        }),
-        #[cfg(feature = "datetime")]
-        ArrowType::Timestamp(u, tz) => polars_arrow::datatypes::ArrowDataType::Timestamp(
-            match u {
+        ArrowType::DateTime(Dt::Time32(u)) => {
+            polars_arrow::datatypes::ArrowDataType::Time32(match u {
                 crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
                 crate::TimeUnit::Milliseconds => polars_arrow::datatypes::TimeUnit::Millisecond,
+                _ => panic!("Time32 supports Seconds or Milliseconds only"),
+            })
+        }
+        #[cfg(feature = "datetime")]
+        ArrowType::DateTime(Dt::Time64(u)) => {
+            polars_arrow::datatypes::ArrowDataType::Time64(match u {
                 crate::TimeUnit::Microseconds => polars_arrow::datatypes::TimeUnit::Microsecond,
                 crate::TimeUnit::Nanoseconds => polars_arrow::datatypes::TimeUnit::Nanosecond,
-                crate::TimeUnit::Days => panic!("Timestamp(Days) is invalid"),
-            },
-            tz.as_ref().map(|s| s.as_str().into()),
-        ),
+                _ => panic!("Time64 supports Microseconds or Nanoseconds only"),
+            })
+        }
         #[cfg(feature = "datetime")]
-        ArrowType::Interval(iu) => polars_arrow::datatypes::ArrowDataType::Interval(match iu {
-            crate::IntervalUnit::YearMonth => polars_arrow::datatypes::IntervalUnit::YearMonth,
-            crate::IntervalUnit::DaysTime => polars_arrow::datatypes::IntervalUnit::DayTime,
-            crate::IntervalUnit::MonthDaysNs => polars_arrow::datatypes::IntervalUnit::MonthDayNano,
-        }),
+        ArrowType::DateTime(Dt::Duration32(u)) => {
+            polars_arrow::datatypes::ArrowDataType::Duration(match u {
+                crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
+                crate::TimeUnit::Milliseconds => polars_arrow::datatypes::TimeUnit::Millisecond,
+                _ => panic!("Duration32 supports Seconds or Milliseconds only"),
+            })
+        }
+        #[cfg(feature = "datetime")]
+        ArrowType::DateTime(Dt::Duration64(u)) => {
+            polars_arrow::datatypes::ArrowDataType::Duration(match u {
+                crate::TimeUnit::Microseconds => polars_arrow::datatypes::TimeUnit::Microsecond,
+                crate::TimeUnit::Nanoseconds => polars_arrow::datatypes::TimeUnit::Nanosecond,
+                _ => panic!("Duration64 supports Microseconds or Nanoseconds only"),
+            })
+        }
+        #[cfg(feature = "datetime")]
+        ArrowType::DateTime(Dt::Timestamp(u, tz)) => {
+            polars_arrow::datatypes::ArrowDataType::Timestamp(
+                match u {
+                    crate::TimeUnit::Seconds => polars_arrow::datatypes::TimeUnit::Second,
+                    crate::TimeUnit::Milliseconds => polars_arrow::datatypes::TimeUnit::Millisecond,
+                    crate::TimeUnit::Microseconds => polars_arrow::datatypes::TimeUnit::Microsecond,
+                    crate::TimeUnit::Nanoseconds => polars_arrow::datatypes::TimeUnit::Nanosecond,
+                    crate::TimeUnit::Days => panic!("Timestamp(Days) is invalid"),
+                },
+                tz.as_ref().map(|s| s.as_str().into()),
+            )
+        }
+        #[cfg(feature = "datetime")]
+        ArrowType::DateTime(Dt::Interval(iu)) => {
+            polars_arrow::datatypes::ArrowDataType::Interval(match iu {
+                crate::IntervalUnit::YearMonth => polars_arrow::datatypes::IntervalUnit::YearMonth,
+                crate::IntervalUnit::DaysTime => polars_arrow::datatypes::IntervalUnit::DayTime,
+                crate::IntervalUnit::MonthDaysNs => {
+                    polars_arrow::datatypes::IntervalUnit::MonthDayNano
+                }
+            })
+        }
 
         #[cfg(feature = "decimal")]
         ArrowType::Decimal32(p, s) | ArrowType::Decimal64(p, s) | ArrowType::Decimal128(p, s) => {

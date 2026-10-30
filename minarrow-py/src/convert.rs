@@ -23,6 +23,8 @@ use minarrow::{arr_i8_opt, arr_i16_opt, arr_u8_opt, arr_u16_opt};
 use minarrow::enums::array::extract_option_values64;
 #[cfg(feature = "datetime")]
 use minarrow::enums::time_units::TimeUnit;
+#[cfg(feature = "datetime")]
+use minarrow::ffi::arrow_dtype::Dt;
 #[cfg(feature = "decimal")]
 use minarrow::DecimalArray;
 #[cfg(feature = "datetime")]
@@ -120,7 +122,7 @@ pub fn build_array(data: &Bound<'_, PyAny>) -> PyResult<Array> {
 /// extraction's own `TypeError` or `OverflowError`.
 ///
 /// Temporal dtypes accept integer values in the unit the dtype declares, so
-/// `ArrowType::Timestamp(TimeUnit::Milliseconds, None)` over
+/// `ArrowType::DateTime(Dt::Timestamp(TimeUnit::Milliseconds, None))` over
 /// `[1700000000000, ...]` builds a millisecond-precision timestamp column.
 pub fn build_array_typed(data: &Bound<'_, PyAny>, dtype: &ArrowType) -> PyResult<Array> {
     macro_rules! build {
@@ -129,18 +131,18 @@ pub fn build_array_typed(data: &Bound<'_, PyAny>, dtype: &ArrowType) -> PyResult
         }};
     }
     // Temporal dtypes build through DatetimeArray rather than the arr_*_opt
-    // macros because the array stores the dtype's TimeUnit alongside its
+    // macros because the array stores the dtype's Dt alongside its
     // values. Null handling matches the other types, with None entries
     // recorded in the null mask by extract_option_values64.
     #[cfg(feature = "datetime")]
     macro_rules! build_temporal {
-        ($t:ty, $make:ident, $unit:expr) => {{
+        ($t:ty, $make:ident, $dtype:expr) => {{
             let (values, null_mask) =
                 extract_option_values64(read_sequence::<Option<$t>>(data)?);
             Ok(Array::$make(DatetimeArray::<$t>::from_vec64(
                 values,
                 null_mask,
-                Some($unit),
+                $dtype.clone(),
             )))
         }};
     }
@@ -165,19 +167,18 @@ pub fn build_array_typed(data: &Bound<'_, PyAny>, dtype: &ArrowType) -> PyResult
         ArrowType::LargeString => build!(String, arr_str64_opt),
         ArrowType::Dictionary(index) => categorical_from_values(data, index),
         #[cfg(feature = "datetime")]
-        ArrowType::Date32 => build_temporal!(i32, from_datetime_i32, TimeUnit::Days),
+        ArrowType::DateTime(
+            dtype @ (Dt::Date32
+            | Dt::Time32(_)
+            | Dt::Duration32(_)),
+        ) => build_temporal!(i32, from_datetime_i32, dtype),
         #[cfg(feature = "datetime")]
-        ArrowType::Date64 => build_temporal!(i64, from_datetime_i64, TimeUnit::Milliseconds),
-        #[cfg(feature = "datetime")]
-        ArrowType::Time32(unit) | ArrowType::Duration32(unit) => {
-            build_temporal!(i32, from_datetime_i32, *unit)
-        }
-        #[cfg(feature = "datetime")]
-        ArrowType::Time64(unit) | ArrowType::Duration64(unit) => {
-            build_temporal!(i64, from_datetime_i64, *unit)
-        }
-        #[cfg(feature = "datetime")]
-        ArrowType::Timestamp(unit, _) => build_temporal!(i64, from_datetime_i64, *unit),
+        ArrowType::DateTime(
+            dtype @ (Dt::Date64
+            | Dt::Time64(_)
+            | Dt::Duration64(_)
+            | Dt::Timestamp(_, _)),
+        ) => build_temporal!(i64, from_datetime_i64, dtype),
         #[cfg(feature = "decimal")]
         ArrowType::Decimal32(p, s) => {
             let (values, null_mask) =
@@ -254,17 +255,25 @@ pub fn parse_dtype(name: &str) -> PyResult<ArrowType> {
         }
         "bool" | "boolean" => ArrowType::Boolean,
         #[cfg(feature = "datetime")]
-        "date32" => ArrowType::Date32,
+        "date32" => ArrowType::DateTime(Dt::Date32),
         #[cfg(feature = "datetime")]
-        "date64" => ArrowType::Date64,
+        "date64" => ArrowType::DateTime(Dt::Date64),
         #[cfg(feature = "datetime")]
-        "timestamp[s]" | "datetime[s]" => ArrowType::Timestamp(TimeUnit::Seconds, None),
+        "timestamp[s]" | "datetime[s]" => {
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Seconds, None))
+        }
         #[cfg(feature = "datetime")]
-        "timestamp[ms]" | "datetime[ms]" => ArrowType::Timestamp(TimeUnit::Milliseconds, None),
+        "timestamp[ms]" | "datetime[ms]" => {
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Milliseconds, None))
+        }
         #[cfg(feature = "datetime")]
-        "timestamp[us]" | "datetime[us]" => ArrowType::Timestamp(TimeUnit::Microseconds, None),
+        "timestamp[us]" | "datetime[us]" => {
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Microseconds, None))
+        }
         #[cfg(feature = "datetime")]
-        "timestamp[ns]" | "datetime[ns]" => ArrowType::Timestamp(TimeUnit::Nanoseconds, None),
+        "timestamp[ns]" | "datetime[ns]" => {
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Nanoseconds, None))
+        }
         #[cfg(feature = "datetime")]
         "timestamp" | "datetime" => {
             return Err(PyValueError::new_err(

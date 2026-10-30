@@ -26,7 +26,7 @@ use crate::{
     StringArray, Table, TableV, TextArray, Value,
 };
 #[cfg(feature = "datetime")]
-use crate::DatetimeArray;
+use crate::{Dt, DatetimeArray};
 #[cfg(feature = "views")]
 use crate::{NumericArrayV, TextArrayV};
 #[cfg(all(feature = "datetime", feature = "views"))]
@@ -196,11 +196,11 @@ pub fn broadcast_scalar_to_array(
         Scalar::UInt16(val) => Array::from_uint16(IntegerArray::from_slice(&[*val])),
         #[cfg(feature = "datetime")]
         Scalar::Datetime32(val) => {
-            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], Dt::Date32))
         }
         #[cfg(feature = "datetime")]
         Scalar::Datetime64(val) => {
-            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], Dt::Date64))
         }
         #[cfg(feature = "decimal")]
         Scalar::Decimal32(val, p, s) => {
@@ -799,11 +799,11 @@ pub fn broadcast_scalar_to_fieldarray(
         Scalar::UInt16(val) => Array::from_uint16(IntegerArray::from_slice(&[*val])),
         #[cfg(feature = "datetime")]
         Scalar::Datetime32(val) => {
-            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], Dt::Date32))
         }
         #[cfg(feature = "datetime")]
         Scalar::Datetime64(val) => {
-            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], Dt::Date64))
         }
         #[cfg(feature = "decimal")]
         Scalar::Decimal32(val, p, s) => {
@@ -856,11 +856,11 @@ pub fn broadcast_fieldarray_to_scalar(
         Scalar::UInt16(val) => Array::from_uint16(IntegerArray::from_slice(&[*val])),
         #[cfg(feature = "datetime")]
         Scalar::Datetime32(val) => {
-            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], Dt::Date32))
         }
         #[cfg(feature = "datetime")]
         Scalar::Datetime64(val) => {
-            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], Dt::Date64))
         }
         #[cfg(feature = "decimal")]
         Scalar::Decimal32(val, p, s) => {
@@ -908,10 +908,10 @@ pub fn broadcast_scalar_to_temporal_arrayview(
         Scalar::Float32(val) => Array::from_float32(FloatArray::from_slice(&[*val])),
         Scalar::Float64(val) => Array::from_float64(FloatArray::from_slice(&[*val])),
         Scalar::Datetime32(val) => {
-            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], Dt::Date32))
         }
         Scalar::Datetime64(val) => {
-            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], Dt::Date64))
         }
         Scalar::Interval => {
             return Err(MinarrowError::NotImplemented {
@@ -966,10 +966,10 @@ pub fn broadcast_temporal_arrayview_to_scalar(
         Scalar::Float32(val) => Array::from_float32(FloatArray::from_slice(&[*val])),
         Scalar::Float64(val) => Array::from_float64(FloatArray::from_slice(&[*val])),
         Scalar::Datetime32(val) => {
-            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i32(DatetimeArray::from_slice(&[*val], Dt::Date32))
         }
         Scalar::Datetime64(val) => {
-            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], None))
+            Array::from_datetime_i64(DatetimeArray::from_slice(&[*val], Dt::Date64))
         }
         Scalar::Interval => {
             return Err(MinarrowError::NotImplemented {
