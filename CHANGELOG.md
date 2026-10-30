@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Bugfixes
 * `ArrayV` equality involving cached nulls. Identical windows previously compared unequal when (only) one had computed its cached null count.
+* `Bitmask::extend` length handling has been corrected for appended bits, which applies to null masks in `SuperArrayV` consolidation.
+* `TryFrom<Value>` for `Array` and `ArrayV` now resolves `SuperArrayView` chunks to the field type when `allow_mixed_array_batches` is enabled. Mixed chunk types previously caused a panic.
 
 ## Optimisations
 * `TryFrom<Value> for ArrayV` from one-column `TableV` values and for views inside `BoxValue` and `ArcValue` are now zero-copy.
