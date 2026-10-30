@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ## Optimisations
-* Zero-copy `TryFrom<Value> for ArrayV` from one-column `TableV` values, and from views inside `BoxValue` and `ArcValue`.
+* `TryFrom<Value> for ArrayV` from one-column `TableV` values and for views inside `BoxValue` and `ArcValue` are now zero-copy.
 
 ## 0.19.0 - 2026-10-27
 
