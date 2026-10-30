@@ -348,7 +348,7 @@ impl<T: Integer> CategoricalArray<T> {
 
     /// Returns a mutable iterator over indices buffer.
     pub fn indices_iter_mut(&mut self) -> IterMut<'_, T> {
-        self.data.iter_mut()
+        self.data.as_mut_slice().iter_mut()
     }
 
     /// Returns a mutable iterator over dictionary values.
@@ -452,7 +452,7 @@ impl<T: Integer> CategoricalArray<T> {
              greater `T` capacity.",
         );
 
-        self.data[idx] = code;
+        self.data.as_mut_slice()[idx] = code;
 
         // An absent mask means all values are valid, so only touch an existing mask.
         if let Some(mask) = &mut self.null_mask {
@@ -2170,6 +2170,29 @@ mod tests {
         assert_eq!(s.get_str(1), Some("b"));
         assert_eq!(s.get_str(2), Some(""));
     }
+
+    #[test]
+    fn test_set_str_on_shared_codes_copies_on_write() {
+        use crate::structs::shared_buffer::SharedBuffer;
+
+        // Zero-copy codes, as in columns loaded from a snapshot
+        let code_bytes: Vec64<u8> = [0u32, 1, 0].iter().flat_map(|code| code.to_le_bytes()).collect();
+        let mut arr = CategoricalArray::<u32>::new(
+            Buffer::<u32>::from_shared(SharedBuffer::from_vec64(code_bytes)),
+            vec64!["a".to_string(), "b".to_string()],
+            None,
+        );
+        assert!(arr.data.is_shared(), "the codes must start on shared storage");
+
+        arr.set_str(2, "c");
+        for code in arr.indices_iter_mut().take(1) {
+            *code = 1;
+        }
+
+        assert_eq!(arr.get_str(0), Some("b"));
+        assert_eq!(arr.get_str(1), Some("b"));
+        assert_eq!(arr.get_str(2), Some("c"));
+    }
 }
 
 #[cfg(test)]
@@ -2243,4 +2266,5 @@ mod parallel_tests {
         assert_eq!(arr.get(2), Some("c"));
         assert_eq!(arr.null_count(), 0);
     }
+
 }

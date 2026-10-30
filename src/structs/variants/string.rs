@@ -267,15 +267,16 @@ impl<T: Integer> StringArray<T> {
 
         // Replace in-place if lengths match
         if old_len == bytes.len() {
-            self.data[old_start..old_end].copy_from_slice(bytes);
+            self.data.as_mut_slice()[old_start..old_end].copy_from_slice(bytes);
         } else {
             // Remove old slice and insert new string
             drop(self.data.splice(old_start..old_end, bytes.iter().copied()));
 
             let delta = bytes.len() as isize - old_len as isize;
-            for i in idx + 1..=self.len() {
-                let off = self.offsets[i].to_usize() as isize + delta;
-                self.offsets[i] = T::from_usize(off as usize);
+            // Shared offsets copy on write before the shift
+            let offsets = self.offsets.as_mut_slice();
+            for offset in &mut offsets[idx + 1..] {
+                *offset = T::from_usize((offset.to_usize() as isize + delta) as usize);
             }
         }
 
@@ -1949,6 +1950,38 @@ mod tests {
         assert_eq!(result.get_str(4), None);
         assert_eq!(result.null_count(), 2);
     }
+
+    #[test]
+    fn test_set_str_on_shared_buffers_copies_on_write() {
+        use crate::structs::shared_buffer::SharedBuffer;
+
+        // Zero-copy offsets and values, as in columns loaded from a snapshot
+        let source = StringArray::<u32>::from_slice(&["ab", "cd", "ef"]);
+        let offset_bytes: Vec64<u8> = source
+            .offsets
+            .as_slice()
+            .iter()
+            .flat_map(|offset| offset.to_le_bytes())
+            .collect();
+        let data_bytes: Vec64<u8> = source.data.as_slice().iter().copied().collect();
+        let mut arr = StringArray::<u32>::new(
+            Buffer::from_shared(SharedBuffer::from_vec64(data_bytes)),
+            None,
+            Buffer::<u32>::from_shared(SharedBuffer::from_vec64(offset_bytes)),
+        );
+        assert!(arr.offsets.is_shared(), "the offsets must start on shared storage");
+        assert!(arr.data.is_shared(), "the values must start on shared storage");
+
+        // An equal-length value writes the values in place
+        arr.set_str(1, "xy");
+        // A longer value shifts the offsets after it
+        arr.set_str(0, "longer");
+
+        assert_eq!(arr.get_str(0), Some("longer"));
+        assert_eq!(arr.get_str(1), Some("xy"));
+        assert_eq!(arr.get_str(2), Some("ef"));
+        assert_eq!(arr.len(), 3);
+    }
 }
 
 #[cfg(test)]
@@ -2067,4 +2100,5 @@ mod parallel_tests {
         assert_eq!(arr.get(2), Some("c"));
         assert_eq!(arr.null_count(), 0);
     }
+
 }
