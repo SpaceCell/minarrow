@@ -2986,12 +2986,12 @@ impl Array {
         }
     }
 
-    /// Checks whether this array's dtype matches the target Field, and
+    /// Checks whether this array's dtype matches the target dtype, and
     /// converts it when possible using the existing cast methods.
     ///
     /// The function exists to support the `allow_mixed_array_batches`
     /// mode which relaxes uniform `SuperArray` typing restrictions.
-    /// When this method is ran, it coerces to the target `Field` type.
+    /// When this method is ran, it coerces to the target dtype.
     ///
     /// ## Conversion rules
     ///
@@ -3003,24 +3003,22 @@ impl Array {
     /// | Datetime64 to Datetime32 | `TemporalArray::try_dt32` |
     /// | String32 to String64 (`LargeString`) | `From<&StringArray<u32>> for StringArray<u64>` |
     /// | Unsupported conversion | All-null array with the target dtype and source length, created through `Array::null_array` |
-    /// | Empty input | Zero-row array with the target field dtype |
+    /// | Empty input | Zero-row array with the target dtype |
     #[cfg(feature = "allow_mixed_array_batches")]
-    pub fn check_unify_batch_dtype(array: Array, field: &crate::Field) -> Array {
-        use crate::ffi::arrow_dtype::ArrowType;
-
+    pub fn check_unify_batch_dtype(array: Array, dtype: &ArrowType) -> Array {
         let len = array.len();
 
-        // Empty array: zero-row array of the Field dtype.
+        // Empty array: zero-row array of the target dtype.
         if len == 0 {
-            return Array::from_arrow_dtype(&field.dtype);
+            return Array::from_arrow_dtype(dtype);
         }
 
         // Dtype already matches: pass through with no copy.
-        if array.arrow_type() == field.dtype {
+        if array.arrow_type() == *dtype {
             return array;
         }
 
-        let converted = match (&array, &field.dtype) {
+        let converted = match (&array, dtype) {
             // Numeric array at another numeric width.
             (Array::NumericArray(num), ArrowType::Int32) => {
                 num.try_i32().ok().map(|a| Array::NumericArray(NumericArray::Int32(a)))
@@ -3080,7 +3078,7 @@ impl Array {
             _ => None,
         };
 
-        converted.unwrap_or_else(|| Array::null_array(&field.dtype, len))
+        converted.unwrap_or_else(|| Array::null_array(dtype, len))
     }
 
     /// Build an array from a slice of Scalars.

@@ -273,7 +273,7 @@ impl Value {
             Value::SuperArray(sa) => sa.field().map(|f| vec![Arc::new(f.clone())]),
 
             #[cfg(all(feature = "chunked", feature = "views"))]
-            Value::SuperArrayView(sav) => Some(vec![sav.field.clone()]),
+            Value::SuperArrayView(sav) => sav.field.clone().map(|f| vec![f]),
 
             #[cfg(feature = "chunked")]
             Value::SuperTable(st) => Some(st.schema().to_vec()),
@@ -346,7 +346,7 @@ impl Value {
             Value::SuperArray(sa) => sa.field().map(|f| f.dtype.clone()),
 
             #[cfg(all(feature = "chunked", feature = "views"))]
-            Value::SuperArrayView(sav) => Some(sav.field.dtype.clone()),
+            Value::SuperArrayView(sav) => sav.field.as_ref().map(|f| f.dtype.clone()),
 
             #[cfg(feature = "matrix")]
             Value::Matrix(_) => Some(ArrowType::Float64),

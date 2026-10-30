@@ -725,7 +725,7 @@ mod tests {
         ];
         let super_array_view = SuperArrayV {
             slices,
-            field: Arc::new(field),
+            field: Some(Arc::new(field)),
             len: 6,
         };
 
