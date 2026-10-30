@@ -1714,8 +1714,8 @@ impl From<SuperArray> for SuperArrayV {
     fn from(super_array: SuperArray) -> Self {
         let len = super_array.len();
 
-        // The view keeps the SuperArray's field, or has no field when the
-        // SuperArray has none.
+        // The view keeps the SuperArray's field, or doesn't when the
+        // SuperArray doesn't have one either.
         let field = super_array.field.clone();
 
         let slices: Vec<ArrayV> = super_array.chunks.into_iter().map(ArrayV::from).collect();
