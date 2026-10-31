@@ -783,15 +783,23 @@ pub fn super_table_view_to_py<'py>(
 /// Converts a MinArrow [`SuperArrayV`] to a PyArrow ChunkedArray by
 /// assembling one Array per [`ArrayV`] slice. Per-slice window offsets
 /// are preserved zero-copy.
+///
+/// Empty views without a field produce a null-typed ChunkedArray, matching
+/// [`super_array_to_py`].
+///
+/// # Panics
+/// Panics if a non-empty view doesn't have a field.
 pub fn super_array_view_to_py<'py>(
     view: &SuperArrayV,
     py: Python<'py>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let pyarrow = py.import("pyarrow")?;
-    let field = &*view.field;
 
     if view.slices.is_empty() {
-        let pa_type = arrow_type_to_pyarrow(&field.dtype, py)?;
+        let pa_type = match view.field.as_ref() {
+            Some(field) => arrow_type_to_pyarrow(&field.dtype, py)?,
+            None => pyarrow.call_method0("null")?,
+        };
         let empty_list = PyList::empty(py);
         let kwargs = [("type", pa_type)].into_py_dict(py)?;
         return pyarrow
@@ -805,6 +813,10 @@ pub fn super_array_view_to_py<'py>(
             });
     }
 
+    let field = view
+        .field
+        .as_ref()
+        .expect("converting a SuperArrayV to PyArrow requires field metadata");
     let mut py_arrays = Vec::with_capacity(view.slices.len());
     for slice in &view.slices {
         py_arrays.push(array_view_to_py(slice, field, py)?);
@@ -981,6 +993,10 @@ pub fn super_table_view_to_stream_capsule<'py>(
 ///
 /// The stream yields one plain array per underlying [`ArrayV`] slice. Each
 /// slice's window is carried zero-copy via `ArrowArray.offset`/`length`.
+///
+/// # Panics
+/// Panics if the view doesn't have a field, as with
+/// [`export_super_array_view_stream`].
 pub fn super_array_view_to_stream_capsule<'py>(
     view: &SuperArrayV,
     py: Python<'py>,
