@@ -1405,10 +1405,33 @@ impl TryFrom<Value> for Table {
             }
             #[cfg(feature = "scalar_type")]
             Value::Scalar(s) => Ok(Table::from(Array::from(s))),
+            // Chunked arrays with a field become a column under the field's
+            // name, as field arrays do. Without a field the column takes the
+            // default name of `Table::from(Array)`.
             #[cfg(feature = "chunked")]
-            Value::SuperArray(_) => Ok(Table::from(Array::try_from(v)?)),
+            Value::SuperArray(ref inner) => {
+                let field = inner.field.clone();
+                let array = Array::try_from(v)?;
+                Ok(match field {
+                    Some(field) => Table::new(
+                        "array".to_string(),
+                        Some(vec![FieldArray::new_arc(field, array)]),
+                    ),
+                    None => Table::from(array),
+                })
+            }
             #[cfg(all(feature = "chunked", feature = "views"))]
-            Value::SuperArrayView(_) => Ok(Table::from(Array::try_from(v)?)),
+            Value::SuperArrayView(ref inner) => {
+                let field = inner.field.clone();
+                let array = Array::try_from(v)?;
+                Ok(match field {
+                    Some(field) => Table::new(
+                        "array".to_string(),
+                        Some(vec![FieldArray::new_arc(field, array)]),
+                    ),
+                    None => Table::from(array),
+                })
+            }
             #[cfg(feature = "chunked")]
             Value::SuperTable(inner) => {
                 Table::try_from(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
@@ -1621,11 +1644,22 @@ impl TryFrom<Value> for SuperArrayV {
     type Error = MinarrowError;
 
     /// Accepts any `Value` that resolves to a chunked array, viewed over its
-    /// full extent. An incoming view passes through with its window intact.
+    /// full extent. Incoming views pass through with their window intact. An
+    /// array view, or the column of a one-column table view with its field,
+    /// becomes a single slice.
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
             Value::SuperArrayView(inner) => {
                 Ok(Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            Value::ArrayView(inner) => Ok(SuperArrayV::from(
+                Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone()),
+            )),
+            Value::TableView(table) if table.n_cols() == 1 => {
+                let col = table.active_col_indices()[0];
+                let mut view = SuperArrayV::from(table.cols[col].clone());
+                view.field = Some(table.fields[col].clone());
+                Ok(view)
             }
             other => Ok(SuperArrayV::from(SuperArray::try_from(other)?)),
         }

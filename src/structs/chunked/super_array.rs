@@ -1395,14 +1395,18 @@ impl SuperArray {
 impl Concatenate for SuperArray {
     /// Concatenates two SuperArrays by appending all chunks from `other` to `self`.
     ///
-    /// # Requirements
-    /// - Both SuperArrays must have compatible types
-    ///
     /// # Returns
     /// A new SuperArray containing all chunks from `self` followed by all chunks from `other`
     ///
+    /// # Behaviour
+    /// - Chunks of one type keep the field of `self`, or of `other` when
+    ///   `self` has none.
+    /// - Chunks of different types are held without a field under the
+    ///   `allow_mixed_array_batches` feature.
+    ///
     /// # Errors
-    /// - `IncompatibleTypeError` if array types don't match
+    /// - `IncompatibleTypeError` if array types don't match, without the
+    ///   `allow_mixed_array_batches` feature
     fn concat(self, other: Self) -> Result<Self, MinarrowError> {
         // If both are empty, return empty
         if self.chunks.is_empty() && other.chunks.is_empty() {
@@ -1419,9 +1423,15 @@ impl Concatenate for SuperArray {
 
         // Validate types match
         let self_type = self.chunks[0].arrow_type();
-        let other_type = other.chunks[0].arrow_type();
+        let mismatch = self
+            .chunks
+            .iter()
+            .chain(other.chunks.iter())
+            .map(|chunk| chunk.arrow_type())
+            .find(|chunk_type| *chunk_type != self_type);
 
-        if self_type != other_type {
+        #[cfg(not(feature = "allow_mixed_array_batches"))]
+        if let Some(other_type) = mismatch {
             return Err(MinarrowError::IncompatibleTypeError {
                 from: "SuperArray",
                 to: "SuperArray",
@@ -1448,7 +1458,10 @@ impl Concatenate for SuperArray {
         #[cfg_attr(not(feature = "shared_dict"), allow(unused_mut))]
         let mut sa = SuperArray {
             chunks: result_chunks,
-            field: self.field.or(other.field),
+            field: match mismatch {
+                Some(_) => None,
+                None => self.field.or(other.field),
+            },
             null_counts,
             #[cfg(feature = "shared_dict")]
             category_manager: None,
@@ -2345,6 +2358,17 @@ mod tests {
             assert_eq!(result.len(), 3);
         }
 
+        #[cfg(feature = "allow_mixed_array_batches")]
+        #[test]
+        fn concat_mismatched_types_holds_them_without_a_field() {
+            let sa1 = SuperArray::from_arrays(vec![decimal_array(&[10], 10, 2)]);
+            let sa2 = SuperArray::from_arrays(vec![int_array(&[20])]);
+            let result = sa1.concat(sa2).unwrap();
+            assert_eq!(result.n_chunks(), 2);
+            assert!(result.field.is_none());
+        }
+
+        #[cfg(not(feature = "allow_mixed_array_batches"))]
         #[test]
         fn concat_mismatched_type_errors() {
             let sa1 = SuperArray::from_arrays(vec![decimal_array(&[10], 10, 2)]);
