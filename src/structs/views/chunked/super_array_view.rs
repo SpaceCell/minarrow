@@ -1823,7 +1823,7 @@ mod tests {
 }
 
 /// SuperArray -> SuperArrayV conversion
-/// Views one array window as a single slice, without a field and without
+/// Views one array window as a single slice, without a field or
 /// copying.
 impl From<ArrayV> for SuperArrayV {
     fn from(view: ArrayV) -> Self {
