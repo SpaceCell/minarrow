@@ -359,31 +359,49 @@ impl Consolidate for SuperArrayV {
 }
 
 impl Concatenate for SuperArrayV {
-    /// Concatenates two super array views by materialising both to owned arrays,
-    /// concatenating them, and wrapping the result back in a view.
+    /// Concatenates two super array views by appending the slices of `other`
+    /// after those of `self`, without copying.
     ///
-    /// # Notes
-    /// - This operation copies data from both views to create owned arrays.
-    /// - The resulting view contains a single slice wrapping the concatenated array.
-    /// - The field metadata from the first view is preserved.
+    /// # Behaviour
+    /// - Slices of one type keep the field of `self`, or of `other` when
+    ///   `self` has none, as `SuperArray` chunks do.
+    /// - Slices of different types are held without a field under the
+    ///   `allow_mixed_array_batches` feature. Without the feature they return
+    ///   `IncompatibleTypeError`.
     fn concat(self, other: Self) -> Result<Self, MinarrowError> {
-        // Preserve field before consuming self
-        let field = self.field.clone();
+        if self.slices.is_empty() {
+            return Ok(other);
+        }
+        if other.slices.is_empty() {
+            return Ok(self);
+        }
 
-        // Materialise both views to owned arrays
-        let self_array = self.consolidate();
-        let other_array = other.consolidate();
+        let dtype = self.slices[0].array.arrow_type();
+        let mismatch = self
+            .slices
+            .iter()
+            .chain(other.slices.iter())
+            .map(|slice| slice.array.arrow_type())
+            .find(|slice_type| *slice_type != dtype);
 
-        // Concatenate the owned arrays
-        let concatenated = self_array.concat(other_array)?;
-        let len = concatenated.len();
+        #[cfg(not(feature = "allow_mixed_array_batches"))]
+        if let Some(slice_type) = mismatch {
+            return Err(MinarrowError::IncompatibleTypeError {
+                from: "SuperArrayV",
+                to: "SuperArrayV",
+                message: Some(format!("Type mismatch: {:?} vs {:?}", dtype, slice_type)),
+            });
+        }
 
-        // Wrap the result in a new view with a single slice
-        Ok(SuperArrayV {
-            slices: vec![ArrayV::from(concatenated)],
-            len,
-            field,
-        })
+        let field = match mismatch {
+            Some(_) => None,
+            None => self.field.or(other.field),
+        };
+        let len = self.len + other.len;
+        let mut slices = self.slices;
+        slices.extend(other.slices);
+
+        Ok(SuperArrayV { slices, len, field })
     }
 }
 
@@ -501,6 +519,83 @@ mod tests {
         let arr = Array::from_int32(crate::IntegerArray::<i32>::from_slice(vals));
         let field = Field::new(name, ArrowType::Int32, false, None);
         FieldArray::new(field, arr)
+    }
+
+    /// Concatenation appends the slices of both views without copying, and
+    /// keeps the field of the first view.
+    #[test]
+    fn test_concat_appends_slices_without_copying() {
+        let left = SuperArrayV::from(SuperArray::from_field_array_chunks(vec![fa("x", &[1, 2])]));
+        let right = SuperArrayV::from(SuperArray::from_field_array_chunks(vec![fa("x", &[3])]));
+        let left_buffer = left.slices[0].array.data_ptr_and_byte_len();
+        let joined = left.concat(right).unwrap();
+        assert_eq!(joined.n_slices(), 2);
+        assert_eq!(joined.len, 3);
+        assert_eq!(joined.slices[0].array.data_ptr_and_byte_len(), left_buffer);
+        assert_eq!(joined.field.as_ref().map(|f| f.name.as_str()), Some("x"));
+    }
+
+    /// Views of different types concatenate into a view without a field.
+    #[cfg(feature = "allow_mixed_array_batches")]
+    #[test]
+    fn test_concat_of_mixed_types_holds_them_without_a_field() {
+        use crate::{arr_f64, arr_str32};
+
+        let numbers = SuperArrayV::from(ArrayV::new(arr_f64![1.0, 2.0], 0, 2));
+        let labels = SuperArrayV::from(ArrayV::new(arr_str32!["x", "y"], 0, 2));
+        let joined = numbers.concat(labels).unwrap();
+        assert_eq!(joined.n_slices(), 2);
+        assert_eq!(joined.len, 4);
+        assert!(joined.field.is_none());
+        assert!(!joined.check_type_uniformity());
+    }
+
+    /// Array views convert to a single slice with their window intact.
+    #[cfg(feature = "value_type")]
+    #[test]
+    fn test_array_view_value_becomes_one_slice() {
+        use crate::{Value, arr_i32};
+
+        let window = ArrayV::new(arr_i32![1, 2, 3, 4], 1, 2);
+        let view = SuperArrayV::try_from(Value::ArrayView(Arc::new(window))).unwrap();
+        assert_eq!(view.n_slices(), 1);
+        assert_eq!(view.len, 2);
+        assert_eq!(view.slices[0].offset, 1);
+        assert!(view.field.is_none());
+    }
+
+    /// Chunked values with a field convert to a table whose column takes the
+    /// field's name.
+    #[cfg(feature = "value_type")]
+    #[test]
+    fn test_super_array_view_value_with_a_field_names_its_table_column() {
+        use crate::{Table, Value};
+
+        let view = SuperArrayV::from(SuperArray::from_field_array_chunks(vec![
+            fa("amount", &[1, 2]),
+            fa("amount", &[3]),
+        ]));
+        let table = Table::try_from(Value::SuperArrayView(Arc::new(view))).unwrap();
+        assert_eq!(table.n_rows, 3);
+        assert_eq!(table.cols[0].field.name, "amount");
+    }
+
+    /// One-column table views convert to a single slice with their window
+    /// and field, sharing the table's buffers.
+    #[cfg(feature = "value_type")]
+    #[test]
+    fn test_one_column_table_view_value_becomes_one_slice() {
+        use crate::{Table, TableV, Value};
+
+        let table = Table::new("t".to_string(), Some(vec![fa("x", &[1, 2, 3, 4])]));
+        let buffer = table.cols[0].array.data_ptr_and_byte_len();
+        let window = TableV::from_table(table, 1, 2);
+        let view = SuperArrayV::try_from(Value::TableView(Arc::new(window))).unwrap();
+        assert_eq!(view.n_slices(), 1);
+        assert_eq!(view.len, 2);
+        assert_eq!(view.slices[0].offset, 1);
+        assert_eq!(view.slices[0].array.data_ptr_and_byte_len(), buffer);
+        assert_eq!(view.field.as_ref().map(|f| f.name.as_str()), Some("x"));
     }
 
     /// Mixed SuperArrays without a Field become views without a Field,
@@ -1519,7 +1614,7 @@ mod tests {
         let field = Field::new("ts", ArrowType::DateTime(dtype.clone()), false, None);
 
         assert_eq!(arr.arrow_type(), field.dtype);
-        let result = Array::check_unify_batch_dtype(arr.clone(), &field);
+        let result = Array::check_unify_batch_dtype(arr.clone(), &field.dtype);
         assert!(result.ptr_eq(&arr));
         assert_eq!(result.arrow_type(), ArrowType::DateTime(dtype));
     }
@@ -1728,6 +1823,19 @@ mod tests {
 }
 
 /// SuperArray -> SuperArrayV conversion
+/// Views one array window as a single slice, without a field or
+/// copying.
+impl From<ArrayV> for SuperArrayV {
+    fn from(view: ArrayV) -> Self {
+        let len = view.len();
+        SuperArrayV {
+            slices: vec![view],
+            len,
+            field: None,
+        }
+    }
+}
+
 impl From<SuperArray> for SuperArrayV {
     fn from(super_array: SuperArray) -> Self {
         let len = super_array.len();
