@@ -2282,6 +2282,141 @@ impl Array {
         }
     }
 
+    /// Returns a new `Array` of `count` copies of the element at `idx`, with
+    /// the same type as this array.
+    ///
+    /// Values are built with each variant's typed [`MaskedArray::fill`], and
+    /// categorical codes with the fill of their integer type. The datetime
+    /// type and time unit, the decimal precision and scale, and the
+    /// categorical dictionary are copied from this array, because the typed
+    /// fills do not receive them.
+    ///
+    /// ## Behaviour
+    /// - Null elements produce `count` nulls of the same type, with an
+    ///   all-false null mask.
+    /// - Non-null elements produce an array without a null mask.
+    /// - Categorical results keep this array's dictionary, with every code
+    ///   referring to the element's category.
+    ///
+    /// Panics when `idx` is out of bounds, which includes every index of the
+    /// zero-length `Null` variants.
+    ///
+    /// # Example
+    /// ```rust
+    /// use minarrow::{Array, IntegerArray};
+    ///
+    /// let array = Array::from_int64(IntegerArray::from_slice(&[4, 7, 9]));
+    /// let filled = array.fill(1, 3);
+    /// assert_eq!(filled.num().i64().data.as_slice(), &[7, 7, 7]);
+    /// ```
+    pub fn fill(&self, idx: usize, count: usize) -> Self {
+        assert!(idx < self.len(), "fill index out of bounds");
+
+        // Fixed-width arrays use their typed `fill`. Null elements fill with
+        // the type's default value under an all-false null mask.
+        macro_rules! fill_typed {
+            ($arr:expr, $ty:ty) => {{
+                let source: &$ty = &**$arr;
+                let mut filled = <$ty as MaskedArray>::fill(source.get(idx).unwrap_or_default(), count);
+                if source.is_null(idx) {
+                    filled.null_mask = Some(Bitmask::new_set_all(count, false));
+                }
+                filled
+            }};
+        }
+
+        // Categorical arrays keep their dictionary through a one-element
+        // clone. Codes are filled with the typed `fill` of the code width.
+        macro_rules! fill_categorical {
+            ($arr:expr, $code:ty) => {{
+                let mut filled = (**$arr).slice_clone(idx, 1);
+                let code = filled.data[0];
+                filled.data = <IntegerArray<$code> as MaskedArray>::fill(code, count).data;
+                filled.null_mask = $arr
+                    .is_null(idx)
+                    .then(|| Bitmask::new_set_all(count, false));
+                Arc::new(filled)
+            }};
+        }
+
+        match self {
+            Array::NumericArray(inner) => Self::NumericArray(match inner {
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(arr) => NumericArray::Int8(Arc::new(fill_typed!(arr, IntegerArray<i8>))),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(arr) => NumericArray::Int16(Arc::new(fill_typed!(arr, IntegerArray<i16>))),
+                NumericArray::Int32(arr) => NumericArray::Int32(Arc::new(fill_typed!(arr, IntegerArray<i32>))),
+                NumericArray::Int64(arr) => NumericArray::Int64(Arc::new(fill_typed!(arr, IntegerArray<i64>))),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(arr) => NumericArray::UInt8(Arc::new(fill_typed!(arr, IntegerArray<u8>))),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(arr) => NumericArray::UInt16(Arc::new(fill_typed!(arr, IntegerArray<u16>))),
+                NumericArray::UInt32(arr) => NumericArray::UInt32(Arc::new(fill_typed!(arr, IntegerArray<u32>))),
+                NumericArray::UInt64(arr) => NumericArray::UInt64(Arc::new(fill_typed!(arr, IntegerArray<u64>))),
+                NumericArray::Float32(arr) => NumericArray::Float32(Arc::new(fill_typed!(arr, FloatArray<f32>))),
+                NumericArray::Float64(arr) => NumericArray::Float64(Arc::new(fill_typed!(arr, FloatArray<f64>))),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => {
+                    let mut filled = fill_typed!(arr, DecimalArray<i32>);
+                    (filled.precision, filled.scale) = (arr.precision, arr.scale);
+                    NumericArray::Decimal32(Arc::new(filled))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => {
+                    let mut filled = fill_typed!(arr, DecimalArray<i64>);
+                    (filled.precision, filled.scale) = (arr.precision, arr.scale);
+                    NumericArray::Decimal64(Arc::new(filled))
+                }
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => {
+                    let mut filled = fill_typed!(arr, DecimalArray<i128>);
+                    (filled.precision, filled.scale) = (arr.precision, arr.scale);
+                    NumericArray::Decimal128(Arc::new(filled))
+                }
+                NumericArray::Null => NumericArray::Null,
+            }),
+            Array::TextArray(inner) => Self::TextArray(match inner {
+                TextArray::String32(arr) => {
+                    let value = arr.get(idx).unwrap_or_default().to_string();
+                    let mut filled = StringArray::<u32>::fill(value, count);
+                    filled.null_mask = arr.is_null(idx).then(|| Bitmask::new_set_all(count, false));
+                    TextArray::String32(Arc::new(filled))
+                }
+                #[cfg(feature = "large_string")]
+                TextArray::String64(arr) => {
+                    let value = arr.get(idx).unwrap_or_default().to_string();
+                    let mut filled = StringArray::<u64>::fill(value, count);
+                    filled.null_mask = arr.is_null(idx).then(|| Bitmask::new_set_all(count, false));
+                    TextArray::String64(Arc::new(filled))
+                }
+                #[cfg(feature = "default_categorical_8")]
+                TextArray::Categorical8(arr) => TextArray::Categorical8(fill_categorical!(arr, u8)),
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical16(arr) => TextArray::Categorical16(fill_categorical!(arr, u16)),
+                TextArray::Categorical32(arr) => TextArray::Categorical32(fill_categorical!(arr, u32)),
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical64(arr) => TextArray::Categorical64(fill_categorical!(arr, u64)),
+                TextArray::Null => TextArray::Null,
+            }),
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(inner) => Self::TemporalArray(match inner {
+                TemporalArray::Datetime32(arr) => {
+                    let mut filled = fill_typed!(arr, DatetimeArray<i32>);
+                    filled.dtype = arr.dtype.clone();
+                    TemporalArray::Datetime32(Arc::new(filled))
+                }
+                TemporalArray::Datetime64(arr) => {
+                    let mut filled = fill_typed!(arr, DatetimeArray<i64>);
+                    filled.dtype = arr.dtype.clone();
+                    TemporalArray::Datetime64(Arc::new(filled))
+                }
+                TemporalArray::Null => TemporalArray::Null,
+            }),
+            Array::BooleanArray(arr) => Self::BooleanArray(Arc::new(fill_typed!(arr, BooleanArray<()>))),
+            Array::Null => Self::Null,
+        }
+    }
+
     /// Arrow physical type for this array.
     pub fn arrow_type(&self) -> ArrowType {
         match self {
@@ -8037,5 +8172,190 @@ mod bool_word_level_tests {
         let out = array.bool();
         assert_eq!(out.len(), len);
         assert!(start.elapsed() < Duration::from_secs(60));
+    }
+}
+
+#[cfg(test)]
+mod fill_tests {
+    use crate::{
+        Array, Bitmask, BooleanArray, CategoricalArray, FloatArray, IntegerArray, StringArray,
+        TextArray, vec64,
+    };
+
+    /// Checks the type, values and nulls of fills from the first element of
+    /// `source` and from its null second element. `source` holds at least
+    /// two elements.
+    fn assert_fills(source: Array) {
+        let mut masked = source.clone();
+        let mut mask = Bitmask::new_set_all(source.len(), true);
+        mask.set(1, false);
+        masked.set_null_mask(mask);
+
+        let filled = source.fill(0, 5);
+        assert_eq!(filled.len(), 5);
+        assert_eq!(filled.arrow_type(), source.arrow_type(), "the type carries over");
+        assert!((0..5).all(|i| filled.value_eq(i, &source, 0)), "every element repeats the value");
+        assert!(filled.null_mask().is_none(), "non-null elements fill without a null mask");
+
+        let nulls = masked.fill(1, 5);
+        assert_eq!(nulls.len(), 5);
+        assert_eq!(nulls.arrow_type(), source.arrow_type(), "null fills keep the type");
+        assert_eq!(nulls.null_count(), 5, "null elements fill with nulls");
+    }
+
+    #[test]
+    fn fill_repeats_32_and_64_bit_integers() {
+        assert_fills(Array::from_int32(IntegerArray::from_slice(&[3, -4, 5])));
+        assert_fills(Array::from_int64(IntegerArray::from_slice(&[3, -4, 5])));
+        assert_fills(Array::from_uint32(IntegerArray::from_slice(&[3, 4, 5])));
+        assert_fills(Array::from_uint64(IntegerArray::from_slice(&[3, 4, 5])));
+    }
+
+    #[cfg(feature = "extended_numeric_types")]
+    #[test]
+    fn fill_repeats_extended_integers() {
+        assert_fills(Array::from_int8(IntegerArray::from_slice(&[3, -4, 5])));
+        assert_fills(Array::from_int16(IntegerArray::from_slice(&[3, -4, 5])));
+        assert_fills(Array::from_uint8(IntegerArray::from_slice(&[3, 4, 5])));
+        assert_fills(Array::from_uint16(IntegerArray::from_slice(&[3, 4, 5])));
+    }
+
+    #[test]
+    fn fill_repeats_floats() {
+        assert_fills(Array::from_float32(FloatArray::from_slice(&[1.5, 2.5, 3.5])));
+        assert_fills(Array::from_float64(FloatArray::from_slice(&[1.5, 2.5, 3.5])));
+    }
+
+    #[test]
+    fn fill_repeats_booleans() {
+        assert_fills(Array::from_bool(BooleanArray::from_slice(&[true, false, true])));
+    }
+
+    #[test]
+    fn fill_repeats_strings() {
+        assert_fills(Array::from_string32(StringArray::from_slice(&["north", "south", "east"])));
+    }
+
+    #[cfg(feature = "large_string")]
+    #[test]
+    fn fill_repeats_large_strings() {
+        assert_fills(Array::from_string64(StringArray::from_slice(&["north", "south", "east"])));
+    }
+
+    /// Returns the dictionary of the categorical `array` as owned strings.
+    fn dictionary(array: &Array) -> Vec<String> {
+        match array.str() {
+            TextArray::Categorical32(arr) => arr.unique_values().to_vec(),
+            #[cfg(feature = "default_categorical_8")]
+            TextArray::Categorical8(arr) => arr.unique_values().to_vec(),
+            #[cfg(feature = "extended_categorical")]
+            TextArray::Categorical16(arr) => arr.unique_values().to_vec(),
+            #[cfg(feature = "extended_categorical")]
+            TextArray::Categorical64(arr) => arr.unique_values().to_vec(),
+            other => panic!("expected a categorical array, received {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fill_repeats_categoricals_and_keeps_the_dictionary() {
+        let categories = ["low".to_string(), "mid".to_string(), "high".to_string()];
+        let source = Array::from_categorical32(CategoricalArray::from_slices(&[2, 0, 1], &categories));
+        assert_fills(source.clone());
+        let filled = source.fill(0, 4);
+        assert_eq!(dictionary(&filled), categories.to_vec());
+        assert!((0..4).all(|i| filled.get_str(i) == Some("high")));
+    }
+
+    #[cfg(feature = "default_categorical_8")]
+    #[test]
+    fn fill_repeats_8_bit_categoricals_and_keeps_the_dictionary() {
+        let categories = ["low".to_string(), "mid".to_string()];
+        let source = Array::from_categorical8(CategoricalArray::from_slices(&[1, 0, 1], &categories));
+        assert_fills(source.clone());
+        assert_eq!(dictionary(&source.fill(1, 3)), categories.to_vec());
+    }
+
+    #[cfg(feature = "extended_categorical")]
+    #[test]
+    fn fill_repeats_16_and_64_bit_categoricals_and_keeps_the_dictionary() {
+        let categories = ["low".to_string(), "mid".to_string()];
+        let source = Array::from_categorical16(CategoricalArray::from_slices(&[1, 0, 1], &categories));
+        assert_fills(source.clone());
+        assert_eq!(dictionary(&source.fill(0, 3)), categories.to_vec());
+        let source = Array::from_categorical64(CategoricalArray::from_slices(&[1, 0, 1], &categories));
+        assert_fills(source.clone());
+        assert_eq!(dictionary(&source.fill(0, 3)), categories.to_vec());
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn fill_repeats_decimals_with_their_precision_and_scale() {
+        use crate::DecimalArray;
+        use crate::ffi::arrow_dtype::ArrowType;
+
+        let source = Array::from_decimal32(DecimalArray::from_slice(&[1250, 300, 75], 7, 2));
+        assert_fills(source.clone());
+        assert_eq!(source.fill(0, 2).arrow_type(), ArrowType::Decimal32(7, 2));
+        assert_fills(Array::from_decimal64(DecimalArray::from_slice(&[1250, 300, 75], 12, 3)));
+        assert_fills(Array::from_decimal128(DecimalArray::from_slice(&[1250, 300, 75], 30, 4)));
+    }
+
+    #[cfg(feature = "datetime")]
+    #[test]
+    fn fill_repeats_datetimes_with_their_time_units() {
+        use crate::enums::time_units::TimeUnit;
+        use crate::ffi::arrow_dtype::{ArrowType, Dt};
+        use crate::DatetimeArray;
+
+        let times = Array::from_datetime_i32(DatetimeArray::from_slice(
+            &[1_000, 2_000, 3_000],
+            Dt::Time32(TimeUnit::Milliseconds),
+        ));
+        assert_fills(times.clone());
+        assert_eq!(
+            times.fill(2, 3).arrow_type(),
+            ArrowType::DateTime(Dt::Time32(TimeUnit::Milliseconds))
+        );
+
+        let stamps = Array::from_datetime_i64(DatetimeArray::from_slice(
+            &[1_700_000_000_000_000, 1_700_000_100_000_000, 1_700_000_200_000_000],
+            Dt::Timestamp(TimeUnit::Microseconds, Some("UTC".to_string())),
+        ));
+        assert_fills(stamps.clone());
+        assert_eq!(
+            stamps.fill(0, 3).arrow_type(),
+            ArrowType::DateTime(Dt::Timestamp(TimeUnit::Microseconds, Some("UTC".to_string())))
+        );
+
+        assert_fills(Array::from_datetime_i64(DatetimeArray::from_slice(
+            &[5, 10, 15],
+            Dt::Duration64(TimeUnit::Nanoseconds),
+        )));
+        assert_fills(Array::from_datetime_i32(DatetimeArray::from_slice(&[19_000, 19_001, 19_002], Dt::Date32)));
+    }
+
+    #[test]
+    fn fill_of_zero_elements_is_empty() {
+        let source = Array::from_int64(IntegerArray::from_slice(&[3, 4]));
+        assert_eq!(source.fill(0, 0).len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "fill index out of bounds")]
+    fn fill_panics_past_the_last_element() {
+        Array::from_int64(IntegerArray::from_slice(&[3, 4])).fill(2, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "fill index out of bounds")]
+    fn fill_panics_on_null_arrays() {
+        Array::Null.fill(0, 3);
+    }
+
+    #[test]
+    fn fill_repeats_the_selected_element() {
+        let source = Array::from_int64(IntegerArray::from_vec64(vec64![8, 9], None));
+        let filled = source.fill(1, 3);
+        assert_eq!(filled.num().i64().data.as_slice(), &[9, 9, 9]);
     }
 }
