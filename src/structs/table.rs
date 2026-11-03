@@ -48,6 +48,8 @@ use super::field_array::FieldArray;
 use crate::ArrayV;
 use crate::Array;
 use crate::Field;
+#[cfg(feature = "scalar_type")]
+use crate::Scalar;
 #[cfg(feature = "chunked")]
 use crate::SuperTable;
 use crate::enums::{error::MinarrowError, shape_dim::ShapeDim};
@@ -1399,19 +1401,57 @@ impl TryFrom<Vec<Table>> for Table {
 impl TryFrom<Table> for Array {
     type Error = MinarrowError;
 
-    /// Takes the array of a one-column table.
+    /// Converts a one-column table to its array.
     ///
-    /// A single-column table is that column, which is the shape a
-    /// one-column projection arrives in. A wider table has no single
-    /// reading, so it reports the column count instead of taking the first.
+    /// One-column projections produce tables of this form. Tables with more
+    /// than one column return `MinarrowError::TypeError` with the column count.
     fn try_from(value: Table) -> Result<Self, Self::Error> {
         match value.n_cols() {
             1 => Ok(value.cols()[0].array.clone()),
             n => Err(MinarrowError::TypeError {
                 from: "Table",
                 to: "Array",
+                message: Some(format!("Expected a table with one column, found {n} columns")),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Table> for FieldArray {
+    type Error = MinarrowError;
+
+    /// Converts a one-column table to its `FieldArray`, including the field.
+    ///
+    /// Tables with more than one column return `MinarrowError::TypeError` with
+    /// the column count.
+    fn try_from(value: Table) -> Result<Self, Self::Error> {
+        match value.n_cols() {
+            1 => Ok(value.cols()[0].clone()),
+            n => Err(MinarrowError::TypeError {
+                from: "Table",
+                to: "FieldArray",
+                message: Some(format!("Expected a table with one column, found {n} columns")),
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "scalar_type")]
+impl TryFrom<Table> for Scalar {
+    type Error = MinarrowError;
+
+    /// Converts a table with one column and one row to the `Scalar` it holds.
+    ///
+    /// Null cells convert to `Scalar::Null`. Tables of any other shape return
+    /// `MinarrowError::TypeError` with their column and row counts.
+    fn try_from(value: Table) -> Result<Self, Self::Error> {
+        match (value.n_cols(), value.n_rows) {
+            (1, 1) => Ok(value.cols()[0].array.get_scalar(0).unwrap_or(Scalar::Null)),
+            (cols, rows) => Err(MinarrowError::TypeError {
+                from: "Table",
+                to: "Scalar",
                 message: Some(format!(
-                    "a single column is needed, the table held {n} columns"
+                    "Expected a table with one column and one row, found {cols} columns and {rows} rows"
                 )),
             }),
         }
@@ -1444,6 +1484,34 @@ mod tests {
                 FieldArray::from_arr("labels", StringArray::<u32>::from_slice(&label_refs)),
             ]),
         )
+    }
+
+    #[test]
+    fn one_column_table_converts_to_its_field_array() {
+        let t = crate::tbl!("single", crate::fa_i32!("x", 1, 2, 3));
+        let column = FieldArray::try_from(t).unwrap();
+        assert_eq!(column.field.name, "x");
+        assert_eq!(column.len(), 3);
+    }
+
+    #[test]
+    fn wider_table_does_not_convert_to_a_field_array() {
+        let t = crate::tbl!("pair", crate::fa_i32!("x", 1), crate::fa_i32!("y", 2));
+        assert!(FieldArray::try_from(t).is_err());
+    }
+
+    #[cfg(feature = "scalar_type")]
+    #[test]
+    fn one_cell_table_converts_to_its_scalar() {
+        let t = crate::tbl!("cell", crate::fa_i32!("x", 7));
+        assert_eq!(Scalar::try_from(t).unwrap(), Scalar::Int32(7));
+    }
+
+    #[cfg(feature = "scalar_type")]
+    #[test]
+    fn table_with_several_rows_does_not_convert_to_a_scalar() {
+        let t = crate::tbl!("rows", crate::fa_i32!("x", 1, 2));
+        assert!(Scalar::try_from(t).is_err());
     }
 
     #[test]

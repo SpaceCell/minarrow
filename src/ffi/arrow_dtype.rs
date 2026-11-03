@@ -55,41 +55,6 @@ use crate::DatetimeArray;
 use crate::enums::time_units::{IntervalUnit, TimeUnit};
 use crate::{BooleanArray, CategoricalArray, Float, FloatArray, Integer, StringArray};
 
-/// # Dt
-///
-/// Temporal *Apache Arrow* types supported by Minarrow.
-///
-/// ## Role
-/// - Held by `ArrowType::DateTime` on a `Field`, and by `DatetimeArray` as its `dtype`.
-/// - Gives the temporal type one definition, shared by the schema and the array.
-/// - Distinguishes dates, times of day, durations, timestamps and intervals that
-///   share the same physical storage.
-///
-/// ## Storage
-/// - `Date32`, `Time32` and `Duration32` use 32-bit storage, `DatetimeArray<i32>`.
-/// - `Date64`, `Time64`, `Duration64` and `Timestamp` use 64-bit storage, `DatetimeArray<i64>`.
-/// - `Date32` values are days since the UNIX epoch, and `Date64` values are milliseconds
-///   since the UNIX epoch.
-/// - `Interval` is available for schema descriptions. `DatetimeArray` does not hold
-///   interval data.
-///
-/// ## Timezones
-/// The optional timezone on `Timestamp` is an Arrow timezone string, such as "UTC" or
-/// "America/New_York". Stored values remain UTC, and the timezone affects only
-/// interpretation and display.
-#[cfg(feature = "datetime")]
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
-pub enum Dt {
-    Date32,
-    Date64,
-    Time32(TimeUnit),
-    Time64(TimeUnit),
-    Duration32(TimeUnit),
-    Duration64(TimeUnit),
-    Timestamp(TimeUnit, Option<String>),
-    Interval(IntervalUnit),
-}
-
 /// # ArrowType
 ///
 /// Unified representation of supported *Apache Arrow* data types in Minarrow.
@@ -421,6 +386,41 @@ impl ArrowType {
             ) => unreachable!("numeric pairs resolve in the numeric rules above"),
         }
     }
+}
+
+/// # Dt
+///
+/// Temporal *Apache Arrow* types supported by Minarrow.
+///
+/// ## Role
+/// - Held by `ArrowType::DateTime` on a `Field`, and by `DatetimeArray` as its `dtype`.
+/// - Gives the temporal type one definition, shared by the schema and the array.
+/// - Distinguishes dates, times of day, durations, timestamps and intervals that
+///   share the same physical storage.
+///
+/// ## Storage
+/// - `Date32`, `Time32` and `Duration32` use 32-bit storage, `DatetimeArray<i32>`.
+/// - `Date64`, `Time64`, `Duration64` and `Timestamp` use 64-bit storage, `DatetimeArray<i64>`.
+/// - `Date32` values are days since the UNIX epoch, and `Date64` values are milliseconds
+///   since the UNIX epoch.
+/// - `Interval` is available for schema descriptions. `DatetimeArray` does not hold
+///   interval data.
+///
+/// ## Timezones
+/// The optional timezone on `Timestamp` is an Arrow timezone string, such as "UTC" or
+/// "America/New_York". Stored values remain UTC, and the timezone affects only
+/// interpretation and display.
+#[cfg(feature = "datetime")]
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+pub enum Dt {
+    Date32,
+    Date64,
+    Time32(TimeUnit),
+    Time64(TimeUnit),
+    Duration32(TimeUnit),
+    Duration64(TimeUnit),
+    Timestamp(TimeUnit, Option<String>),
+    Interval(IntervalUnit),
 }
 
 /// # CategoricalIndexType
