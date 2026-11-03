@@ -1235,39 +1235,29 @@ impl<T: Integer> MaskedArray for StringArray<T> {
     /// Pre-calculates total byte requirements for efficient memory allocation
     /// and builds the array with consistent offset spacing.
     fn fill(value: Self::LogicalType, count: usize) -> Self {
-        let total_bytes = value.len() * count;
-        let mut array = StringArray::<T>::with_capacity(count, total_bytes, false);
-
-        // Extend data and offsets to proper length
-        array.data.resize(total_bytes, 0);
-        array.offsets.resize(count + 1, T::from_usize(0));
-
         let string_bytes = value.as_bytes();
         let string_len = string_bytes.len();
+        let total_bytes = string_len * count;
+        let mut array = StringArray::<T>::with_capacity(count, total_bytes, false);
 
-        // Now use unchecked operations since we have proper length
-        for i in 0..count {
-            let byte_offset = i * string_len;
-
-            // Set the offset for this string
-            {
-                let offsets = array.offsets.as_mut_slice();
-                offsets[i] = T::from_usize(byte_offset);
-            }
-
-            // Copy string bytes
-            {
-                let data = array.data.as_mut_slice();
-                data[byte_offset..byte_offset + string_len].copy_from_slice(string_bytes);
+        // Copy the first string, then double the filled region with one bulk
+        // copy per step until the buffer is full.
+        array.data.resize(total_bytes, 0);
+        let data = array.data.as_mut_slice();
+        if total_bytes > 0 {
+            data[..string_len].copy_from_slice(string_bytes);
+            let mut filled = string_len;
+            while filled < total_bytes {
+                let step = filled.min(total_bytes - filled);
+                data.copy_within(..step, filled);
+                filled += step;
             }
         }
 
-        // Set final offset
-        {
-            let offsets = array.offsets.as_mut_slice();
-            offsets[count] = T::from_usize(total_bytes);
-        }
-
+        array.offsets = (0..=count)
+            .map(|i| T::from_usize(i * string_len))
+            .collect::<Vec64<T>>()
+            .into();
         array
     }
 }

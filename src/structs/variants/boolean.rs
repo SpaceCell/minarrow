@@ -913,13 +913,8 @@ impl MaskedArray for BooleanArray<()> {
     /// Creates a new boolean array filled with the specified value repeated `count` times.
     fn fill(value: Self::LogicalType, count: usize) -> Self {
         let mut array = BooleanArray::with_capacity(count, false);
-        // Extend the length to accommodate new elements
-        array.data.resize(count, false);
+        array.data = Bitmask::new_set_all(count, value);
         array.len = count;
-        // Now use unchecked operations since we have proper length
-        for i in 0..count {
-            unsafe { array.data.set_unchecked(i, value) };
-        }
         array
     }
 }

@@ -656,11 +656,7 @@ impl<T: Integer> MaskedArray for DecimalArray<T> {
     /// for arrays with specific precision and scale.
     fn fill(value: T, count: usize) -> Self {
         let mut array = Self::default();
-        array.data.reserve(count);
-        array.data.resize(count, Default::default());
-        for i in 0..count {
-            unsafe { array.set_unchecked(i, value) };
-        }
+        array.data.resize(count, value);
         array
     }
 }

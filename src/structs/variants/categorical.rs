@@ -1224,8 +1224,6 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
     /// for repeated categorical values.
     fn fill(value: Self::LogicalType, count: usize) -> Self {
         let mut array = CategoricalArray::<T>::from_vec64(crate::Vec64::with_capacity(count), None);
-        // Extend the length to accommodate new elements
-        array.data.resize(count, T::from_usize(0));
         // Fresh array; dictionary holds one entry once we intern.
         let owned_value = value.to_string();
         #[cfg(not(feature = "shared_dict"))]
@@ -1236,13 +1234,7 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
              of the categorical integer. Consider a CategoricalArray<T> with a \
              greater `T` capacity.",
         );
-        // Now use unchecked operations since we have proper length
-        for i in 0..count {
-            {
-                let data = array.data.as_mut_slice();
-                data[i] = dict_index;
-            }
-        }
+        array.data.resize(count, dict_index);
         array
     }
 }

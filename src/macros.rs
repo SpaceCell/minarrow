@@ -589,13 +589,7 @@ macro_rules! impl_masked_array {
             /// Creates a new array filled with the specified value repeated `count` times.
             fn fill(value: Self::LogicalType, count: usize) -> Self {
                 let mut array = Self::default();
-                array.data.reserve(count);
-                // Extend the length to accommodate new elements
-                array.data.resize(count, Default::default());
-                // Now use unchecked operations since we have proper length
-                for i in 0..count {
-                    unsafe { array.set_unchecked(i, value) };
-                }
+                array.data.resize(count, value);
                 array
             }
 
