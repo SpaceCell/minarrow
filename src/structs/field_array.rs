@@ -546,7 +546,7 @@ impl Display for FieldArray {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "\nFieldArray \"{}\" [{} values] (dtype: {:?})",
+            "\nFieldArray \"{}\" [{} values] (dtype: {})",
             self.field.name,
             self.array.len(),
             self.field.dtype
@@ -579,7 +579,7 @@ fn format_field_array_with_timezone(
     if let Array::TemporalArray(TemporalArray::Datetime64(dt)) = arr {
         writeln!(
             f,
-            "DatetimeArray [{} values] (dtype: datetime[{:?}], timezone: {}, nulls: {})",
+            "DatetimeArray [{} values] (dtype: datetime[{}], timezone: {}, nulls: {})",
             len,
             dt.time_unit(),
             timezone,
@@ -600,7 +600,7 @@ fn format_field_array_with_timezone(
     } else if let Array::TemporalArray(TemporalArray::Datetime32(dt)) = arr {
         writeln!(
             f,
-            "DatetimeArray [{} values] (dtype: datetime[{:?}], timezone: {}, nulls: {})",
+            "DatetimeArray [{} values] (dtype: datetime[{}], timezone: {}, nulls: {})",
             len,
             dt.time_unit(),
             timezone,

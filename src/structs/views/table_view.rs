@@ -600,7 +600,7 @@ impl Display for TableV {
         for col_idx in 0..n_cols {
             if let Some(_col_view) = self.cols.get(col_idx) {
                 let hdr = if let Some(f) = self.fields.get(col_idx) {
-                    format!("{}:{:?}", f.name, f.dtype)
+                    format!("{}:{}", f.name, f.dtype)
                 } else {
                     "unknown".to_string()
                 };

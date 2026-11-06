@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Breaking
 
 * `SuperArrayV::field` is now `Option<Arc<Field>>`, matching `SuperArray`.
-* `SuperArray::resolve_batches` and `SuperArrayV::resolve_batches` without a field now resolve to the first chunk's type widened through `ArrowType::upcast` by the later chunks that share a common type with it. For example, Int64 and Float64 chunks resolve to Float64. 
+* `SuperArray::resolve_batches` and `SuperArrayV::resolve_batches` without a field now resolve to the first chunk's type widened through `ArrowType::upcast` by the later chunks that share a common type with it. For example, Int64 and Float64 chunks resolve to Float64.
    Note: They previously resolved to the first chunk's type, which narrowed later chunks and biased type discovery..
 * `Array::check_unify_batch_dtype` receives the target `ArrowType` instead of `Field`.
 
@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `ArrayV` equality involving cached nulls. Identical windows previously compared unequal when (only) one had computed its cached null count.
 * `Bitmask::extend` length handling has been corrected for appended bits, which applies to null masks in `SuperArrayV` consolidation.
 * `TryFrom<Value>` for `Array` and `ArrayV` now resolves `SuperArrayView` chunks to the field type, or to the resolved common type without a field, when `allow_mixed_array_batches` is enabled. Mixed chunk types previously caused a panic.
+* The `Display` output of `Table`, `TableV`, `SuperArray`, `FieldArray` and `DatetimeArray` now writes column types and time units through their `Display` implementations. They were previously written through `Debug`, and therefore builds that compile `Debug` formatting as empty, such as with `-Zfmt-debug=none`, printed headers without their types. Temporal column types in table headers now read as their `Display` form - for example `Timestamp(Milliseconds)`.
 
 ## Optimisations
 * `TryFrom<Value> for ArrayV` from one-column `TableV` values and for views inside `BoxValue` and `ArcValue` are now zero-copy.
