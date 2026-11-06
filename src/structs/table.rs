@@ -1195,7 +1195,7 @@ impl Display for Table {
         let mut widths: Vec<usize> = Vec::with_capacity(self.cols.len());
 
         for col in &self.cols {
-            let hdr = format!("{}:{:?}", col.field.name, col.field.dtype);
+            let hdr = format!("{}:{}", col.field.name, col.field.dtype);
             widths.push(hdr.len());
             headers.push(hdr);
         }

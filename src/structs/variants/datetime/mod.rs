@@ -457,7 +457,7 @@ where
         let nulls = self.null_count();
         writeln!(
             f,
-            "DatetimeArray [{} values] (dtype: datetime[{:?}], nulls: {})",
+            "DatetimeArray [{} values] (dtype: datetime[{}], nulls: {})",
             len,
             self.time_unit(),
             nulls

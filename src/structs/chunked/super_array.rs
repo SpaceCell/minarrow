@@ -1652,9 +1652,9 @@ impl Display for SuperArray {
             .map(|f| f.name.as_str())
             .unwrap_or("<unnamed>");
         let dtype = if let Some(chunk) = self.chunks.first() {
-            format!("{:?}", chunk.arrow_type())
+            format!("{}", chunk.arrow_type())
         } else if let Some(ref field) = self.field {
-            format!("{:?}", field.dtype)
+            format!("{}", field.dtype)
         } else {
             "<empty>".to_string()
         };
