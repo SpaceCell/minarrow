@@ -2203,7 +2203,7 @@ mod tests {
         assert_eq!(empty.len(), 0);
     }
 
-    // Without `shared_dict`, categorical gathers hold only the gathered values
+    // Without `shared_dict`, categorical gather only holds the extracted values
     // in their dictionary, in order of first appearance.
     #[cfg(not(feature = "shared_dict"))]
     #[test]
