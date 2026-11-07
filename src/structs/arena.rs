@@ -829,8 +829,49 @@ impl AAMaker {
 /// # Panics
 /// Panics if `chunks` is empty.
 #[cfg(feature = "chunked")]
+/// Dictionary values of a categorical array, or `None` for other arrays.
+fn categorical_values(array: &Array) -> Option<&[String]> {
+    match array {
+        #[cfg(feature = "default_categorical_8")]
+        Array::TextArray(TextArray::Categorical8(a)) => Some(a.unique_values()),
+        #[cfg(feature = "extended_categorical")]
+        Array::TextArray(TextArray::Categorical16(a)) => Some(a.unique_values()),
+        Array::TextArray(TextArray::Categorical32(a)) => Some(a.unique_values()),
+        #[cfg(feature = "extended_categorical")]
+        Array::TextArray(TextArray::Categorical64(a)) => Some(a.unique_values()),
+        _ => None,
+    }
+}
+
+/// True when the chunks of one column are not categorical, or are
+/// categorical with equal dictionary values. The arena copies codes as they
+/// are under the first chunk's dictionary, which is valid only in that case.
+fn codes_interchangeable<'a>(mut chunks: impl Iterator<Item = &'a Array>) -> bool {
+    let Some(first) = chunks.next() else { return true };
+    match categorical_values(first) {
+        None => true,
+        Some(values) => chunks.all(|chunk| categorical_values(chunk) == Some(values)),
+    }
+}
+
+/// Joins chunks through `Array::concat_array`, which expresses each
+/// categorical chunk's codes against the combined dictionary.
+fn concat_chunks(chunks: &[&Array]) -> Array {
+    let mut joined = chunks[0].clone();
+    for chunk in &chunks[1..] {
+        joined.concat_array(chunk);
+    }
+    joined
+}
+
 pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> Array {
     assert!(!chunks.is_empty(), "consolidate called on empty chunk set");
+
+    // Categorical chunks with differing dictionaries need their codes
+    // remapped, which the arena's buffer copy does not do.
+    if !codes_interchangeable(chunks.iter().copied()) {
+        return concat_chunks(chunks);
+    }
 
     let n_rows: usize = chunks.iter().map(|a| a.len()).sum();
     let mask_bytes = (n_rows + 7) / 8;
@@ -1221,6 +1262,28 @@ pub(crate) fn consolidate_tables_arena(
 
     let n_cols = tables[0].cols.len();
     let n_rows: usize = tables.iter().map(|t| t.n_rows).sum();
+
+    // Categorical columns with differing dictionaries across the tables need
+    // their codes remapped, which the arena's buffer copy does not do. Those
+    // tables join column by column through `Array::concat_array`.
+    if !(0..n_cols).all(|c| codes_interchangeable(tables.iter().map(|t| &t.cols[c].array))) {
+        let cols = (0..n_cols)
+            .map(|c| {
+                let chunks: Vec<&Array> = tables.iter().map(|t| &t.cols[c].array).collect();
+                let array = concat_chunks(&chunks);
+                let null_count = array.null_count();
+                crate::FieldArray { field: tables[0].cols[c].field.clone(), array, null_count }
+            })
+            .collect();
+        let table = Table::build(cols, n_rows, name);
+        #[cfg(feature = "table_metadata")]
+        let table = {
+            let mut t = table;
+            t.metadata = tables[0].metadata.clone();
+            t
+        };
+        return table;
+    }
     let mask_bytes = (n_rows + 7) / 8;
 
     let schema: Vec<Arc<crate::Field>> = tables[0].cols.iter().map(|c| c.field.clone()).collect();

@@ -2351,6 +2351,27 @@ mod tests {
             }
         }
     }
+
+    #[cfg(feature = "default_categorical_8")]
+    #[test]
+    fn consolidate_remaps_categorical_dictionaries_that_differ() {
+        use crate::{CategoricalArray, TextArray};
+        use crate::traits::consolidate::Consolidate;
+        use std::sync::Arc;
+        let side = |values: &[&str]| {
+            let array = Array::TextArray(TextArray::Categorical8(Arc::new(
+                CategoricalArray::<u8>::from_values(values.iter().copied()),
+            )));
+            Table::new("t", Some(vec![crate::FieldArray::from_arr("side", array)]))
+        };
+        let joined = vec![side(&["N", "B", "A"]), side(&["A", "A", "B"]), side(&["B", "N"])].consolidate();
+        let Array::TextArray(TextArray::Categorical8(c)) = &joined.cols[0].array else {
+            panic!("expected a categorical column")
+        };
+        let values: Vec<&str> = (0..c.len()).map(|i| c.get_str(i).unwrap()).collect();
+        assert_eq!(values, ["N", "B", "A", "A", "A", "B", "B", "N"]);
+    }
+
 }
 
 #[cfg(test)]

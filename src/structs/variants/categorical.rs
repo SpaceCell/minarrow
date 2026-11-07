@@ -118,6 +118,81 @@ pub struct CategoricalArray<T: Integer> {
 }
 
 impl<T: Integer> CategoricalArray<T> {
+    /// Prepares `self`'s dictionary to receive codes from `other`.
+    ///
+    /// Returns `None` when `other`'s codes are valid against `self`'s
+    /// dictionary as they are, and otherwise the code in `self`'s dictionary
+    /// for each code of `other`'s dictionary.
+    ///
+    /// ## Behaviour
+    /// - Equal dictionaries, and dictionaries of which `other`'s is a prefix
+    ///   of `self`'s, take `other`'s codes as they are.
+    /// - When `self`'s dictionary is a prefix of `other`'s, `self` adopts
+    ///   `other`'s dictionary and takes its codes as they are.
+    /// - Otherwise the values of `other`'s dictionary that `self`'s lacks are
+    ///   added to `self`'s, and `other`'s codes are remapped.
+    /// - Returns `MinarrowError` when the combined dictionary exceeds the
+    ///   capacity of `T`.
+    fn code_map(&mut self, other: &Self) -> Result<Option<Vec<T>>, MinarrowError> {
+        #[cfg(feature = "shared_dict")]
+        {
+            if self.dictionary.shares_with(&other.dictionary) {
+                return Ok(None);
+            }
+        }
+        let (own, theirs) = (self.unique_values(), other.unique_values());
+        if theirs.len() <= own.len() && own[..theirs.len()] == *theirs {
+            return Ok(None);
+        }
+        if own.len() < theirs.len() && theirs[..own.len()] == *own {
+            #[cfg(feature = "shared_dict")]
+            {
+                self.dictionary = other.dictionary.clone();
+            }
+            #[cfg(not(feature = "shared_dict"))]
+            {
+                self.unique_values = other.unique_values.clone();
+            }
+            return Ok(None);
+        }
+        #[cfg(feature = "shared_dict")]
+        let map = other
+            .dictionary
+            .values()
+            .iter()
+            .map(|value| match self.dictionary.lookup(value) {
+                Some(code) => Ok(code),
+                None => self.dictionary.add_cat(value).map_err(MinarrowError::from),
+            })
+            .collect::<Result<Vec<T>, MinarrowError>>()?;
+        #[cfg(not(feature = "shared_dict"))]
+        let map = other
+            .unique_values
+            .iter()
+            .map(|value| add_category(&mut self.unique_values, value))
+            .collect();
+        Ok(Some(map))
+    }
+
+    /// Appends `other`'s codes in `offset..offset + len` to `self`, expressed
+    /// against `self`'s dictionary through `code_map`. Null masks are left
+    /// to the caller.
+    fn append_codes(&mut self, other: &Self, offset: usize, len: usize) -> Result<(), MinarrowError> {
+        let map = self.code_map(other)?;
+        let codes = &other.data()[offset..offset + len];
+        match map {
+            None => self.data_mut().extend_from_slice(codes),
+            Some(map) => {
+                let data = self.data_mut();
+                data.reserve(len);
+                for &code in codes {
+                    data.push(map[code.to_usize()]);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Constructs a new CategoricalArray
     #[inline]
     pub fn new(
@@ -947,7 +1022,8 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
             return;
         }
 
-        self.data_mut().extend_from_slice(other.data());
+        self.append_codes(other, 0, other_len)
+            .unwrap_or_else(|err| panic!("CategoricalArray::append_array: {err}"));
 
         match (self.null_mask_mut(), other.null_mask()) {
             (Some(self_mask), Some(other_mask)) => {
@@ -984,8 +1060,7 @@ impl<T: Integer> MaskedArray for CategoricalArray<T> {
         }
         let orig_len = self.len();
 
-        self.data_mut()
-            .extend_from_slice(&other.data()[offset..offset + len]);
+        self.append_codes(other, offset, len)?;
 
         match (self.null_mask_mut(), other.null_mask()) {
             (Some(self_mask), Some(other_mask)) => {
@@ -1500,22 +1575,14 @@ impl<T: Integer> Shape for CategoricalArray<T> {
 }
 
 impl<T: Integer> Concatenate for CategoricalArray<T> {
-    /// Concatenates `other` onto `self` with three dictionary-handling paths:
+    /// Concatenates `other` onto `self`, expressing `other`'s codes against
+    /// `self`'s dictionary.
     ///
-    /// 1. **Shared Arc** (`Arc::ptr_eq`): both batches already point at the
-    ///    same dictionary. Codes are mutually meaningful, so this is a pure
-    ///    buffer concat with no dictionary work.
-    /// 2. **Prefix**: one dictionary is a prefix of the other. Codes from
-    ///    the shorter side decode identically against the longer side, so
-    ///    the result adopts the longer Arc and the data buffer is appended
-    ///    without remapping.
-    /// 3. **Divergent**: both dictionaries grew independently. Append the
-    ///    missing entries into `self`'s dictionary via `intern` (O(1) per
-    ///    string) and remap `other`'s codes into the combined space.
-    ///
-    /// Without `shared_dict`, equal dictionaries take the first path. On the
-    /// paths that append codes as they are, consecutive windows over one
-    /// allocation join without copying.
+    /// Equal and prefix dictionaries take `other`'s codes as they are, and
+    /// divergent dictionaries add `other`'s missing values to `self`'s and
+    /// remap its codes, as `code_map` describes. Consecutive windows over
+    /// one allocation join without copying. Returns `MinarrowError` when the
+    /// combined dictionary exceeds the capacity of the index type.
     fn concat(
         mut self,
         other: Self,
@@ -1527,59 +1594,11 @@ impl<T: Integer> Concatenate for CategoricalArray<T> {
             return Ok(self);
         }
 
-        #[cfg(feature = "shared_dict")]
-        {
-            let share = self.dictionary.shares_with(&other.dictionary);
-            if share {
-                // Same dictionary instance: pure buffer concat.
-                self.append_array(&other);
-                return Ok(self);
-            } else if other.dictionary.values().len() <= self.dictionary.values().len()
-                && other.dictionary.is_prefix_of(&self.dictionary)
-            {
-                // `other`'s codes are already valid against the longer `self` dictionary.
-                self.append_array(&other);
-                return Ok(self);
-            } else if self.dictionary.is_prefix_of(&other.dictionary) {
-                // `self`'s codes are valid against the longer `other` dictionary.
-                // Adopt `other`'s dictionary and append `other`'s data verbatim.
-                self.dictionary = other.dictionary.clone();
-                self.append_array(&other);
-                return Ok(self);
-            } else {
-                // Divergent: bring missing entries from other into self's
-                // dictionary, then remap other's codes through the union.
-                let n_other_codes = other.dictionary.values().len();
-                let mut remap: Vec<T> = Vec::with_capacity(n_other_codes);
-                for other_value in other.dictionary.values().iter() {
-                    let code = self.dictionary.add_cat(other_value)?;
-                    remap.push(code);
-                }
-                for &other_code in other.data.iter() {
-                    let mapped = remap[other_code.to_usize()];
-                    self.data.push(mapped);
-                }
-            }
+        // Consecutive windows over one allocation join without copying.
+        if let Some(joined) = self.adjacent_window(&other) {
+            return Ok(joined);
         }
-        #[cfg(not(feature = "shared_dict"))]
-        {
-            // Codes appended against an equal dictionary need no remapping.
-            if self.unique_values == other.unique_values {
-                self.append_array(&other);
-                return Ok(self);
-            }
-            // Without `shared_dict` each categorical owns its dictionary
-            // outright; merge by interning every entry of `other`'s
-            // dictionary into `self`'s, then remap `other`'s codes.
-            let mut remap: Vec<T> = Vec::with_capacity(other.unique_values.len());
-            for other_value in other.unique_values.iter() {
-                remap.push(add_category(&mut self.unique_values, other_value));
-            }
-            for &other_code in other.data.iter() {
-                let mapped = remap[other_code.to_usize()];
-                self.data.push(mapped);
-            }
-        }
+        self.append_codes(&other, 0, other_len)?;
 
         // Merge null masks
         match (self.null_mask_mut(), other.null_mask()) {
@@ -2192,6 +2211,42 @@ mod tests {
         assert_eq!(arr.get_str(0), Some("b"));
         assert_eq!(arr.get_str(1), Some("b"));
         assert_eq!(arr.get_str(2), Some("c"));
+    }
+
+    fn strings<T: Integer>(arr: &CategoricalArray<T>) -> Vec<&str> {
+        (0..arr.len()).map(|i| arr.get_str(i).unwrap()).collect()
+    }
+
+    #[test]
+    fn append_array_remaps_divergent_dictionaries() {
+        let mut a = CategoricalArray::<u8>::from_values(["N", "B", "A"]);
+        let b = CategoricalArray::<u8>::from_values(["A", "A", "B", "C"]);
+        a.append_array(&b);
+        assert_eq!(strings(&a), ["N", "B", "A", "A", "A", "B", "C"]);
+    }
+
+    #[test]
+    fn append_array_adopts_a_longer_dictionary_with_this_as_prefix() {
+        let mut a = CategoricalArray::<u8>::from_values(["A", "B"]);
+        let b = CategoricalArray::<u8>::from_values(["A", "B", "N", "N"]);
+        a.append_array(&b);
+        assert_eq!(strings(&a), ["A", "B", "A", "B", "N", "N"]);
+    }
+
+    #[test]
+    fn append_range_remaps_divergent_dictionaries() {
+        let mut a = CategoricalArray::<u8>::from_values(["N", "B"]);
+        let b = CategoricalArray::<u8>::from_values(["A", "B", "A", "N"]);
+        a.append_range(&b, 1, 3).unwrap();
+        assert_eq!(strings(&a), ["N", "B", "B", "A", "N"]);
+    }
+
+    #[test]
+    fn concat_remaps_divergent_dictionaries() {
+        let a = CategoricalArray::<u8>::from_values(["N", "B", "A"]);
+        let b = CategoricalArray::<u8>::from_values(["A", "A", "B"]);
+        let joined = a.concat(b).unwrap();
+        assert_eq!(strings(&joined), ["N", "B", "A", "A", "A", "B"]);
     }
 }
 
