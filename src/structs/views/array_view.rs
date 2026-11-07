@@ -53,6 +53,7 @@ use crate::traits::print::MAX_PREVIEW;
 #[cfg(feature = "select")]
 use crate::traits::selection::{DataSelector, RowSelection};
 #[cfg(feature = "select")]
+#[cfg(not(feature = "shared_dict"))]
 use crate::structs::variants::categorical::compact_codes;
 use crate::traits::shape::Shape;
 use crate::enums::collections::numeric_array::NumericArray;
@@ -901,11 +902,10 @@ impl ArrayV {
     /// from the source mask. The value under a null position is
     /// unspecified, matching the mask-driven gathers.
     ///
-    /// Categorical outputs hold a new dictionary of only the gathered values,
-    /// compacted as
-    /// [`CategoricalArray::compact_dict`](crate::CategoricalArray::compact_dict)
-    /// describes. Under `shared_dict` the output is detached from the
-    /// source's sharing group, and its codes diverge from the source's codes.
+    /// Categorical outputs keep the source's dictionary and codes under
+    /// `shared_dict`. Otherwise, their dictionary is reduced to the gathered
+    /// values, in the same way as
+    /// [`CategoricalArray::compact_dict`](crate::CategoricalArray::compact_dict).
     #[cfg(feature = "select")]
     pub fn gather_indices(&self, indices: &[usize]) -> Array {
         use crate::{
@@ -956,15 +956,22 @@ impl ArrayV {
             }};
         }
 
-        // Gathers a categorical window's codes through `gather_idx_prim`.
-        // The output dictionary holds only the gathered values, through
+        // Gathers a categorical window's codes through `gather_idx_prim`. The
+        // output keeps the source's dictionary under `shared_dict`, and
+        // otherwise reduces its dictionary to the gathered values through
         // `compact_codes`.
         macro_rules! gather_idx_cat {
             ($self_:expr, $arr:expr, $indices:expr, $T:ty, $from:path) => {{
                 let (data, null_mask) = gather_idx_prim!($self_, $arr, $indices, $T);
-                let mut data = data;
-                let values = compact_codes(&mut data, null_mask.as_ref(), $arr.unique_values());
-                $from(CategoricalArray::from_parts(data, values, null_mask))
+                #[cfg(feature = "shared_dict")]
+                let array = CategoricalArray::new_existing_dict(data, $arr.dictionary.clone(), null_mask);
+                #[cfg(not(feature = "shared_dict"))]
+                let array = {
+                    let mut data = data;
+                    let values = compact_codes(&mut data, null_mask.as_ref(), $arr.unique_values());
+                    CategoricalArray::from_parts(data, values, null_mask)
+                };
+                $from(array)
             }};
         }
 
@@ -1125,11 +1132,10 @@ impl ArrayV {
     /// and clear the padded bits afterwards, which costs a second index
     /// buffer and a mask combine that this function does not.
     ///
-    /// Categorical outputs hold a new dictionary of only the gathered values,
-    /// compacted as
-    /// [`CategoricalArray::compact_dict`](crate::CategoricalArray::compact_dict)
-    /// describes. Under `shared_dict` the output is detached from the
-    /// source's sharing group, and its codes diverge from the source's codes.
+    /// Categorical outputs keep the source's dictionary and codes under
+    /// `shared_dict`. Otherwise, their dictionary is reduced to the gathered
+    /// values, in the same way as
+    /// [`CategoricalArray::compact_dict`](crate::CategoricalArray::compact_dict).
     #[cfg(feature = "select")]
     pub fn gather_indices_padded(&self, indices: &[usize], pad: usize) -> Array {
         use crate::{
@@ -1180,15 +1186,22 @@ impl ArrayV {
             }};
         }
 
-        // Gathers a categorical window's codes through `gather_pad_prim`.
-        // The output dictionary holds only the gathered values, through
+        // Gathers a categorical window's codes through `gather_pad_prim`. The
+        // output keeps the source's dictionary under `shared_dict`, and
+        // otherwise reduces its dictionary to the gathered values through
         // `compact_codes`.
         macro_rules! gather_pad_cat {
             ($self_:expr, $arr:expr, $indices:expr, $pad:expr, $T:ty, $from:path) => {{
                 let (data, null_mask) = gather_pad_prim!($self_, $arr, $indices, $pad, $T);
-                let mut data = data;
-                let values = compact_codes(&mut data, null_mask.as_ref(), $arr.unique_values());
-                $from(CategoricalArray::from_parts(data, values, null_mask))
+                #[cfg(feature = "shared_dict")]
+                let array = CategoricalArray::new_existing_dict(data, $arr.dictionary.clone(), null_mask);
+                #[cfg(not(feature = "shared_dict"))]
+                let array = {
+                    let mut data = data;
+                    let values = compact_codes(&mut data, null_mask.as_ref(), $arr.unique_values());
+                    CategoricalArray::from_parts(data, values, null_mask)
+                };
+                $from(array)
             }};
         }
 
@@ -1354,11 +1367,10 @@ impl ArrayV {
     /// zero words skip 64 elements at a time and fully-set words copy their whole
     /// run with one slice copy. Null mask bits carry through to gathered positions.
     ///
-    /// Categorical outputs hold a new dictionary of only the gathered values,
-    /// compacted as
-    /// [`CategoricalArray::compact_dict`](crate::CategoricalArray::compact_dict)
-    /// describes. Under `shared_dict` the output is detached from the
-    /// source's sharing group, and its codes diverge from the source's codes.
+    /// Categorical outputs keep the source's dictionary and codes under
+    /// `shared_dict`. Otherwise, their dictionary is reduced to the gathered
+    /// values, in the same way as
+    /// [`CategoricalArray::compact_dict`](crate::CategoricalArray::compact_dict).
     #[cfg(feature = "select")]
     pub fn gather_mask(&self, mask: &Bitmask) -> Array {
         use crate::{
@@ -1447,15 +1459,22 @@ impl ArrayV {
             }};
         }
 
-        // Gathers a categorical window's codes through `gather_mask_prim`.
-        // The output dictionary holds only the gathered values, through
+        // Gathers a categorical window's codes through `gather_mask_prim`. The
+        // output keeps the source's dictionary under `shared_dict`, and
+        // otherwise reduces its dictionary to the gathered values through
         // `compact_codes`.
         macro_rules! gather_mask_cat {
             ($self_:expr, $arr:expr, $mask:expr, $kept:expr, $T:ty, $from:path) => {{
                 let (data, null_mask) = gather_mask_prim!($self_, $arr, $mask, $kept, $T);
-                let mut data = data;
-                let values = compact_codes(&mut data, null_mask.as_ref(), $arr.unique_values());
-                $from(CategoricalArray::from_parts(data, values, null_mask))
+                #[cfg(feature = "shared_dict")]
+                let array = CategoricalArray::new_existing_dict(data, $arr.dictionary.clone(), null_mask);
+                #[cfg(not(feature = "shared_dict"))]
+                let array = {
+                    let mut data = data;
+                    let values = compact_codes(&mut data, null_mask.as_ref(), $arr.unique_values());
+                    CategoricalArray::from_parts(data, values, null_mask)
+                };
+                $from(array)
             }};
         }
 
@@ -2184,8 +2203,9 @@ mod tests {
         assert_eq!(empty.len(), 0);
     }
 
-    // Categorical gathers hold only the gathered values in their dictionary,
-    // in order of first appearance.
+    // Without `shared_dict`, categorical gather only holds the extracted values
+    // in their dictionary, in order of first appearance.
+    #[cfg(not(feature = "shared_dict"))]
     #[test]
     fn test_categorical_gathers_hold_only_the_gathered_values() {
         use crate::CategoricalArray;
@@ -2221,6 +2241,42 @@ mod tests {
         mask.set(1, true);
         mask.set(3, true);
         check(view.gather_mask(&mask), &[None, Some("b")], &["b"]);
+    }
+
+    // Under `shared_dict`, categorical gathers keep the source's dictionary
+    // and sharing group.
+    #[cfg(feature = "shared_dict")]
+    #[test]
+    fn test_categorical_gathers_keep_the_shared_dictionary() {
+        use crate::CategoricalArray;
+
+        let mut arr = CategoricalArray::<u32>::from_values(["a", "b", "c", "a", "b"]);
+        arr.set_null(2);
+        let dictionary = arr.dictionary.clone();
+        // The view covers rows 1..5, which read ["b", null, "a", "b"].
+        let view = ArrayV::new(Array::from_categorical32(arr), 1, 4);
+
+        let check = |result: Array, values: &[Option<&str>]| {
+            let Array::TextArray(TextArray::Categorical32(out)) = &result else {
+                panic!("Expected Categorical32");
+            };
+            assert!(out.dictionary.shares_with(&dictionary));
+            assert_eq!(out.len(), values.len());
+            for (i, value) in values.iter().enumerate() {
+                assert_eq!(out.get_str(i), *value);
+            }
+        };
+
+        check(view.gather_indices(&[3, 0, 2]), &[Some("b"), Some("b"), Some("a")]);
+        check(view.gather_indices(&[1, 2]), &[None, Some("a")]);
+        check(
+            view.gather_indices_padded(&[2, usize::MAX, 0], usize::MAX),
+            &[Some("a"), None, Some("b")],
+        );
+        let mut mask = Bitmask::new_set_all(4, false);
+        mask.set(1, true);
+        mask.set(3, true);
+        check(view.gather_mask(&mask), &[None, Some("b")]);
     }
 
     // Decimal ArrayV Tests
