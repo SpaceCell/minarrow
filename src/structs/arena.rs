@@ -558,6 +558,16 @@ pub enum AAMaker {
         mask: Option<ArenaRegion>,
         unique_values: Vec64<String>,
     },
+    /// Dictionary-encoded categorical array that keeps the dictionary of
+    /// `source`, the first input array, without copying it. Consolidated
+    /// tables use it under `shared_dict`, where the inputs share one
+    /// dictionary and their codes are valid against it.
+    #[cfg(feature = "shared_dict")]
+    SharedCategorical {
+        indices: ArenaRegion,
+        mask: Option<ArenaRegion>,
+        source: Array,
+    },
     /// Datetime array with its temporal type.
     #[cfg(feature = "datetime")]
     Temporal {
@@ -748,6 +758,91 @@ impl AAMaker {
                     crate::CategoricalArray::new(
                         indices.to_buffer::<u64>(shared),
                         unique_values,
+                        m,
+                    ),
+                )))
+            }
+
+            #[cfg(feature = "shared_dict")]
+            (
+                ArrowType::Dictionary(CategoricalIndexType::UInt32),
+                AAMaker::SharedCategorical {
+                    indices,
+                    mask,
+                    source,
+                },
+            ) => {
+                let m = mask.map(|r| r.to_bitmask(shared, n_rows));
+                let Array::TextArray(TextArray::Categorical32(source)) = source else {
+                    unreachable!("the source of a Categorical32 region is a Categorical32")
+                };
+                Array::TextArray(TextArray::Categorical32(Arc::new(
+                    crate::CategoricalArray::new_existing_dict(
+                        indices.to_buffer::<u32>(shared),
+                        source.dictionary.clone(),
+                        m,
+                    ),
+                )))
+            }
+            #[cfg(all(feature = "shared_dict", feature = "default_categorical_8"))]
+            (
+                ArrowType::Dictionary(CategoricalIndexType::UInt8),
+                AAMaker::SharedCategorical {
+                    indices,
+                    mask,
+                    source,
+                },
+            ) => {
+                let m = mask.map(|r| r.to_bitmask(shared, n_rows));
+                let Array::TextArray(TextArray::Categorical8(source)) = source else {
+                    unreachable!("the source of a Categorical8 region is a Categorical8")
+                };
+                Array::TextArray(TextArray::Categorical8(Arc::new(
+                    crate::CategoricalArray::new_existing_dict(
+                        indices.to_buffer::<u8>(shared),
+                        source.dictionary.clone(),
+                        m,
+                    ),
+                )))
+            }
+            #[cfg(all(feature = "shared_dict", feature = "extended_categorical"))]
+            (
+                ArrowType::Dictionary(CategoricalIndexType::UInt16),
+                AAMaker::SharedCategorical {
+                    indices,
+                    mask,
+                    source,
+                },
+            ) => {
+                let m = mask.map(|r| r.to_bitmask(shared, n_rows));
+                let Array::TextArray(TextArray::Categorical16(source)) = source else {
+                    unreachable!("the source of a Categorical16 region is a Categorical16")
+                };
+                Array::TextArray(TextArray::Categorical16(Arc::new(
+                    crate::CategoricalArray::new_existing_dict(
+                        indices.to_buffer::<u16>(shared),
+                        source.dictionary.clone(),
+                        m,
+                    ),
+                )))
+            }
+            #[cfg(all(feature = "shared_dict", feature = "extended_categorical"))]
+            (
+                ArrowType::Dictionary(CategoricalIndexType::UInt64),
+                AAMaker::SharedCategorical {
+                    indices,
+                    mask,
+                    source,
+                },
+            ) => {
+                let m = mask.map(|r| r.to_bitmask(shared, n_rows));
+                let Array::TextArray(TextArray::Categorical64(source)) = source else {
+                    unreachable!("the source of a Categorical64 region is a Categorical64")
+                };
+                Array::TextArray(TextArray::Categorical64(Arc::new(
+                    crate::CategoricalArray::new_existing_dict(
+                        indices.to_buffer::<u64>(shared),
+                        source.dictionary.clone(),
                         m,
                     ),
                 )))
@@ -1031,20 +1126,28 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     })
                     .collect();
                 let aa = arena.write_slices::<u32>(&slices, n_rows, has_nulls);
-                let dict = if let Array::TextArray(TextArray::Categorical32(c)) = first {
-                    Vec64::from(c.unique_values().to_vec())
-                } else {
+                let AAMaker::Primitive { data, mask } = aa else {
                     unreachable!()
                 };
-                if let AAMaker::Primitive { data, mask } = aa {
+                // Under `shared_dict` the output keeps the first input's dictionary.
+                #[cfg(feature = "shared_dict")]
+                let region = AAMaker::SharedCategorical {
+                    indices: data,
+                    mask,
+                    source: Array::clone(first),
+                };
+                #[cfg(not(feature = "shared_dict"))]
+                let region = {
+                    let Array::TextArray(TextArray::Categorical32(c)) = first else {
+                        unreachable!()
+                    };
                     AAMaker::Categorical {
                         indices: data,
                         mask,
-                        unique_values: dict,
+                        unique_values: Vec64::from(c.unique_values().to_vec()),
                     }
-                } else {
-                    unreachable!()
-                }
+                };
+                region
             }
             #[cfg(feature = "default_categorical_8")]
             TextArray::Categorical8(_) => {
@@ -1059,20 +1162,28 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     })
                     .collect();
                 let aa = arena.write_slices::<u8>(&slices, n_rows, has_nulls);
-                let dict = if let Array::TextArray(TextArray::Categorical8(c)) = first {
-                    Vec64::from(c.unique_values().to_vec())
-                } else {
+                let AAMaker::Primitive { data, mask } = aa else {
                     unreachable!()
                 };
-                if let AAMaker::Primitive { data, mask } = aa {
+                // Under `shared_dict` the output keeps the first input's dictionary.
+                #[cfg(feature = "shared_dict")]
+                let region = AAMaker::SharedCategorical {
+                    indices: data,
+                    mask,
+                    source: Array::clone(first),
+                };
+                #[cfg(not(feature = "shared_dict"))]
+                let region = {
+                    let Array::TextArray(TextArray::Categorical8(c)) = first else {
+                        unreachable!()
+                    };
                     AAMaker::Categorical {
                         indices: data,
                         mask,
-                        unique_values: dict,
+                        unique_values: Vec64::from(c.unique_values().to_vec()),
                     }
-                } else {
-                    unreachable!()
-                }
+                };
+                region
             }
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical16(_) => {
@@ -1087,20 +1198,28 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     })
                     .collect();
                 let aa = arena.write_slices::<u16>(&slices, n_rows, has_nulls);
-                let dict = if let Array::TextArray(TextArray::Categorical16(c)) = first {
-                    Vec64::from(c.unique_values().to_vec())
-                } else {
+                let AAMaker::Primitive { data, mask } = aa else {
                     unreachable!()
                 };
-                if let AAMaker::Primitive { data, mask } = aa {
+                // Under `shared_dict` the output keeps the first input's dictionary.
+                #[cfg(feature = "shared_dict")]
+                let region = AAMaker::SharedCategorical {
+                    indices: data,
+                    mask,
+                    source: Array::clone(first),
+                };
+                #[cfg(not(feature = "shared_dict"))]
+                let region = {
+                    let Array::TextArray(TextArray::Categorical16(c)) = first else {
+                        unreachable!()
+                    };
                     AAMaker::Categorical {
                         indices: data,
                         mask,
-                        unique_values: dict,
+                        unique_values: Vec64::from(c.unique_values().to_vec()),
                     }
-                } else {
-                    unreachable!()
-                }
+                };
+                region
             }
             #[cfg(feature = "extended_categorical")]
             TextArray::Categorical64(_) => {
@@ -1115,20 +1234,28 @@ pub(crate) fn consolidate_array_arena(chunks: &[&Array], dtype: &ArrowType) -> A
                     })
                     .collect();
                 let aa = arena.write_slices::<u64>(&slices, n_rows, has_nulls);
-                let dict = if let Array::TextArray(TextArray::Categorical64(c)) = first {
-                    Vec64::from(c.unique_values().to_vec())
-                } else {
+                let AAMaker::Primitive { data, mask } = aa else {
                     unreachable!()
                 };
-                if let AAMaker::Primitive { data, mask } = aa {
+                // Under `shared_dict` the output keeps the first input's dictionary.
+                #[cfg(feature = "shared_dict")]
+                let region = AAMaker::SharedCategorical {
+                    indices: data,
+                    mask,
+                    source: Array::clone(first),
+                };
+                #[cfg(not(feature = "shared_dict"))]
+                let region = {
+                    let Array::TextArray(TextArray::Categorical64(c)) = first else {
+                        unreachable!()
+                    };
                     AAMaker::Categorical {
                         indices: data,
                         mask,
-                        unique_values: dict,
+                        unique_values: Vec64::from(c.unique_values().to_vec()),
                     }
-                } else {
-                    unreachable!()
-                }
+                };
+                region
             }
             TextArray::Null => AAMaker::Primitive {
                 data: ArenaRegion::EMPTY,
@@ -1440,22 +1567,28 @@ pub(crate) fn consolidate_tables_arena(
                         })
                         .collect();
                     let aa = arena.write_slices::<u32>(&slices, n_rows, has_nulls);
-                    let dict = if let Array::TextArray(TextArray::Categorical32(a)) =
-                        &tables[0].cols[col_idx].array
-                    {
-                        Vec64::from(a.unique_values().to_vec())
-                    } else {
+                    let AAMaker::Primitive { data, mask } = aa else {
                         unreachable!()
                     };
-                    if let AAMaker::Primitive { data, mask } = aa {
+                    // Under `shared_dict` the output keeps the first input's dictionary.
+                    #[cfg(feature = "shared_dict")]
+                    let region = AAMaker::SharedCategorical {
+                        indices: data,
+                        mask,
+                        source: Array::clone(&tables[0].cols[col_idx].array),
+                    };
+                    #[cfg(not(feature = "shared_dict"))]
+                    let region = {
+                        let Array::TextArray(TextArray::Categorical32(a)) = &tables[0].cols[col_idx].array else {
+                            unreachable!()
+                        };
                         AAMaker::Categorical {
                             indices: data,
                             mask,
-                            unique_values: dict,
+                            unique_values: Vec64::from(a.unique_values().to_vec()),
                         }
-                    } else {
-                        unreachable!()
-                    }
+                    };
+                    region
                 }
                 #[cfg(feature = "default_categorical_8")]
                 TextArray::Categorical8(_) => {
@@ -1472,22 +1605,28 @@ pub(crate) fn consolidate_tables_arena(
                         })
                         .collect();
                     let aa = arena.write_slices::<u8>(&slices, n_rows, has_nulls);
-                    let dict = if let Array::TextArray(TextArray::Categorical8(a)) =
-                        &tables[0].cols[col_idx].array
-                    {
-                        Vec64::from(a.unique_values().to_vec())
-                    } else {
+                    let AAMaker::Primitive { data, mask } = aa else {
                         unreachable!()
                     };
-                    if let AAMaker::Primitive { data, mask } = aa {
+                    // Under `shared_dict` the output keeps the first input's dictionary.
+                    #[cfg(feature = "shared_dict")]
+                    let region = AAMaker::SharedCategorical {
+                        indices: data,
+                        mask,
+                        source: Array::clone(&tables[0].cols[col_idx].array),
+                    };
+                    #[cfg(not(feature = "shared_dict"))]
+                    let region = {
+                        let Array::TextArray(TextArray::Categorical8(a)) = &tables[0].cols[col_idx].array else {
+                            unreachable!()
+                        };
                         AAMaker::Categorical {
                             indices: data,
                             mask,
-                            unique_values: dict,
+                            unique_values: Vec64::from(a.unique_values().to_vec()),
                         }
-                    } else {
-                        unreachable!()
-                    }
+                    };
+                    region
                 }
                 #[cfg(feature = "extended_categorical")]
                 TextArray::Categorical16(_) => {
@@ -1504,22 +1643,28 @@ pub(crate) fn consolidate_tables_arena(
                         })
                         .collect();
                     let aa = arena.write_slices::<u16>(&slices, n_rows, has_nulls);
-                    let dict = if let Array::TextArray(TextArray::Categorical16(a)) =
-                        &tables[0].cols[col_idx].array
-                    {
-                        Vec64::from(a.unique_values().to_vec())
-                    } else {
+                    let AAMaker::Primitive { data, mask } = aa else {
                         unreachable!()
                     };
-                    if let AAMaker::Primitive { data, mask } = aa {
+                    // Under `shared_dict` the output keeps the first input's dictionary.
+                    #[cfg(feature = "shared_dict")]
+                    let region = AAMaker::SharedCategorical {
+                        indices: data,
+                        mask,
+                        source: Array::clone(&tables[0].cols[col_idx].array),
+                    };
+                    #[cfg(not(feature = "shared_dict"))]
+                    let region = {
+                        let Array::TextArray(TextArray::Categorical16(a)) = &tables[0].cols[col_idx].array else {
+                            unreachable!()
+                        };
                         AAMaker::Categorical {
                             indices: data,
                             mask,
-                            unique_values: dict,
+                            unique_values: Vec64::from(a.unique_values().to_vec()),
                         }
-                    } else {
-                        unreachable!()
-                    }
+                    };
+                    region
                 }
                 #[cfg(feature = "extended_categorical")]
                 TextArray::Categorical64(_) => {
@@ -1536,22 +1681,28 @@ pub(crate) fn consolidate_tables_arena(
                         })
                         .collect();
                     let aa = arena.write_slices::<u64>(&slices, n_rows, has_nulls);
-                    let dict = if let Array::TextArray(TextArray::Categorical64(a)) =
-                        &tables[0].cols[col_idx].array
-                    {
-                        Vec64::from(a.unique_values().to_vec())
-                    } else {
+                    let AAMaker::Primitive { data, mask } = aa else {
                         unreachable!()
                     };
-                    if let AAMaker::Primitive { data, mask } = aa {
+                    // Under `shared_dict` the output keeps the first input's dictionary.
+                    #[cfg(feature = "shared_dict")]
+                    let region = AAMaker::SharedCategorical {
+                        indices: data,
+                        mask,
+                        source: Array::clone(&tables[0].cols[col_idx].array),
+                    };
+                    #[cfg(not(feature = "shared_dict"))]
+                    let region = {
+                        let Array::TextArray(TextArray::Categorical64(a)) = &tables[0].cols[col_idx].array else {
+                            unreachable!()
+                        };
                         AAMaker::Categorical {
                             indices: data,
                             mask,
-                            unique_values: dict,
+                            unique_values: Vec64::from(a.unique_values().to_vec()),
                         }
-                    } else {
-                        unreachable!()
-                    }
+                    };
+                    region
                 }
                 TextArray::Null => AAMaker::Primitive {
                     data: ArenaRegion::EMPTY,
@@ -1917,5 +2068,38 @@ mod tests {
             assert_eq!(arr.len(), 100);
             assert_eq!(arr.get(0), Some((i as i64) * 100));
         }
+    }
+
+    /// Consolidating tables with a categorical column over one shared
+    /// dictionary keeps that dictionary on the output, with the codes of
+    /// every input in order.
+    #[cfg(feature = "shared_dict")]
+    #[test]
+    fn test_consolidate_keeps_the_shared_categorical_dictionary() {
+        use crate::{CategoricalArray, Dictionary, FieldArray, Table};
+
+        let dictionary =
+            Dictionary::from_values(Vec64::from(vec!["A".to_string(), "B".to_string(), "N".to_string()]));
+        let table = |codes: &[u32]| {
+            let side = CategoricalArray::new_existing_dict(
+                Buffer::from_vec64(Vec64::from_slice(codes)),
+                dictionary.clone(),
+                None,
+            );
+            Table::new(
+                "book".to_string(),
+                Some(vec![FieldArray::from_arr(
+                    "side",
+                    Array::TextArray(TextArray::Categorical32(Arc::new(side))),
+                )]),
+            )
+        };
+        let (first, second) = (table(&[0, 1]), table(&[2, 0, 1]));
+        let out = consolidate_tables_arena(&[&first, &second], "book".to_string());
+        let Array::TextArray(TextArray::Categorical32(side)) = &out.cols[0].array else {
+            panic!("side stays a Categorical32");
+        };
+        assert!(side.dictionary.shares_with(&dictionary));
+        assert_eq!(side.data.as_slice(), &[0, 1, 2, 0, 1]);
     }
 }
