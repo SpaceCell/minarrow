@@ -685,6 +685,8 @@ impl Consolidate for Vec<Value> {
     /// Uses `Concatenate` to fold matching-typed Values together.
     /// A vector of tables consolidates as `Vec<Table>`, in one pass, and
     /// consecutive views of one array or table join without copying.
+    /// Other mixes of tables and table views consolidate into one table,
+    /// also in one pass.
     /// A single-element vector returns the element directly.
     /// An empty vector returns an empty VecValue.
     ///
@@ -726,6 +728,25 @@ impl Consolidate for Vec<Value> {
                 }
                 if let Some(joined) = joined {
                     return joined;
+                }
+
+                // Tables and table views that are not consecutive views of one
+                // parent consolidate as tables in one pass. Views over whole
+                // columns convert to tables without copying their buffers.
+                #[cfg(feature = "views")]
+                if self
+                    .iter()
+                    .all(|value| matches!(value, Value::Table(_) | Value::TableView(_)))
+                {
+                    let tables: Vec<Table> = self
+                        .into_iter()
+                        .map(|value| match value {
+                            Value::Table(table) => Arc::unwrap_or_clone(table),
+                            Value::TableView(view) => view.to_table(),
+                            _ => unreachable!("every value is verified to be a table or table view"),
+                        })
+                        .collect();
+                    return Value::Table(Arc::new(tables.consolidate()));
                 }
 
                 let mut iter = self.into_iter();

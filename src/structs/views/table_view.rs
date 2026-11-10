@@ -1165,4 +1165,52 @@ mod tests {
         assert_eq!((joined.offset, joined.len), (0, 6));
         assert!(joined.cols[0].array.ptr_eq(&table.cols[0].array));
     }
+
+    /// Column selections of separate tables, and a table among them,
+    /// consolidate into one table of the selected columns in order.
+    #[cfg(all(feature = "chunked", feature = "value_type", feature = "select"))]
+    #[test]
+    fn column_selections_of_separate_tables_consolidate_into_one_table() {
+        use crate::Value;
+        use crate::NumericArray;
+        use crate::traits::consolidate::Consolidate;
+
+        let batch = |a: [i32; 2], b: [i32; 2], c: [i32; 2]| {
+            Table::new(
+                "t".to_string(),
+                Some(vec![
+                    fa_i32!("a", a[0], a[1]),
+                    fa_i32!("b", b[0], b[1]),
+                    fa_i32!("c", c[0], c[1]),
+                ]),
+            )
+        };
+        let first = batch([1, 2], [10, 20], [100, 200]);
+        let second = batch([3, 4], [30, 40], [300, 400]);
+        let third = Table::new("t".to_string(), Some(vec![fa_i32!("a", 5), fa_i32!("c", 500)]));
+        let values = vec![
+            Value::TableView(Arc::new(first.c(&["a", "c"]))),
+            Value::TableView(Arc::new(second.c(&["a", "c"]))),
+            Value::Table(Arc::new(third)),
+        ];
+        let Value::Table(consolidated) = values.consolidate() else {
+            panic!("table views of separate tables consolidate into a table");
+        };
+        assert_eq!(consolidated.n_rows, 5);
+        let names: Vec<&str> = consolidated
+            .cols
+            .iter()
+            .map(|col| col.field.name.as_str())
+            .collect();
+        assert_eq!(names, ["a", "c"]);
+        let column = |i: usize| -> Vec<i32> {
+            let Array::NumericArray(NumericArray::Int32(values)) = &consolidated.cols[i].array
+            else {
+                panic!("int32 column");
+            };
+            values.data.as_slice().to_vec()
+        };
+        assert_eq!(column(0), [1, 2, 3, 4, 5]);
+        assert_eq!(column(1), [100, 200, 300, 400, 500]);
+    }
 }
