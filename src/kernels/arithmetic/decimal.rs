@@ -208,12 +208,20 @@ where
         let value = if mask.is_some_and(|m| !m.get(i)) {
             None
         } else {
-            let l = <T as From<L>>::from(lhs[i])
-                .checked_mul(&lhs_factor)
-                .ok_or_else(|| overflow_error("lhs rescale"))?;
             let r = <T as From<R>>::from(rhs[i])
                 .checked_mul(&rhs_factor)
                 .ok_or_else(|| overflow_error("rhs rescale"))?;
+            // A zero divisor produces null before the numerator is scaled up,
+            // and a scale-up overflow on that row does not return an error.
+            let zero_divisor = r == T::zero()
+                && matches!(op, ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv);
+            let l = if zero_divisor {
+                T::zero()
+            } else {
+                <T as From<L>>::from(lhs[i])
+                    .checked_mul(&lhs_factor)
+                    .ok_or_else(|| overflow_error("lhs rescale"))?
+            };
             match op {
                 ArithmeticOperator::Add => {
                     Some(l.checked_add(&r).ok_or_else(|| overflow_error("add"))?)
@@ -898,6 +906,18 @@ mod tests {
         let result =
             decimal_binary_into(&[1i32, 2], (9, 0), &[3i32, 4], (9, 0), Add, None, &mut out, None);
         assert!(matches!(result, Err(KernelError::LengthMismatch(_))));
+    }
+
+    #[test]
+    fn divide_by_zero_with_overflowing_numerator_produces_null() {
+        // The numerator scale-up of 10^2 overflows i32 on the first row, and the
+        // zero divisor produces null there
+        let a = dec32(&[i32::MAX, 300], 9, 0);
+        let b = dec32(&[0, 15], 9, 1);
+        let result = decimal_binary(&a, &b, Divide).unwrap();
+        assert!(result.is_null(0));
+        // 300 / 1.5 = 200.0 at scale 1
+        assert_eq!(result.get(1), Some(2000));
     }
 
     #[test]
