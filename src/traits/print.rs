@@ -114,8 +114,8 @@ pub(crate) fn value_to_string(arr: &Array, idx: usize) -> String {
         // ------------------------- datetime -----------------------------
         #[cfg(feature = "datetime")]
         Array::TemporalArray(inner) => match inner {
-            TemporalArray::Datetime32(dt) => format_datetime_value(dt, idx, None),
-            TemporalArray::Datetime64(dt) => format_datetime_value(dt, idx, None),
+            TemporalArray::Datetime32(dt) => format_datetime_value(dt, idx),
+            TemporalArray::Datetime64(dt) => format_datetime_value(dt, idx),
             TemporalArray::Null => "null".into(),
         },
         // ------------------------- fallback -----------------------------
@@ -292,104 +292,82 @@ pub(crate) fn print_ndarray_body<T: Float + Display>(
     }
 }
 
+/// Formats the datetime value at `idx` according to the array's `Dt`.
+///
+/// Under `datetime_ops`, dates and timestamps print in ISO form:
+/// - `Date32` and `Date64` print as `YYYY-MM-DD`.
+/// - `Timestamp` prints as `YYYY-MM-DD HH:MM:SS`, with fractional seconds
+///   only when they are not zero, using the fewest digits needed.
+/// - Timestamps with a time zone that resolves to an offset print the local
+///   wall time, the offset and the time zone text, as in
+///   `2026-01-01 19:30:00 +10:00:00 Australia/Sydney`.
+///   Unresolved time zones print the UTC value followed by the time zone text.
+/// - `Time32`, `Time64` and `Duration` values print through the `time` crate's
+///   `OffsetDateTime` display.
+///
+/// Without `datetime_ops`, and for values outside the supported date range, the
+/// raw integer prints with its time unit suffix. Nulls print as `null`.
 #[cfg(feature = "datetime")]
-pub(crate) fn format_datetime_value<T>(
-    arr: &DatetimeArray<T>,
-    idx: usize,
-    timezone: Option<&str>,
-) -> String
+pub(crate) fn format_datetime_value<T>(arr: &DatetimeArray<T>, idx: usize) -> String
 where
     T: Integer + std::fmt::Display,
 {
-    use crate::MaskedArray;
+    use crate::{MaskedArray, TimeUnit};
     if arr.is_null(idx) {
         return "null".into();
     }
 
     #[cfg(feature = "datetime_ops")]
     {
-        use crate::TimeUnit;
+        use crate::Dt;
         use time::OffsetDateTime;
+        use time::macros::format_description;
 
-        let utc_dt = match arr.time_unit() {
-            TimeUnit::Seconds => {
-                let secs = arr.data[idx].to_i64().unwrap();
-                OffsetDateTime::from_unix_timestamp(secs).ok()
-            }
-            TimeUnit::Milliseconds => {
-                let v = arr.data[idx].to_i64().unwrap();
-                OffsetDateTime::from_unix_timestamp_nanos((v as i128) * 1_000_000).ok()
-            }
-            TimeUnit::Microseconds => {
-                let v = arr.data[idx].to_i64().unwrap();
-                OffsetDateTime::from_unix_timestamp_nanos((v as i128) * 1_000).ok()
-            }
-            TimeUnit::Nanoseconds => {
-                let v = arr.data[idx].to_i64().unwrap();
-                OffsetDateTime::from_unix_timestamp_nanos(v as i128).ok()
-            }
-            TimeUnit::Days => {
-                use crate::structs::variants::datetime::UNIX_EPOCH_JULIAN_DAY;
-                let days = arr.data[idx].to_i64().unwrap();
-                time::Date::from_julian_day((days + UNIX_EPOCH_JULIAN_DAY) as i32)
-                    .ok()
-                    .and_then(|d| d.with_hms(0, 0, 0).ok())
-                    .map(|dt| dt.assume_utc())
-            }
-        };
+        // The conversion depends only on the time unit, and is shared with `DatetimeOps`.
+        let value = arr.data[idx].to_i64().unwrap();
+        if let Some(utc_dt) = DatetimeArray::<i64>::i64_to_datetime(value, arr.time_unit()) {
+            let date_format = format_description!("[year]-[month]-[day]");
+            let whole_seconds_format =
+                format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
+            let fractional_seconds_format =
+                format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond]");
 
-        if let Some(dt) = utc_dt {
-            if let Some(tz) = timezone {
-                format_with_timezone(dt, tz)
-            } else {
-                dt.to_string()
-            }
-        } else {
-            let v = arr.data[idx];
-            let suffix = match arr.time_unit() {
-                TimeUnit::Seconds => "s",
-                TimeUnit::Milliseconds => "ms",
-                TimeUnit::Microseconds => "µs",
-                TimeUnit::Nanoseconds => "ns",
-                TimeUnit::Days => "d",
+            let format_timestamp = |dt: OffsetDateTime| {
+                let text = if dt.nanosecond() == 0 {
+                    dt.format(whole_seconds_format)
+                } else {
+                    dt.format(fractional_seconds_format)
+                };
+                text.unwrap_or_else(|_| dt.to_string())
             };
-            format!("{v}{suffix}")
+
+            return match &arr.dtype {
+                Dt::Date32 | Dt::Date64 => utc_dt
+                    .format(date_format)
+                    .unwrap_or_else(|_| utc_dt.to_string()),
+                Dt::Timestamp(_, None) => format_timestamp(utc_dt),
+                Dt::Timestamp(_, Some(tz)) => match parse_timezone_offset(tz) {
+                    Some(offset) => {
+                        let local_dt = utc_dt.to_offset(offset);
+                        format!("{} {} {}", format_timestamp(local_dt), local_dt.offset(), tz)
+                    }
+                    // Time zones without a known offset print the UTC value and the time zone text.
+                    None => format!("{} {}", utc_dt, tz),
+                },
+                _ => utc_dt.to_string(),
+            };
         }
     }
-    #[cfg(not(feature = "datetime_ops"))]
-    {
-        use crate::TimeUnit;
 
-        if timezone.is_some() {
-            panic!(
-                "Timezone functionality requires the 'datetime_ops' feature. \
-                Enable it in Cargo.toml with: features = [\"datetime_ops\"]"
-            );
-        }
-
-        let v = arr.data[idx];
-        let suffix = match arr.time_unit() {
-            TimeUnit::Seconds => "s",
-            TimeUnit::Milliseconds => "ms",
-            TimeUnit::Microseconds => "µs",
-            TimeUnit::Nanoseconds => "ns",
-            TimeUnit::Days => "d",
-        };
-        format!("{v}{suffix}")
-    }
-}
-
-#[cfg(all(feature = "datetime", feature = "datetime_ops"))]
-fn format_with_timezone(utc_dt: time::OffsetDateTime, tz: &str) -> String {
-    // Try to parse as offset string first (e.g., "+05:00", "-08:00")
-    if let Some(offset) = parse_timezone_offset(tz) {
-        let local_dt = utc_dt.to_offset(offset);
-        format!("{} {}", local_dt, tz)
-    } else {
-        // For IANA timezones (e.g., "America/New_York"), we can't do full conversion
-        // without a timezone database. Just append the timezone name.
-        format!("{} {}", utc_dt, tz)
-    }
+    let v = arr.data[idx];
+    let suffix = match arr.time_unit() {
+        TimeUnit::Seconds => "s",
+        TimeUnit::Milliseconds => "ms",
+        TimeUnit::Microseconds => "µs",
+        TimeUnit::Nanoseconds => "ns",
+        TimeUnit::Days => "d",
+    };
+    format!("{v}{suffix}")
 }
 
 #[cfg(all(feature = "datetime", feature = "datetime_ops"))]
@@ -508,5 +486,185 @@ mod tests {
         assert!(display.contains("123.45"), "display should contain 123.45, got: {}", display);
         assert!(display.contains("678.90"), "display should contain 678.90, got: {}", display);
         assert!(display.contains("1.00"), "display should contain 1.00, got: {}", display);
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    fn timestamp_array(values: &[Option<i64>], dtype: crate::Dt) -> crate::DatetimeArray<i64> {
+        let data: Vec<i64> = values.iter().map(|v| v.unwrap_or(0)).collect();
+        let mut arr = crate::DatetimeArray::<i64>::from_slice(&data, dtype);
+        if values.iter().any(|v| v.is_none()) {
+            arr.null_mask = Some(crate::Bitmask::from_bools(
+                &values.iter().map(|v| v.is_some()).collect::<Vec<_>>(),
+            ));
+        }
+        arr
+    }
+
+    // Asserts the text through `Array::value_to_string`, `DatetimeArray` Display and
+    // `FieldArray` Display for each value of a 64-bit datetime array.
+    #[cfg(feature = "datetime_ops")]
+    fn assert_datetime_text(arr: crate::DatetimeArray<i64>, expected: &[&str]) {
+        // Values of zoned timestamps print the time zone text given to the array.
+        if let crate::Dt::Timestamp(_, Some(tz)) = &arr.dtype {
+            for text in expected.iter().filter(|text| **text != "null") {
+                assert!(text.ends_with(&format!(" {tz}")), "{text} should end with {tz}");
+            }
+        }
+
+        let list = format!("[{}]", expected.join(", "));
+        assert_eq!(arr.to_string().lines().last(), Some(list.as_str()));
+
+        let array = Array::from_datetime_i64(arr);
+        for (i, text) in expected.iter().enumerate() {
+            assert_eq!(array.value_to_string(i), *text);
+        }
+
+        let field_array = crate::FieldArray::from_arr("ts", array);
+        let display = field_array.to_string();
+        assert_eq!(display.lines().last(), Some(list.as_str()));
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_date32_prints_iso_date() {
+        use crate::{DatetimeArray, Dt};
+        let mut arr = DatetimeArray::<i32>::from_slice(&[20461, 0, -1], Dt::Date32);
+        arr.null_mask = Some(crate::Bitmask::from_bools(&[true, true, false]));
+        assert_eq!(arr.to_string().lines().last(), Some("[2026-01-08, 1970-01-01, null]"));
+
+        let array = Array::from_datetime_i32(arr);
+        assert_eq!(array.value_to_string(0), "2026-01-08");
+        assert_eq!(array.value_to_string(1), "1970-01-01");
+        assert_eq!(array.value_to_string(2), "null");
+
+        let display = crate::FieldArray::from_arr("d", array).to_string();
+        assert_eq!(display.lines().last(), Some("[2026-01-08, 1970-01-01, null]"));
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_date64_prints_iso_date() {
+        use crate::Dt;
+        let arr = timestamp_array(&[Some(1_767_830_400_000), None], Dt::Date64);
+        assert_datetime_text(arr, &["2026-01-08", "null"]);
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timestamp_seconds_prints_iso_datetime() {
+        use crate::{Dt, TimeUnit};
+        let arr = timestamp_array(
+            &[Some(1_767_259_800), None, Some(0)],
+            Dt::Timestamp(TimeUnit::Seconds, None),
+        );
+        assert_datetime_text(arr, &["2026-01-01 09:30:00", "null", "1970-01-01 00:00:00"]);
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timestamp_milliseconds_prints_fraction_when_not_zero() {
+        use crate::{Dt, TimeUnit};
+        let arr = timestamp_array(
+            &[Some(1_767_259_800_123), Some(1_767_259_800_000), None],
+            Dt::Timestamp(TimeUnit::Milliseconds, None),
+        );
+        assert_datetime_text(
+            arr,
+            &["2026-01-01 09:30:00.123", "2026-01-01 09:30:00", "null"],
+        );
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timestamp_microseconds_prints_fewest_fraction_digits() {
+        use crate::{Dt, TimeUnit};
+        let arr = timestamp_array(
+            &[Some(1_767_259_800_500_000), Some(1_767_259_800_000_000), Some(1_767_259_800_000_250)],
+            Dt::Timestamp(TimeUnit::Microseconds, None),
+        );
+        assert_datetime_text(
+            arr,
+            &["2026-01-01 09:30:00.5", "2026-01-01 09:30:00", "2026-01-01 09:30:00.00025"],
+        );
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timestamp_nanoseconds_prints_fraction_when_not_zero() {
+        use crate::{Dt, TimeUnit};
+        let arr = timestamp_array(
+            &[Some(1_767_259_800_000_000_001), Some(1_767_259_800_000_000_000), None],
+            Dt::Timestamp(TimeUnit::Nanoseconds, None),
+        );
+        assert_datetime_text(
+            arr,
+            &["2026-01-01 09:30:00.000000001", "2026-01-01 09:30:00", "null"],
+        );
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timestamp_with_offset_prints_local_time_and_offset() {
+        use crate::{Dt, TimeUnit};
+        let arr = timestamp_array(
+            &[Some(1_767_259_800_000_000), Some(1_767_259_800_250_000), None],
+            Dt::Timestamp(TimeUnit::Microseconds, Some("+05:00".into())),
+        );
+        assert_datetime_text(
+            arr,
+            &["2026-01-01 14:30:00 +05:00:00 +05:00", "2026-01-01 14:30:00.25 +05:00:00 +05:00", "null"],
+        );
+
+        let arr = timestamp_array(
+            &[Some(1_767_259_800)],
+            Dt::Timestamp(TimeUnit::Seconds, Some("-08:00".into())),
+        );
+        assert_datetime_text(arr, &["2026-01-01 01:30:00 -08:00:00 -08:00"]);
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timestamp_with_named_zone_prints_local_time_and_offset() {
+        use crate::{Dt, TimeUnit};
+        let arr = timestamp_array(
+            &[Some(1_767_259_800_000), None],
+            Dt::Timestamp(TimeUnit::Milliseconds, Some("Asia/Tokyo".into())),
+        );
+        assert_datetime_text(arr, &["2026-01-01 18:30:00 +09:00:00 Asia/Tokyo", "null"]);
+
+        let arr = timestamp_array(
+            &[Some(1_767_259_800)],
+            Dt::Timestamp(TimeUnit::Seconds, Some("UTC".into())),
+        );
+        assert_datetime_text(arr, &["2026-01-01 09:30:00 +00:00:00 UTC"]);
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timestamp_with_unresolved_zone_prints_utc_value_and_zone_text() {
+        use crate::{Dt, TimeUnit};
+        let arr = timestamp_array(
+            &[Some(1_767_259_800), None],
+            Dt::Timestamp(TimeUnit::Seconds, Some("Mars/Olympus_Mons".into())),
+        );
+        assert_datetime_text(
+            arr,
+            &["2026-01-01 9:30:00.0 +00:00:00 Mars/Olympus_Mons", "null"],
+        );
+    }
+
+    #[cfg(all(feature = "datetime", not(feature = "datetime_ops")))]
+    #[test]
+    fn test_datetime_prints_raw_value_without_datetime_ops() {
+        use crate::{DatetimeArray, Dt, TimeUnit};
+        let date = Array::from_datetime_i32(DatetimeArray::from_slice(&[20461], Dt::Date32));
+        assert_eq!(date.value_to_string(0), "20461d");
+        let ts = DatetimeArray::<i64>::from_slice(
+            &[1_767_259_800_000_000],
+            Dt::Timestamp(TimeUnit::Microseconds, None),
+        );
+        assert_eq!(ts.to_string().lines().last(), Some("[1767259800000000µs]"));
+        let ts = Array::from_datetime_i64(ts);
+        assert_eq!(ts.value_to_string(0), "1767259800000000µs");
     }
 }
