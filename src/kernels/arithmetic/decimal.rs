@@ -131,13 +131,15 @@ pub fn decimal_binary<T: Integer + 'static>(
 /// - Power returns `KernelError::UnsupportedType`.
 ///
 /// ## Null handling
-/// - `mask` is the merged null mask of both operands. Null positions write zero.
-/// - When `out_mask` is supplied, every position of it is written, and zero
-///   divisors produce null.
-/// - A null result without an `out_mask` returns `KernelError::InvalidArguments`.
+/// - `mask` is the merged null mask of both operands. Rows that it marks null
+///   write zero.
+/// - When `out_mask` is supplied, its first `len` positions are written: the
+///   bits of `mask`, or valid without one, with zero divisors marked null.
+/// - A zero divisor without an `out_mask` returns `KernelError::InvalidArguments`.
 ///
 /// ## Errors
-/// Overflow returns `KernelError::Overflow`, and mismatched lengths return
+/// Overflow returns `KernelError::Overflow`. Operands and `out` of different
+/// lengths, and masks shorter than the operands, return
 /// `KernelError::LengthMismatch`. On error, `out` holds a partial result.
 pub fn decimal_binary_into<L, R, T>(
     lhs: &[L],
@@ -161,6 +163,11 @@ where
             len,
             rhs.len(),
             out.len()
+        )));
+    }
+    if mask.is_some_and(|m| m.len() < len) || out_mask.as_deref().is_some_and(|m| m.len() < len) {
+        return Err(KernelError::LengthMismatch(format!(
+            "decimal_binary_into: a null mask is shorter than the {len} operand rows"
         )));
     }
 
@@ -204,72 +211,111 @@ where
         .and_then(checked_pow10::<T>)
         .ok_or_else(|| overflow_error("rhs scale factor"))?;
 
-    for i in 0..len {
-        let value = if mask.is_some_and(|m| !m.get(i)) {
-            None
-        } else {
-            let r = <T as From<R>>::from(rhs[i])
-                .checked_mul(&rhs_factor)
-                .ok_or_else(|| overflow_error("rhs rescale"))?;
-            // A zero divisor produces null before the numerator is scaled up,
-            // and a scale-up overflow on that row does not return an error.
-            let zero_divisor = r == T::zero()
-                && matches!(op, ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv);
-            let l = if zero_divisor {
-                T::zero()
-            } else {
-                <T as From<L>>::from(lhs[i])
-                    .checked_mul(&lhs_factor)
-                    .ok_or_else(|| overflow_error("lhs rescale"))?
-            };
-            match op {
-                ArithmeticOperator::Add => {
-                    Some(l.checked_add(&r).ok_or_else(|| overflow_error("add"))?)
-                }
-                ArithmeticOperator::Subtract => {
-                    Some(l.checked_sub(&r).ok_or_else(|| overflow_error("subtract"))?)
-                }
-                ArithmeticOperator::Multiply => {
-                    Some(l.checked_mul(&r).ok_or_else(|| overflow_error("multiply"))?)
-                }
-                // Division and remainder by zero produce null
-                ArithmeticOperator::Divide
-                | ArithmeticOperator::FloorDiv
-                | ArithmeticOperator::Remainder
-                    if r == T::zero() =>
-                {
-                    None
-                }
-                ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => {
-                    Some(l.checked_div(&r).ok_or_else(|| overflow_error("divide"))?)
-                }
-                // The remainder is derived from the checked quotient, because
-                // `PrimInt` does not include a checked remainder.
-                ArithmeticOperator::Remainder => {
-                    let q = l.checked_div(&r).ok_or_else(|| overflow_error("remainder"))?;
-                    Some(l - q * r)
-                }
-                ArithmeticOperator::Power => unreachable!("Power returns before the element loop"),
-            }
-        };
-
-        match (value, out_mask.as_deref_mut()) {
-            (Some(v), m) => {
-                out[i] = v;
-                if let Some(m) = m {
-                    m.set(i, true);
+    // The output mask receives the bits of `mask` in bulk, or all valid without
+    // one, and the loop clears the bit of each zero divisor.
+    if let Some(out_mask) = out_mask.as_deref_mut() {
+        match mask {
+            Some(mask) => {
+                let whole_bytes = len / 8;
+                out_mask.bits.as_mut_slice()[..whole_bytes]
+                    .copy_from_slice(&mask.bits.as_slice()[..whole_bytes]);
+                for i in whole_bytes * 8..len {
+                    out_mask.set(i, mask.get(i));
                 }
             }
-            (None, Some(m)) => {
-                out[i] = T::zero();
-                m.set(i, false);
-            }
-            (None, None) => {
-                return Err(KernelError::InvalidArguments(
-                    "decimal_binary_into: a null result requires an output mask".to_string(),
-                ));
-            }
+            None => out_mask.set_range(0, len, true),
         }
+    }
+
+    // Each operator runs its own loop over the rows that `mask` leaves valid,
+    // with `$value` producing the result of row `$i`, or `None` for a zero
+    // divisor.
+    macro_rules! run {
+        (|$i:ident| $value:expr) => {{
+            for $i in 0..len {
+                if mask.is_some_and(|m| !m.get($i)) {
+                    out[$i] = T::zero();
+                    continue;
+                }
+                match $value {
+                    Some(v) => out[$i] = v,
+                    None => {
+                        out[$i] = T::zero();
+                        match out_mask.as_deref_mut() {
+                            Some(m) => m.set($i, false),
+                            None => {
+                                return Err(KernelError::InvalidArguments(
+                                    "decimal_binary_into: a zero divisor requires an output mask"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }};
+    }
+    // Operands widen to `T`, and multiply by their scale factor when the
+    // operator rescales them.
+    macro_rules! lhs_at {
+        ($i:expr) => {
+            <T as From<L>>::from(lhs[$i])
+                .checked_mul(&lhs_factor)
+                .ok_or_else(|| overflow_error("lhs rescale"))?
+        };
+    }
+    macro_rules! rhs_at {
+        ($i:expr) => {
+            <T as From<R>>::from(rhs[$i])
+                .checked_mul(&rhs_factor)
+                .ok_or_else(|| overflow_error("rhs rescale"))?
+        };
+    }
+    let lhs_raw = |i: usize| <T as From<L>>::from(lhs[i]);
+    let rhs_raw = |i: usize| <T as From<R>>::from(rhs[i]);
+    let same_scale = lhs_factor == T::one() && rhs_factor == T::one();
+
+    match op {
+        ArithmeticOperator::Add if same_scale => run!(|i| Some(
+            lhs_raw(i).checked_add(&rhs_raw(i)).ok_or_else(|| overflow_error("add"))?
+        )),
+        ArithmeticOperator::Add => run!(|i| Some(
+            lhs_at!(i).checked_add(&rhs_at!(i)).ok_or_else(|| overflow_error("add"))?
+        )),
+        ArithmeticOperator::Subtract if same_scale => run!(|i| Some(
+            lhs_raw(i).checked_sub(&rhs_raw(i)).ok_or_else(|| overflow_error("subtract"))?
+        )),
+        ArithmeticOperator::Subtract => run!(|i| Some(
+            lhs_at!(i).checked_sub(&rhs_at!(i)).ok_or_else(|| overflow_error("subtract"))?
+        )),
+        // Multiply does not rescale its operands
+        ArithmeticOperator::Multiply => run!(|i| Some(
+            lhs_raw(i).checked_mul(&rhs_raw(i)).ok_or_else(|| overflow_error("multiply"))?
+        )),
+        // A zero divisor produces null before the numerator is scaled up,
+        // and a scale-up overflow on that row does not return an error. The
+        // divisor is not rescaled.
+        ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => run!(|i| {
+            let r = rhs_raw(i);
+            if r == T::zero() {
+                None
+            } else {
+                Some(lhs_at!(i).checked_div(&r).ok_or_else(|| overflow_error("divide"))?)
+            }
+        }),
+        // The remainder is derived from the checked quotient, because `PrimInt`
+        // does not include a checked remainder. The quotient overflows only for
+        // the minimum value divided by -1, where the remainder is 0. A zero
+        // divisor produces null.
+        ArithmeticOperator::Remainder if same_scale => run!(|i| {
+            let (l, r) = (lhs_raw(i), rhs_raw(i));
+            if r == T::zero() { None } else { Some(l.checked_div(&r).map_or(T::zero(), |q| l - q * r)) }
+        }),
+        ArithmeticOperator::Remainder => run!(|i| {
+            let (l, r) = (lhs_at!(i), rhs_at!(i));
+            if r == T::zero() { None } else { Some(l.checked_div(&r).map_or(T::zero(), |q| l - q * r)) }
+        }),
+        ArithmeticOperator::Power => unreachable!("Power returns before the element loop"),
     }
 
     Ok(result_type)
@@ -811,7 +857,7 @@ mod tests {
         mask: Option<&Bitmask>,
     ) -> (Vec<T>, Bitmask, (u8, i8)) {
         let mut out = vec![T::zero(); lhs.len()];
-        let mut out_mask = Bitmask::new_set_all(lhs.len(), true);
+        let mut out_mask = Bitmask::new_set_all(lhs.len(), false);
         let result_type = decimal_binary_into(
             lhs,
             lhs_type,
@@ -827,50 +873,105 @@ mod tests {
     }
 
     #[test]
-    fn into_matches_decimal_binary_for_every_operator() {
-        let mut a = DecimalArray::<i64>::with_capacity(4, true, 12, 2);
-        a.push(12345);
-        a.push_null();
-        a.push(-700);
-        a.push(1000);
-        let b = dec64(&[250, 10, 0, -3], 10, 3);
-        let mask = a.null_mask.clone();
-
-        for op in [Add, Subtract, Multiply, Divide, FloorDiv, Remainder] {
-            let expected = decimal_binary(&a, &b, op).unwrap();
-            let (out, out_mask, (p, s)) = into_result::<i64, i64, i64>(
-                a.data.as_slice(),
-                (12, 2),
-                b.data.as_slice(),
-                (10, 3),
-                op,
-                mask.as_ref(),
-            );
-            assert_eq!((p, s), (expected.precision, expected.scale), "{op:?}");
-            for i in 0..4 {
-                assert_eq!(out_mask.get(i), !expected.is_null(i), "{op:?} row {i}");
-                if out_mask.get(i) {
-                    assert_eq!(out[i], expected.data[i], "{op:?} row {i}");
-                }
-            }
+    fn into_matches_expected_values_for_every_operator() {
+        // 123.45, null, -7.00 and 10.00 at scale 2 against 0.250, 0.010, 0.000
+        // and -0.003 at scale 3
+        let lhs = [12345i64, 0, -700, 1000];
+        let mask = Bitmask::from_bools(&[true, false, true, true]);
+        let rhs = [250i64, 10, 0, -3];
+        let cases: [(ArithmeticOperator, (u8, i8), [Option<i64>; 4]); 6] = [
+            // 123.700, -7.000, 9.997
+            (Add, (13, 3), [Some(123700), None, Some(-7000), Some(9997)]),
+            // 123.200, -7.000, 10.003
+            (Subtract, (13, 3), [Some(123200), None, Some(-7000), Some(10003)]),
+            // 30.86250, 0.00000, -0.03000
+            (Multiply, (18, 5), [Some(3086250), None, Some(0), Some(-3000)]),
+            // 493.800, null for the zero divisor, -3333.333 truncated
+            (Divide, (12, 3), [Some(493800), None, None, Some(-3333333)]),
+            (FloorDiv, (12, 3), [Some(493800), None, None, Some(-3333333)]),
+            // 0.200, null for the zero divisor, 0.001 with the sign of the dividend
+            (Remainder, (12, 3), [Some(200), None, None, Some(1)]),
+        ];
+        for (op, result_type, expected) in cases {
+            let (out, out_mask, actual_type) =
+                into_result::<i64, i64, i64>(&lhs, (12, 2), &rhs, (10, 3), op, Some(&mask));
+            assert_eq!(actual_type, result_type, "{op:?}");
+            let actual: Vec<Option<i64>> =
+                (0..4).map(|i| out_mask.get(i).then(|| out[i])).collect();
+            assert_eq!(actual, expected, "{op:?}");
         }
     }
 
     #[test]
     fn into_widens_mixed_width_operands() {
-        // Decimal32 lhs against Decimal64 rhs equals both operands at i64
-        let l32 = [150i32, -25, 9];
-        let r64 = [1_000_000_000_000i64, 4, -3];
-        let l64 = dec64(&[150, -25, 9], 9, 1);
-        let r = dec64(&r64, 18, 2);
-
-        for op in [Add, Subtract, Multiply, Divide, Remainder] {
-            let expected = decimal_binary(&l64, &r, op).unwrap();
-            let (out, out_mask, (p, s)) =
-                into_result::<i32, i64, i64>(&l32, (9, 1), &r64, (18, 2), op, None);
+        // Decimal32 15.0, -2.5 and 0.9 at scale 1 against Decimal64 10^10, 0.04
+        // and -0.03 at scale 2, written as i64
+        let lhs = [150i32, -25, 9];
+        let rhs = [1_000_000_000_000i64, 4, -3];
+        let cases: [(ArithmeticOperator, (u8, i8), [i64; 3]); 5] = [
+            (Add, (18, 2), [1_000_000_001_500, -246, 87]),
+            (Subtract, (18, 2), [-999_999_998_500, -254, 93]),
+            (Multiply, (18, 3), [150_000_000_000_000, -100, -27]),
+            // 0.00, -62.50, -30.00
+            (Divide, (18, 2), [0, -6250, -3000]),
+            // 15.00, -0.02, 0.00
+            (Remainder, (18, 2), [1500, -2, 0]),
+        ];
+        for (op, result_type, expected) in cases {
+            let (out, out_mask, actual_type) =
+                into_result::<i32, i64, i64>(&lhs, (9, 1), &rhs, (18, 2), op, None);
             assert!(out_mask.all_set(), "{op:?}");
-            assert_eq!(out.as_slice(), expected.data.as_slice(), "{op:?}");
-            assert_eq!((p, s), (expected.precision, expected.scale), "{op:?}");
+            assert_eq!(out, expected, "{op:?}");
+            assert_eq!(actual_type, result_type, "{op:?}");
+        }
+    }
+
+    #[test]
+    fn into_null_rows_without_output_mask_write_zero() {
+        let mask = Bitmask::from_bools(&[true, false, true]);
+        let mut out = [7i32; 3];
+        let result_type = decimal_binary_into(
+            &[100i32, 200, 300],
+            (9, 2),
+            &[1i32, 2, 3],
+            (9, 2),
+            Add,
+            Some(&mask),
+            &mut out,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, [101, 0, 303]);
+        assert_eq!(result_type, (9, 2));
+    }
+
+    #[test]
+    fn into_short_masks_return_length_mismatch() {
+        let short = Bitmask::new_set_all(1, true);
+        let mut out = [0i32; 2];
+        let result = decimal_binary_into(
+            &[1i32, 2], (9, 0), &[3i32, 4], (9, 0), Add, Some(&short), &mut out, None,
+        );
+        assert!(matches!(result, Err(KernelError::LengthMismatch(_))));
+        let mut short_out = Bitmask::new_set_all(1, true);
+        let result = decimal_binary_into(
+            &[1i32, 2], (9, 0), &[3i32, 4], (9, 0), Add, None, &mut out, Some(&mut short_out),
+        );
+        assert!(matches!(result, Err(KernelError::LengthMismatch(_))));
+    }
+
+    #[test]
+    fn into_output_mask_follows_input_mask_across_byte_boundaries() {
+        // 19 rows cover two whole mask bytes and a partial third
+        let valid: Vec<bool> = (0..19).map(|i| i % 3 != 0).collect();
+        let mask = Bitmask::from_bools(&valid);
+        let lhs: Vec<i64> = (0..19).collect();
+        let rhs = vec![2i64; 19];
+        let (out, out_mask, _) =
+            into_result::<i64, i64, i64>(&lhs, (18, 0), &rhs, (18, 0), Multiply, Some(&mask));
+        for i in 0..19 {
+            assert_eq!(out_mask.get(i), valid[i], "row {i}");
+            assert_eq!(out[i], if valid[i] { 2 * i as i64 } else { 0 }, "row {i}");
         }
     }
 
@@ -923,7 +1024,7 @@ mod tests {
     #[test]
     fn into_minimum_divided_by_minus_one_returns_overflow() {
         let mut out = [0i32; 1];
-        for op in [Divide, Remainder] {
+        for op in [Divide, FloorDiv] {
             let result = decimal_binary_into(
                 &[i32::MIN],
                 (9, 0),
@@ -936,6 +1037,15 @@ mod tests {
             );
             assert!(matches!(result, Err(KernelError::Overflow(_))), "{op:?}");
         }
+    }
+
+    #[test]
+    fn remainder_of_minimum_by_minus_one_is_zero() {
+        let a = dec32(&[i32::MIN, 7], 9, 0);
+        let b = dec32(&[-1, -1], 9, 0);
+        let result = decimal_binary(&a, &b, Remainder).unwrap();
+        assert_eq!(result.data.as_slice(), &[0, 0]);
+        assert!(result.null_mask.is_none());
     }
 
     // -----------------------------------------------------------------------
