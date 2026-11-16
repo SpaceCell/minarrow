@@ -306,14 +306,20 @@ where
         // The remainder is derived from the checked quotient, because `PrimInt`
         // does not include a checked remainder. The quotient overflows only for
         // the minimum value divided by -1, where the remainder is 0. A zero
-        // divisor produces null.
+        // divisor produces null before the numerator is rescaled, as for
+        // division.
         ArithmeticOperator::Remainder if same_scale => run!(|i| {
             let (l, r) = (lhs_raw(i), rhs_raw(i));
             if r == T::zero() { None } else { Some(l.checked_div(&r).map_or(T::zero(), |q| l - q * r)) }
         }),
         ArithmeticOperator::Remainder => run!(|i| {
-            let (l, r) = (lhs_at!(i), rhs_at!(i));
-            if r == T::zero() { None } else { Some(l.checked_div(&r).map_or(T::zero(), |q| l - q * r)) }
+            let r = rhs_at!(i);
+            if r == T::zero() {
+                None
+            } else {
+                let l = lhs_at!(i);
+                Some(l.checked_div(&r).map_or(T::zero(), |q| l - q * r))
+            }
         }),
         ArithmeticOperator::Power => unreachable!("Power returns before the element loop"),
     }
@@ -845,7 +851,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Destination-passing variant
+    // decimal_binary_into
     // -----------------------------------------------------------------------
 
     fn into_result<L: Copy, R: Copy, T: Integer + From<L> + From<R>>(
@@ -1019,6 +1025,18 @@ mod tests {
         assert!(result.is_null(0));
         // 300 / 1.5 = 200.0 at scale 1
         assert_eq!(result.get(1), Some(2000));
+    }
+
+    #[test]
+    fn remainder_by_zero_with_overflowing_numerator_produces_null() {
+        // The numerator rescale of 10^2 overflows i32 on the first row, and the
+        // zero divisor produces null there
+        let a = dec32(&[i32::MAX, 300], 9, 0);
+        let b = dec32(&[0, 70], 9, 2);
+        let result = decimal_binary(&a, &b, Remainder).unwrap();
+        assert!(result.is_null(0));
+        // 300 % 0.70 = 0.40 at scale 2
+        assert_eq!(result.get(1), Some(40));
     }
 
     #[test]
