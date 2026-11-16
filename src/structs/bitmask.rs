@@ -932,6 +932,30 @@ impl Bitmask {
         })
     }
 
+    /// Returns bits `[offset, offset + len)` as a zero-copy window when the
+    /// bits are shared and `offset` is a multiple of 8.
+    ///
+    /// The window spans the whole bytes that contain its bits, consistent
+    /// with [`crate::LBuffer::bitmask_window`], and joins with the following
+    /// window through [`Bitmask::adjacent_window`].
+    ///
+    /// Returns `None` for owned bits, or when `offset` is not a multiple of 8.
+    ///
+    /// # Panics
+    /// Panics if `offset + len` exceeds the bitmask length.
+    pub(crate) fn shared_window(&self, offset: usize, len: usize) -> Option<Self> {
+        assert!(
+            offset + len <= self.len,
+            "Bitmask::shared_window out of bounds"
+        );
+        if offset % 8 != 0 {
+            return None;
+        }
+        let first = offset / 8;
+        let bits = self.bits.shared_window(first, (offset + len + 7) / 8 - first)?;
+        Some(Bitmask { bits, len })
+    }
+
     /// Slices by copying the data
     ///
     /// The copy runs one 64-bit word at a time. A byte-aligned `offset` copies

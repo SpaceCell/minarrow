@@ -625,9 +625,8 @@ impl Array {
                                 if word_copy {
                                     m.slice_clone(0, len)
                                 } else {
-                                    // A mask shorter than the data, or one backed
-                                    // by an LBuffer, is read bit by bit through
-                                    // `get`.
+                                    // Masks shorter than the data, are 
+                                    // read bit by bit through `get`.
                                     let mut bm = Bitmask::with_capacity(len);
                                     for i in 0..len {
                                         bm.set(i, m.get(i));
@@ -2280,6 +2279,76 @@ impl Array {
             Array::BooleanArray(arr) => Self::BooleanArray(arr.slice_clone(offset, len)),
             Array::Null => Self::Null,
         }
+    }
+
+    /// Returns rows `[offset, offset + len)` as a zero-copy window when the
+    /// array's data buffers are shared.
+    ///
+    /// The result holds the same values and null mask as
+    /// [`Array::slice_clone`]. Null masks and Boolean values share bytes only
+    /// when `offset` is a multiple of 8, and are copied otherwise. String
+    /// offsets are rebased to start at zero, which copies them.
+    ///
+    /// Returns `None` when the data buffers are owned.
+    pub(crate) fn shared_window(&self, offset: usize, len: usize) -> Option<Self> {
+        Some(match self {
+            Array::NumericArray(inner) => Self::NumericArray(match inner {
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int8(arr) => NumericArray::Int8(Arc::new(arr.shared_window(offset, len)?)),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::Int16(arr) => NumericArray::Int16(Arc::new(arr.shared_window(offset, len)?)),
+                NumericArray::Int32(arr) => NumericArray::Int32(Arc::new(arr.shared_window(offset, len)?)),
+                NumericArray::Int64(arr) => NumericArray::Int64(Arc::new(arr.shared_window(offset, len)?)),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt8(arr) => NumericArray::UInt8(Arc::new(arr.shared_window(offset, len)?)),
+                #[cfg(feature = "extended_numeric_types")]
+                NumericArray::UInt16(arr) => NumericArray::UInt16(Arc::new(arr.shared_window(offset, len)?)),
+                NumericArray::UInt32(arr) => NumericArray::UInt32(Arc::new(arr.shared_window(offset, len)?)),
+                NumericArray::UInt64(arr) => NumericArray::UInt64(Arc::new(arr.shared_window(offset, len)?)),
+                NumericArray::Float32(arr) => NumericArray::Float32(Arc::new(arr.shared_window(offset, len)?)),
+                NumericArray::Float64(arr) => NumericArray::Float64(Arc::new(arr.shared_window(offset, len)?)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal32(arr) => NumericArray::Decimal32(Arc::new(arr.shared_window(offset, len)?)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal64(arr) => NumericArray::Decimal64(Arc::new(arr.shared_window(offset, len)?)),
+                #[cfg(feature = "decimal")]
+                NumericArray::Decimal128(arr) => NumericArray::Decimal128(Arc::new(arr.shared_window(offset, len)?)),
+                NumericArray::Null => return None,
+            }),
+            Array::TextArray(inner) => Self::TextArray(match inner {
+                TextArray::String32(arr) => TextArray::String32(Arc::new(arr.shared_window(offset, len)?)),
+                #[cfg(feature = "large_string")]
+                TextArray::String64(arr) => TextArray::String64(Arc::new(arr.shared_window(offset, len)?)),
+                #[cfg(feature = "default_categorical_8")]
+                TextArray::Categorical8(arr) => {
+                    TextArray::Categorical8(Arc::new(arr.shared_window(offset, len)?))
+                }
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical16(arr) => {
+                    TextArray::Categorical16(Arc::new(arr.shared_window(offset, len)?))
+                }
+                TextArray::Categorical32(arr) => {
+                    TextArray::Categorical32(Arc::new(arr.shared_window(offset, len)?))
+                }
+                #[cfg(feature = "extended_categorical")]
+                TextArray::Categorical64(arr) => {
+                    TextArray::Categorical64(Arc::new(arr.shared_window(offset, len)?))
+                }
+                TextArray::Null => return None,
+            }),
+            #[cfg(feature = "datetime")]
+            Array::TemporalArray(inner) => Self::TemporalArray(match inner {
+                TemporalArray::Datetime32(arr) => {
+                    TemporalArray::Datetime32(Arc::new(arr.shared_window(offset, len)?))
+                }
+                TemporalArray::Datetime64(arr) => {
+                    TemporalArray::Datetime64(Arc::new(arr.shared_window(offset, len)?))
+                }
+                TemporalArray::Null => return None,
+            }),
+            Array::BooleanArray(arr) => Self::BooleanArray(Arc::new(arr.shared_window(offset, len)?)),
+            Array::Null => return None,
+        })
     }
 
     /// Arrow physical type for this array.

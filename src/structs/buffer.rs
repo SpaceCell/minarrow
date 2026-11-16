@@ -777,8 +777,7 @@ impl<T> Buffer<T> {
     /// ends.
     ///
     /// Consolidating consecutive windows avoids incurring a memory copy.
-    /// Consecutive windows taken from one allocation, such as those from
-    /// [`crate::LBuffer::window`], consolidate back into a single view.
+    /// Consecutive windows taken from one allocation, consolidate back into a single view.
     /// Returns `None` for owned buffers, for windows over different
     /// allocations, and for windows that are not consecutive.
     pub fn adjacent_window(&self, next: &Self) -> Option<Self> {
@@ -810,6 +809,39 @@ impl<T> Buffer<T> {
                 owner,
                 offset: *a_offset,
                 len: a_len + b_len,
+            },
+        })
+    }
+
+    /// Returns elements `[offset, offset + len)` as a zero-copy window when
+    /// the buffer is shared.
+    ///
+    /// The result is a view of the same allocation and joins 
+    /// with consecutive windows through [`Buffer::adjacent_window`].
+    ///
+    /// Returns `None` for owned and other non-shared storage.
+    ///
+    /// # Panics
+    /// Panics if `offset + len` exceeds the buffer length.
+    pub(crate) fn shared_window(&self, offset: usize, len: usize) -> Option<Self> {
+        let Storage::Shared {
+            owner,
+            offset: base,
+            len: base_len,
+        } = &self.storage
+        else {
+            return None;
+        };
+        assert!(
+            offset + len <= *base_len,
+            "Buffer::shared_window: offset {} + len {} exceeds length {}",
+            offset, len, base_len
+        );
+        Some(Buffer {
+            storage: Storage::Shared {
+                owner: owner.clone(),
+                offset: base + offset,
+                len,
             },
         })
     }

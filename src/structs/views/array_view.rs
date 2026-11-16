@@ -802,16 +802,24 @@ impl ArrayV {
         }
     }
 
-    /// Materialise the view window as an owned `Array`.
+    /// Materialises the view window as an `Array`.
     ///
-    /// If the view covers the entire backing array, returns a cheap clone
-    /// with no data copy. Otherwise deep-copies the window via slice_clone.
+    /// - A view that covers the whole backing array returns a clone with no
+    ///   data copy.
+    /// - A view over shared buffers, for example those produced by
+    ///   [`crate::LBuffer::window`], returns a zero-copy window over the same
+    ///   allocation, which joins with consecutive windows through
+    ///   [`Array::adjacent_window`]. A null mask that starts within a byte is
+    ///   copied.
+    /// - Any other view is copied through `slice_clone`.
     #[inline]
     pub fn to_array(&self) -> Array {
         if self.offset == 0 && self.len == self.array.len() {
             return self.array.clone();
         }
-        self.array.slice_clone(self.offset, self.len)
+        self.array
+            .shared_window(self.offset, self.len)
+            .unwrap_or_else(|| self.array.slice_clone(self.offset, self.len))
     }
 
     /// Extract array data as `Vec64<T>`, casting numeric values if necessary.
@@ -1978,7 +1986,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::{Array, Bitmask, IntegerArray, NumericArray, vec64};
+    use crate::{Array, Bitmask, Buffer, IntegerArray, NumericArray, SharedBuffer, Vec64, vec64};
 
     #[test]
     fn test_array_view_basic_indexing_and_slice() {
@@ -2414,5 +2422,411 @@ mod tests {
 
         // Different windows over the same array are not equal.
         assert_ne!(counted, ArrayV::new(array, 2, 3));
+    }
+
+    // Builds a buffer with shared storage over its own allocation.
+    fn shared_buffer<T: Copy>(values: &[T]) -> Buffer<T> {
+        let owner = unsafe { SharedBuffer::from_vec64_typed(Vec64::from_slice(values)) };
+        Buffer::from_shared_column(owner, 0, values.len())
+    }
+
+    // Builds a bitmask with shared bytes.
+    fn shared_bitmask(bits: &[bool]) -> Bitmask {
+        let owned = Bitmask::from_bools(bits);
+        Bitmask::new(shared_buffer(owned.bits.as_slice()), bits.len())
+    }
+
+    fn mask_bits(mask: Option<&Bitmask>, len: usize) -> Option<Vec<bool>> {
+        mask.map(|m| (0..len).map(|i| m.get(i)).collect())
+    }
+
+    fn int64_parts(array: &Array) -> (&Buffer<i64>, Option<&Bitmask>) {
+        let Array::NumericArray(NumericArray::Int64(a)) = array else {
+            panic!("expected Int64");
+        };
+        (&a.data, a.null_mask.as_ref())
+    }
+
+    fn nullable_int64(shared: bool) -> Array {
+        let values: Vec<i64> = (0..40).collect();
+        let bits: Vec<bool> = (0..40).map(|i| i % 3 != 0).collect();
+        let (data, null_mask) = if shared {
+            (shared_buffer(&values), shared_bitmask(&bits))
+        } else {
+            (Buffer::from(Vec64::from_slice(&values)), Bitmask::from_bools(&bits))
+        };
+        Array::from_int64(IntegerArray::new(data, Some(null_mask)))
+    }
+
+    #[test]
+    fn to_array_rewindows_shared_buffers_without_copying() {
+        let array = nullable_int64(true);
+        let base = int64_parts(&array).0.as_slice().as_ptr();
+        let windowed = ArrayV::new(array.clone(), 8, 20).to_array();
+        let copied = array.slice_clone(8, 20);
+
+        let (data, mask) = int64_parts(&windowed);
+        assert!(data.is_shared());
+        assert_eq!(data.as_slice().as_ptr(), base.wrapping_add(8));
+        assert!(mask.unwrap().bits.is_shared());
+        assert_eq!(data.as_slice(), int64_parts(&copied).0.as_slice());
+        assert_eq!(mask_bits(mask, 20), mask_bits(int64_parts(&copied).1, 20));
+        assert_eq!(windowed.null_count(), copied.null_count());
+    }
+
+    #[test]
+    fn to_array_copies_null_masks_starting_within_a_byte() {
+        let array = nullable_int64(true);
+        let base = int64_parts(&array).0.as_slice().as_ptr();
+        let windowed = ArrayV::new(array.clone(), 3, 21).to_array();
+        let copied = array.slice_clone(3, 21);
+
+        let (data, mask) = int64_parts(&windowed);
+        assert_eq!(data.as_slice().as_ptr(), base.wrapping_add(3));
+        assert!(!mask.unwrap().bits.is_shared());
+        assert_eq!(data.as_slice(), int64_parts(&copied).0.as_slice());
+        assert_eq!(mask_bits(mask, 21), mask_bits(int64_parts(&copied).1, 21));
+    }
+
+    #[test]
+    fn to_array_copies_owned_buffers() {
+        let array = nullable_int64(false);
+        let base = int64_parts(&array).0.as_slice().as_ptr();
+        let windowed = ArrayV::new(array.clone(), 8, 20).to_array();
+
+        let (data, mask) = int64_parts(&windowed);
+        assert!(data.is_owned());
+        assert_ne!(data.as_slice().as_ptr(), base.wrapping_add(8));
+        assert_eq!(data.as_slice(), &(8..28).collect::<Vec<i64>>()[..]);
+        assert_eq!(
+            mask_bits(mask, 20),
+            Some((8..28).map(|i| i % 3 != 0).collect())
+        );
+    }
+
+    #[test]
+    fn consecutive_shared_windows_join_after_to_array() {
+        let array = nullable_int64(true);
+        let base = int64_parts(&array).0.as_slice().as_ptr();
+        let first = ArrayV::new(array.clone(), 0, 16).to_array();
+        let second = ArrayV::new(array.clone(), 16, 13).to_array();
+
+        let joined = first.adjacent_window(&second).expect("windows join");
+        let (data, mask) = int64_parts(&joined);
+        assert_eq!(data.as_slice().as_ptr(), base);
+        assert_eq!(data.as_slice(), &(0..29).collect::<Vec<i64>>()[..]);
+        assert_eq!(
+            mask_bits(mask, 29),
+            Some((0..29).map(|i| i % 3 != 0).collect())
+        );
+    }
+
+    #[test]
+    fn windows_split_within_a_mask_byte_join_with_shared_values_and_copied_mask() {
+        let array = nullable_int64(true);
+        let base = int64_parts(&array).0.as_slice().as_ptr();
+        let first = ArrayV::new(array.clone(), 0, 13).to_array();
+        let second = ArrayV::new(array.clone(), 13, 16).to_array();
+        assert!(!int64_parts(&second).1.unwrap().bits.is_shared());
+
+        let joined = first.adjacent_window(&second).expect("values join");
+        let (data, mask) = int64_parts(&joined);
+        assert!(data.is_shared());
+        assert_eq!(data.as_slice().as_ptr(), base);
+        assert_eq!(data.as_slice(), &(0..29).collect::<Vec<i64>>()[..]);
+        assert!(!mask.unwrap().bits.is_shared());
+        assert_eq!(
+            mask_bits(mask, 29),
+            Some((0..29).map(|i| i % 3 != 0).collect())
+        );
+        assert_eq!(joined.null_count(), (0..29).filter(|i| i % 3 == 0).count());
+    }
+
+    #[test]
+    fn byte_aligned_windows_join_with_a_shared_mask() {
+        let array = nullable_int64(true);
+        let first = ArrayV::new(array.clone(), 0, 16).to_array();
+        let second = ArrayV::new(array.clone(), 16, 13).to_array();
+
+        let joined = first.adjacent_window(&second).expect("windows join");
+        let (data, mask) = int64_parts(&joined);
+        assert!(data.is_shared());
+        assert!(mask.unwrap().bits.is_shared());
+        assert_eq!(
+            mask_bits(mask, 29),
+            Some((0..29).map(|i| i % 3 != 0).collect())
+        );
+    }
+
+    #[test]
+    fn a_window_without_a_mask_joins_as_all_set() {
+        let values: Vec<i64> = (0..30).collect();
+        let owner = shared_buffer(&values);
+        let bits: Vec<bool> = (0..19).map(|i| i % 2 == 0).collect();
+        let masked = |offset: usize, len: usize| {
+            Array::from_int64(IntegerArray::new(
+                owner.shared_window(offset, len).unwrap(),
+                Some(Bitmask::from_bools(&bits[..len])),
+            ))
+        };
+        let unmasked = |offset: usize, len: usize| {
+            Array::from_int64(IntegerArray::new(owner.shared_window(offset, len).unwrap(), None))
+        };
+
+        // A masked window followed by one without a mask.
+        let joined = masked(0, 11).adjacent_window(&unmasked(11, 19)).expect("values join");
+        let (data, mask) = int64_parts(&joined);
+        assert_eq!(data.as_slice().as_ptr(), owner.as_slice().as_ptr());
+        assert_eq!(data.as_slice(), &values[..]);
+        let mut expected = bits[..11].to_vec();
+        expected.extend(std::iter::repeat_n(true, 19));
+        assert_eq!(mask_bits(mask, 30), Some(expected));
+
+        // A window without a mask followed by a masked one.
+        let joined = unmasked(0, 11).adjacent_window(&masked(11, 19)).expect("values join");
+        let (data, mask) = int64_parts(&joined);
+        assert_eq!(data.as_slice(), &values[..]);
+        let mut expected = vec![true; 11];
+        expected.extend_from_slice(&bits);
+        assert_eq!(mask_bits(mask, 30), Some(expected));
+    }
+
+    #[test]
+    fn boolean_windows_join_their_values_and_copy_owned_masks() {
+        use crate::BooleanArray;
+
+        let bools: Vec<bool> = (0..32).map(|i| i % 5 < 2).collect();
+        let nulls: Vec<bool> = (0..32).map(|i| i % 3 != 0).collect();
+        // Shared value bits with an owned null mask.
+        let array = Array::from_bool(BooleanArray::new(
+            shared_bitmask(&bools),
+            Some(Bitmask::from_bools(&nulls)),
+        ));
+        let first = ArrayV::new(array.clone(), 0, 16).to_array();
+        let second = ArrayV::new(array.clone(), 16, 12).to_array();
+
+        let joined = first.adjacent_window(&second).expect("values join");
+        let Array::BooleanArray(a) = &joined else {
+            panic!("expected Boolean");
+        };
+        assert!(a.data.bits.is_shared());
+        assert_eq!(mask_bits(Some(&a.data), 28).unwrap(), bools[..28]);
+        assert!(!a.null_mask.as_ref().unwrap().bits.is_shared());
+        assert_eq!(mask_bits(a.null_mask.as_ref(), 28).unwrap(), nulls[..28]);
+    }
+
+    #[test]
+    fn categorical_windows_join_their_indices_with_a_copied_mask() {
+        use crate::{CategoricalArray, TextArray};
+
+        let dictionary = ["x".to_string(), "y".to_string(), "z".to_string()];
+        let codes: Vec<u32> = (0..24).map(|i| i % 3).collect();
+        let nulls: Vec<bool> = (0..24).map(|i| i % 4 != 0).collect();
+        let categorical = CategoricalArray::<u32>::from_slices(&codes, &dictionary);
+        let array = Array::from_categorical32(CategoricalArray {
+            data: shared_buffer(&codes),
+            null_mask: Some(shared_bitmask(&nulls)),
+            ..categorical
+        });
+        let first = ArrayV::new(array.clone(), 0, 5).to_array();
+        let second = ArrayV::new(array.clone(), 5, 15).to_array();
+
+        let joined = first.adjacent_window(&second).expect("indices join");
+        let Array::TextArray(TextArray::Categorical32(a)) = &joined else {
+            panic!("expected Categorical32");
+        };
+        assert!(a.data.is_shared());
+        assert_eq!(a.data.as_slice(), &codes[..20]);
+        assert_eq!(mask_bits(a.null_mask.as_ref(), 20).unwrap(), nulls[..20]);
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_windows_join_their_values_with_a_copied_mask() {
+        use crate::DecimalArray;
+
+        let values: Vec<i64> = (0..20).map(|i| i * 125).collect();
+        let nulls: Vec<bool> = (0..20).map(|i| i % 3 != 1).collect();
+        let array = Array::NumericArray(NumericArray::Decimal64(Arc::new(DecimalArray::new(
+            shared_buffer(&values),
+            Some(shared_bitmask(&nulls)),
+            12,
+            3,
+        ))));
+        let first = ArrayV::new(array.clone(), 0, 3).to_array();
+        let second = ArrayV::new(array.clone(), 3, 14).to_array();
+
+        let joined = first.adjacent_window(&second).expect("values join");
+        let Array::NumericArray(NumericArray::Decimal64(a)) = &joined else {
+            panic!("expected Decimal64");
+        };
+        assert!(a.data.is_shared());
+        assert_eq!(a.data.as_slice(), &values[..17]);
+        assert_eq!(mask_bits(a.null_mask.as_ref(), 17).unwrap(), nulls[..17]);
+        assert_eq!((a.precision, a.scale), (12, 3));
+    }
+
+    #[test]
+    fn to_array_rewindows_shared_float_buffers() {
+        use crate::FloatArray;
+
+        let floats: Vec<f64> = (0..32).map(|i| i as f64 * 0.5).collect();
+        let array = Array::from_float64(FloatArray::new(shared_buffer(&floats), None));
+        let windowed = ArrayV::new(array, 5, 10).to_array();
+        let Array::NumericArray(NumericArray::Float64(a)) = &windowed else {
+            panic!("expected Float64");
+        };
+        assert!(a.data.is_shared());
+        assert_eq!(a.data.as_slice(), &floats[5..15]);
+    }
+
+    #[cfg(feature = "datetime")]
+    #[test]
+    fn to_array_rewindows_shared_datetime_buffers() {
+        use crate::ffi::arrow_dtype::Dt;
+        use crate::{DatetimeArray, TemporalArray, TimeUnit};
+
+        let stamps: Vec<i64> = (0..32).map(|i| 1_000 + i).collect();
+        let dtype = Dt::Timestamp(TimeUnit::Microseconds, None);
+        let array = Array::from_datetime_i64(DatetimeArray::new(
+            shared_buffer(&stamps),
+            None,
+            dtype.clone(),
+        ));
+        let windowed = ArrayV::new(array, 7, 9).to_array();
+        let Array::TemporalArray(TemporalArray::Datetime64(a)) = &windowed else {
+            panic!("expected Datetime64");
+        };
+        assert!(a.data.is_shared());
+        assert_eq!(a.data.as_slice(), &stamps[7..16]);
+        assert_eq!(a.dtype, dtype);
+    }
+
+    #[test]
+    fn to_array_shares_boolean_values_from_byte_aligned_offsets() {
+        use crate::BooleanArray;
+
+        let bools: Vec<bool> = (0..40).map(|i| i % 5 < 2).collect();
+        let array = Array::from_bool(BooleanArray::new(shared_bitmask(&bools), None));
+        for (offset, shares) in [(8, true), (3, false)] {
+            let windowed = ArrayV::new(array.clone(), offset, 20).to_array();
+            let Array::BooleanArray(a) = &windowed else {
+                panic!("expected Boolean");
+            };
+            assert_eq!(a.data.bits.is_shared(), shares);
+            assert_eq!(windowed.len(), 20);
+            assert_eq!(
+                mask_bits(Some(&a.data), 20).unwrap(),
+                bools[offset..offset + 20]
+            );
+        }
+    }
+
+    #[test]
+    fn to_array_shares_string_bytes_and_rebases_offsets() {
+        use crate::{StringArray, TextArray};
+
+        let words = ["alpha", "", "gamma", "delta", "epsilon", "zeta", "eta"];
+        let owned = StringArray::<u32>::from_slice(&words);
+        let shared = StringArray::<u32>::new(
+            shared_buffer(owned.data.as_slice()),
+            None,
+            Buffer::from(Vec64::from_slice(owned.offsets.as_slice())),
+        );
+        let base = shared.data.as_slice().as_ptr();
+        let array = Array::from_string32(shared);
+        let windowed = ArrayV::new(array, 2, 4).to_array();
+        let Array::TextArray(TextArray::String32(a)) = &windowed else {
+            panic!("expected String32");
+        };
+        assert!(a.data.is_shared());
+        assert_eq!(a.data.as_slice().as_ptr(), base.wrapping_add(5));
+        assert_eq!(a.offsets.as_slice()[0], 0);
+        let got: Vec<&str> = (0..4).map(|i| a.get_str(i).unwrap()).collect();
+        assert_eq!(got, words[2..6]);
+    }
+
+    #[test]
+    fn to_array_rewindows_shared_categorical_indices() {
+        use crate::{CategoricalArray, TextArray};
+
+        let dictionary = ["x".to_string(), "y".to_string(), "z".to_string()];
+        let codes: Vec<u32> = (0..24).map(|i| i % 3).collect();
+        let categorical = CategoricalArray::<u32>::from_slices(&codes, &dictionary);
+        let shared = CategoricalArray {
+            data: shared_buffer(&codes),
+            ..categorical
+        };
+        let array = Array::from_categorical32(shared);
+        let windowed = ArrayV::new(array, 4, 10).to_array();
+        let Array::TextArray(TextArray::Categorical32(a)) = &windowed else {
+            panic!("expected Categorical32");
+        };
+        assert!(a.data.is_shared());
+        let got: Vec<&str> = (0..10).map(|i| a.get_str(i).unwrap()).collect();
+        let expected: Vec<&str> = (4..14).map(|i| dictionary[i % 3].as_str()).collect();
+        assert_eq!(got, expected);
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn to_array_rewindows_shared_decimal_buffers() {
+        use crate::DecimalArray;
+
+        let values: Vec<i64> = (0..20).map(|i| i * 125).collect();
+        let array = Array::NumericArray(NumericArray::Decimal64(Arc::new(DecimalArray::new(
+            shared_buffer(&values),
+            None,
+            12,
+            3,
+        ))));
+        let windowed = ArrayV::new(array, 6, 8).to_array();
+        let Array::NumericArray(NumericArray::Decimal64(a)) = &windowed else {
+            panic!("expected Decimal64");
+        };
+        assert!(a.data.is_shared());
+        assert_eq!(a.data.as_slice(), &values[6..14]);
+        assert_eq!((a.precision, a.scale), (12, 3));
+    }
+
+    #[cfg(feature = "lbuffer")]
+    #[test]
+    fn table_view_over_lbuffer_windows_materialises_without_copying() {
+        use crate::{Field, FieldArray, LBuffer, Table};
+        use crate::ffi::arrow_dtype::ArrowType;
+
+        let mut prices = LBuffer::<f64>::with_capacity(64);
+        let mut sizes = LBuffer::<i64>::with_capacity(64);
+        for i in 0..64 {
+            prices.push(i as f64 + 0.25).unwrap();
+            sizes.push(i * 10).unwrap();
+        }
+        let table = Table::new(
+            "quotes".to_string(),
+            Some(vec![
+                FieldArray::new(
+                    Field::new("price", ArrowType::Float64, false, None),
+                    Array::from_float64(crate::FloatArray::new(prices.window(16, 32), None)),
+                ),
+                FieldArray::new(
+                    Field::new("size", ArrowType::Int64, false, None),
+                    Array::from_int64(IntegerArray::new(sizes.window(16, 32), None)),
+                ),
+            ]),
+        );
+        let first = table.slice(0, 11).to_table();
+        let second = table.slice(11, 21).to_table();
+
+        let Array::NumericArray(NumericArray::Float64(p)) = &second.cols[0].array else {
+            panic!("expected Float64");
+        };
+        assert!(p.data.is_shared());
+        assert_eq!(p.data.as_slice(), &(27..48).map(|i| i as f64 + 0.25).collect::<Vec<_>>()[..]);
+        let Array::NumericArray(NumericArray::Int64(s)) = &first.cols[1].array else {
+            panic!("expected Int64");
+        };
+        assert!(s.data.is_shared());
+        assert_eq!(s.data.as_slice(), &(16..27).map(|i| i * 10).collect::<Vec<_>>()[..]);
+        assert!(first.cols[0].array.adjacent_window(&second.cols[0].array).is_some());
     }
 }

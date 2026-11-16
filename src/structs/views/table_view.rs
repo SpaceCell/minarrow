@@ -430,9 +430,10 @@ impl TableV {
 
     /// Materialise the view into an owned Table. Respects active column selection.
     ///
-    /// Each column delegates to `ArrayV::to_array()`, which avoids a buffer copy
-    /// when the column window already spans its full backing array. Genuinely
-    /// row-windowed columns fall through to `slice_clone` inside `to_array`.
+    /// Each column is materialised through `ArrayV::to_array()`, which avoids a
+    /// buffer copy when the column window spans its full backing array or when
+    /// the column's buffers are shared. Other columns are copied through
+    /// `slice_clone`.
     pub fn to_table(&self) -> Table {
         let col_indices = self.active_col_indices();
         let cols: Vec<_> = col_indices

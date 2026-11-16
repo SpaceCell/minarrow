@@ -216,6 +216,25 @@ impl<T: Integer> DecimalArray<T> {
             panic!("DecimalArray::arrow_type: unsupported backing type")
         }
     }
+
+    /// Returns rows `[offset, offset + len)` as a zero-copy window when the
+    /// data buffer is shared.
+    ///
+    /// The null mask shares bytes when `offset` is a multiple of 8, and is
+    /// copied otherwise. Returns `None` when the data buffer is owned.
+    pub(crate) fn shared_window(&self, offset: usize, len: usize) -> Option<Self> {
+        let data = self.data.shared_window(offset, len)?;
+        let null_mask = self.null_mask.as_ref().map(|m| {
+            m.shared_window(offset, len)
+                .unwrap_or_else(|| m.slice_clone(offset, len))
+        });
+        Some(Self {
+            data,
+            null_mask,
+            precision: self.precision,
+            scale: self.scale,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -407,8 +426,26 @@ impl<T: Integer> MaskedArray for DecimalArray<T> {
         let data = self.data.adjacent_window(&other.data)?;
         let null_mask = match (&self.null_mask, &other.null_mask) {
             (None, None) => None,
-            (Some(a), Some(b)) => Some(a.adjacent_window(b)?),
-            _ => return None,
+            // Join the null masks without copying when they are consecutive windows
+            // over one allocation. Otherwise, copy both into a new mask, treating a
+            // missing mask as all set. The values remain shared in both cases.
+            (a, b) => Some(
+                a.as_ref()
+                    .zip(b.as_ref())
+                    .and_then(|(a, b)| a.adjacent_window(b))
+                    .unwrap_or_else(|| {
+                        let mut mask = Bitmask::default();
+                        match a {
+                            Some(a) => mask.extend_from_bitmask(a),
+                            None => mask.resize(self.len(), true),
+                        }
+                        match b {
+                            Some(b) => mask.extend_from_bitmask(b),
+                            None => mask.resize(mask.len() + other.len(), true),
+                        }
+                        mask
+                    }),
+            ),
         };
         Some(DecimalArray {
             data,

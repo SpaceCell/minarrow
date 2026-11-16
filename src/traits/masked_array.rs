@@ -322,8 +322,14 @@ pub trait MaskedArray {
     /// [`append_array`](Self::append_array) and table consolidation use
     /// this to join windows.
     ///
-    /// Returns `None` when either array owns its buffers, when the windows
-    /// are not consecutive, and for array types without window support.
+    /// The values are always shared. The null masks are joined without copying
+    /// when they are consecutive windows over one allocation, and are
+    /// otherwise copied into a new mask, with a missing mask treated as all
+    /// set.
+    ///
+    /// Returns `None` when either array owns its value buffers, when the
+    /// windows are not consecutive, or when the array type does not support
+    /// windows.
     fn adjacent_window(&self, other: &Self) -> Option<Self>
     where
         Self: Sized;

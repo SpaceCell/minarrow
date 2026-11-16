@@ -485,6 +485,34 @@ impl<T: Integer> StringArray<T> {
     pub fn slice_tuple(&self, offset: usize, len: usize) -> (&[u8], Offset, Length) {
         (&self.data.as_ref()[offset..offset + len], offset, len)
     }
+
+    /// Returns strings `[offset, offset + len)` as a zero-copy window over
+    /// their bytes when the data buffer is shared.
+    ///
+    /// The `len + 1` offsets are rebased to start at zero, which copies them.
+    /// The null mask shares bytes when `offset` is a
+    /// multiple of 8, and is copied otherwise. Returns `None` when the data
+    /// buffer is owned.
+    pub(crate) fn shared_window(&self, offset: usize, len: usize) -> Option<Self> {
+        assert!(offset + len <= self.len(), "slice out of bounds");
+        let start_byte = self.offsets[offset].to_usize();
+        let end_byte = self.offsets[offset + len].to_usize();
+        let data = self.data.shared_window(start_byte, end_byte - start_byte)?;
+        let mut offsets = Vec64::<T>::with_capacity(len + 1);
+        for i in 0..=len {
+            let relative = self.offsets[offset + i].to_usize() - start_byte;
+            offsets.push(T::from(relative).unwrap());
+        }
+        let null_mask = self.null_mask.as_ref().map(|m| {
+            m.shared_window(offset, len)
+                .unwrap_or_else(|| m.slice_clone(offset, len))
+        });
+        Some(StringArray {
+            offsets: offsets.into(),
+            data,
+            null_mask,
+        })
+    }
 }
 
 /// ⚠️ The string implementation of `MaskedArray` is primarily to support
