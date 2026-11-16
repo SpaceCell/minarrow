@@ -625,9 +625,8 @@ impl Array {
                                 if word_copy {
                                     m.slice_clone(0, len)
                                 } else {
-                                    // A mask shorter than the data, or one backed
-                                    // by an LBuffer, is read bit by bit through
-                                    // `get`.
+                                    // Masks shorter than the data, are 
+                                    // read bit by bit through `get`.
                                     let mut bm = Bitmask::with_capacity(len);
                                     for i in 0..len {
                                         bm.set(i, m.get(i));
@@ -2283,8 +2282,7 @@ impl Array {
     }
 
     /// Returns rows `[offset, offset + len)` as a zero-copy window when the
-    /// array's data buffers are shared, for example those produced by
-    /// [`crate::LBuffer::window`].
+    /// array's data buffers are shared.
     ///
     /// The result holds the same values and null mask as
     /// [`Array::slice_clone`]. Null masks and Boolean values share bytes only
