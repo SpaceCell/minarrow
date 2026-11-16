@@ -489,8 +489,8 @@ impl<T: Integer> StringArray<T> {
     /// Returns strings `[offset, offset + len)` as a zero-copy window over
     /// their bytes when the data buffer is shared.
     ///
-    /// The `len + 1` offsets are rebased to start at zero, which copies them,
-    /// as `slice_clone` does. The null mask shares bytes when `offset` is a
+    /// The `len + 1` offsets are rebased to start at zero, which copies them.
+    /// The null mask shares bytes when `offset` is a
     /// multiple of 8, and is copied otherwise. Returns `None` when the data
     /// buffer is owned.
     pub(crate) fn shared_window(&self, offset: usize, len: usize) -> Option<Self> {
