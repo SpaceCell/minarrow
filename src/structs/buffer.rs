@@ -816,9 +816,8 @@ impl<T> Buffer<T> {
     /// Returns elements `[offset, offset + len)` as a zero-copy window when
     /// the buffer is shared.
     ///
-    /// The result is a view of the same allocation, for example one produced
-    /// by [`crate::LBuffer::window`], and joins with consecutive windows
-    /// through [`Buffer::adjacent_window`].
+    /// The result is a view of the same allocation and joins 
+    /// with consecutive windows through [`Buffer::adjacent_window`].
     ///
     /// Returns `None` for owned and other non-shared storage.
     ///
