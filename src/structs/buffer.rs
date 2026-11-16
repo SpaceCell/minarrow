@@ -777,8 +777,7 @@ impl<T> Buffer<T> {
     /// ends.
     ///
     /// Consolidating consecutive windows avoids incurring a memory copy.
-    /// Consecutive windows taken from one allocation, such as those from
-    /// [`crate::LBuffer::window`], consolidate back into a single view.
+    /// Consecutive windows taken from one allocation, consolidate back into a single view.
     /// Returns `None` for owned buffers, for windows over different
     /// allocations, and for windows that are not consecutive.
     pub fn adjacent_window(&self, next: &Self) -> Option<Self> {
