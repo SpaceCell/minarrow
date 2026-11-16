@@ -55,16 +55,7 @@ fn checked_pow10<T: Integer>(exp: u32) -> Option<T> {
 /// Reconciles scale for add/subtract, computes result scale for
 /// multiply/divide, and detects overflow across all operations.
 /// The merged null mask from both operands propagates through the result.
-///
-/// ## Scale rules
-/// - Add/Subtract: operands are rescaled to the finer scale. Result
-///   precision is capped at the width maximum.
-/// - Multiply: result scale = s1 + s2, result precision = p1 + p2,
-///   capped at the width maximum.
-/// - Divide: the numerator is scaled up so integer division preserves
-///   the desired number of fractional digits. Result scale is max of
-///   the two input scales.
-/// - Negate and Abs are unary and handled by separate functions.
+/// See [`decimal_binary_into`] for the scale rules.
 pub fn decimal_binary<T: Integer + 'static>(
     lhs: &DecimalArray<T>,
     rhs: &DecimalArray<T>,
@@ -85,217 +76,255 @@ pub fn decimal_binary<T: Integer + 'static>(
         len,
     );
 
-    match op {
-        ArithmeticOperator::Add | ArithmeticOperator::Subtract => {
-            decimal_add_sub(lhs, rhs, op, merged_mask)
-        }
-        ArithmeticOperator::Multiply => decimal_multiply(lhs, rhs, merged_mask),
-        ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => {
-            decimal_divide(lhs, rhs, merged_mask)
-        }
-        ArithmeticOperator::Remainder => decimal_remainder(lhs, rhs, merged_mask),
-        ArithmeticOperator::Power => Err(KernelError::UnsupportedType(
-            "Power is not supported for decimal arrays - consider converting to float64 first"
-                .to_string(),
-        )),
+    // Division and remainder mark zero divisors null, which requires an output
+    // mask even when neither operand has one.
+    let zero_divisor_nulls = matches!(
+        op,
+        ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv | ArithmeticOperator::Remainder
+    );
+    let mut out_mask = match &merged_mask {
+        Some(m) => Some(m.clone()),
+        None if zero_divisor_nulls => Some(Bitmask::new_set_all(len, true)),
+        None => None,
+    };
+
+    let mut out = Vec64::<T>::with_capacity(len);
+    unsafe { out.set_len(len) };
+
+    let (precision, scale) = decimal_binary_into(
+        lhs.data.as_slice(),
+        (lhs.precision, lhs.scale),
+        rhs.data.as_slice(),
+        (rhs.precision, rhs.scale),
+        op,
+        merged_mask.as_ref(),
+        &mut out,
+        out_mask.as_mut(),
+    )?;
+
+    // The result keeps an output mask only when it records a null.
+    if merged_mask.is_none() && out_mask.as_ref().is_some_and(|m| m.all_set()) {
+        out_mask = None;
     }
+
+    Ok(DecimalArray::new(out, out_mask, precision, scale))
 }
 
-/// Add or subtract two decimal arrays, reconciling scale when they differ.
-fn decimal_add_sub<T: Integer + 'static>(
-    lhs: &DecimalArray<T>,
-    rhs: &DecimalArray<T>,
+/// Element-wise checked binary arithmetic on decimal storage slices, writing
+/// into the caller-provided `out` slice.
+///
+/// `lhs_type` and `rhs_type` hold the `(precision, scale)` of each operand.
+/// Operands of different widths are widened into the output width `T` through
+/// `From`, which allows, for example, a `Decimal32` operand against a
+/// `Decimal64` operand to write `i64` output. Returns the `(precision, scale)`
+/// of the result.
+///
+/// ## Scale rules
+/// - Add/Subtract: operands are rescaled to the finer scale. Result
+///   precision is `max(p1, p2) + 1`, capped at the width maximum.
+/// - Multiply: result scale = s1 + s2, result precision = p1 + p2,
+///   capped at the width maximum.
+/// - Divide: the numerator is scaled up so integer division preserves
+///   the desired number of fractional digits. Result scale is max of
+///   the two input scales. `FloorDiv` follows the same rule.
+/// - Remainder: operands are rescaled to the finer scale.
+/// - Power returns `KernelError::UnsupportedType`.
+///
+/// ## Null handling
+/// - `mask` is the merged null mask of both operands. Rows that it marks null
+///   write zero.
+/// - When `out_mask` is supplied, its first `len` positions are written: the
+///   bits of `mask`, or valid without one, with zero divisors marked null.
+/// - A zero divisor without an `out_mask` returns `KernelError::InvalidArguments`.
+///
+/// ## Errors
+/// Overflow returns `KernelError::Overflow`. Operands and `out` of different
+/// lengths, and masks shorter than the operands, return
+/// `KernelError::LengthMismatch`. On error, `out` holds a partial result.
+pub fn decimal_binary_into<L, R, T>(
+    lhs: &[L],
+    lhs_type: (u8, i8),
+    rhs: &[R],
+    rhs_type: (u8, i8),
     op: ArithmeticOperator,
-    merged_mask: Option<Bitmask>,
-) -> Result<DecimalArray<T>, KernelError> {
+    mask: Option<&Bitmask>,
+    out: &mut [T],
+    mut out_mask: Option<&mut Bitmask>,
+) -> Result<(u8, i8), KernelError>
+where
+    L: Copy,
+    R: Copy,
+    T: Integer + From<L> + From<R>,
+{
     let len = lhs.len();
-    let ls = lhs.scale;
-    let rs = rhs.scale;
-    let result_scale = ls.max(rs);
-    let result_precision = (lhs.precision.max(rhs.precision) + 1).min(max_precision::<T>());
-
-    let mut out = Vec64::<T>::with_capacity(len);
-    unsafe { out.set_len(len) };
-
-    let is_add = matches!(op, ArithmeticOperator::Add);
-
-    if ls == rs {
-        // Same scale - operate on raw values
-        for i in 0..len {
-            if is_masked_null(&merged_mask, i) {
-                out[i] = T::zero();
-                continue;
-            }
-            let l = lhs.data[i];
-            let r = rhs.data[i];
-            let result = if is_add {
-                l.checked_add(&r)
-            } else {
-                l.checked_sub(&r)
-            };
-            out[i] = result.ok_or_else(|| overflow_error("add/subtract"))?;
-        }
-    } else {
-        // Different scale - rescale the coarser operand to the finer scale
-        let scale_diff = (ls - rs).unsigned_abs() as u32;
-        let scale_factor = checked_pow10::<T>(scale_diff)
-            .ok_or_else(|| overflow_error("scale factor computation"))?;
-
-        for i in 0..len {
-            if is_masked_null(&merged_mask, i) {
-                out[i] = T::zero();
-                continue;
-            }
-            let (l, r) = if ls < rs {
-                // lhs has coarser scale, rescale lhs up
-                let scaled_l = lhs.data[i]
-                    .checked_mul(&scale_factor)
-                    .ok_or_else(|| overflow_error("rescale for add/subtract"))?;
-                (scaled_l, rhs.data[i])
-            } else {
-                // rhs has coarser scale, rescale rhs up
-                let scaled_r = rhs.data[i]
-                    .checked_mul(&scale_factor)
-                    .ok_or_else(|| overflow_error("rescale for add/subtract"))?;
-                (lhs.data[i], scaled_r)
-            };
-            let result = if is_add {
-                l.checked_add(&r)
-            } else {
-                l.checked_sub(&r)
-            };
-            out[i] = result.ok_or_else(|| overflow_error("add/subtract"))?;
-        }
+    if len != rhs.len() || len != out.len() {
+        return Err(KernelError::LengthMismatch(format!(
+            "decimal_binary_into: lhs {} vs rhs {} vs out {}",
+            len,
+            rhs.len(),
+            out.len()
+        )));
+    }
+    if mask.is_some_and(|m| m.len() < len) || out_mask.as_deref().is_some_and(|m| m.len() < len) {
+        return Err(KernelError::LengthMismatch(format!(
+            "decimal_binary_into: a null mask is shorter than the {len} operand rows"
+        )));
     }
 
-    Ok(DecimalArray::new(out, merged_mask, result_precision, result_scale))
-}
+    let (lp, ls) = lhs_type;
+    let (rp, rs) = rhs_type;
+    let max_p = max_precision::<T>();
+    let finer_scale = ls.max(rs);
 
-/// Multiply two decimal arrays. Result scale = s1 + s2, result
-/// precision = p1 + p2, capped at the width maximum.
-fn decimal_multiply<T: Integer + 'static>(
-    lhs: &DecimalArray<T>,
-    rhs: &DecimalArray<T>,
-    merged_mask: Option<Bitmask>,
-) -> Result<DecimalArray<T>, KernelError> {
-    let len = lhs.len();
-    let result_scale = lhs.scale + rhs.scale;
-    let result_precision = (lhs.precision + rhs.precision).min(max_precision::<T>());
-
-    let mut out = Vec64::<T>::with_capacity(len);
-    unsafe { out.set_len(len) };
-
-    for i in 0..len {
-        if is_masked_null(&merged_mask, i) {
-            out[i] = T::zero();
-            continue;
+    // Result type, and the power-of-ten factors applied to each operand before
+    // the operation.
+    let (result_type, lhs_exp, rhs_exp) = match op {
+        ArithmeticOperator::Add | ArithmeticOperator::Subtract => (
+            ((lp.max(rp) + 1).min(max_p), finer_scale),
+            finer_scale as i32 - ls as i32,
+            finer_scale as i32 - rs as i32,
+        ),
+        ArithmeticOperator::Remainder => (
+            (lp.max(rp).min(max_p), finer_scale),
+            finer_scale as i32 - ls as i32,
+            finer_scale as i32 - rs as i32,
+        ),
+        ArithmeticOperator::Multiply => (((lp + rp).min(max_p), ls + rs), 0, 0),
+        ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => (
+            (lp.max(rp).min(max_p), finer_scale),
+            finer_scale as i32 - ls as i32 + rs as i32,
+            0,
+        ),
+        ArithmeticOperator::Power => {
+            return Err(KernelError::UnsupportedType(
+                "Power is not supported for decimal arrays - consider converting to float64 first"
+                    .to_string(),
+            ));
         }
-        out[i] = lhs.data[i]
-            .checked_mul(&rhs.data[i])
-            .ok_or_else(|| overflow_error("multiply"))?;
-    }
-
-    Ok(DecimalArray::new(out, merged_mask, result_precision, result_scale))
-}
-
-/// Divide two decimal arrays. The numerator is scaled up so integer division
-/// preserves fractional digits. Result scale = max of the two input scales.
-fn decimal_divide<T: Integer + 'static>(
-    lhs: &DecimalArray<T>,
-    rhs: &DecimalArray<T>,
-    merged_mask: Option<Bitmask>,
-) -> Result<DecimalArray<T>, KernelError> {
-    let len = lhs.len();
-    let result_scale = lhs.scale.max(rhs.scale);
-    let result_precision = lhs.precision.max(rhs.precision).min(max_precision::<T>());
-
-    // Scale up the numerator so that integer division produces digits at
-    // the desired result scale: numerator * 10^(result_scale - lhs.scale + rhs.scale)
-    let extra_scale = (result_scale - lhs.scale + rhs.scale) as u32;
-    let scale_up = if extra_scale > 0 {
-        checked_pow10::<T>(extra_scale)
-            .ok_or_else(|| overflow_error("division scale-up factor"))?
-    } else {
-        T::one()
     };
+    let lhs_factor = u32::try_from(lhs_exp)
+        .ok()
+        .and_then(checked_pow10::<T>)
+        .ok_or_else(|| overflow_error("lhs scale factor"))?;
+    let rhs_factor = u32::try_from(rhs_exp)
+        .ok()
+        .and_then(checked_pow10::<T>)
+        .ok_or_else(|| overflow_error("rhs scale factor"))?;
 
-    let mut out = Vec64::<T>::with_capacity(len);
-    unsafe { out.set_len(len) };
-    let mut out_mask = merged_mask.clone();
-
-    for i in 0..len {
-        if is_masked_null(&out_mask, i) {
-            out[i] = T::zero();
-            continue;
+    // The output mask receives the bits of `mask` in bulk, or all valid without
+    // one, and the loop clears the bit of each zero divisor.
+    if let Some(out_mask) = out_mask.as_deref_mut() {
+        match mask {
+            Some(mask) => {
+                let whole_bytes = len / 8;
+                out_mask.bits.as_mut_slice()[..whole_bytes]
+                    .copy_from_slice(&mask.bits.as_slice()[..whole_bytes]);
+                for i in whole_bytes * 8..len {
+                    out_mask.set(i, mask.get(i));
+                }
+            }
+            None => out_mask.set_range(0, len, true),
         }
-        let divisor = rhs.data[i];
-        if divisor == T::zero() {
-            // Division by zero produces null
-            out[i] = T::zero();
-            ensure_mask_null(&mut out_mask, len, i);
-            continue;
-        }
-        let scaled_num = lhs.data[i]
-            .checked_mul(&scale_up)
-            .ok_or_else(|| overflow_error("division numerator scale-up"))?;
-        out[i] = scaled_num / divisor;
     }
 
-    Ok(DecimalArray::new(out, out_mask, result_precision, result_scale))
-}
-
-/// Remainder of two decimal arrays. Operands must have the same scale,
-/// or the coarser operand is rescaled first.
-fn decimal_remainder<T: Integer + 'static>(
-    lhs: &DecimalArray<T>,
-    rhs: &DecimalArray<T>,
-    merged_mask: Option<Bitmask>,
-) -> Result<DecimalArray<T>, KernelError> {
-    let len = lhs.len();
-    let ls = lhs.scale;
-    let rs = rhs.scale;
-    let result_scale = ls.max(rs);
-    let result_precision = lhs.precision.max(rhs.precision).min(max_precision::<T>());
-
-    let scale_diff = (ls - rs).unsigned_abs() as u32;
-    let scale_factor = if scale_diff > 0 {
-        checked_pow10::<T>(scale_diff)
-            .ok_or_else(|| overflow_error("remainder scale factor"))?
-    } else {
-        T::one()
-    };
-
-    let mut out = Vec64::<T>::with_capacity(len);
-    unsafe { out.set_len(len) };
-    let mut out_mask = merged_mask.clone();
-
-    for i in 0..len {
-        if is_masked_null(&out_mask, i) {
-            out[i] = T::zero();
-            continue;
-        }
-        let (l, r) = if ls == rs {
-            (lhs.data[i], rhs.data[i])
-        } else if ls < rs {
-            let scaled_l = lhs.data[i]
-                .checked_mul(&scale_factor)
-                .ok_or_else(|| overflow_error("remainder rescale"))?;
-            (scaled_l, rhs.data[i])
-        } else {
-            let scaled_r = rhs.data[i]
-                .checked_mul(&scale_factor)
-                .ok_or_else(|| overflow_error("remainder rescale"))?;
-            (lhs.data[i], scaled_r)
+    // Each operator runs its own loop over the rows that `mask` leaves valid,
+    // with `$value` producing the result of row `$i`, or `None` for a zero
+    // divisor.
+    macro_rules! run {
+        (|$i:ident| $value:expr) => {{
+            for $i in 0..len {
+                if mask.is_some_and(|m| !m.get($i)) {
+                    out[$i] = T::zero();
+                    continue;
+                }
+                match $value {
+                    Some(v) => out[$i] = v,
+                    None => {
+                        out[$i] = T::zero();
+                        match out_mask.as_deref_mut() {
+                            Some(m) => m.set($i, false),
+                            None => {
+                                return Err(KernelError::InvalidArguments(
+                                    "decimal_binary_into: a zero divisor requires an output mask"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }};
+    }
+    // Operands widen to `T`, and multiply by their scale factor when the
+    // operator rescales them.
+    macro_rules! lhs_at {
+        ($i:expr) => {
+            <T as From<L>>::from(lhs[$i])
+                .checked_mul(&lhs_factor)
+                .ok_or_else(|| overflow_error("lhs rescale"))?
         };
-        if r == T::zero() {
-            out[i] = T::zero();
-            ensure_mask_null(&mut out_mask, len, i);
-            continue;
-        }
-        out[i] = l % r;
+    }
+    macro_rules! rhs_at {
+        ($i:expr) => {
+            <T as From<R>>::from(rhs[$i])
+                .checked_mul(&rhs_factor)
+                .ok_or_else(|| overflow_error("rhs rescale"))?
+        };
+    }
+    let lhs_raw = |i: usize| <T as From<L>>::from(lhs[i]);
+    let rhs_raw = |i: usize| <T as From<R>>::from(rhs[i]);
+    let same_scale = lhs_factor == T::one() && rhs_factor == T::one();
+
+    match op {
+        ArithmeticOperator::Add if same_scale => run!(|i| Some(
+            lhs_raw(i).checked_add(&rhs_raw(i)).ok_or_else(|| overflow_error("add"))?
+        )),
+        ArithmeticOperator::Add => run!(|i| Some(
+            lhs_at!(i).checked_add(&rhs_at!(i)).ok_or_else(|| overflow_error("add"))?
+        )),
+        ArithmeticOperator::Subtract if same_scale => run!(|i| Some(
+            lhs_raw(i).checked_sub(&rhs_raw(i)).ok_or_else(|| overflow_error("subtract"))?
+        )),
+        ArithmeticOperator::Subtract => run!(|i| Some(
+            lhs_at!(i).checked_sub(&rhs_at!(i)).ok_or_else(|| overflow_error("subtract"))?
+        )),
+        // Multiply does not rescale its operands
+        ArithmeticOperator::Multiply => run!(|i| Some(
+            lhs_raw(i).checked_mul(&rhs_raw(i)).ok_or_else(|| overflow_error("multiply"))?
+        )),
+        // A zero divisor produces null before the numerator is scaled up,
+        // and a scale-up overflow on that row does not return an error. The
+        // divisor is not rescaled.
+        ArithmeticOperator::Divide | ArithmeticOperator::FloorDiv => run!(|i| {
+            let r = rhs_raw(i);
+            if r == T::zero() {
+                None
+            } else {
+                Some(lhs_at!(i).checked_div(&r).ok_or_else(|| overflow_error("divide"))?)
+            }
+        }),
+        // The remainder is derived from the checked quotient, because `PrimInt`
+        // does not include a checked remainder. The quotient overflows only for
+        // the minimum value divided by -1, where the remainder is 0. A zero
+        // divisor produces null before the numerator is rescaled, as for
+        // division.
+        ArithmeticOperator::Remainder if same_scale => run!(|i| {
+            let (l, r) = (lhs_raw(i), rhs_raw(i));
+            if r == T::zero() { None } else { Some(l.checked_div(&r).map_or(T::zero(), |q| l - q * r)) }
+        }),
+        ArithmeticOperator::Remainder => run!(|i| {
+            let r = rhs_at!(i);
+            if r == T::zero() {
+                None
+            } else {
+                let l = lhs_at!(i);
+                Some(l.checked_div(&r).map_or(T::zero(), |q| l - q * r))
+            }
+        }),
+        ArithmeticOperator::Power => unreachable!("Power returns before the element loop"),
     }
 
-    Ok(DecimalArray::new(out, out_mask, result_precision, result_scale))
+    Ok(result_type)
 }
 
 /// Element-wise negate on a decimal array. Overflow is only possible when
@@ -499,23 +528,6 @@ pub fn integer_to_decimal<T: Integer + 'static>(
 // ---------------------------------------------------------------------------
 // Internal utilities
 // ---------------------------------------------------------------------------
-
-#[inline(always)]
-fn is_masked_null(mask: &Option<Bitmask>, i: usize) -> bool {
-    mask.as_ref().map(|m| !m.get(i)).unwrap_or(false)
-}
-
-/// Ensure the mask exists and mark position `i` as null.
-fn ensure_mask_null(mask: &mut Option<Bitmask>, len: usize, i: usize) {
-    match mask {
-        Some(m) => m.set(i, false),
-        None => {
-            let mut m = Bitmask::new_set_all(len, true);
-            m.set(i, false);
-            *mask = Some(m);
-        }
-    }
-}
 
 fn overflow_error(context: &str) -> KernelError {
     KernelError::Overflow(format!("Decimal arithmetic overflow in {}", context))
@@ -836,6 +848,222 @@ mod tests {
         let b = dec32(&[2], 9, 0);
         let result = decimal_binary(&a, &b, Power);
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // decimal_binary_into
+    // -----------------------------------------------------------------------
+
+    fn into_result<L: Copy, R: Copy, T: Integer + From<L> + From<R>>(
+        lhs: &[L],
+        lhs_type: (u8, i8),
+        rhs: &[R],
+        rhs_type: (u8, i8),
+        op: ArithmeticOperator,
+        mask: Option<&Bitmask>,
+    ) -> (Vec<T>, Bitmask, (u8, i8)) {
+        let mut out = vec![T::zero(); lhs.len()];
+        let mut out_mask = Bitmask::new_set_all(lhs.len(), false);
+        let result_type = decimal_binary_into(
+            lhs,
+            lhs_type,
+            rhs,
+            rhs_type,
+            op,
+            mask,
+            &mut out,
+            Some(&mut out_mask),
+        )
+        .unwrap();
+        (out, out_mask, result_type)
+    }
+
+    #[test]
+    fn into_matches_expected_values_for_every_operator() {
+        // 123.45, null, -7.00 and 10.00 at scale 2 against 0.250, 0.010, 0.000
+        // and -0.003 at scale 3
+        let lhs = [12345i64, 0, -700, 1000];
+        let mask = Bitmask::from_bools(&[true, false, true, true]);
+        let rhs = [250i64, 10, 0, -3];
+        let cases: [(ArithmeticOperator, (u8, i8), [Option<i64>; 4]); 6] = [
+            // 123.700, -7.000, 9.997
+            (Add, (13, 3), [Some(123700), None, Some(-7000), Some(9997)]),
+            // 123.200, -7.000, 10.003
+            (Subtract, (13, 3), [Some(123200), None, Some(-7000), Some(10003)]),
+            // 30.86250, 0.00000, -0.03000
+            (Multiply, (18, 5), [Some(3086250), None, Some(0), Some(-3000)]),
+            // 493.800, null for the zero divisor, -3333.333 truncated
+            (Divide, (12, 3), [Some(493800), None, None, Some(-3333333)]),
+            (FloorDiv, (12, 3), [Some(493800), None, None, Some(-3333333)]),
+            // 0.200, null for the zero divisor, 0.001 with the sign of the dividend
+            (Remainder, (12, 3), [Some(200), None, None, Some(1)]),
+        ];
+        for (op, result_type, expected) in cases {
+            let (out, out_mask, actual_type) =
+                into_result::<i64, i64, i64>(&lhs, (12, 2), &rhs, (10, 3), op, Some(&mask));
+            assert_eq!(actual_type, result_type, "{op:?}");
+            let actual: Vec<Option<i64>> =
+                (0..4).map(|i| out_mask.get(i).then(|| out[i])).collect();
+            assert_eq!(actual, expected, "{op:?}");
+        }
+    }
+
+    #[test]
+    fn into_widens_mixed_width_operands() {
+        // Decimal32 15.0, -2.5 and 0.9 at scale 1 against Decimal64 10^10, 0.04
+        // and -0.03 at scale 2, written as i64
+        let lhs = [150i32, -25, 9];
+        let rhs = [1_000_000_000_000i64, 4, -3];
+        let cases: [(ArithmeticOperator, (u8, i8), [i64; 3]); 5] = [
+            (Add, (18, 2), [1_000_000_001_500, -246, 87]),
+            (Subtract, (18, 2), [-999_999_998_500, -254, 93]),
+            (Multiply, (18, 3), [150_000_000_000_000, -100, -27]),
+            // 0.00, -62.50, -30.00
+            (Divide, (18, 2), [0, -6250, -3000]),
+            // 15.00, -0.02, 0.00
+            (Remainder, (18, 2), [1500, -2, 0]),
+        ];
+        for (op, result_type, expected) in cases {
+            let (out, out_mask, actual_type) =
+                into_result::<i32, i64, i64>(&lhs, (9, 1), &rhs, (18, 2), op, None);
+            assert!(out_mask.all_set(), "{op:?}");
+            assert_eq!(out, expected, "{op:?}");
+            assert_eq!(actual_type, result_type, "{op:?}");
+        }
+    }
+
+    #[test]
+    fn into_null_rows_without_output_mask_write_zero() {
+        let mask = Bitmask::from_bools(&[true, false, true]);
+        let mut out = [7i32; 3];
+        let result_type = decimal_binary_into(
+            &[100i32, 200, 300],
+            (9, 2),
+            &[1i32, 2, 3],
+            (9, 2),
+            Add,
+            Some(&mask),
+            &mut out,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, [101, 0, 303]);
+        assert_eq!(result_type, (9, 2));
+    }
+
+    #[test]
+    fn into_short_masks_return_length_mismatch() {
+        let short = Bitmask::new_set_all(1, true);
+        let mut out = [0i32; 2];
+        let result = decimal_binary_into(
+            &[1i32, 2], (9, 0), &[3i32, 4], (9, 0), Add, Some(&short), &mut out, None,
+        );
+        assert!(matches!(result, Err(KernelError::LengthMismatch(_))));
+        let mut short_out = Bitmask::new_set_all(1, true);
+        let result = decimal_binary_into(
+            &[1i32, 2], (9, 0), &[3i32, 4], (9, 0), Add, None, &mut out, Some(&mut short_out),
+        );
+        assert!(matches!(result, Err(KernelError::LengthMismatch(_))));
+    }
+
+    #[test]
+    fn into_output_mask_follows_input_mask_across_byte_boundaries() {
+        // 19 rows cover two whole mask bytes and a partial third
+        let valid: Vec<bool> = (0..19).map(|i| i % 3 != 0).collect();
+        let mask = Bitmask::from_bools(&valid);
+        let lhs: Vec<i64> = (0..19).collect();
+        let rhs = vec![2i64; 19];
+        let (out, out_mask, _) =
+            into_result::<i64, i64, i64>(&lhs, (18, 0), &rhs, (18, 0), Multiply, Some(&mask));
+        for i in 0..19 {
+            assert_eq!(out_mask.get(i), valid[i], "row {i}");
+            assert_eq!(out[i], if valid[i] { 2 * i as i64 } else { 0 }, "row {i}");
+        }
+    }
+
+    #[test]
+    fn into_zero_divisor_without_output_mask_returns_error() {
+        let mut out = [0i32; 1];
+        let result =
+            decimal_binary_into(&[100i32], (9, 2), &[0i32], (9, 2), Divide, None, &mut out, None);
+        assert!(matches!(result, Err(KernelError::InvalidArguments(_))));
+    }
+
+    #[test]
+    fn into_without_nulls_accepts_no_output_mask() {
+        let mut out = [0i64; 2];
+        let result_type = decimal_binary_into(
+            &[100i64, 200],
+            (18, 2),
+            &[3i32, 4],
+            (9, 0),
+            Multiply,
+            None,
+            &mut out,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, [300, 800]);
+        assert_eq!(result_type, (18, 2));
+    }
+
+    #[test]
+    fn into_output_length_mismatch_returns_error() {
+        let mut out = [0i32; 1];
+        let result =
+            decimal_binary_into(&[1i32, 2], (9, 0), &[3i32, 4], (9, 0), Add, None, &mut out, None);
+        assert!(matches!(result, Err(KernelError::LengthMismatch(_))));
+    }
+
+    #[test]
+    fn divide_by_zero_with_overflowing_numerator_produces_null() {
+        // The numerator scale-up of 10^2 overflows i32 on the first row, and the
+        // zero divisor produces null there
+        let a = dec32(&[i32::MAX, 300], 9, 0);
+        let b = dec32(&[0, 15], 9, 1);
+        let result = decimal_binary(&a, &b, Divide).unwrap();
+        assert!(result.is_null(0));
+        // 300 / 1.5 = 200.0 at scale 1
+        assert_eq!(result.get(1), Some(2000));
+    }
+
+    #[test]
+    fn remainder_by_zero_with_overflowing_numerator_produces_null() {
+        // The numerator rescale of 10^2 overflows i32 on the first row, and the
+        // zero divisor produces null there
+        let a = dec32(&[i32::MAX, 300], 9, 0);
+        let b = dec32(&[0, 70], 9, 2);
+        let result = decimal_binary(&a, &b, Remainder).unwrap();
+        assert!(result.is_null(0));
+        // 300 % 0.70 = 0.40 at scale 2
+        assert_eq!(result.get(1), Some(40));
+    }
+
+    #[test]
+    fn into_minimum_divided_by_minus_one_returns_overflow() {
+        let mut out = [0i32; 1];
+        for op in [Divide, FloorDiv] {
+            let result = decimal_binary_into(
+                &[i32::MIN],
+                (9, 0),
+                &[-1i32],
+                (9, 0),
+                op,
+                None,
+                &mut out,
+                None,
+            );
+            assert!(matches!(result, Err(KernelError::Overflow(_))), "{op:?}");
+        }
+    }
+
+    #[test]
+    fn remainder_of_minimum_by_minus_one_is_zero() {
+        let a = dec32(&[i32::MIN, 7], 9, 0);
+        let b = dec32(&[-1, -1], 9, 0);
+        let result = decimal_binary(&a, &b, Remainder).unwrap();
+        assert_eq!(result.data.as_slice(), &[0, 0]);
+        assert!(result.null_mask.is_none());
     }
 
     // -----------------------------------------------------------------------
