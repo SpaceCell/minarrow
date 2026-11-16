@@ -813,6 +813,40 @@ impl<T> Buffer<T> {
             },
         })
     }
+
+    /// Returns elements `[offset, offset + len)` as a zero-copy window when
+    /// the buffer is shared.
+    ///
+    /// The result is a view of the same allocation, for example one produced
+    /// by [`crate::LBuffer::window`], and joins with consecutive windows
+    /// through [`Buffer::adjacent_window`].
+    ///
+    /// Returns `None` for owned and other non-shared storage.
+    ///
+    /// # Panics
+    /// Panics if `offset + len` exceeds the buffer length.
+    pub(crate) fn shared_window(&self, offset: usize, len: usize) -> Option<Self> {
+        let Storage::Shared {
+            owner,
+            offset: base,
+            len: base_len,
+        } = &self.storage
+        else {
+            return None;
+        };
+        assert!(
+            offset + len <= *base_len,
+            "Buffer::shared_window: offset {} + len {} exceeds length {}",
+            offset, len, base_len
+        );
+        Some(Buffer {
+            storage: Storage::Shared {
+                owner: owner.clone(),
+                offset: base + offset,
+                len,
+            },
+        })
+    }
 }
 
 impl<T: Clone> Buffer<T> {
