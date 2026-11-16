@@ -345,16 +345,12 @@ macro_rules! impl_masked_array {
                         }
                         // caller had a mask but `other` didn’t -> explicitly set each new bit true
                         (Some(self_mask), None) => {
-                            for i in orig_len..(orig_len + other_len) {
-                                self_mask.set(i, true);
-                            }
+                            self_mask.resize(orig_len + other_len, true);
                         }
                     (None, Some(other_mask)) => {
                         // Materialise new null mask for self, all existing valid.
-                        let mut mask = Bitmask::new_set_all(orig_len + other_len, true);
-                        for i in 0..other_len {
-                            mask.set(orig_len + i, other_mask.get(i));
-                        }
+                        let mut mask = Bitmask::new_set_all(orig_len, true);
+                        mask.extend_from_bitmask(other_mask);
                         self.set_null_mask(Some(mask));
                     }
                     (None, None) => {

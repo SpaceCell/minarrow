@@ -86,18 +86,16 @@ pub fn extend_null_mask(
 ) {
     match (result_mask.as_mut(), source_mask) {
         (Some(mask), Some(src)) => {
-            mask.extend((offset..offset + len).map(|i| src.get(i)));
+            mask.extend_from_bitmask_range(src, offset, len);
         }
         (Some(mask), None) => {
             // Source has no nulls, set all bits valid
-            for _ in 0..len {
-                mask.set(mask.len(), true);
-            }
+            mask.resize(mask.len() + len, true);
         }
         (None, Some(src)) => {
             // Create mask, all previous values valid, then copy from source
             let mut mask = Bitmask::new_set_all(result_len, true);
-            mask.extend((offset..offset + len).map(|i| src.get(i)));
+            mask.extend_from_bitmask_range(src, offset, len);
             *result_mask = Some(mask);
         }
         (None, None) => {}

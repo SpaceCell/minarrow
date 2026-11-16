@@ -780,16 +780,10 @@ impl Bitmask {
         self.mask_trailing_bits();
     }
 
-    /// Appends all bits from another Bitmask.
+    /// Appends all bits from another Bitmask, copying whole bytes or words
+    /// rather than single bits.
     pub fn extend_from_bitmask(&mut self, other: &Bitmask) {
-        let old_len = self.len();
-        self.resize(old_len + other.len(), true);
-        for i in 0..other.len() {
-            // Safety: falls within established lengths.
-            // Provided another thread isn't mutating this at the same
-            // time it's ok.
-            unsafe { self.set_unchecked(old_len + i, other.get_unchecked(i)) };
-        }
+        self.extend_from_bitmask_range(other, 0, other.len());
     }
 
     /// Appends bits `[offset..offset+len)` from another bitmask into self.
@@ -1994,6 +1988,29 @@ mod word_level_tests {
                             ),
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// Appending a whole bitmask gives the same bits as appending each bit
+    /// in turn, for every destination bit position and source length.
+    #[test]
+    fn extend_from_bitmask_matches_bit_by_bit_append() {
+        let mut rng = Rng(0x5D1C_93A7_2F64_B0E9);
+        for &src_len in &LENGTHS {
+            for &density in &DENSITIES {
+                let other = random_mask(&mut rng, src_len, density);
+                for &dst_len in &[0usize, 1, 5, 8, 13, 64, 67] {
+                    let base = random_mask(&mut rng, dst_len, 50);
+                    let mut new = base.clone();
+                    new.extend_from_bitmask(&other);
+                    let mut old = base.clone();
+                    old.resize(dst_len + src_len, true);
+                    for i in 0..src_len {
+                        old.set(dst_len + i, other.get(i));
+                    }
+                    assert_identical(&new, &old, &format!("src_len={src_len} density={density} dst_len={dst_len}"));
                 }
             }
         }
