@@ -495,3 +495,42 @@ pub fn create_aligned_chunks_from_array(
 
     Ok(SuperArray::from_chunks(chunks?))
 }
+
+#[cfg(all(test, feature = "datetime_ops"))]
+mod datetime_text_tests {
+    use super::parse_datetime_str;
+
+    // Milliseconds since the epoch of 2026-01-01 09:30:00 UTC and of that day at midnight.
+    const INSTANT_MS: i64 = 1_767_259_800_000;
+    const MIDNIGHT_MS: i64 = 1_767_225_600_000;
+
+    #[test]
+    fn test_rfc3339_and_iso8601_text_parses() {
+        assert_eq!(parse_datetime_str("2026-01-01T09:30:00Z"), Some(INSTANT_MS));
+        assert_eq!(parse_datetime_str("2026-01-01T19:30:00+10:00"), Some(INSTANT_MS));
+        assert_eq!(parse_datetime_str("2026-01-01T09:30:00.123Z"), Some(INSTANT_MS + 123));
+    }
+
+    #[test]
+    fn test_date_time_text_without_time_zone_parses_as_utc() {
+        assert_eq!(parse_datetime_str("2026-01-01 09:30:00"), Some(INSTANT_MS));
+    }
+
+    #[test]
+    fn test_date_text_parses_as_midnight_utc() {
+        assert_eq!(parse_datetime_str("2026-01-01"), Some(MIDNIGHT_MS));
+    }
+
+    #[test]
+    fn test_time_text_parses_as_that_time_today() {
+        let parsed = parse_datetime_str("09:30:00").expect("the time text parses");
+        assert_eq!(parsed.rem_euclid(86_400_000), 34_200_000);
+    }
+
+    #[test]
+    fn test_integer_text_parses_as_milliseconds() {
+        assert_eq!(parse_datetime_str("1767259800000"), Some(INSTANT_MS));
+        assert_eq!(parse_datetime_str(""), None);
+        assert_eq!(parse_datetime_str("not a date"), None);
+    }
+}
