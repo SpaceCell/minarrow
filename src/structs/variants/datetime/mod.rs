@@ -77,6 +77,7 @@ use ::vec64::{Vec64, Vec64Alloc};
 
 pub mod datetime_ops;
 pub mod parse;
+#[cfg(feature = "time_zones")]
 pub mod tz;
 
 /// Julian Day Number corresponding to the Unix epoch (1970-01-01 00:00:00 UTC).
@@ -451,7 +452,7 @@ where
     T: Integer + Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        use crate::traits::print::MAX_PREVIEW;
+        use crate::traits::print::{MAX_PREVIEW, format_datetime_value};
 
         let len = self.len();
         let nulls = self.null_count();
@@ -464,78 +465,11 @@ where
         )?;
 
         write!(f, "[")?;
-
-        #[cfg(feature = "datetime_ops")]
-        {
-            use time::OffsetDateTime;
-            for i in 0..usize::min(len, MAX_PREVIEW) {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                match self.value(i) {
-                    Some(val) => match self.time_unit() {
-                        TimeUnit::Seconds => {
-                            let v = val.to_i64().unwrap();
-                            match OffsetDateTime::from_unix_timestamp(v) {
-                                Ok(dt) => write!(f, "{}", dt),
-                                Err(_) => write!(f, "{}s", val),
-                            }
-                        }
-                        TimeUnit::Milliseconds => {
-                            let v = val.to_i64().unwrap();
-                            match OffsetDateTime::from_unix_timestamp_nanos((v as i128) * 1_000_000)
-                            {
-                                Ok(dt) => write!(f, "{}", dt),
-                                Err(_) => write!(f, "{}ms", val),
-                            }
-                        }
-                        TimeUnit::Microseconds => {
-                            let v = val.to_i64().unwrap();
-                            match OffsetDateTime::from_unix_timestamp_nanos((v as i128) * 1_000) {
-                                Ok(dt) => write!(f, "{}", dt),
-                                Err(_) => write!(f, "{}µs", val),
-                            }
-                        }
-                        TimeUnit::Nanoseconds => {
-                            let v = val.to_i64().unwrap();
-                            match OffsetDateTime::from_unix_timestamp_nanos(v as i128) {
-                                Ok(dt) => write!(f, "{}", dt),
-                                Err(_) => write!(f, "{}ns", val),
-                            }
-                        }
-                        TimeUnit::Days => {
-                            let days = val.to_i64().unwrap();
-                            match time::Date::from_julian_day((days + UNIX_EPOCH_JULIAN_DAY) as i32)
-                            {
-                                Ok(date) => write!(f, "{}", date),
-                                Err(_) => write!(f, "{}d", val),
-                            }
-                        }
-                    },
-                    None => write!(f, "null"),
-                }?;
+        for i in 0..usize::min(len, MAX_PREVIEW) {
+            if i > 0 {
+                write!(f, ", ")?;
             }
-        }
-
-        #[cfg(not(feature = "datetime_ops"))]
-        {
-            // Raw value plus suffix
-            let suffix = match self.time_unit() {
-                TimeUnit::Seconds => "s",
-                TimeUnit::Milliseconds => "ms",
-                TimeUnit::Microseconds => "µs",
-                TimeUnit::Nanoseconds => "ns",
-                TimeUnit::Days => "d",
-            };
-            for i in 0..usize::min(len, MAX_PREVIEW) {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                match self.value(i) {
-                    Some(val) => write!(f, "{}{}", val, suffix)?,
-                    None => write!(f, "null")?,
-                }
-            }
+            write!(f, "{}", format_datetime_value(self, i))?;
         }
 
         if len > MAX_PREVIEW {
