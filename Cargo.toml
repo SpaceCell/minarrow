@@ -221,8 +221,9 @@ datetime_ops = ["dep:time", "datetime"]
 # - Display, component extraction, truncation and month arithmetic on the wall time
 #   of the time zone
 #
-# Stored values stay UTC integers. The IANA Time Zone Database is compiled into the
-# binary as static data, which adds about 440 KB to a release binary.
+# Stored values are still UTC integers with this feature on. The IANA Time Zone Database 
+# is compiled into the binary as static data, which adds about 440 KB to the release binary
+# (roughly ~%40 of the total size).
 #
 # Without this feature, timestamps with a time zone are printed and computed in UTC.
 time_zones = ["datetime_ops", "dep:tzdb_data"]
