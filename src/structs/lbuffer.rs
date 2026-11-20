@@ -758,17 +758,20 @@ impl<T> LBuffer<T, true> {
 }
 
 impl<T, const MASK: bool> LBuffer<T, MASK> {
-    /// Returns a write cursor positioned at the buffer's published length.
+    /// Returns a write cursor that starts at the buffer's published length.
     ///
-    /// The cursor writes and publishes values as [`push`](Self::push) does,
-    /// without the sealed and capacity checks, for writers that make those
-    /// checks once for many values.
+    /// Use a cursor when the caller already guarantees, for a run of writes,
+    /// that the buffer is unsealed and has room. Each cursor write is then
+    /// the same as [`push`](Self::push), without its sealed and capacity
+    /// checks.
     ///
     /// # Safety
-    /// While the cursor is in use, the buffer must not be sealed and must
-    /// not be written through any other path, and every cursor write must
-    /// stay below the buffer's capacity. The cursor must not outlive the
-    /// buffer.
+    /// While the cursor is in use, the caller must ensure that:
+    /// - the buffer is not sealed;
+    /// - no other path writes to the buffer;
+    /// - every write stays below the buffer's capacity.
+    ///
+    /// The cursor must not outlive the buffer.
     pub unsafe fn cursor(&mut self) -> LBufferCursor<T, MASK> {
         let len = self.inner.len.load(Ordering::Relaxed);
         let mask = self.mask.as_ref();
@@ -782,15 +785,18 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
         }
     }
 
-    /// Publishes the first `len` elements, with their null mask bits.
+    /// Publishes the first `len` elements and their null mask bits to
+    /// readers.
     ///
-    /// Used together with detached cursors, whose writers publish to targets
-    /// of their own. The caller publishes the completed prefix of their rows.
+    /// Use this with detached cursors, which do not publish their own
+    /// writes. The coordinating thread calls it with the length of the
+    /// completed prefix.
     ///
     /// # Safety
-    /// Every element below `len` must have been written, and those writes
-    /// must happen before this call. `len` must be no less than the length
-    /// already published and no more than the capacity.
+    /// The caller must ensure that:
+    /// - every element below `len` has been written, and those writes happen
+    ///   before this call;
+    /// - `len` is at least the published length and at most the capacity.
     pub unsafe fn publish(&self, len: usize) {
         if let Some(tail) = self.mask.as_ref().and_then(|m| m.mask_tail.as_ref()) {
             tail.publish(len / 8, len % 8);
@@ -801,18 +807,18 @@ impl<T, const MASK: bool> LBuffer<T, MASK> {
 
 /// # LBufferCursor
 ///
-/// Unchecked writer over the slots of an [`LBuffer`].
+/// Writes values into the slots of an [`LBuffer`] without per-write checks.
 ///
 /// ## Description
-/// A cursor writes values at its position, sets or clears their null mask
-/// bits, and publishes the new length with a `Release` store, with the mask
-/// tail published before it. Created with [`LBuffer::cursor`], it publishes
-/// to the buffer's own length and mask tail, which makes each write the same
-/// as [`LBuffer::push`] without its sealed and capacity checks.
-///
-/// [`detach`](Self::detach) points the cursor's publication at targets of
-/// its own, for several writers filling disjoint ranges of one buffer. Their
-/// coordinator publishes the completed prefix with [`LBuffer::publish`].
+/// - [`push`](Self::push) and [`push_null`](LBufferCursor::push_null) write
+///   the value at the cursor's position, update its null mask bit, and
+///   publish the new length with a `Release` store. The null mask tail is
+///   published before the length, as in [`LBuffer::push`].
+/// - A cursor from [`LBuffer::cursor`] publishes to the buffer's own length.
+/// - After [`detach`](Self::detach), the cursor publishes to private targets
+///   instead. Several detached cursors can then fill separate ranges of one
+///   buffer, and a coordinating thread makes the completed prefix visible
+///   with [`LBuffer::publish`].
 pub struct LBufferCursor<T, const MASK: bool = false> {
     base: NonNull<T>,
     /// Base of the null mask bytes. `Some` only when `MASK` is true.
@@ -825,12 +831,12 @@ pub struct LBufferCursor<T, const MASK: bool = false> {
     scratch: Option<Box<(AtomicUsize, LMaskTail)>>,
 }
 
-// SAFETY: the cursor writes to slots of one buffer that its owner has handed
-// to it alone, under the contract of `LBuffer::cursor`.
+// SAFETY: the cursor only writes to slots of one buffer, which the caller has
+// reserved for it under the contract of `LBuffer::cursor`.
 unsafe impl<T: Send, const MASK: bool> Send for LBufferCursor<T, MASK> {}
 
 impl<T, const MASK: bool> LBufferCursor<T, MASK> {
-    /// The slot the next write goes to.
+    /// Returns the index of the next slot to be written.
     #[inline]
     pub fn position(&self) -> usize {
         self.position
@@ -839,17 +845,19 @@ impl<T, const MASK: bool> LBufferCursor<T, MASK> {
     /// Moves the cursor to slot `position`.
     ///
     /// # Safety
-    /// The cursor's writes from `position` must stay within slots no other
-    /// writer writes. For a masked buffer, `position` must start a byte of
-    /// the null mask, that is be a multiple of 8, and the bytes the cursor
-    /// writes must be its own.
+    /// The caller must ensure that:
+    /// - writes from `position` onwards go to slots that no other writer
+    ///   uses;
+    /// - for a masked buffer, `position` is a multiple of 8, and no other
+    ///   writer writes the null mask bytes this cursor writes.
     #[inline]
     pub unsafe fn set_position(&mut self, position: usize) {
         self.position = position;
     }
 
-    /// Points the cursor's publication at targets of its own, leaving the
-    /// buffer's published length to [`LBuffer::publish`].
+    /// Stops the cursor publishing to the buffer, and publishes its writes to
+    /// private targets instead. The buffer's published length is then set
+    /// only through [`LBuffer::publish`].
     pub fn detach(&mut self) {
         let scratch = self.scratch.insert(Box::new((AtomicUsize::new(0), LMaskTail::new())));
         self.len = NonNull::from(&scratch.0);
@@ -861,13 +869,13 @@ impl<T, const MASK: bool> LBufferCursor<T, MASK> {
     /// Writes `value` at the cursor's position and publishes it.
     ///
     /// # Safety
-    /// See [`LBuffer::cursor`]: the position must be below the buffer's
-    /// capacity.
+    /// The position must be below the buffer's capacity. See
+    /// [`LBuffer::cursor`] for the full contract.
     #[inline(always)]
     pub unsafe fn push(&mut self, value: T) {
         let n = self.position;
-        // SAFETY: the caller keeps `n` below the capacity, in a slot this
-        // cursor alone writes.
+        // SAFETY: the caller guarantees that `n` is below the capacity and that
+        // no other writer uses this slot.
         unsafe {
             self.base.as_ptr().add(n).write(value);
         }
@@ -875,18 +883,18 @@ impl<T, const MASK: bool> LBufferCursor<T, MASK> {
             self.mark(n, true);
         }
         self.position = n + 1;
-        // SAFETY: `len` refers to the buffer's length or the cursor's own
-        // target, both of which outlive the cursor.
+        // SAFETY: `len` is the buffer's length or the cursor's own target, and
+        // both outlive the cursor.
         unsafe { self.len.as_ref() }.store(n + 1, Ordering::Release);
     }
 
-    /// Sets or clears the null mask bit of slot `n`, and publishes the mask
-    /// tail past it. Only reached when `MASK` is true.
+    /// Updates the null mask bit for slot `n` and publishes the mask tail
+    /// past it. Only called for masked buffers.
     #[inline(always)]
     fn mark(&self, n: usize, valid: bool) {
-        // SAFETY: `mask_base` and `tail` are `Some` for a masked buffer. The
-        // byte of slot `n` is written by this cursor alone, and atomically,
-        // because a reader may read the byte being filled.
+        // SAFETY: `mask_base` and `tail` are `Some` for a masked buffer. Only
+        // this cursor writes the byte for slot `n`. The write is atomic because
+        // a reader may read the byte while it is being filled.
         let (byte, tail) = unsafe {
             let base = self.mask_base.unwrap_unchecked();
             (AtomicU8::from_ptr(base.as_ptr().add(n / 8)), self.tail.unwrap_unchecked().as_ref())
@@ -909,7 +917,7 @@ impl<T, const MASK: bool> LBufferCursor<T, MASK> {
 
 impl<T: Default> LBufferCursor<T, true> {
     /// Writes a null at the cursor's position and publishes it. The value
-    /// slot receives `T::default()`.
+    /// slot is set to `T::default()`.
     ///
     /// # Safety
     /// See [`push`](Self::push).
