@@ -300,13 +300,17 @@ pub(crate) fn print_ndarray_body<T: Float + Display>(
 /// - `Timestamp` prints as `YYYY-MM-DD HH:MM:SS`, followed by the fraction
 ///   digits of its time unit: 3 for milliseconds, 6 for microseconds and 9 for
 ///   nanoseconds. The values of an array therefore print at one width.
-/// - Timestamps with a time zone print the wall time and the UTC offset, as in
-///   `2026-01-01 14:30:00+05:00`. Time zone text other than an offset follows
-///   the value, as in `2026-01-01 18:30:00+09:00 Asia/Tokyo`.
-/// - Time zones that observe daylight saving time, and time zones absent from
-///   the time zone tables, print the UTC value with `+00:00` and without the
-///   time zone text. The tables hold their offsets without transition dates,
-///   and the time zone text is printed only beside the wall time of that zone.
+/// - Timestamps with a time zone print the wall time of that time zone and
+///   its UTC offset at that instant, as in `2026-01-01 14:30:00+05:00`. Time
+///   zone text other than an offset follows the value, as in
+///   `2026-01-01 20:30:00+11:00 Australia/Sydney`.
+/// - IANA identifiers are resolved through the IANA Time Zone Database, which
+///   includes daylight saving and historical transitions. The same time zone
+///   therefore prints `+11:00` in January and `+10:00` in July for Sydney.
+/// - Offsets with seconds, which occur before standard time was adopted,
+///   print as `+HH:MM:SS`.
+/// - Time zone text that is not an offset, an abbreviation or an IANA
+///   identifier prints the UTC value with `+00:00` and without that text.
 /// - `Time32` and `Time64` print the time of day as `HH:MM:SS`, with the
 ///   fraction digits of their time unit.
 /// - `Duration32` and `Duration64` print the stored count with its time unit
@@ -367,19 +371,23 @@ where
                 }
             }
             Dt::Timestamp(_, Some(tz)) => {
-                let offset = parse_timezone_offset(tz);
-                let local_dt = DatetimeArray::<i64>::i64_to_datetime(value, unit)
-                    .and_then(|dt| dt.checked_to_offset(offset.unwrap_or(UtcOffset::UTC)));
+                let utc_dt = DatetimeArray::<i64>::i64_to_datetime(value, unit);
+                let offset = utc_dt.and_then(|dt| timezone_offset(tz, dt.unix_timestamp()));
+                let local_dt =
+                    utc_dt.and_then(|dt| dt.checked_to_offset(offset.unwrap_or(UtcOffset::UTC)));
                 if let Some(local_dt) = local_dt {
                     let seconds = local_dt.offset().whole_seconds();
                     let sign = if seconds < 0 { '-' } else { '+' };
-                    let text = format!(
+                    let mut text = format!(
                         "{}{}{:02}:{:02}",
                         format_timestamp(local_dt),
                         sign,
                         seconds.abs() / 3_600,
                         seconds.abs() / 60 % 60
                     );
+                    if seconds % 60 != 0 {
+                        text.push_str(&format!(":{:02}", seconds.abs() % 60));
+                    }
                     // Time zone text that is an offset is already printed with the value.
                     let is_offset_text = tz.starts_with(['+', '-'])
                         || tz.eq_ignore_ascii_case("UTC")
@@ -425,29 +433,31 @@ where
     format!("{v}{suffix}")
 }
 
-/// Returns the UTC offset of the time zone text `tz`, for offsets, time zone
-/// abbreviations and IANA identifiers with one offset throughout the year.
+/// Returns the UTC offset in effect at `unix_seconds` for the time zone text `tz`.
 ///
-/// Returns `None` for IANA identifiers that observe daylight saving time,
-/// because the time zone tables hold their two offsets without the dates on
-/// which each applies, and for text absent from the tables.
+/// ## Behaviour
+/// - Time zone abbreviations in `ABBR_TO_OFFSET` return their fixed offset.
+/// - IANA identifiers return the offset of that instant from the IANA Time
+///   Zone Database, which includes daylight saving and historical transitions.
+/// - `UTC`, `Z` and offsets such as `+05:00` and `+0530` return that offset.
+///
+/// Returns `None` for any other text.
 #[cfg(all(feature = "datetime", feature = "datetime_ops"))]
-fn parse_timezone_offset(tz: &str) -> Option<time::UtcOffset> {
-    use crate::structs::variants::datetime::tz::{TZ_DATABASE, lookup_timezone};
+fn timezone_offset(tz: &str, unix_seconds: i64) -> Option<time::UtcOffset> {
+    use crate::structs::variants::datetime::tz::ABBR_TO_OFFSET;
     use time::UtcOffset;
 
-    if TZ_DATABASE
-        .get(tz)
-        .is_some_and(|info| info.std_offset != info.dst_offset)
-    {
-        return None;
+    let tz = match ABBR_TO_OFFSET.get(tz) {
+        Some(offset) => offset,
+        None => {
+            if let Some(zone) = tzdb_data::find_tz(tz.as_bytes()) {
+                let seconds = zone.find_local_time_type(unix_seconds).ok()?.ut_offset();
+                return UtcOffset::from_whole_seconds(seconds).ok();
+            }
+            tz
+        }
     }
-
-    // First try timezone database lookup (handles IANA IDs, abbreviations, and direct offsets)
-    let tz_offset = lookup_timezone(tz)?;
-
-    // Now parse the resolved offset string
-    let tz = tz_offset.trim();
+    .trim();
 
     // Handle UTC specially
     if tz.eq_ignore_ascii_case("UTC") || tz.eq_ignore_ascii_case("Z") {
@@ -685,7 +695,7 @@ mod tests {
 
     #[cfg(feature = "datetime_ops")]
     #[test]
-    fn test_timestamp_with_fixed_offset_zone_prints_local_time_offset_and_zone() {
+    fn test_timestamp_with_named_zone_prints_local_time_offset_and_zone() {
         use crate::{Dt, TimeUnit};
         let arr = timestamp_array(
             &[Some(1_767_259_800_000), None],
@@ -720,15 +730,57 @@ mod tests {
         );
     }
 
+    // The expected text is from Python's `zoneinfo`, which reads the IANA Time
+    // Zone Database. It covers daylight saving in both hemispheres, the seconds
+    // either side of a transition, historical rules, offsets of 30 and 45
+    // minutes, and local mean time offsets with seconds.
     #[cfg(feature = "datetime_ops")]
     #[test]
-    fn test_timestamp_with_daylight_saving_zone_prints_utc_value_with_utc_offset() {
+    fn test_timestamp_with_iana_zone_prints_wall_time_and_offset_of_the_instant() {
+        use crate::{Dt, TimeUnit};
+        let cases: [(&str, i64, &str); 17] = [
+            ("Australia/Sydney", 1767259800, "2026-01-01 20:30:00+11:00 Australia/Sydney"),
+            ("Australia/Sydney", 1782898200, "2026-07-01 19:30:00+10:00 Australia/Sydney"),
+            ("America/New_York", 1767259800, "2026-01-01 04:30:00-05:00 America/New_York"),
+            ("America/New_York", 1782898200, "2026-07-01 05:30:00-04:00 America/New_York"),
+            ("Europe/London", 1782898200, "2026-07-01 10:30:00+01:00 Europe/London"),
+            ("Australia/Sydney", 1775318399, "2026-04-05 02:59:59+11:00 Australia/Sydney"),
+            ("Australia/Sydney", 1775318400, "2026-04-05 02:00:00+10:00 Australia/Sydney"),
+            ("America/New_York", 1772953199, "2026-03-08 01:59:59-05:00 America/New_York"),
+            ("America/New_York", 1772953200, "2026-03-08 03:00:00-04:00 America/New_York"),
+            ("America/New_York", 1142856000, "2006-03-20 07:00:00-05:00 America/New_York"),
+            ("Europe/London", 0, "1970-01-01 01:00:00+01:00 Europe/London"),
+            ("Asia/Kolkata", 1767259800, "2026-01-01 15:00:00+05:30 Asia/Kolkata"),
+            ("Asia/Kathmandu", 1767259800, "2026-01-01 15:15:00+05:45 Asia/Kathmandu"),
+            ("Australia/Lord_Howe", 1767259800, "2026-01-01 20:30:00+11:00 Australia/Lord_Howe"),
+            ("Australia/Lord_Howe", 1782898200, "2026-07-01 20:00:00+10:30 Australia/Lord_Howe"),
+            ("Australia/Sydney", -2524521600, "1890-01-01 10:04:52+10:04:52 Australia/Sydney"),
+            ("America/New_York", -2840140800, "1879-12-31 19:03:58-04:56:02 America/New_York"),
+        ];
+        for (zone, unix_seconds, expected) in cases {
+            let arr = timestamp_array(
+                &[Some(unix_seconds), None],
+                Dt::Timestamp(TimeUnit::Seconds, Some(zone.into())),
+            );
+            assert_datetime_text(arr, &[expected, "null"]);
+        }
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timestamp_with_iana_zone_prints_fraction_digits_of_its_unit() {
         use crate::{Dt, TimeUnit};
         let arr = timestamp_array(
-            &[Some(1_767_259_800), None],
-            Dt::Timestamp(TimeUnit::Seconds, Some("Australia/Sydney".into())),
+            &[Some(1_767_259_800_123), Some(1_782_898_200_000)],
+            Dt::Timestamp(TimeUnit::Milliseconds, Some("Australia/Sydney".into())),
         );
-        assert_datetime_text(arr, &["2026-01-01 09:30:00+00:00", "null"]);
+        assert_datetime_text(
+            arr,
+            &[
+                "2026-01-01 20:30:00.123+11:00 Australia/Sydney",
+                "2026-07-01 19:30:00.000+10:00 Australia/Sydney",
+            ],
+        );
     }
 
     #[cfg(feature = "datetime_ops")]
