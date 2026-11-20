@@ -66,11 +66,28 @@ pub fn parse_datetime_str(s: &str) -> Option<i64> {
 
     #[cfg(feature = "datetime_ops")]
     {
+        use std::sync::LazyLock;
         use time::{
             Date, OffsetDateTime, PrimitiveDateTime, Time,
-            format_description::well_known::{Iso8601, Rfc3339},
-            macros::format_description,
+            format_description::{
+                self, BorrowedFormatItem,
+                well_known::{Iso8601, Rfc3339},
+            },
         };
+
+        // The format descriptions are parsed on first use.
+        static DATE_TIME_FORMAT: LazyLock<Vec<BorrowedFormatItem<'static>>> = LazyLock::new(|| {
+            format_description::parse_borrowed::<1>("[year]-[month]-[day] [hour]:[minute]:[second]")
+                .expect("the date-time format description is valid")
+        });
+        static DATE_FORMAT: LazyLock<Vec<BorrowedFormatItem<'static>>> = LazyLock::new(|| {
+            format_description::parse_borrowed::<1>("[year]-[month]-[day]")
+                .expect("the date format description is valid")
+        });
+        static TIME_FORMAT: LazyLock<Vec<BorrowedFormatItem<'static>>> = LazyLock::new(|| {
+            format_description::parse_borrowed::<1>("[hour]:[minute]:[second]")
+                .expect("the time format description is valid")
+        });
 
         // Try to parse as RFC3339/ISO8601 string (with timezone)
         if let Ok(dt) = OffsetDateTime::parse(s, &Rfc3339) {
@@ -83,8 +100,7 @@ pub fn parse_datetime_str(s: &str) -> Option<i64> {
         }
 
         // Try parsing as full date-time (no timezone) "%Y-%m-%d %H:%M:%S"
-        let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
-        if let Ok(dt) = PrimitiveDateTime::parse(s, format) {
+        if let Ok(dt) = PrimitiveDateTime::parse(s, DATE_TIME_FORMAT.as_slice()) {
             let dt_utc = dt.assume_utc();
             return Some(
                 dt_utc.unix_timestamp() * 1_000 + (dt_utc.nanosecond() / 1_000_000) as i64,
@@ -92,8 +108,7 @@ pub fn parse_datetime_str(s: &str) -> Option<i64> {
         }
 
         // Try parsing as date only "%Y-%m-%d"
-        let date_format = format_description!("[year]-[month]-[day]");
-        if let Ok(date) = Date::parse(s, date_format) {
+        if let Ok(date) = Date::parse(s, DATE_FORMAT.as_slice()) {
             if let Ok(dt) = date.with_hms(0, 0, 0) {
                 let dt_utc = dt.assume_utc();
                 return Some(dt_utc.unix_timestamp() * 1_000);
@@ -101,8 +116,7 @@ pub fn parse_datetime_str(s: &str) -> Option<i64> {
         }
 
         // Try parsing as time only "%H:%M:%S" (use today's date)
-        let time_format = format_description!("[hour]:[minute]:[second]");
-        if let Ok(time) = Time::parse(s, time_format) {
+        if let Ok(time) = Time::parse(s, TIME_FORMAT.as_slice()) {
             let today = OffsetDateTime::now_utc().date();
             let dt_primitive = today.with_time(time);
             let dt_utc = dt_primitive.assume_utc();

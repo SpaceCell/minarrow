@@ -436,7 +436,7 @@ where
 /// Returns the UTC offset in effect at `unix_seconds` for the time zone text `tz`.
 ///
 /// ## Behaviour
-/// - Time zone abbreviations in `ABBR_TO_OFFSET` return their fixed offset.
+/// - Time zone abbreviations listed in `abbreviation_offset` return their fixed offset.
 /// - IANA identifiers return the offset of that instant from the IANA Time
 ///   Zone Database, which includes daylight saving and historical transitions.
 /// - `UTC`, `Z` and offsets such as `+05:00` and `+0530` return that offset.
@@ -444,10 +444,10 @@ where
 /// Returns `None` for any other text.
 #[cfg(all(feature = "datetime", feature = "datetime_ops"))]
 fn timezone_offset(tz: &str, unix_seconds: i64) -> Option<time::UtcOffset> {
-    use crate::structs::variants::datetime::tz::ABBR_TO_OFFSET;
+    use crate::structs::variants::datetime::tz::abbreviation_offset;
     use time::UtcOffset;
 
-    let tz = match ABBR_TO_OFFSET.get(tz) {
+    let tz = match abbreviation_offset(tz) {
         Some(offset) => offset,
         None => {
             if let Some(zone) = tzdb_data::find_tz(tz.as_bytes()) {
@@ -781,6 +781,91 @@ mod tests {
                 "2026-07-01 19:30:00.000+10:00 Australia/Sydney",
             ],
         );
+    }
+
+    // 1 January 2026 and 1 July 2026 at 09:30:00 UTC.
+    #[cfg(feature = "datetime_ops")]
+    const JANUARY: i64 = 1_767_259_800;
+    #[cfg(feature = "datetime_ops")]
+    const JULY: i64 = 1_782_898_200;
+
+    #[cfg(feature = "datetime_ops")]
+    fn offset_text(tz: &str, unix_seconds: i64) -> Option<String> {
+        timezone_offset(tz, unix_seconds).map(|offset| {
+            let seconds = offset.whole_seconds();
+            let sign = if seconds < 0 { '-' } else { '+' };
+            format!("{sign}{:02}:{:02}", seconds.abs() / 3_600, seconds.abs() / 60 % 60)
+        })
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timezone_offset_of_iana_identifiers() {
+        assert_eq!(offset_text("Australia/Sydney", JULY).as_deref(), Some("+10:00"));
+        assert_eq!(offset_text("Australia/Sydney", JANUARY).as_deref(), Some("+11:00"));
+        assert_eq!(offset_text("America/New_York", JANUARY).as_deref(), Some("-05:00"));
+        assert_eq!(offset_text("America/New_York", JULY).as_deref(), Some("-04:00"));
+        assert_eq!(offset_text("Europe/London", JANUARY).as_deref(), Some("+00:00"));
+        assert_eq!(offset_text("Europe/London", JULY).as_deref(), Some("+01:00"));
+        assert_eq!(offset_text("Asia/Tokyo", JANUARY).as_deref(), Some("+09:00"));
+        assert_eq!(offset_text("Pacific/Auckland", JULY).as_deref(), Some("+12:00"));
+        assert_eq!(offset_text("Pacific/Auckland", JANUARY).as_deref(), Some("+13:00"));
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timezone_offset_of_abbreviations() {
+        for (abbreviation, offset) in [
+            ("AEST", "+10:00"),
+            ("EST", "-05:00"),
+            ("GMT", "+00:00"),
+            ("UTC", "+00:00"),
+            ("PST", "-08:00"),
+            ("JST", "+09:00"),
+        ] {
+            // Abbreviations have one offset throughout the year.
+            assert_eq!(offset_text(abbreviation, JANUARY).as_deref(), Some(offset));
+            assert_eq!(offset_text(abbreviation, JULY).as_deref(), Some(offset));
+        }
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timezone_offset_of_direct_offsets() {
+        for offset in ["+10:00", "-05:00", "+00:00", "+05:30", "-03:30"] {
+            assert_eq!(offset_text(offset, JANUARY).as_deref(), Some(offset));
+        }
+        assert_eq!(offset_text("+0530", JANUARY).as_deref(), Some("+05:30"));
+        assert_eq!(offset_text("Z", JANUARY).as_deref(), Some("+00:00"));
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timezone_offset_of_invalid_text() {
+        assert_eq!(offset_text("Invalid/Timezone", JANUARY), None);
+        assert_eq!(offset_text("INVALID", JANUARY), None);
+        assert_eq!(offset_text("25:00", JANUARY), None);
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timezone_offset_of_unusual_offsets() {
+        assert_eq!(offset_text("Australia/Eucla", JANUARY).as_deref(), Some("+08:45"));
+        assert_eq!(offset_text("Asia/Kathmandu", JANUARY).as_deref(), Some("+05:45"));
+        assert_eq!(offset_text("Asia/Colombo", JANUARY).as_deref(), Some("+05:30"));
+        assert_eq!(offset_text("America/St_Johns", JANUARY).as_deref(), Some("-03:30"));
+        assert_eq!(offset_text("America/St_Johns", JULY).as_deref(), Some("-02:30"));
+        assert_eq!(offset_text("Pacific/Chatham", JULY).as_deref(), Some("+12:45"));
+        assert_eq!(offset_text("Pacific/Chatham", JANUARY).as_deref(), Some("+13:45"));
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_every_iana_identifier_has_an_offset() {
+        for name in tzdb_data::TZ_NAMES {
+            assert!(timezone_offset(name, JANUARY).is_some(), "no offset for {name}");
+            assert!(timezone_offset(name, JULY).is_some(), "no offset for {name}");
+        }
     }
 
     #[cfg(feature = "datetime_ops")]
