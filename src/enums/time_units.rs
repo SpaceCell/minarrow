@@ -112,14 +112,16 @@ impl Display for IntervalUnit {
 /// distinct concept: it names a calendar step, not the resolution of a stored value.
 ///
 /// ## String form
-/// Each variant has a canonical lower-case label (`year`, `month`, `week`, `day`,
-/// `hour`, `minute`, `second`, `millisecond`, `microsecond`). A `TimePeriod` converts
-/// to and from that label, so a call site can pass either the variant or its string.
+/// Each variant has a canonical lower-case label (`year`, `quarter`, `month`, `week`,
+/// `day`, `hour`, `minute`, `second`, `millisecond`, `microsecond`). A `TimePeriod`
+/// converts to and from that label, so a call site can pass either the variant or its
+/// string.
 /// Parse an untrusted string with `str::parse` (via [`FromStr`]) to get a `Result` -
 /// the `From<&str>` path panics on an unknown label and is for known-good literals.
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub enum TimePeriod {
     Year,
+    Quarter,
     Month,
     Week,
     Day,
@@ -135,6 +137,7 @@ impl TimePeriod {
     pub const fn as_str(&self) -> &'static str {
         match self {
             TimePeriod::Year => "year",
+            TimePeriod::Quarter => "quarter",
             TimePeriod::Month => "month",
             TimePeriod::Week => "week",
             TimePeriod::Day => "day",
@@ -159,6 +162,7 @@ impl FromStr for TimePeriod {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "year" => Ok(TimePeriod::Year),
+            "quarter" => Ok(TimePeriod::Quarter),
             "month" => Ok(TimePeriod::Month),
             "week" => Ok(TimePeriod::Week),
             "day" => Ok(TimePeriod::Day),
@@ -190,6 +194,7 @@ mod time_period_tests {
     fn label_round_trips_through_string() {
         for period in [
             TimePeriod::Year,
+            TimePeriod::Quarter,
             TimePeriod::Month,
             TimePeriod::Week,
             TimePeriod::Day,
@@ -208,6 +213,7 @@ mod time_period_tests {
     fn from_str_accepts_known_label() {
         assert_eq!("day".parse::<TimePeriod>().unwrap(), TimePeriod::Day);
         assert_eq!(TimePeriod::from("week"), TimePeriod::Week);
+        assert_eq!("quarter".parse::<TimePeriod>().unwrap(), TimePeriod::Quarter);
     }
 
     #[test]

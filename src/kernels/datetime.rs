@@ -141,7 +141,8 @@ const MAX_EPOCH_DAY: i64 = MAX_JULIAN_DAY - UNIX_EPOCH_JULIAN_DAY;
 ///
 /// The value is split into an epoch day and a second of day, the relevant
 /// component is floored, and the result is scaled back by `per_second`, where
-/// `None` identifies the `Days` unit. `Week` starts on Sunday 00:00 UTC.
+/// `None` identifies the `Days` unit. `Quarter` starts on 1 January, 1 April,
+/// 1 July or 1 October, and `Week` starts on Sunday 00:00 UTC.
 ///
 /// Returns `None` for values outside the `time` crate's date range, for `Week`
 /// results that start before `Date::MIN`, and when scaling the result overflows
@@ -173,8 +174,9 @@ fn floor_calendar(v: i64, period: TimePeriod, per_second: Option<i64>) -> Option
     };
 
     let floored_seconds = match period {
-        TimePeriod::Year => year_and_month_start(day).0 * SECONDS_PER_DAY,
-        TimePeriod::Month => year_and_month_start(day).1 * SECONDS_PER_DAY,
+        TimePeriod::Year => year_quarter_and_month_start(day).0 * SECONDS_PER_DAY,
+        TimePeriod::Quarter => year_quarter_and_month_start(day).1 * SECONDS_PER_DAY,
+        TimePeriod::Month => year_quarter_and_month_start(day).2 * SECONDS_PER_DAY,
         // The epoch day is a Thursday, so `(day + 4) mod 7` counts the days back
         // to the preceding Sunday.
         TimePeriod::Week => {
@@ -200,16 +202,17 @@ fn floor_calendar(v: i64, period: TimePeriod, per_second: Option<i64>) -> Option
 }
 
 /// Shift in 400-year cycles that makes every in-range epoch day non-negative in
-/// the March-based calendar used by `year_and_month_start`.
+/// the March-based calendar used by `year_quarter_and_month_start`.
 const ERA_SHIFT_DAYS: i64 = (-(MIN_EPOCH_DAY + 719_468) / 146_097 + 1) * 146_097;
 
-/// Returns the epoch days of the first day of the year and the first day of the
-/// month containing `day`, in the proleptic Gregorian calendar.
+/// Returns the epoch days of the first day of the year, the first day of the
+/// quarter and the first day of the month containing `day`, in the proleptic
+/// Gregorian calendar.
 ///
 /// Uses unsigned arithmetic on a calendar that starts each year on 1 March, so
 /// that the leap day falls at the end of the year. `day` must lie within
 /// `MIN_EPOCH_DAY..=MAX_EPOCH_DAY`.
-fn year_and_month_start(day: i64) -> (i64, i64) {
+fn year_quarter_and_month_start(day: i64) -> (i64, i64, i64) {
     let shifted = (day + 719_468 + ERA_SHIFT_DAYS) as u64;
     let day_of_era = shifted % 146_097;
     let year_of_era =
@@ -229,7 +232,16 @@ fn year_and_month_start(day: i64) -> (i64, i64) {
         let leap = year_of_era % 4 == 0 && (year_of_era % 100 != 0 || year_of_era == 0);
         day - day_of_year as i64 - 59 - leap as i64
     };
-    (year_start, month_start)
+    // January, February and March fall in the first quarter, which starts with
+    // the year. The other quarters start on 1 April, 1 July and 1 October, which
+    // are months 1, 4 and 7 of the March-based year.
+    let quarter_start = if month == 0 || month >= 10 {
+        year_start
+    } else {
+        let quarter_month = 1 + (month - 1) / 3 * 3;
+        day - day_of_year as i64 + ((153 * quarter_month + 2) / 5) as i64
+    };
+    (year_start, quarter_start, month_start)
 }
 
 /// Add `duration` to the values of `src` in the window `[src_offset, src_offset +
@@ -761,8 +773,9 @@ mod floor_tests {
     use crate::{Dt, Vec64};
 
     /// Calendar periods tested against the `time::OffsetDateTime` reference.
-    const PERIODS: [TimePeriod; 7] = [
+    const PERIODS: [TimePeriod; 8] = [
         TimePeriod::Year,
+        TimePeriod::Quarter,
         TimePeriod::Month,
         TimePeriod::Week,
         TimePeriod::Day,
@@ -787,6 +800,14 @@ mod floor_tests {
             TimePeriod::Year => |dt| {
                 Date::from_calendar_date(dt.year(), time::Month::January, 1)
                     .ok()
+                    .and_then(|d| d.with_hms(0, 0, 0).ok())
+                    .map(|pdt| pdt.assume_utc())
+            },
+            TimePeriod::Quarter => |dt| {
+                let first_month = (dt.month() as u8 - 1) / 3 * 3 + 1;
+                time::Month::try_from(first_month)
+                    .ok()
+                    .and_then(|month| Date::from_calendar_date(dt.year(), month, 1).ok())
                     .and_then(|d| d.with_hms(0, 0, 0).ok())
                     .map(|pdt| pdt.assume_utc())
             },
