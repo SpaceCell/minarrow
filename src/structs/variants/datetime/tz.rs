@@ -30,7 +30,11 @@
 //! This module is part of the `time_zones` feature, which compiles the IANA
 //! Time Zone Database into the binary and adds about 400 KB to it.
 
+use std::cell::Cell;
+
 use tzdb_data::find_tz;
+
+const SECONDS_PER_DAY: i64 = 86_400;
 
 /// Returns the fixed UTC offset of a time zone abbreviation in `±HH:MM` form.
 ///
@@ -114,7 +118,10 @@ pub fn abbreviation_offset(abbreviation: &str) -> Option<&'static str> {
 /// of the instant in seconds since the Unix epoch.
 ///
 /// The time zone is resolved once, and the returned function is called for
-/// each instant.
+/// each instant. The function remembers the ranges of UTC days that it has
+/// found to have one offset throughout, and instants in those ranges reuse the
+/// offset. Values in time order therefore search the database about once per
+/// day of data.
 ///
 /// ## Behaviour
 /// - Time zone abbreviations listed in `abbreviation_offset` have their fixed offset.
@@ -132,10 +139,49 @@ pub(crate) fn utc_offset_seconds(tz: &str) -> Option<impl Fn(i64) -> i64> {
         Some(_) => 0,
         None => offset_text_seconds(abbreviation_offset(tz).unwrap_or(tz))?,
     };
+    // Two ranges of UTC days found to have one offset throughout, as the first
+    // day, the last day and the offset. A range is empty when its first day is
+    // after its last day. Truncation and month arithmetic read offsets near their
+    // input and near their result, which the two ranges hold apart.
+    let ranges = Cell::new([(1i64, 0i64, 0i64); 2]);
     Some(move |unix_seconds: i64| match zone {
-        Some(zone) => zone
-            .find_local_time_type(unix_seconds)
-            .map_or(0, |local| i64::from(local.ut_offset())),
+        Some(zone) => {
+            let offset_at = |seconds: i64| {
+                zone.find_local_time_type(seconds)
+                    .map_or(0, |local| i64::from(local.ut_offset()))
+            };
+            let day = unix_seconds.div_euclid(SECONDS_PER_DAY);
+            let mut found = ranges.get();
+            for (first_day, last_day, offset) in found {
+                if first_day <= day && day <= last_day {
+                    return offset;
+                }
+            }
+            // Transitions are more than a day apart, so equal offsets at the first
+            // and last second of a day hold for the whole day.
+            let day_start = day.saturating_mul(SECONDS_PER_DAY);
+            let first = offset_at(day_start);
+            let last = offset_at(day_start.saturating_add(SECONDS_PER_DAY - 1));
+            if first != last {
+                return offset_at(unix_seconds);
+            }
+            // The day extends a range that it adjoins at the same offset, and
+            // otherwise replaces the range found less recently.
+            let adjoined = found.iter_mut().find(|(first_day, last_day, offset)| {
+                first_day <= last_day
+                    && *offset == first
+                    && (day == last_day.saturating_add(1) || day.saturating_add(1) == *first_day)
+            });
+            match adjoined {
+                Some(range) => {
+                    range.0 = range.0.min(day);
+                    range.1 = range.1.max(day);
+                }
+                None => found = [(day, day, first), found[0]],
+            }
+            ranges.set(found);
+            first
+        }
         None => fixed,
     })
 }

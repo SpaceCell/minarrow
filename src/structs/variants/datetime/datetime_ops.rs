@@ -2695,6 +2695,55 @@ mod time_zone_tests {
         }
     }
 
+    // Arrays of many rows reuse the offsets of the days they have read. Each row
+    // must equal the result of an array holding that row alone, in time order,
+    // in reverse order and in an order that moves between distant days.
+    #[test]
+    fn test_rows_of_one_array_equal_the_results_of_single_row_arrays() {
+        for tz in ["Australia/Sydney", "America/New_York", "Australia/Lord_Howe", "America/Havana"] {
+            // Every 20 minutes from 20 days before to 20 days after each transition of 2026.
+            let transitions: Vec<i64> = TRUNCATIONS
+                .iter()
+                .filter(|row| row.0 == tz && row.1 == "day")
+                .map(|row| row.2)
+                .collect();
+            let mut values: Vec<i64> = Vec::new();
+            for transition in [transitions[3], transitions[transitions.len() - 3]] {
+                values.extend((-1_440..1_440).map(|step| transition + step * 1_200));
+            }
+            let reversed: Vec<i64> = values.iter().rev().copied().collect();
+            let half = values.len() / 2;
+            let interleaved: Vec<i64> = (0..half).flat_map(|i| [values[i], values[half + i]]).collect();
+
+            for order in [&values, &reversed, &interleaved] {
+                let arr = zoned(order, tz, TimeUnit::Seconds);
+                let hours = arr.hour();
+                let days = arr.truncate(TimePeriod::Day);
+                let months = arr.truncate(TimePeriod::Month);
+                let added = arr.add_months(1).unwrap();
+                for (i, value) in order.iter().enumerate() {
+                    let single = zoned(&[*value], tz, TimeUnit::Seconds);
+                    assert_eq!(hours.data[i], single.hour().data[0], "{tz} hour at {value}");
+                    assert_eq!(
+                        days.data[i],
+                        single.truncate(TimePeriod::Day).data[0],
+                        "{tz} day at {value}"
+                    );
+                    assert_eq!(
+                        months.data[i],
+                        single.truncate(TimePeriod::Month).data[0],
+                        "{tz} month at {value}"
+                    );
+                    assert_eq!(
+                        added.data[i],
+                        single.add_months(1).unwrap().data[0],
+                        "{tz} plus one month at {value}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_output_buffer_kernels_read_the_wall_time_of_the_time_zone() {
         let rows: Vec<&(&str, i64, [i32; 11], bool)> = COMPONENTS
