@@ -260,6 +260,7 @@ Additional types:
 |---------|-------------|
 | `datetime` | Temporal array types as raw integer offsets |
 | `datetime_ops` | Datetime library functionality: ISO 8601 parsing, timezone-aware operations, arithmetic, component extraction |
+| `time_zones` | Time zone conversion through the IANA Time Zone Database, including daylight saving and historical transitions. Display, component extraction, truncation and month arithmetic use the wall time of the time zone, and stored values stay UTC. Without it, timestamps with a time zone are printed and computed in UTC |
 | `extended_numeric_types` | i8, i16, u8, u16 variants |
 | `default_categorical_8` | 8-bit default categorical width, with Categorical8 and Categorical32 both available |
 | `extended_categorical` | Adds Categorical16 and Categorical64 dictionary index widths |

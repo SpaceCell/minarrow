@@ -66,11 +66,28 @@ pub fn parse_datetime_str(s: &str) -> Option<i64> {
 
     #[cfg(feature = "datetime_ops")]
     {
+        use std::sync::LazyLock;
         use time::{
             Date, OffsetDateTime, PrimitiveDateTime, Time,
-            format_description::well_known::{Iso8601, Rfc3339},
-            macros::format_description,
+            format_description::{
+                self, BorrowedFormatItem,
+                well_known::{Iso8601, Rfc3339},
+            },
         };
+
+        // The format descriptions are parsed on first use.
+        static DATE_TIME_FORMAT: LazyLock<Vec<BorrowedFormatItem<'static>>> = LazyLock::new(|| {
+            format_description::parse_borrowed::<1>("[year]-[month]-[day] [hour]:[minute]:[second]")
+                .expect("the date-time format description is valid")
+        });
+        static DATE_FORMAT: LazyLock<Vec<BorrowedFormatItem<'static>>> = LazyLock::new(|| {
+            format_description::parse_borrowed::<1>("[year]-[month]-[day]")
+                .expect("the date format description is valid")
+        });
+        static TIME_FORMAT: LazyLock<Vec<BorrowedFormatItem<'static>>> = LazyLock::new(|| {
+            format_description::parse_borrowed::<1>("[hour]:[minute]:[second]")
+                .expect("the time format description is valid")
+        });
 
         // Try to parse as RFC3339/ISO8601 string (with timezone)
         if let Ok(dt) = OffsetDateTime::parse(s, &Rfc3339) {
@@ -83,8 +100,7 @@ pub fn parse_datetime_str(s: &str) -> Option<i64> {
         }
 
         // Try parsing as full date-time (no timezone) "%Y-%m-%d %H:%M:%S"
-        let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
-        if let Ok(dt) = PrimitiveDateTime::parse(s, format) {
+        if let Ok(dt) = PrimitiveDateTime::parse(s, DATE_TIME_FORMAT.as_slice()) {
             let dt_utc = dt.assume_utc();
             return Some(
                 dt_utc.unix_timestamp() * 1_000 + (dt_utc.nanosecond() / 1_000_000) as i64,
@@ -92,8 +108,7 @@ pub fn parse_datetime_str(s: &str) -> Option<i64> {
         }
 
         // Try parsing as date only "%Y-%m-%d"
-        let date_format = format_description!("[year]-[month]-[day]");
-        if let Ok(date) = Date::parse(s, date_format) {
+        if let Ok(date) = Date::parse(s, DATE_FORMAT.as_slice()) {
             if let Ok(dt) = date.with_hms(0, 0, 0) {
                 let dt_utc = dt.assume_utc();
                 return Some(dt_utc.unix_timestamp() * 1_000);
@@ -101,8 +116,7 @@ pub fn parse_datetime_str(s: &str) -> Option<i64> {
         }
 
         // Try parsing as time only "%H:%M:%S" (use today's date)
-        let time_format = format_description!("[hour]:[minute]:[second]");
-        if let Ok(time) = Time::parse(s, time_format) {
+        if let Ok(time) = Time::parse(s, TIME_FORMAT.as_slice()) {
             let today = OffsetDateTime::now_utc().date();
             let dt_primitive = today.with_time(time);
             let dt_utc = dt_primitive.assume_utc();
@@ -480,4 +494,43 @@ pub fn create_aligned_chunks_from_array(
         .collect();
 
     Ok(SuperArray::from_chunks(chunks?))
+}
+
+#[cfg(all(test, feature = "datetime_ops"))]
+mod datetime_text_tests {
+    use super::parse_datetime_str;
+
+    // Milliseconds since the epoch of 2026-01-01 09:30:00 UTC and of that day at midnight.
+    const INSTANT_MS: i64 = 1_767_259_800_000;
+    const MIDNIGHT_MS: i64 = 1_767_225_600_000;
+
+    #[test]
+    fn test_rfc3339_and_iso8601_text_parses() {
+        assert_eq!(parse_datetime_str("2026-01-01T09:30:00Z"), Some(INSTANT_MS));
+        assert_eq!(parse_datetime_str("2026-01-01T19:30:00+10:00"), Some(INSTANT_MS));
+        assert_eq!(parse_datetime_str("2026-01-01T09:30:00.123Z"), Some(INSTANT_MS + 123));
+    }
+
+    #[test]
+    fn test_date_time_text_without_time_zone_parses_as_utc() {
+        assert_eq!(parse_datetime_str("2026-01-01 09:30:00"), Some(INSTANT_MS));
+    }
+
+    #[test]
+    fn test_date_text_parses_as_midnight_utc() {
+        assert_eq!(parse_datetime_str("2026-01-01"), Some(MIDNIGHT_MS));
+    }
+
+    #[test]
+    fn test_time_text_parses_as_that_time_today() {
+        let parsed = parse_datetime_str("09:30:00").expect("the time text parses");
+        assert_eq!(parsed.rem_euclid(86_400_000), 34_200_000);
+    }
+
+    #[test]
+    fn test_integer_text_parses_as_milliseconds() {
+        assert_eq!(parse_datetime_str("1767259800000"), Some(INSTANT_MS));
+        assert_eq!(parse_datetime_str(""), None);
+        assert_eq!(parse_datetime_str("not a date"), None);
+    }
 }

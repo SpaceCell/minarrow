@@ -757,6 +757,184 @@ impl<T> LBuffer<T, true> {
     }
 }
 
+impl<T, const MASK: bool> LBuffer<T, MASK> {
+    /// Returns a write cursor that starts at the buffer's published length.
+    ///
+    /// Use a cursor when the caller already guarantees, for a run of writes,
+    /// that the buffer is unsealed and has room. Each cursor write is then
+    /// the same as [`push`](Self::push), without its sealed and capacity
+    /// checks.
+    ///
+    /// # Safety
+    /// While the cursor is in use, the caller must ensure that:
+    /// - the buffer is not sealed;
+    /// - no other path writes to the buffer;
+    /// - every write stays below the buffer's capacity.
+    ///
+    /// The cursor must not outlive the buffer.
+    pub unsafe fn cursor(&mut self) -> LBufferCursor<T, MASK> {
+        let len = self.inner.len.load(Ordering::Relaxed);
+        let mask = self.mask.as_ref();
+        LBufferCursor {
+            base: self.inner.base,
+            mask_base: mask.map(|m| m.base),
+            position: len,
+            len: NonNull::from(&self.inner.len),
+            tail: mask.and_then(|m| m.mask_tail.as_ref()).map(NonNull::from),
+            scratch: None,
+        }
+    }
+
+    /// Publishes the first `len` elements and their null mask bits to
+    /// readers.
+    ///
+    /// Use this with detached cursors, which do not publish their own
+    /// writes. The coordinating thread calls it with the length of the
+    /// completed prefix.
+    ///
+    /// # Safety
+    /// The caller must ensure that:
+    /// - every element below `len` has been written, and those writes happen
+    ///   before this call;
+    /// - `len` is at least the published length and at most the capacity.
+    pub unsafe fn publish(&self, len: usize) {
+        if let Some(tail) = self.mask.as_ref().and_then(|m| m.mask_tail.as_ref()) {
+            tail.publish(len / 8, len % 8);
+        }
+        self.inner.len.store(len, Ordering::Release);
+    }
+}
+
+/// # LBufferCursor
+///
+/// Writes values into the slots of an [`LBuffer`] without per-write checks.
+///
+/// ## Description
+/// - [`push`](Self::push) and [`push_null`](LBufferCursor::push_null) write
+///   the value at the cursor's position, update its null mask bit, and
+///   publish the new length with a `Release` store. The null mask tail is
+///   published before the length, as in [`LBuffer::push`].
+/// - A cursor from [`LBuffer::cursor`] publishes to the buffer's own length.
+/// - After [`detach`](Self::detach), the cursor publishes to private targets
+///   instead. Several detached cursors can then fill separate ranges of one
+///   buffer, and a coordinating thread makes the completed prefix visible
+///   with [`LBuffer::publish`].
+pub struct LBufferCursor<T, const MASK: bool = false> {
+    base: NonNull<T>,
+    /// Base of the null mask bytes. `Some` only when `MASK` is true.
+    mask_base: Option<NonNull<u8>>,
+    position: usize,
+    len: NonNull<AtomicUsize>,
+    /// The null mask's fill position. `Some` only when `MASK` is true.
+    tail: Option<NonNull<LMaskTail>>,
+    /// The publication targets of a detached cursor.
+    scratch: Option<Box<(AtomicUsize, LMaskTail)>>,
+}
+
+// SAFETY: the cursor only writes to slots of one buffer, which the caller has
+// reserved for it under the contract of `LBuffer::cursor`.
+unsafe impl<T: Send, const MASK: bool> Send for LBufferCursor<T, MASK> {}
+
+impl<T, const MASK: bool> LBufferCursor<T, MASK> {
+    /// Returns the index of the next slot to be written.
+    #[inline]
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    /// Moves the cursor to slot `position`.
+    ///
+    /// # Safety
+    /// The caller must ensure that:
+    /// - writes from `position` onwards go to slots that no other writer
+    ///   uses;
+    /// - for a masked buffer, `position` is a multiple of 8, and no other
+    ///   writer writes the null mask bytes this cursor writes.
+    #[inline]
+    pub unsafe fn set_position(&mut self, position: usize) {
+        self.position = position;
+    }
+
+    /// Stops the cursor publishing to the buffer, and publishes its writes to
+    /// private targets instead. The buffer's published length is then set
+    /// only through [`LBuffer::publish`].
+    pub fn detach(&mut self) {
+        let scratch = self.scratch.insert(Box::new((AtomicUsize::new(0), LMaskTail::new())));
+        self.len = NonNull::from(&scratch.0);
+        if self.tail.is_some() {
+            self.tail = Some(NonNull::from(&scratch.1));
+        }
+    }
+
+    /// Writes `value` at the cursor's position and publishes it.
+    ///
+    /// # Safety
+    /// The position must be below the buffer's capacity. See
+    /// [`LBuffer::cursor`] for the full contract.
+    #[inline(always)]
+    pub unsafe fn push(&mut self, value: T) {
+        let n = self.position;
+        // SAFETY: the caller guarantees that `n` is below the capacity and that
+        // no other writer uses this slot.
+        unsafe {
+            self.base.as_ptr().add(n).write(value);
+        }
+        if MASK {
+            self.mark(n, true);
+        }
+        self.position = n + 1;
+        // SAFETY: `len` is the buffer's length or the cursor's own target, and
+        // both outlive the cursor.
+        unsafe { self.len.as_ref() }.store(n + 1, Ordering::Release);
+    }
+
+    /// Updates the null mask bit for slot `n` and publishes the mask tail
+    /// past it. Only called for masked buffers.
+    #[inline(always)]
+    fn mark(&self, n: usize, valid: bool) {
+        // SAFETY: `mask_base` and `tail` are `Some` for a masked buffer. Only
+        // this cursor writes the byte for slot `n`. The write is atomic because
+        // a reader may read the byte while it is being filled.
+        let (byte, tail) = unsafe {
+            let base = self.mask_base.unwrap_unchecked();
+            (AtomicU8::from_ptr(base.as_ptr().add(n / 8)), self.tail.unwrap_unchecked().as_ref())
+        };
+        let bit = n % 8;
+        if bit == 0 {
+            // A fresh byte is all valid until a null clears a bit.
+            byte.store(0xFF, Ordering::Relaxed);
+        }
+        if !valid {
+            byte.fetch_and(!(1u8 << bit), Ordering::Relaxed);
+        }
+        if bit + 1 == 8 {
+            tail.publish(n / 8 + 1, 0);
+        } else {
+            tail.publish(n / 8, bit + 1);
+        }
+    }
+}
+
+impl<T: Default> LBufferCursor<T, true> {
+    /// Writes a null at the cursor's position and publishes it. The value
+    /// slot is set to `T::default()`.
+    ///
+    /// # Safety
+    /// See [`push`](Self::push).
+    #[inline(always)]
+    pub unsafe fn push_null(&mut self) {
+        let n = self.position;
+        // SAFETY: as for `push`.
+        unsafe {
+            self.base.as_ptr().add(n).write(T::default());
+        }
+        self.mark(n, false);
+        self.position = n + 1;
+        // SAFETY: as for `push`.
+        unsafe { self.len.as_ref() }.store(n + 1, Ordering::Release);
+    }
+}
+
 impl<T, const MASK: bool> Drop for LBuffer<T, MASK> {
     fn drop(&mut self) {
         // Seal on drop so views observe the flag even when the writer
@@ -1683,5 +1861,77 @@ mod tests {
         let Array::NumericArray(qty_col) = &window.cols[0].array else { panic!("qty is numeric") };
         let crate::NumericArray::Int64(qty_col) = qty_col else { panic!("qty is Int64") };
         assert_eq!(qty_col.data.as_slice().as_ptr(), qty.window(0, 1).as_slice().as_ptr());
+    }
+
+    #[test]
+    fn cursor_writes_match_pushes_with_their_null_masks() {
+        let mut pushed = LBuffer::<i64>::with_capacity_masked(64);
+        let mut cursored = LBuffer::<i64>::with_capacity_masked(64);
+        let mut cursor = unsafe { cursored.cursor() };
+        for i in 0..37i64 {
+            if i % 5 == 3 {
+                pushed.push_null().unwrap();
+                unsafe { cursor.push_null() };
+            } else {
+                pushed.push(i).unwrap();
+                unsafe { cursor.push(i) };
+            }
+        }
+        assert_eq!(cursored.len(), 37);
+        assert_eq!(cursor.position(), 37);
+        assert_eq!(pushed.view().as_slice(), cursored.view().as_slice());
+        let (a, b) = (pushed.as_bitmask(), cursored.as_bitmask());
+        assert_eq!(a.len(), b.len());
+        for i in 0..37 {
+            assert_eq!(a.get(i), b.get(i), "bit {i}");
+        }
+    }
+
+    #[test]
+    fn cursors_start_at_the_published_length() {
+        let mut buf = LBuffer::<u32>::with_capacity(8);
+        buf.push(1).unwrap();
+        buf.push(2).unwrap();
+        let mut cursor = unsafe { buf.cursor() };
+        unsafe { cursor.push(3) };
+        assert_eq!(buf.view().as_slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn detached_cursors_publish_only_through_their_buffer() {
+        let mut buf = LBuffer::<u64>::with_capacity_masked(2_048);
+        let view = buf.view();
+        let mut a = unsafe { buf.cursor() };
+        let mut b = unsafe { buf.cursor() };
+        a.detach();
+        b.detach();
+        unsafe { b.set_position(512) };
+        let writer_a = std::thread::spawn(move || {
+            for i in 0..512u64 {
+                if i % 7 == 0 { unsafe { a.push_null() } } else { unsafe { a.push(i) } }
+            }
+            a
+        });
+        let writer_b = std::thread::spawn(move || {
+            for i in 512..1_024u64 {
+                if i % 7 == 0 { unsafe { b.push_null() } } else { unsafe { b.push(i) } }
+            }
+            b
+        });
+        let (_a, _b) = (writer_a.join().unwrap(), writer_b.join().unwrap());
+        assert_eq!(view.len(), 0, "detached writes stay unpublished");
+        unsafe { buf.publish(1_024) };
+        assert_eq!(view.len(), 1_024);
+        let values = view.as_slice();
+        let mask = buf.as_bitmask();
+        for i in 0..1_024usize {
+            if i % 7 == 0 {
+                assert!(!mask.get(i), "row {i} is null");
+                assert_eq!(values[i], 0);
+            } else {
+                assert!(mask.get(i), "row {i} is set");
+                assert_eq!(values[i], i as u64);
+            }
+        }
     }
 }

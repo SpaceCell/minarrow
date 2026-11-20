@@ -569,8 +569,16 @@ fn format_field_array_with_timezone(
     field_array: &FieldArray,
     timezone: &str,
 ) -> std::fmt::Result {
-    use crate::traits::print::MAX_PREVIEW;
+    use crate::traits::print::{MAX_PREVIEW, format_datetime_value};
     use crate::{Array, TemporalArray};
+
+    // Time zone conversion requires the `time` crate.
+    if cfg!(not(feature = "datetime_ops")) {
+        panic!(
+            "Timezone functionality requires the 'datetime_ops' feature. \
+            Enable it in Cargo.toml with: features = [\"datetime_ops\"]"
+        );
+    }
 
     let arr = &field_array.array;
     let len = arr.len();
@@ -591,7 +599,7 @@ fn format_field_array_with_timezone(
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", format_datetime_with_tz(dt.as_ref(), i, timezone))?;
+            write!(f, "{}", format_datetime_value(dt.as_ref(), i))?;
         }
         if len > MAX_PREVIEW {
             write!(f, ", ...")?;
@@ -612,7 +620,7 @@ fn format_field_array_with_timezone(
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", format_datetime_with_tz(dt.as_ref(), i, timezone))?;
+            write!(f, "{}", format_datetime_value(dt.as_ref(), i))?;
         }
         if len > MAX_PREVIEW {
             write!(f, ", ...")?;
@@ -621,15 +629,6 @@ fn format_field_array_with_timezone(
     } else {
         field_array.array.fmt(f)
     }
-}
-
-#[cfg(feature = "datetime")]
-fn format_datetime_with_tz<T>(arr: &crate::DatetimeArray<T>, idx: usize, timezone: &str) -> String
-where
-    T: crate::Integer + std::fmt::Display,
-{
-    use crate::traits::print::format_datetime_value;
-    format_datetime_value(arr, idx, Some(timezone))
 }
 
 impl Shape for FieldArray {

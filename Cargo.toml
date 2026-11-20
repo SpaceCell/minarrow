@@ -40,8 +40,9 @@ polars-core = { version = "0.55.2", default-features = false, features = [
     "dtype-decimal",
 ], optional = true }
 polars-arrow = { version = "0.55.2", optional = true }
-time = { version = "0.3", optional = true, features = ["parsing", "formatting", "macros", "local-offset"] }
-phf = { version = "0.13.1", features = ["macros"], optional = true }
+time = { version = "0.3", optional = true, features = ["parsing"] }
+# IANA Time Zone Database as static data, for the `time_zones` feature.
+tzdb_data = { version = "0.2.5", optional = true }
 num-traits = "0.2.19"
 rayon = { version = "1.11.0", optional = true }
 ryu = { version = "1.0.23", optional = true }
@@ -211,7 +212,21 @@ simd = []
 # Without this feature, datetime values are raw integer offsets.
 # The `ArrowType` stored in `Field` and/or `FieldArray` specifies the
 # logical type (Date32, Date64, Timestamp, etc.) for Arrow FFI compatibility.
-datetime_ops = ["dep:time", "dep:phf", "datetime"]
+datetime_ops = ["dep:time", "datetime"]
+
+# Adds time zone conversion for timestamps with a time zone:
+# - Wall times and UTC offsets for IANA identifiers such as `Australia/Sydney`,
+#   including daylight saving and historical transitions
+# - Fixed offsets for abbreviations such as `AEST`, and for offsets such as `+10:00`
+# - Display, component extraction, truncation and month arithmetic on the wall time
+#   of the time zone
+#
+# Stored values are still UTC integers with this feature on. The IANA Time Zone Database 
+# is compiled into the binary as static data, which adds about 440 KB to the release binary
+# (roughly ~%40 of the total size).
+#
+# Without this feature, timestamps with a time zone are printed and computed in UTC.
+time_zones = ["datetime_ops", "dep:tzdb_data"]
 
 # Adds string arithmetic kernels
 # Includes (small) external dependencies, and supports

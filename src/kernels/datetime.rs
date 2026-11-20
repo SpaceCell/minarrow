@@ -50,6 +50,10 @@ use crate::{Bitmask, DatetimeArray};
 /// Handles the full calendar range (`Year` through `Second`, plus `Week`) and the
 /// sub-second steps (`Millisecond`, `Microsecond`). Sub-second steps are no-ops on
 /// arrays whose stored resolution is already at or coarser than the target.
+///
+/// With the `time_zones` feature, calendar periods of timestamps with a time zone are
+/// floored on the wall time of that time zone, and `out` receives the UTC value of the
+/// start of the period.
 pub fn truncate_into<T: Integer + FromPrimitive>(
     src: &DatetimeArray<T>,
     src_offset: usize,
@@ -59,6 +63,8 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
 ) {
     let time_unit = src.time_unit();
     let len = out.len();
+    let wall_time_offset = src.wall_time_offset();
+    let wall_time_values = src.wall_time_values();
 
     // Resolve the unit scaling and sub-second divisor once for the whole window.
     // `None` for `per_second` identifies the `Days` unit. A divisor of 1 leaves
@@ -89,7 +95,24 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
                 .to_i64()
                 .and_then(|v| match sub_second_divisor {
                     Some(divisor) => v.div_euclid(divisor).checked_mul(divisor),
-                    None => floor_calendar(v, period, per_second),
+                    // Calendar periods are floored on the wall time of the array's
+                    // time zone, and written as the UTC value of that wall time.
+                    None => {
+                        let offset = wall_time_offset(v);
+                        v.checked_add(offset)
+                            .and_then(|wall| floor_calendar(wall, period, per_second))
+                            .and_then(|floored| {
+                                // Use the input's offset for the start of the period.
+                                // Resolve the wall time when a transition lies between
+                                // the start of the period and the input.
+                                let value = floored.checked_sub(offset)?;
+                                if wall_time_offset(value) == offset {
+                                    Some(value)
+                                } else {
+                                    Some(wall_time_values(floored).0)
+                                }
+                            })
+                    }
                 })
                 .and_then(T::from_i64)
             {
@@ -297,6 +320,9 @@ pub fn add_duration_into<T: Integer + FromPrimitive>(
 /// A day that does not exist in the destination month is clamped to that month's last
 /// day, and time-of-day is preserved. A value whose result is not a valid datetime is
 /// marked null in `out_mask`.
+///
+/// With the `time_zones` feature, the months of timestamps with a time zone are added
+/// on the wall time of that time zone, and `out` receives the UTC value of the result.
 pub fn add_months_into<T: Integer + FromPrimitive>(
     src: &DatetimeArray<T>,
     src_offset: usize,
@@ -305,14 +331,18 @@ pub fn add_months_into<T: Integer + FromPrimitive>(
     mut out_mask: Option<&mut Bitmask>,
 ) {
     let time_unit = src.time_unit();
+    let wall_time_offset = src.wall_time_offset();
+    let wall_time_values = src.wall_time_values();
     for i in 0..out.len() {
         let original = src.data[src_offset + i];
         out[i] = original;
         let computed = if src.is_null(src_offset + i) {
             None
         } else {
+            // The months are added on the wall time of the array's time zone.
             original
                 .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
                 .and_then(|v| DatetimeArray::<T>::i64_to_datetime(v, time_unit))
                 .and_then(|dt| {
                     let date = dt.date();
@@ -325,7 +355,8 @@ pub fn add_months_into<T: Integer + FromPrimitive>(
                     let new_date =
                         time::Date::from_calendar_date(new_year, new_month_enum, day).ok()?;
                     let new_dt = new_date.with_time(dt.time()).assume_utc();
-                    T::from_i64(DatetimeArray::<T>::datetime_to_i64(new_dt, time_unit))
+                    let wall = DatetimeArray::<T>::datetime_to_i64(new_dt, time_unit);
+                    T::from_i64(wall_time_values(wall).1)
                 })
         };
         let valid = match computed {
@@ -345,6 +376,9 @@ pub fn add_months_into<T: Integer + FromPrimitive>(
 /// `[src_offset, src_offset + out.len())`, writing into `out`. A null input or a
 /// value that is not a representable datetime writes `0` and clears its `out_mask`
 /// bit. The allocating extract methods on `DatetimeArray` pass `src_offset = 0`.
+///
+/// With the `time_zones` feature, fields of timestamps with a time zone are those of
+/// the wall time of that time zone.
 fn extract_i32_into<T, F>(
     src: &DatetimeArray<T>,
     src_offset: usize,
@@ -356,12 +390,14 @@ fn extract_i32_into<T, F>(
     F: Fn(time::OffsetDateTime) -> i32,
 {
     let time_unit = src.time_unit();
+    let wall_time_offset = src.wall_time_offset();
     for i in 0..out.len() {
         let dt = if src.is_null(src_offset + i) {
             None
         } else {
             src.data[src_offset + i]
                 .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
                 .and_then(|v| DatetimeArray::<T>::i64_to_datetime(v, time_unit))
         };
         let valid = match dt {
@@ -468,9 +504,11 @@ pub fn extract_bool_into<T, F>(
     F: Fn(time::OffsetDateTime) -> bool,
 {
     let time_unit = src.time_unit();
+    let wall_time_offset = src.wall_time_offset();
     for i in 0..out_bits.len() {
         match src.data[src_offset + i]
             .to_i64()
+            .and_then(|v| v.checked_add(wall_time_offset(v)))
             .and_then(|v| DatetimeArray::<T>::i64_to_datetime(v, time_unit))
         {
             // SAFETY: `i < out_bits.len()`, so the bit index is within the bitmask's
