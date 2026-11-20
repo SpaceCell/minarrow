@@ -26,6 +26,9 @@
 //! Standard Time, China Standard Time and Cuba Standard Time. The most common
 //! reading is used. Consider IANA identifiers or offsets such as `+10:00`
 //! where an exact reading is required.
+//!
+//! This module is part of the `time_zones` feature, which compiles the IANA
+//! Time Zone Database into the binary and adds about 400 KB to it.
 
 /// Returns the fixed UTC offset of a time zone abbreviation in `±HH:MM` form.
 ///
@@ -33,16 +36,12 @@
 ///
 /// # Example
 /// ```
-/// # #[cfg(feature = "datetime_ops")]
-/// # {
 /// use minarrow::structs::variants::datetime::tz::abbreviation_offset;
 ///
 /// assert_eq!(abbreviation_offset("AEST"), Some("+10:00"));
 /// assert_eq!(abbreviation_offset("AEDT"), Some("+11:00"));
 /// assert_eq!(abbreviation_offset("Australia/Sydney"), None);
-/// # }
 /// ```
-#[cfg(feature = "datetime_ops")]
 pub fn abbreviation_offset(abbreviation: &str) -> Option<&'static str> {
     let offset = match abbreviation {
         // Common Standard Time Zones
@@ -109,7 +108,6 @@ pub fn abbreviation_offset(abbreviation: &str) -> Option<&'static str> {
     Some(offset)
 }
 
-#[cfg(all(feature = "datetime", feature = "datetime_ops"))]
 #[cfg(test)]
 mod tests {
     use super::*;
