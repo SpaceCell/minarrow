@@ -114,15 +114,15 @@ impl<T: Integer + FromPrimitive> DatetimeArray<T> {
         }
     }
 
-    /// Returns the UTC offset of each stored value, in the array's time unit, as
-    /// a function of the stored value.
+    /// Returns the UTC offset lookup for the array's time zone.
     ///
-    /// Stored values are UTC. A stored value plus its offset is the wall time of
-    /// the array's time zone in the same unit, and the calendar arithmetic of the
-    /// kernels reads that sum as it reads a UTC value.
+    /// The lookup receives a stored UTC value and returns the offset of the time
+    /// zone at that instant, in the array's time unit. Adding the offset to the
+    /// stored value produces the wall time in the same unit. The kernels run
+    /// their calendar arithmetic on that wall time, and stored values stay in UTC.
     ///
-    /// The offset is 0 for arrays without a time zone, for time zone text that
-    /// `utc_offset_seconds` does not resolve, and without the `time_zones` feature.
+    /// The offset is 0 when the array has no time zone, when `utc_offset_seconds`
+    /// cannot resolve the time zone text, and when the `time_zones` feature is off.
     pub(crate) fn wall_time_offset(&self) -> impl Fn(i64) -> i64 {
         #[cfg(feature = "time_zones")]
         {
@@ -145,18 +145,19 @@ impl<T: Integer + FromPrimitive> DatetimeArray<T> {
         }
     }
 
-    /// Returns the stored UTC values for a wall time of the array's time zone, as
-    /// a function of the wall time in the array's time unit.
+    /// Returns the conversion from wall times of the array's time zone to stored
+    /// UTC values.
     ///
-    /// The two values are those of `wall_time_instants`. The first is the first
-    /// stored value at which the wall clock reads the wall time or later, which
-    /// truncation writes for period starts on the other side of a transition from
-    /// their input. The second reads skipped wall times with the offset in force
-    /// before the transition, which calendar arithmetic writes.
+    /// The conversion receives a wall time in the array's time unit and returns
+    /// two UTC values, as `wall_time_instants` defines them:
+    /// - The first value is the earliest UTC value where the wall clock shows the
+    ///   wall time or later. Truncation uses it.
+    /// - The second value resolves skipped wall times with the offset from before
+    ///   the transition. Month arithmetic uses it.
     ///
-    /// Both values are the wall time itself for arrays without a time zone, for
-    /// time zone text that `utc_offset_seconds` does not resolve, and without the
-    /// `time_zones` feature.
+    /// Both values equal the wall time when the array has no time zone, when
+    /// `utc_offset_seconds` cannot resolve the time zone text, and when the
+    /// `time_zones` feature is off.
     pub(crate) fn wall_time_values(&self) -> impl Fn(i64) -> (i64, i64) {
         #[cfg(feature = "time_zones")]
         {
@@ -188,8 +189,10 @@ impl<T: Integer + FromPrimitive> DatetimeArray<T> {
         }
     }
 
-    /// Returns the number of stored values per second for `unit`, or `None` for
-    /// the `Days` unit, which is not a unit of timestamps with a time zone.
+    /// Returns the number of stored values per second for `unit`.
+    ///
+    /// Returns `None` for `Days`, because timestamps with a time zone are not
+    /// stored in days.
     #[cfg(feature = "time_zones")]
     fn values_per_second(unit: TimeUnit) -> Option<i64> {
         match unit {

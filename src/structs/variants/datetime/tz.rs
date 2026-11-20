@@ -17,10 +17,10 @@
 //! Maps time zone abbreviations, such as `AEST` and `EDT`, to their fixed UTC
 //! offsets.
 //!
-//! IANA identifiers, such as `Australia/Sydney`, are resolved through the IANA
-//! Time Zone Database, which includes daylight saving and historical
-//! transitions. Abbreviations refer to one offset throughout the year, and are
-//! listed in this module.
+//! IANA identifiers, such as `Australia/Sydney`, use the IANA Time Zone
+//! Database, including daylight saving and historical transitions.
+//! Abbreviations refer to one offset throughout the year, and are listed in
+//! this module.
 //!
 //! Some abbreviations are ambiguous. For example, `CST` refers to Central
 //! Standard Time, China Standard Time and Cuba Standard Time. The most common
@@ -114,22 +114,23 @@ pub fn abbreviation_offset(abbreviation: &str) -> Option<&'static str> {
     Some(offset)
 }
 
-/// Returns the UTC offset of the time zone text `tz`, in seconds, as a function
-/// of the instant in seconds since the Unix epoch.
+/// Resolves the time zone text `tz` and returns its UTC offset lookup.
 ///
-/// The time zone is resolved once, and the returned function is called for
-/// each instant. The function remembers the ranges of UTC days that it has
-/// found to have one offset throughout, and instants in those ranges reuse the
-/// offset. Values in time order therefore search the database about once per
-/// day of data.
+/// The lookup receives an instant in seconds since the Unix epoch and returns
+/// the UTC offset in seconds at that instant. The time zone is resolved once
+/// here, and the kernels call the lookup for each row.
 ///
 /// ## Behaviour
-/// - Time zone abbreviations listed in `abbreviation_offset` have their fixed offset.
-/// - IANA identifiers have the offset of each instant from the IANA Time Zone
-///   Database, which includes daylight saving and historical transitions.
-/// - `UTC`, `Z` and offsets such as `+05:00` and `+0530` have that offset.
+/// - Abbreviations listed in `abbreviation_offset` use their fixed offset.
+/// - IANA identifiers use the IANA Time Zone Database, including daylight
+///   saving and historical transitions.
+/// - `UTC`, `Z` and offsets such as `+05:00` and `+0530` use that offset.
+/// - Any other text returns `None`.
 ///
-/// Returns `None` for any other text.
+/// ## Details
+/// - The lookup keeps two ranges of UTC days that each have a single offset.
+///   Instants inside those ranges return the offset without a database search.
+/// - Days that contain a transition are searched for every instant.
 pub(crate) fn utc_offset_seconds(tz: &str) -> Option<impl Fn(i64) -> i64> {
     let zone = match abbreviation_offset(tz) {
         Some(_) => None,
@@ -139,10 +140,10 @@ pub(crate) fn utc_offset_seconds(tz: &str) -> Option<impl Fn(i64) -> i64> {
         Some(_) => 0,
         None => offset_text_seconds(abbreviation_offset(tz).unwrap_or(tz))?,
     };
-    // Two ranges of UTC days found to have one offset throughout, as the first
-    // day, the last day and the offset. A range is empty when its first day is
-    // after its last day. Truncation and month arithmetic read offsets near their
-    // input and near their result, which the two ranges hold apart.
+    // Cache of two ranges of UTC days that each have a single offset, stored as
+    // (first day, last day, offset). An empty range has its first day after its
+    // last day. Two ranges are kept because truncation and month arithmetic look
+    // up offsets near the input and near the result.
     let ranges = Cell::new([(1i64, 0i64, 0i64); 2]);
     Some(move |unix_seconds: i64| match zone {
         Some(zone) => {
@@ -165,8 +166,8 @@ pub(crate) fn utc_offset_seconds(tz: &str) -> Option<impl Fn(i64) -> i64> {
             if first != last {
                 return offset_at(unix_seconds);
             }
-            // The day extends a range that it adjoins at the same offset, and
-            // otherwise replaces the range found less recently.
+            // Extend an adjacent range with the same offset. Otherwise replace
+            // the older range.
             let adjoined = found.iter_mut().find(|(first_day, last_day, offset)| {
                 first_day <= last_day
                     && *offset == first
@@ -186,8 +187,9 @@ pub(crate) fn utc_offset_seconds(tz: &str) -> Option<impl Fn(i64) -> i64> {
     })
 }
 
-/// Returns the offset in seconds of offset text such as `+05:00`, `-0800`,
-/// `UTC` and `Z`, or `None` for any other text.
+/// Parses offset text such as `+05:00`, `-0800`, `UTC` and `Z` into seconds.
+///
+/// Returns `None` for any other text.
 fn offset_text_seconds(text: &str) -> Option<i64> {
     let text = text.trim();
 
@@ -221,30 +223,29 @@ fn offset_text_seconds(text: &str) -> Option<i64> {
     None
 }
 
-/// Seconds either side of a wall time within which its instants lie.
+/// Search distance in seconds around a wall time when resolving its instants.
 ///
-/// UTC offsets in the IANA Time Zone Database are within 16 hours of UTC, and
-/// consecutive transitions of a time zone are more than 32 hours apart.
+/// Every UTC offset in the IANA Time Zone Database is smaller than 16 hours,
+/// and consecutive transitions of a time zone are more than 32 hours apart.
+/// The search range around a wall time therefore holds at most one transition.
 const WALL_TIME_WINDOW: i64 = 16 * 3_600;
 
-/// Returns the instants, in seconds since the Unix epoch, for the wall time
-/// `wall_seconds` of a time zone.
+/// Resolves the wall time `wall_seconds` of a time zone to instants.
 ///
-/// `offset_seconds` is the function that `utc_offset_seconds` returns for the
-/// time zone, and `wall_seconds` is the wall time as seconds since the Unix
-/// epoch on the wall clock.
+/// `offset_seconds` is the lookup from `utc_offset_seconds`. `wall_seconds` is
+/// the wall clock reading in seconds since the Unix epoch. Both returned
+/// instants are in seconds since the Unix epoch.
+///
+/// Most wall times map to one instant, and both values are that instant. The
+/// two values differ only for wall times that a transition skips.
 ///
 /// ## Behaviour
-/// - Wall times that occur once return their instant in both positions.
-/// - Wall times that occur twice, where the clocks move back, return the
-///   earlier instant in both positions.
-/// - Wall times that are skipped, where the clocks move forward, return the
-///   instant of the transition first. The second position reads the wall time
-///   with the offset in force before the transition, which is later than the
-///   transition by the distance of the wall time into the skipped interval.
-///
-/// The first position is therefore the first instant at which the wall clock
-/// reads `wall_seconds` or later.
+/// - Wall times that occur once: both values are that instant.
+/// - Wall times that occur twice, when clocks move back: both values are the
+///   earlier instant.
+/// - Wall times that are skipped, when clocks move forward: the first value is
+///   the instant of the transition. The second value applies the offset from
+///   before the transition, and is later than the transition.
 pub(crate) fn wall_time_instants(
     offset_seconds: &impl Fn(i64) -> i64,
     wall_seconds: i64,
@@ -266,8 +267,8 @@ pub(crate) fn wall_time_instants(
         (true, false) => (with_before, with_before),
         (false, true) => (with_after, with_after),
         (false, false) => {
-            // The wall time is skipped. The transition is the first instant in
-            // `(with_after, with_before]` at the offset in force after it.
+            // The wall time is skipped. Find the transition, the first instant
+            // in `(with_after, with_before]` that has the later offset.
             let (mut low, mut high) = (with_after, with_before);
             while high - low > 1 {
                 let middle = low + (high - low) / 2;

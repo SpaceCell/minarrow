@@ -312,11 +312,11 @@ pub(crate) fn print_ndarray_body<T: Float + Display>(
 ///   its UTC offset at that instant, as in `2026-01-01 14:30:00+05:00`. Time
 ///   zone text other than an offset follows the value, as in
 ///   `2026-01-01 20:30:00+11:00 Australia/Sydney`.
-/// - IANA identifiers are resolved through the IANA Time Zone Database, which
-///   includes daylight saving and historical transitions. The same time zone
-///   therefore prints `+11:00` in January and `+10:00` in July for Sydney.
-/// - Offsets with seconds, which occur before standard time was adopted,
-///   print as `+HH:MM:SS`.
+/// - IANA identifiers use the IANA Time Zone Database, including daylight
+///   saving and historical transitions. Sydney prints `+11:00` in January and
+///   `+10:00` in July.
+/// - Offsets from before standard time can include seconds, and print as
+///   `+HH:MM:SS`.
 /// - Time zone text that is not an offset, an abbreviation or an IANA
 ///   identifier prints the UTC value with `+00:00` and without that text.
 ///

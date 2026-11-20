@@ -102,8 +102,9 @@ pub fn truncate_into<T: Integer + FromPrimitive>(
                         v.checked_add(offset)
                             .and_then(|wall| floor_calendar(wall, period, per_second))
                             .and_then(|floored| {
-                                // The offset of the input is in force at the start of
-                                // the period unless a transition lies between them.
+                                // Use the input's offset for the start of the period.
+                                // Resolve the wall time when a transition lies between
+                                // the start of the period and the input.
                                 let value = floored.checked_sub(offset)?;
                                 if wall_time_offset(value) == offset {
                                     Some(value)
