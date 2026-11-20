@@ -40,7 +40,7 @@ polars-core = { version = "0.55.2", default-features = false, features = [
     "dtype-decimal",
 ], optional = true }
 polars-arrow = { version = "0.55.2", optional = true }
-time = { version = "0.3", optional = true, features = ["parsing", "formatting", "macros", "local-offset"] }
+time = { version = "0.3", optional = true, features = ["parsing", "macros"] }
 phf = { version = "0.13.1", features = ["macros"], optional = true }
 # IANA Time Zone Database as static data, for the UTC offset of each time zone at an instant.
 tzdb_data = { version = "0.2.5", optional = true }
