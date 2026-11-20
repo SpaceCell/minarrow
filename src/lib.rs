@@ -304,7 +304,7 @@ pub use structs::chunked::{
 #[cfg(all(feature = "chunked", feature = "ndarray"))]
 pub use structs::chunked::super_ndarray::SuperNdArray;
 #[cfg(feature = "lbuffer")]
-pub use structs::lbuffer::{LBuffer, LBufferV};
+pub use structs::lbuffer::{LBuffer, LBufferCursor, LBufferV};
 #[cfg(feature = "views")]
 pub use structs::views::array_view::ArrayV;
 pub use structs::views::bitmask_view::BitmaskV;
