@@ -30,6 +30,8 @@
 //! This module is part of the `time_zones` feature, which compiles the IANA
 //! Time Zone Database into the binary and adds about 400 KB to it.
 
+use tzdb_data::find_tz;
+
 /// Returns the fixed UTC offset of a time zone abbreviation in `±HH:MM` form.
 ///
 /// Returns `None` for text that is not a listed abbreviation.
@@ -108,6 +110,132 @@ pub fn abbreviation_offset(abbreviation: &str) -> Option<&'static str> {
     Some(offset)
 }
 
+/// Returns the UTC offset of the time zone text `tz`, in seconds, as a function
+/// of the instant in seconds since the Unix epoch.
+///
+/// The time zone is resolved once, and the returned function is called for
+/// each instant.
+///
+/// ## Behaviour
+/// - Time zone abbreviations listed in `abbreviation_offset` have their fixed offset.
+/// - IANA identifiers have the offset of each instant from the IANA Time Zone
+///   Database, which includes daylight saving and historical transitions.
+/// - `UTC`, `Z` and offsets such as `+05:00` and `+0530` have that offset.
+///
+/// Returns `None` for any other text.
+pub(crate) fn utc_offset_seconds(tz: &str) -> Option<impl Fn(i64) -> i64> {
+    let zone = match abbreviation_offset(tz) {
+        Some(_) => None,
+        None => find_tz(tz.as_bytes()),
+    };
+    let fixed = match zone {
+        Some(_) => 0,
+        None => offset_text_seconds(abbreviation_offset(tz).unwrap_or(tz))?,
+    };
+    Some(move |unix_seconds: i64| match zone {
+        Some(zone) => zone
+            .find_local_time_type(unix_seconds)
+            .map_or(0, |local| i64::from(local.ut_offset())),
+        None => fixed,
+    })
+}
+
+/// Returns the offset in seconds of offset text such as `+05:00`, `-0800`,
+/// `UTC` and `Z`, or `None` for any other text.
+fn offset_text_seconds(text: &str) -> Option<i64> {
+    let text = text.trim();
+
+    // Handle UTC specially
+    if text.eq_ignore_ascii_case("UTC") || text.eq_ignore_ascii_case("Z") {
+        return Some(0);
+    }
+
+    // Parse offset strings like "+05:00", "-08:00", "+0530"
+    if !text.starts_with('+') && !text.starts_with('-') {
+        return None;
+    }
+
+    let (sign, rest) = text.split_at(1);
+    let sign = if sign == "+" { 1 } else { -1 };
+
+    // Try parsing HH:MM format
+    if let Some((hours_str, mins_str)) = rest.split_once(':') {
+        let hours: i8 = hours_str.parse().ok()?;
+        let mins: i8 = mins_str.parse().ok()?;
+        return Some(sign * (hours as i64 * 3600 + mins as i64 * 60));
+    }
+
+    // Try parsing HHMM format
+    if rest.len() == 4 {
+        let hours: i8 = rest[0..2].parse().ok()?;
+        let mins: i8 = rest[2..4].parse().ok()?;
+        return Some(sign * (hours as i64 * 3600 + mins as i64 * 60));
+    }
+
+    None
+}
+
+/// Seconds either side of a wall time within which its instants lie.
+///
+/// UTC offsets in the IANA Time Zone Database are within 16 hours of UTC, and
+/// consecutive transitions of a time zone are more than 32 hours apart.
+const WALL_TIME_WINDOW: i64 = 16 * 3_600;
+
+/// Returns the instants, in seconds since the Unix epoch, for the wall time
+/// `wall_seconds` of a time zone.
+///
+/// `offset_seconds` is the function that `utc_offset_seconds` returns for the
+/// time zone, and `wall_seconds` is the wall time as seconds since the Unix
+/// epoch on the wall clock.
+///
+/// ## Behaviour
+/// - Wall times that occur once return their instant in both positions.
+/// - Wall times that occur twice, where the clocks move back, return the
+///   earlier instant in both positions.
+/// - Wall times that are skipped, where the clocks move forward, return the
+///   instant of the transition first. The second position reads the wall time
+///   with the offset in force before the transition, which is later than the
+///   transition by the distance of the wall time into the skipped interval.
+///
+/// The first position is therefore the first instant at which the wall clock
+/// reads `wall_seconds` or later.
+pub(crate) fn wall_time_instants(
+    offset_seconds: &impl Fn(i64) -> i64,
+    wall_seconds: i64,
+) -> (i64, i64) {
+    let before = offset_seconds(wall_seconds.saturating_sub(WALL_TIME_WINDOW));
+    let after = offset_seconds(wall_seconds.saturating_add(WALL_TIME_WINDOW));
+    let with_before = wall_seconds.saturating_sub(before);
+    let with_after = wall_seconds.saturating_sub(after);
+    if before == after {
+        return (with_before, with_before);
+    }
+    let before_holds = offset_seconds(with_before) == before;
+    let after_holds = offset_seconds(with_after) == after;
+    match (before_holds, after_holds) {
+        (true, true) => {
+            let first = with_before.min(with_after);
+            (first, first)
+        }
+        (true, false) => (with_before, with_before),
+        (false, true) => (with_after, with_after),
+        (false, false) => {
+            // The wall time is skipped. The transition is the first instant in
+            // `(with_after, with_before]` at the offset in force after it.
+            let (mut low, mut high) = (with_after, with_before);
+            while high - low > 1 {
+                let middle = low + (high - low) / 2;
+                if offset_seconds(middle) == after {
+                    high = middle;
+                } else {
+                    low = middle;
+                }
+            }
+            (high, with_before)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +248,25 @@ mod tests {
         assert_eq!(abbreviation_offset("UTC"), Some("+00:00"));
         assert_eq!(abbreviation_offset("PST"), Some("-08:00"));
         assert_eq!(abbreviation_offset("JST"), Some("+09:00"));
+    }
+
+    // `wall_time_instants` reads the offsets 16 hours either side of a wall time.
+    #[test]
+    fn test_database_offsets_and_transitions_fit_the_wall_time_window() {
+        for name in tzdb_data::TZ_NAMES {
+            let zone = find_tz(name.as_bytes()).unwrap();
+            for local in zone.local_time_types() {
+                assert!(
+                    i64::from(local.ut_offset()).abs() < WALL_TIME_WINDOW,
+                    "{name} has the offset {}",
+                    local.ut_offset()
+                );
+            }
+            for pair in zone.transitions().windows(2) {
+                let apart = pair[1].unix_leap_time() - pair[0].unix_leap_time();
+                assert!(apart > 2 * WALL_TIME_WINDOW, "{name} has transitions {apart} seconds apart");
+            }
+        }
     }
 
     #[test]

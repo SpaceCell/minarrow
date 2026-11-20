@@ -470,10 +470,14 @@ macro_rules! windowed_component {
 macro_rules! windowed_component_inner {
     ($arr:expr, $offset:expr, $len:expr, $extract:expr) => {{
         let mut result = IntegerArray::with_capacity($len, $arr.is_nullable());
+        let wall_time_offset = $arr.wall_time_offset();
         for i in $offset..$offset + $len {
             if $arr.is_null(i) {
                 result.push_null();
-            } else if let Some(val_i64) = $arr.data[i].to_i64() {
+            } else if let Some(val_i64) = $arr.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+            {
                 if let Some(dt) = DatetimeArray::<i64>::i64_to_datetime(val_i64, $arr.time_unit()) {
                     #[allow(clippy::redundant_closure_call)]
                     result.push(($extract)(&dt));
@@ -704,10 +708,13 @@ fn is_leap_year_windowed<T: crate::Integer + FromPrimitive>(
     len: usize,
 ) -> BooleanArray<()> {
     let mut result = BooleanArray::with_capacity(len, arr.is_nullable());
+    let wall_time_offset = arr.wall_time_offset();
     for i in offset..offset + len {
         if arr.is_null(i) {
             result.push_null();
-        } else if let Some(val_i64) = arr.data[i].to_i64() {
+        } else if let Some(val_i64) =
+            arr.data[i].to_i64().and_then(|v| v.checked_add(wall_time_offset(v)))
+        {
             if let Some(dt) = DatetimeArray::<i64>::i64_to_datetime(val_i64, arr.time_unit()) {
                 result.push(time::util::is_leap_year(dt.year()));
             } else {

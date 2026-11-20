@@ -35,6 +35,26 @@
 //! For timezone operations, use `FieldArray::with_timezone()` and `FieldArray::to_utc()` which
 //! update metadata without modifying the underlying UTC data.
 //!
+//! With the `time_zones` feature, operations on timestamps with a time zone read the
+//! wall time of that time zone. The stored values stay UTC integers. Each operation
+//! adds the UTC offset of the time zone at that instant to the stored value, runs the
+//! same calendar arithmetic as for UTC values, and writes results that are timestamps
+//! back as UTC values.
+//! - Component extraction, such as `hour` and `day`, returns the components of the wall time.
+//! - Truncation floors the wall time and writes the UTC value of the start of the period.
+//!   The offset in force at the input is used where it is in force at the start of the
+//!   period. Otherwise the result is the first instant at which the wall clock reads the
+//!   start of the period or later.
+//! - `add_months` and `add_years` keep the wall time. Wall times that occur twice use the
+//!   earlier instant, and skipped wall times use the offset in force before the transition.
+//! - `add_duration`, `sub_duration`, `add_days`, `diff`, the comparisons and
+//!   `cast_time_unit` operate on instants, and return the same values with or without a
+//!   time zone. `add_days` adds days of 24 hours.
+//!
+//! Offsets come from the IANA Time Zone Database, including daylight saving and historical
+//! transitions. Without `time_zones`, every operation reads the UTC value, and timestamps
+//! with a time zone print in UTC.
+//!
 //! ## Result types
 //! The arithmetic and truncation operations return arrays of the input's `Dt`.
 //! `cast_time_unit` keeps the type's variant and timezone, and changes its unit.
@@ -60,6 +80,8 @@ use crate::{
     structs::variants::{boolean::BooleanArray, integer::IntegerArray},
     traits::{masked_array::MaskedArray, type_unions::Integer},
 };
+#[cfg(feature = "time_zones")]
+use crate::structs::variants::datetime::tz::{utc_offset_seconds, wall_time_instants};
 #[cfg(feature = "datetime_ops")]
 use ::vec64::Vec64;
 #[cfg(feature = "datetime_ops")]
@@ -89,6 +111,93 @@ impl<T: Integer + FromPrimitive> DatetimeArray<T> {
                 .ok()
                 .and_then(|date| date.with_hms(0, 0, 0).ok())
                 .map(|dt| dt.assume_utc()),
+        }
+    }
+
+    /// Returns the UTC offset of each stored value, in the array's time unit, as
+    /// a function of the stored value.
+    ///
+    /// Stored values are UTC. A stored value plus its offset is the wall time of
+    /// the array's time zone in the same unit, and the calendar arithmetic of the
+    /// kernels reads that sum as it reads a UTC value.
+    ///
+    /// The offset is 0 for arrays without a time zone, for time zone text that
+    /// `utc_offset_seconds` does not resolve, and without the `time_zones` feature.
+    pub(crate) fn wall_time_offset(&self) -> impl Fn(i64) -> i64 {
+        #[cfg(feature = "time_zones")]
+        {
+            let zone = match &self.dtype {
+                Dt::Timestamp(unit, Some(tz)) => {
+                    utc_offset_seconds(tz).zip(Self::values_per_second(*unit))
+                }
+                _ => None,
+            };
+            move |value: i64| match &zone {
+                Some((offset_seconds, per_second)) => {
+                    offset_seconds(value.div_euclid(*per_second)).saturating_mul(*per_second)
+                }
+                None => 0,
+            }
+        }
+        #[cfg(not(feature = "time_zones"))]
+        {
+            |_value: i64| 0
+        }
+    }
+
+    /// Returns the stored UTC values for a wall time of the array's time zone, as
+    /// a function of the wall time in the array's time unit.
+    ///
+    /// The two values are those of `wall_time_instants`. The first is the first
+    /// stored value at which the wall clock reads the wall time or later, which
+    /// truncation writes for period starts on the other side of a transition from
+    /// their input. The second reads skipped wall times with the offset in force
+    /// before the transition, which calendar arithmetic writes.
+    ///
+    /// Both values are the wall time itself for arrays without a time zone, for
+    /// time zone text that `utc_offset_seconds` does not resolve, and without the
+    /// `time_zones` feature.
+    pub(crate) fn wall_time_values(&self) -> impl Fn(i64) -> (i64, i64) {
+        #[cfg(feature = "time_zones")]
+        {
+            let zone = match &self.dtype {
+                Dt::Timestamp(unit, Some(tz)) => {
+                    utc_offset_seconds(tz).zip(Self::values_per_second(*unit))
+                }
+                _ => None,
+            };
+            move |wall: i64| match &zone {
+                Some((offset_seconds, per_second)) => {
+                    let fraction = wall.rem_euclid(*per_second);
+                    let (first, second) =
+                        wall_time_instants(offset_seconds, wall.div_euclid(*per_second));
+                    let second_value = second.saturating_mul(*per_second).saturating_add(fraction);
+                    // The instant of a transition is a whole second.
+                    if first == second {
+                        (second_value, second_value)
+                    } else {
+                        (first.saturating_mul(*per_second), second_value)
+                    }
+                }
+                None => (wall, wall),
+            }
+        }
+        #[cfg(not(feature = "time_zones"))]
+        {
+            |wall: i64| (wall, wall)
+        }
+    }
+
+    /// Returns the number of stored values per second for `unit`, or `None` for
+    /// the `Days` unit, which is not a unit of timestamps with a time zone.
+    #[cfg(feature = "time_zones")]
+    fn values_per_second(unit: TimeUnit) -> Option<i64> {
+        match unit {
+            TimeUnit::Seconds => Some(1),
+            TimeUnit::Milliseconds => Some(1_000),
+            TimeUnit::Microseconds => Some(1_000_000),
+            TimeUnit::Nanoseconds => Some(1_000_000_000),
+            TimeUnit::Days => None,
         }
     }
 
@@ -340,11 +449,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Extracts the year component from all datetime values.
     fn year(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 result.push(dt.year());
             } else {
                 result.push_null();
@@ -357,11 +471,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Extracts the month component (1-12) from all datetime values.
     fn month(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 result.push(dt.month() as i32);
             } else {
                 result.push_null();
@@ -374,11 +493,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Extracts the day of month (1-31) from all datetime values.
     fn day(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 result.push(dt.day() as i32);
             } else {
                 result.push_null();
@@ -391,11 +515,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Extracts the hour component (0-23) from all datetime values.
     fn hour(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 result.push(dt.hour() as i32);
             } else {
                 result.push_null();
@@ -408,11 +537,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Extracts the minute component (0-59) from all datetime values.
     fn minute(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 result.push(dt.minute() as i32);
             } else {
                 result.push_null();
@@ -425,11 +559,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Extracts the second component (0-59) from all datetime values.
     fn second(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 result.push(dt.second() as i32);
             } else {
                 result.push_null();
@@ -442,11 +581,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Extracts the weekday (1=Sunday, 2=Monday, ..., 7=Saturday) from all datetime values.
     fn weekday(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 result.push(dt.weekday().number_from_sunday() as i32);
             } else {
                 result.push_null();
@@ -459,11 +603,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Extracts the day of year (1-366) from all datetime values.
     fn day_of_year(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 result.push(dt.ordinal() as i32);
             } else {
                 result.push_null();
@@ -476,11 +625,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Extracts the ISO week number (1-53) from all datetime values.
     fn iso_week(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 result.push(dt.iso_week() as i32);
             } else {
                 result.push_null();
@@ -493,11 +647,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Extracts the quarter (1-4) from all datetime values.
     fn quarter(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 let month = dt.month() as i32;
                 let quarter = ((month - 1) / 3) + 1;
                 result.push(quarter);
@@ -513,11 +672,16 @@ impl<T: Integer + FromPrimitive> DatetimeOps for DatetimeArray<T> {
     /// Week 0 contains days before the first Sunday.
     fn week_of_year(&self) -> IntegerArray<i32> {
         let mut result = IntegerArray::with_capacity(self.len(), self.is_nullable());
+        let wall_time_offset = self.wall_time_offset();
 
         for i in 0..self.len() {
             if self.is_null(i) {
                 result.push_null();
-            } else if let Some(dt) = self.value_to_datetime(i) {
+            } else if let Some(dt) = self.data[i]
+                .to_i64()
+                .and_then(|v| v.checked_add(wall_time_offset(v)))
+                .and_then(|v| Self::i64_to_datetime(v, self.time_unit()))
+            {
                 let day_of_year = dt.ordinal() as i32;
                 let weekday = dt.weekday().number_from_sunday() as i32;
                 // Calculate week based on day of year and weekday (Sunday = 1)
@@ -1638,5 +1802,998 @@ mod tests {
             Dt::Date32
         );
         assert!(date32.cast_time_unit(TimeUnit::Seconds).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "time_zones"))]
+mod time_zone_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::kernels::datetime::{hour_into, minute_into};
+    use crate::{Array, TemporalArray, TemporalArrayV};
+
+    // The tables are from Python's `zoneinfo`, which reads the IANA Time Zone
+    // Database. They cover daylight saving in both hemispheres, offsets of 30 and
+    // 45 minutes, daylight saving of 30 minutes, transitions at midnight, the
+    // seconds either side of each transition of 2026, and historical rules.
+    //
+    // Truncation floors the wall time and reads it with the offset in force at
+    // the input. Where that offset is not in force at the start of the period,
+    // the result is the first instant at which the wall clock reads the start of
+    // the period or later. Month arithmetic keeps the wall time: wall times that
+    // occur twice use the earlier instant, and skipped wall times use the offset
+    // in force before the transition.
+
+    /// Time zone, instant in seconds, then year, month, day, hour, minute, second,
+    /// weekday from 1 for Sunday, day of year, ISO week, quarter, week of year, and
+    /// whether the year is a leap year.
+    const COMPONENTS: &[(&str, i64, [i32; 11], bool)] = &[
+        ("Australia/Sydney", 1767259800, [2026, 1, 1, 20, 30, 0, 5, 1, 1, 1, 0], false),
+        ("Australia/Sydney", 1767277800, [2026, 1, 2, 1, 30, 0, 6, 2, 1, 1, 0], false),
+        ("Australia/Sydney", 1775313000, [2026, 4, 5, 1, 30, 0, 1, 95, 14, 2, 14], false),
+        ("Australia/Sydney", 1775318399, [2026, 4, 5, 2, 59, 59, 1, 95, 14, 2, 14], false),
+        ("Australia/Sydney", 1775318400, [2026, 4, 5, 2, 0, 0, 1, 95, 14, 2, 14], false),
+        ("Australia/Sydney", 1775320200, [2026, 4, 5, 2, 30, 0, 1, 95, 14, 2, 14], false),
+        ("Australia/Sydney", 1775323800, [2026, 4, 5, 3, 30, 0, 1, 95, 14, 2, 14], false),
+        ("Australia/Sydney", 1782898200, [2026, 7, 1, 19, 30, 0, 4, 182, 27, 3, 26], false),
+        ("Australia/Sydney", 1791037800, [2026, 10, 4, 0, 30, 0, 1, 277, 40, 4, 40], false),
+        ("Australia/Sydney", 1791043199, [2026, 10, 4, 1, 59, 59, 1, 277, 40, 4, 40], false),
+        ("Australia/Sydney", 1791043200, [2026, 10, 4, 3, 0, 0, 1, 277, 40, 4, 40], false),
+        ("Australia/Sydney", 1791045000, [2026, 10, 4, 3, 30, 0, 1, 277, 40, 4, 40], false),
+        ("Australia/Sydney", 1791048600, [2026, 10, 4, 4, 30, 0, 1, 277, 40, 4, 40], false),
+        ("America/New_York", 1142856000, [2006, 3, 20, 7, 0, 0, 2, 79, 12, 1, 12], false),
+        ("America/New_York", 1767259800, [2026, 1, 1, 4, 30, 0, 5, 1, 1, 1, 0], false),
+        ("America/New_York", 1767277800, [2026, 1, 1, 9, 30, 0, 5, 1, 1, 1, 0], false),
+        ("America/New_York", 1772947800, [2026, 3, 8, 0, 30, 0, 1, 67, 10, 1, 10], false),
+        ("America/New_York", 1772953199, [2026, 3, 8, 1, 59, 59, 1, 67, 10, 1, 10], false),
+        ("America/New_York", 1772953200, [2026, 3, 8, 3, 0, 0, 1, 67, 10, 1, 10], false),
+        ("America/New_York", 1772955000, [2026, 3, 8, 3, 30, 0, 1, 67, 10, 1, 10], false),
+        ("America/New_York", 1772958600, [2026, 3, 8, 4, 30, 0, 1, 67, 10, 1, 10], false),
+        ("America/New_York", 1782898200, [2026, 7, 1, 5, 30, 0, 4, 182, 27, 3, 26], false),
+        ("America/New_York", 1793507400, [2026, 11, 1, 0, 30, 0, 1, 305, 44, 4, 44], false),
+        ("America/New_York", 1793512799, [2026, 11, 1, 1, 59, 59, 1, 305, 44, 4, 44], false),
+        ("America/New_York", 1793512800, [2026, 11, 1, 1, 0, 0, 1, 305, 44, 4, 44], false),
+        ("America/New_York", 1793514600, [2026, 11, 1, 1, 30, 0, 1, 305, 44, 4, 44], false),
+        ("America/New_York", 1793518200, [2026, 11, 1, 2, 30, 0, 1, 305, 44, 4, 44], false),
+        ("Europe/London", 0, [1970, 1, 1, 1, 0, 0, 5, 1, 1, 1, 0], false),
+        ("Europe/London", 1767259800, [2026, 1, 1, 9, 30, 0, 5, 1, 1, 1, 0], false),
+        ("Europe/London", 1767277800, [2026, 1, 1, 14, 30, 0, 5, 1, 1, 1, 0], false),
+        ("Europe/London", 1774740600, [2026, 3, 28, 23, 30, 0, 7, 87, 13, 1, 12], false),
+        ("Europe/London", 1774745999, [2026, 3, 29, 0, 59, 59, 1, 88, 13, 1, 13], false),
+        ("Europe/London", 1774746000, [2026, 3, 29, 2, 0, 0, 1, 88, 13, 1, 13], false),
+        ("Europe/London", 1774747800, [2026, 3, 29, 2, 30, 0, 1, 88, 13, 1, 13], false),
+        ("Europe/London", 1774751400, [2026, 3, 29, 3, 30, 0, 1, 88, 13, 1, 13], false),
+        ("Europe/London", 1782898200, [2026, 7, 1, 10, 30, 0, 4, 182, 27, 3, 26], false),
+        ("Europe/London", 1792884600, [2026, 10, 25, 0, 30, 0, 1, 298, 43, 4, 43], false),
+        ("Europe/London", 1792889999, [2026, 10, 25, 1, 59, 59, 1, 298, 43, 4, 43], false),
+        ("Europe/London", 1792890000, [2026, 10, 25, 1, 0, 0, 1, 298, 43, 4, 43], false),
+        ("Europe/London", 1792891800, [2026, 10, 25, 1, 30, 0, 1, 298, 43, 4, 43], false),
+        ("Europe/London", 1792895400, [2026, 10, 25, 2, 30, 0, 1, 298, 43, 4, 43], false),
+        ("Australia/Lord_Howe", 1767259800, [2026, 1, 1, 20, 30, 0, 5, 1, 1, 1, 0], false),
+        ("Australia/Lord_Howe", 1767277800, [2026, 1, 2, 1, 30, 0, 6, 2, 1, 1, 0], false),
+        ("Australia/Lord_Howe", 1775309400, [2026, 4, 5, 0, 30, 0, 1, 95, 14, 2, 14], false),
+        ("Australia/Lord_Howe", 1775314799, [2026, 4, 5, 1, 59, 59, 1, 95, 14, 2, 14], false),
+        ("Australia/Lord_Howe", 1775314800, [2026, 4, 5, 1, 30, 0, 1, 95, 14, 2, 14], false),
+        ("Australia/Lord_Howe", 1775316600, [2026, 4, 5, 2, 0, 0, 1, 95, 14, 2, 14], false),
+        ("Australia/Lord_Howe", 1775320200, [2026, 4, 5, 3, 0, 0, 1, 95, 14, 2, 14], false),
+        ("Australia/Lord_Howe", 1782898200, [2026, 7, 1, 20, 0, 0, 4, 182, 27, 3, 26], false),
+        ("Australia/Lord_Howe", 1791036000, [2026, 10, 4, 0, 30, 0, 1, 277, 40, 4, 40], false),
+        ("Australia/Lord_Howe", 1791041399, [2026, 10, 4, 1, 59, 59, 1, 277, 40, 4, 40], false),
+        ("Australia/Lord_Howe", 1791041400, [2026, 10, 4, 2, 30, 0, 1, 277, 40, 4, 40], false),
+        ("Australia/Lord_Howe", 1791043200, [2026, 10, 4, 3, 0, 0, 1, 277, 40, 4, 40], false),
+        ("Australia/Lord_Howe", 1791046800, [2026, 10, 4, 4, 0, 0, 1, 277, 40, 4, 40], false),
+        ("Asia/Kolkata", 1767259800, [2026, 1, 1, 15, 0, 0, 5, 1, 1, 1, 0], false),
+        ("Asia/Kolkata", 1767277800, [2026, 1, 1, 20, 0, 0, 5, 1, 1, 1, 0], false),
+        ("Asia/Kolkata", 1782898200, [2026, 7, 1, 15, 0, 0, 4, 182, 27, 3, 26], false),
+        ("Asia/Kathmandu", 1767259800, [2026, 1, 1, 15, 15, 0, 5, 1, 1, 1, 0], false),
+        ("Asia/Kathmandu", 1767277800, [2026, 1, 1, 20, 15, 0, 5, 1, 1, 1, 0], false),
+        ("Asia/Kathmandu", 1782898200, [2026, 7, 1, 15, 15, 0, 4, 182, 27, 3, 26], false),
+        ("America/Havana", 1767259800, [2026, 1, 1, 4, 30, 0, 5, 1, 1, 1, 0], false),
+        ("America/Havana", 1767277800, [2026, 1, 1, 9, 30, 0, 5, 1, 1, 1, 0], false),
+        ("America/Havana", 1772940600, [2026, 3, 7, 22, 30, 0, 7, 66, 10, 1, 9], false),
+        ("America/Havana", 1772945999, [2026, 3, 7, 23, 59, 59, 7, 66, 10, 1, 9], false),
+        ("America/Havana", 1772946000, [2026, 3, 8, 1, 0, 0, 1, 67, 10, 1, 10], false),
+        ("America/Havana", 1772947800, [2026, 3, 8, 1, 30, 0, 1, 67, 10, 1, 10], false),
+        ("America/Havana", 1772951400, [2026, 3, 8, 2, 30, 0, 1, 67, 10, 1, 10], false),
+        ("America/Havana", 1782898200, [2026, 7, 1, 5, 30, 0, 4, 182, 27, 3, 26], false),
+        ("America/Havana", 1793503800, [2026, 10, 31, 23, 30, 0, 7, 304, 44, 4, 43], false),
+        ("America/Havana", 1793509199, [2026, 11, 1, 0, 59, 59, 1, 305, 44, 4, 44], false),
+        ("America/Havana", 1793509200, [2026, 11, 1, 0, 0, 0, 1, 305, 44, 4, 44], false),
+        ("America/Havana", 1793511000, [2026, 11, 1, 0, 30, 0, 1, 305, 44, 4, 44], false),
+        ("America/Havana", 1793514600, [2026, 11, 1, 1, 30, 0, 1, 305, 44, 4, 44], false),
+        ("Asia/Beirut", 1767259800, [2026, 1, 1, 11, 30, 0, 5, 1, 1, 1, 0], false),
+        ("Asia/Beirut", 1767277800, [2026, 1, 1, 16, 30, 0, 5, 1, 1, 1, 0], false),
+        ("Asia/Beirut", 1774729800, [2026, 3, 28, 22, 30, 0, 7, 87, 13, 1, 12], false),
+        ("Asia/Beirut", 1774735199, [2026, 3, 28, 23, 59, 59, 7, 87, 13, 1, 12], false),
+        ("Asia/Beirut", 1774735200, [2026, 3, 29, 1, 0, 0, 1, 88, 13, 1, 13], false),
+        ("Asia/Beirut", 1774737000, [2026, 3, 29, 1, 30, 0, 1, 88, 13, 1, 13], false),
+        ("Asia/Beirut", 1774740600, [2026, 3, 29, 2, 30, 0, 1, 88, 13, 1, 13], false),
+        ("Asia/Beirut", 1782898200, [2026, 7, 1, 12, 30, 0, 4, 182, 27, 3, 26], false),
+        ("Asia/Beirut", 1792870200, [2026, 10, 24, 22, 30, 0, 7, 297, 43, 4, 42], false),
+        ("Asia/Beirut", 1792875599, [2026, 10, 24, 23, 59, 59, 7, 297, 43, 4, 42], false),
+        ("Asia/Beirut", 1792875600, [2026, 10, 24, 23, 0, 0, 7, 297, 43, 4, 42], false),
+        ("Asia/Beirut", 1792877400, [2026, 10, 24, 23, 30, 0, 7, 297, 43, 4, 42], false),
+        ("Asia/Beirut", 1792881000, [2026, 10, 25, 0, 30, 0, 1, 298, 43, 4, 43], false),
+        ("America/Santiago", 1767259800, [2026, 1, 1, 6, 30, 0, 5, 1, 1, 1, 0], false),
+        ("America/Santiago", 1767277800, [2026, 1, 1, 11, 30, 0, 5, 1, 1, 1, 0], false),
+        ("America/Santiago", 1775352600, [2026, 4, 4, 22, 30, 0, 7, 94, 14, 2, 13], false),
+        ("America/Santiago", 1775357999, [2026, 4, 4, 23, 59, 59, 7, 94, 14, 2, 13], false),
+        ("America/Santiago", 1775358000, [2026, 4, 4, 23, 0, 0, 7, 94, 14, 2, 13], false),
+        ("America/Santiago", 1775359800, [2026, 4, 4, 23, 30, 0, 7, 94, 14, 2, 13], false),
+        ("America/Santiago", 1775363400, [2026, 4, 5, 0, 30, 0, 1, 95, 14, 2, 14], false),
+        ("America/Santiago", 1782898200, [2026, 7, 1, 5, 30, 0, 4, 182, 27, 3, 26], false),
+        ("America/Santiago", 1788661800, [2026, 9, 5, 22, 30, 0, 7, 248, 36, 3, 35], false),
+        ("America/Santiago", 1788667199, [2026, 9, 5, 23, 59, 59, 7, 248, 36, 3, 35], false),
+        ("America/Santiago", 1788667200, [2026, 9, 6, 1, 0, 0, 1, 249, 36, 3, 36], false),
+        ("America/Santiago", 1788669000, [2026, 9, 6, 1, 30, 0, 1, 249, 36, 3, 36], false),
+        ("America/Santiago", 1788672600, [2026, 9, 6, 2, 30, 0, 1, 249, 36, 3, 36], false),
+    ];
+
+    /// Time zone, period, instant in seconds, and the instant of the start of the period.
+    const TRUNCATIONS: &[(&str, &str, i64, i64)] = &[
+        ("Australia/Sydney", "year", 1767259800, 1767186000),
+        ("Australia/Sydney", "month", 1767259800, 1767186000),
+        ("Australia/Sydney", "week", 1767259800, 1766840400),
+        ("Australia/Sydney", "day", 1767259800, 1767186000),
+        ("Australia/Sydney", "hour", 1767259800, 1767258000),
+        ("Australia/Sydney", "minute", 1767259800, 1767259800),
+        ("Australia/Sydney", "year", 1767277800, 1767186000),
+        ("Australia/Sydney", "month", 1767277800, 1767186000),
+        ("Australia/Sydney", "week", 1767277800, 1766840400),
+        ("Australia/Sydney", "day", 1767277800, 1767272400),
+        ("Australia/Sydney", "hour", 1767277800, 1767276000),
+        ("Australia/Sydney", "minute", 1767277800, 1767277800),
+        ("Australia/Sydney", "year", 1775313000, 1767186000),
+        ("Australia/Sydney", "month", 1775313000, 1774962000),
+        ("Australia/Sydney", "week", 1775313000, 1775307600),
+        ("Australia/Sydney", "day", 1775313000, 1775307600),
+        ("Australia/Sydney", "hour", 1775313000, 1775311200),
+        ("Australia/Sydney", "minute", 1775313000, 1775313000),
+        ("Australia/Sydney", "year", 1775318399, 1767186000),
+        ("Australia/Sydney", "month", 1775318399, 1774962000),
+        ("Australia/Sydney", "week", 1775318399, 1775307600),
+        ("Australia/Sydney", "day", 1775318399, 1775307600),
+        ("Australia/Sydney", "hour", 1775318399, 1775314800),
+        ("Australia/Sydney", "minute", 1775318399, 1775318340),
+        ("Australia/Sydney", "year", 1775318400, 1767186000),
+        ("Australia/Sydney", "month", 1775318400, 1774962000),
+        ("Australia/Sydney", "week", 1775318400, 1775307600),
+        ("Australia/Sydney", "day", 1775318400, 1775307600),
+        ("Australia/Sydney", "hour", 1775318400, 1775318400),
+        ("Australia/Sydney", "minute", 1775318400, 1775318400),
+        ("Australia/Sydney", "year", 1775320200, 1767186000),
+        ("Australia/Sydney", "month", 1775320200, 1774962000),
+        ("Australia/Sydney", "week", 1775320200, 1775307600),
+        ("Australia/Sydney", "day", 1775320200, 1775307600),
+        ("Australia/Sydney", "hour", 1775320200, 1775318400),
+        ("Australia/Sydney", "minute", 1775320200, 1775320200),
+        ("Australia/Sydney", "year", 1775323800, 1767186000),
+        ("Australia/Sydney", "month", 1775323800, 1774962000),
+        ("Australia/Sydney", "week", 1775323800, 1775307600),
+        ("Australia/Sydney", "day", 1775323800, 1775307600),
+        ("Australia/Sydney", "hour", 1775323800, 1775322000),
+        ("Australia/Sydney", "minute", 1775323800, 1775323800),
+        ("Australia/Sydney", "year", 1782898200, 1767186000),
+        ("Australia/Sydney", "month", 1782898200, 1782828000),
+        ("Australia/Sydney", "week", 1782898200, 1782568800),
+        ("Australia/Sydney", "day", 1782898200, 1782828000),
+        ("Australia/Sydney", "hour", 1782898200, 1782896400),
+        ("Australia/Sydney", "minute", 1782898200, 1782898200),
+        ("Australia/Sydney", "year", 1791037800, 1767186000),
+        ("Australia/Sydney", "month", 1791037800, 1790776800),
+        ("Australia/Sydney", "week", 1791037800, 1791036000),
+        ("Australia/Sydney", "day", 1791037800, 1791036000),
+        ("Australia/Sydney", "hour", 1791037800, 1791036000),
+        ("Australia/Sydney", "minute", 1791037800, 1791037800),
+        ("Australia/Sydney", "year", 1791043199, 1767186000),
+        ("Australia/Sydney", "month", 1791043199, 1790776800),
+        ("Australia/Sydney", "week", 1791043199, 1791036000),
+        ("Australia/Sydney", "day", 1791043199, 1791036000),
+        ("Australia/Sydney", "hour", 1791043199, 1791039600),
+        ("Australia/Sydney", "minute", 1791043199, 1791043140),
+        ("Australia/Sydney", "year", 1791043200, 1767186000),
+        ("Australia/Sydney", "month", 1791043200, 1790776800),
+        ("Australia/Sydney", "week", 1791043200, 1791036000),
+        ("Australia/Sydney", "day", 1791043200, 1791036000),
+        ("Australia/Sydney", "hour", 1791043200, 1791043200),
+        ("Australia/Sydney", "minute", 1791043200, 1791043200),
+        ("Australia/Sydney", "year", 1791045000, 1767186000),
+        ("Australia/Sydney", "month", 1791045000, 1790776800),
+        ("Australia/Sydney", "week", 1791045000, 1791036000),
+        ("Australia/Sydney", "day", 1791045000, 1791036000),
+        ("Australia/Sydney", "hour", 1791045000, 1791043200),
+        ("Australia/Sydney", "minute", 1791045000, 1791045000),
+        ("Australia/Sydney", "year", 1791048600, 1767186000),
+        ("Australia/Sydney", "month", 1791048600, 1790776800),
+        ("Australia/Sydney", "week", 1791048600, 1791036000),
+        ("Australia/Sydney", "day", 1791048600, 1791036000),
+        ("Australia/Sydney", "hour", 1791048600, 1791046800),
+        ("Australia/Sydney", "minute", 1791048600, 1791048600),
+        ("America/New_York", "year", 1142856000, 1136091600),
+        ("America/New_York", "month", 1142856000, 1141189200),
+        ("America/New_York", "week", 1142856000, 1142744400),
+        ("America/New_York", "day", 1142856000, 1142830800),
+        ("America/New_York", "hour", 1142856000, 1142856000),
+        ("America/New_York", "minute", 1142856000, 1142856000),
+        ("America/New_York", "year", 1767259800, 1767243600),
+        ("America/New_York", "month", 1767259800, 1767243600),
+        ("America/New_York", "week", 1767259800, 1766898000),
+        ("America/New_York", "day", 1767259800, 1767243600),
+        ("America/New_York", "hour", 1767259800, 1767258000),
+        ("America/New_York", "minute", 1767259800, 1767259800),
+        ("America/New_York", "year", 1767277800, 1767243600),
+        ("America/New_York", "month", 1767277800, 1767243600),
+        ("America/New_York", "week", 1767277800, 1766898000),
+        ("America/New_York", "day", 1767277800, 1767243600),
+        ("America/New_York", "hour", 1767277800, 1767276000),
+        ("America/New_York", "minute", 1767277800, 1767277800),
+        ("America/New_York", "year", 1772947800, 1767243600),
+        ("America/New_York", "month", 1772947800, 1772341200),
+        ("America/New_York", "week", 1772947800, 1772946000),
+        ("America/New_York", "day", 1772947800, 1772946000),
+        ("America/New_York", "hour", 1772947800, 1772946000),
+        ("America/New_York", "minute", 1772947800, 1772947800),
+        ("America/New_York", "year", 1772953199, 1767243600),
+        ("America/New_York", "month", 1772953199, 1772341200),
+        ("America/New_York", "week", 1772953199, 1772946000),
+        ("America/New_York", "day", 1772953199, 1772946000),
+        ("America/New_York", "hour", 1772953199, 1772949600),
+        ("America/New_York", "minute", 1772953199, 1772953140),
+        ("America/New_York", "year", 1772953200, 1767243600),
+        ("America/New_York", "month", 1772953200, 1772341200),
+        ("America/New_York", "week", 1772953200, 1772946000),
+        ("America/New_York", "day", 1772953200, 1772946000),
+        ("America/New_York", "hour", 1772953200, 1772953200),
+        ("America/New_York", "minute", 1772953200, 1772953200),
+        ("America/New_York", "year", 1772955000, 1767243600),
+        ("America/New_York", "month", 1772955000, 1772341200),
+        ("America/New_York", "week", 1772955000, 1772946000),
+        ("America/New_York", "day", 1772955000, 1772946000),
+        ("America/New_York", "hour", 1772955000, 1772953200),
+        ("America/New_York", "minute", 1772955000, 1772955000),
+        ("America/New_York", "year", 1772958600, 1767243600),
+        ("America/New_York", "month", 1772958600, 1772341200),
+        ("America/New_York", "week", 1772958600, 1772946000),
+        ("America/New_York", "day", 1772958600, 1772946000),
+        ("America/New_York", "hour", 1772958600, 1772956800),
+        ("America/New_York", "minute", 1772958600, 1772958600),
+        ("America/New_York", "year", 1782898200, 1767243600),
+        ("America/New_York", "month", 1782898200, 1782878400),
+        ("America/New_York", "week", 1782898200, 1782619200),
+        ("America/New_York", "day", 1782898200, 1782878400),
+        ("America/New_York", "hour", 1782898200, 1782896400),
+        ("America/New_York", "minute", 1782898200, 1782898200),
+        ("America/New_York", "year", 1793507400, 1767243600),
+        ("America/New_York", "month", 1793507400, 1793505600),
+        ("America/New_York", "week", 1793507400, 1793505600),
+        ("America/New_York", "day", 1793507400, 1793505600),
+        ("America/New_York", "hour", 1793507400, 1793505600),
+        ("America/New_York", "minute", 1793507400, 1793507400),
+        ("America/New_York", "year", 1793512799, 1767243600),
+        ("America/New_York", "month", 1793512799, 1793505600),
+        ("America/New_York", "week", 1793512799, 1793505600),
+        ("America/New_York", "day", 1793512799, 1793505600),
+        ("America/New_York", "hour", 1793512799, 1793509200),
+        ("America/New_York", "minute", 1793512799, 1793512740),
+        ("America/New_York", "year", 1793512800, 1767243600),
+        ("America/New_York", "month", 1793512800, 1793505600),
+        ("America/New_York", "week", 1793512800, 1793505600),
+        ("America/New_York", "day", 1793512800, 1793505600),
+        ("America/New_York", "hour", 1793512800, 1793512800),
+        ("America/New_York", "minute", 1793512800, 1793512800),
+        ("America/New_York", "year", 1793514600, 1767243600),
+        ("America/New_York", "month", 1793514600, 1793505600),
+        ("America/New_York", "week", 1793514600, 1793505600),
+        ("America/New_York", "day", 1793514600, 1793505600),
+        ("America/New_York", "hour", 1793514600, 1793512800),
+        ("America/New_York", "minute", 1793514600, 1793514600),
+        ("America/New_York", "year", 1793518200, 1767243600),
+        ("America/New_York", "month", 1793518200, 1793505600),
+        ("America/New_York", "week", 1793518200, 1793505600),
+        ("America/New_York", "day", 1793518200, 1793505600),
+        ("America/New_York", "hour", 1793518200, 1793516400),
+        ("America/New_York", "minute", 1793518200, 1793518200),
+        ("Europe/London", "year", 0, -3600),
+        ("Europe/London", "month", 0, -3600),
+        ("Europe/London", "week", 0, -349200),
+        ("Europe/London", "day", 0, -3600),
+        ("Europe/London", "hour", 0, 0),
+        ("Europe/London", "minute", 0, 0),
+        ("Europe/London", "year", 1767259800, 1767225600),
+        ("Europe/London", "month", 1767259800, 1767225600),
+        ("Europe/London", "week", 1767259800, 1766880000),
+        ("Europe/London", "day", 1767259800, 1767225600),
+        ("Europe/London", "hour", 1767259800, 1767258000),
+        ("Europe/London", "minute", 1767259800, 1767259800),
+        ("Europe/London", "year", 1767277800, 1767225600),
+        ("Europe/London", "month", 1767277800, 1767225600),
+        ("Europe/London", "week", 1767277800, 1766880000),
+        ("Europe/London", "day", 1767277800, 1767225600),
+        ("Europe/London", "hour", 1767277800, 1767276000),
+        ("Europe/London", "minute", 1767277800, 1767277800),
+        ("Europe/London", "year", 1774740600, 1767225600),
+        ("Europe/London", "month", 1774740600, 1772323200),
+        ("Europe/London", "week", 1774740600, 1774137600),
+        ("Europe/London", "day", 1774740600, 1774656000),
+        ("Europe/London", "hour", 1774740600, 1774738800),
+        ("Europe/London", "minute", 1774740600, 1774740600),
+        ("Europe/London", "year", 1774745999, 1767225600),
+        ("Europe/London", "month", 1774745999, 1772323200),
+        ("Europe/London", "week", 1774745999, 1774742400),
+        ("Europe/London", "day", 1774745999, 1774742400),
+        ("Europe/London", "hour", 1774745999, 1774742400),
+        ("Europe/London", "minute", 1774745999, 1774745940),
+        ("Europe/London", "year", 1774746000, 1767225600),
+        ("Europe/London", "month", 1774746000, 1772323200),
+        ("Europe/London", "week", 1774746000, 1774742400),
+        ("Europe/London", "day", 1774746000, 1774742400),
+        ("Europe/London", "hour", 1774746000, 1774746000),
+        ("Europe/London", "minute", 1774746000, 1774746000),
+        ("Europe/London", "year", 1774747800, 1767225600),
+        ("Europe/London", "month", 1774747800, 1772323200),
+        ("Europe/London", "week", 1774747800, 1774742400),
+        ("Europe/London", "day", 1774747800, 1774742400),
+        ("Europe/London", "hour", 1774747800, 1774746000),
+        ("Europe/London", "minute", 1774747800, 1774747800),
+        ("Europe/London", "year", 1774751400, 1767225600),
+        ("Europe/London", "month", 1774751400, 1772323200),
+        ("Europe/London", "week", 1774751400, 1774742400),
+        ("Europe/London", "day", 1774751400, 1774742400),
+        ("Europe/London", "hour", 1774751400, 1774749600),
+        ("Europe/London", "minute", 1774751400, 1774751400),
+        ("Europe/London", "year", 1782898200, 1767225600),
+        ("Europe/London", "month", 1782898200, 1782860400),
+        ("Europe/London", "week", 1782898200, 1782601200),
+        ("Europe/London", "day", 1782898200, 1782860400),
+        ("Europe/London", "hour", 1782898200, 1782896400),
+        ("Europe/London", "minute", 1782898200, 1782898200),
+        ("Europe/London", "year", 1792884600, 1767225600),
+        ("Europe/London", "month", 1792884600, 1790809200),
+        ("Europe/London", "week", 1792884600, 1792882800),
+        ("Europe/London", "day", 1792884600, 1792882800),
+        ("Europe/London", "hour", 1792884600, 1792882800),
+        ("Europe/London", "minute", 1792884600, 1792884600),
+        ("Europe/London", "year", 1792889999, 1767225600),
+        ("Europe/London", "month", 1792889999, 1790809200),
+        ("Europe/London", "week", 1792889999, 1792882800),
+        ("Europe/London", "day", 1792889999, 1792882800),
+        ("Europe/London", "hour", 1792889999, 1792886400),
+        ("Europe/London", "minute", 1792889999, 1792889940),
+        ("Europe/London", "year", 1792890000, 1767225600),
+        ("Europe/London", "month", 1792890000, 1790809200),
+        ("Europe/London", "week", 1792890000, 1792882800),
+        ("Europe/London", "day", 1792890000, 1792882800),
+        ("Europe/London", "hour", 1792890000, 1792890000),
+        ("Europe/London", "minute", 1792890000, 1792890000),
+        ("Europe/London", "year", 1792891800, 1767225600),
+        ("Europe/London", "month", 1792891800, 1790809200),
+        ("Europe/London", "week", 1792891800, 1792882800),
+        ("Europe/London", "day", 1792891800, 1792882800),
+        ("Europe/London", "hour", 1792891800, 1792890000),
+        ("Europe/London", "minute", 1792891800, 1792891800),
+        ("Europe/London", "year", 1792895400, 1767225600),
+        ("Europe/London", "month", 1792895400, 1790809200),
+        ("Europe/London", "week", 1792895400, 1792882800),
+        ("Europe/London", "day", 1792895400, 1792882800),
+        ("Europe/London", "hour", 1792895400, 1792893600),
+        ("Europe/London", "minute", 1792895400, 1792895400),
+        ("Australia/Lord_Howe", "year", 1767259800, 1767186000),
+        ("Australia/Lord_Howe", "month", 1767259800, 1767186000),
+        ("Australia/Lord_Howe", "week", 1767259800, 1766840400),
+        ("Australia/Lord_Howe", "day", 1767259800, 1767186000),
+        ("Australia/Lord_Howe", "hour", 1767259800, 1767258000),
+        ("Australia/Lord_Howe", "minute", 1767259800, 1767259800),
+        ("Australia/Lord_Howe", "year", 1767277800, 1767186000),
+        ("Australia/Lord_Howe", "month", 1767277800, 1767186000),
+        ("Australia/Lord_Howe", "week", 1767277800, 1766840400),
+        ("Australia/Lord_Howe", "day", 1767277800, 1767272400),
+        ("Australia/Lord_Howe", "hour", 1767277800, 1767276000),
+        ("Australia/Lord_Howe", "minute", 1767277800, 1767277800),
+        ("Australia/Lord_Howe", "year", 1775309400, 1767186000),
+        ("Australia/Lord_Howe", "month", 1775309400, 1774962000),
+        ("Australia/Lord_Howe", "week", 1775309400, 1775307600),
+        ("Australia/Lord_Howe", "day", 1775309400, 1775307600),
+        ("Australia/Lord_Howe", "hour", 1775309400, 1775307600),
+        ("Australia/Lord_Howe", "minute", 1775309400, 1775309400),
+        ("Australia/Lord_Howe", "year", 1775314799, 1767186000),
+        ("Australia/Lord_Howe", "month", 1775314799, 1774962000),
+        ("Australia/Lord_Howe", "week", 1775314799, 1775307600),
+        ("Australia/Lord_Howe", "day", 1775314799, 1775307600),
+        ("Australia/Lord_Howe", "hour", 1775314799, 1775311200),
+        ("Australia/Lord_Howe", "minute", 1775314799, 1775314740),
+        ("Australia/Lord_Howe", "year", 1775314800, 1767186000),
+        ("Australia/Lord_Howe", "month", 1775314800, 1774962000),
+        ("Australia/Lord_Howe", "week", 1775314800, 1775307600),
+        ("Australia/Lord_Howe", "day", 1775314800, 1775307600),
+        ("Australia/Lord_Howe", "hour", 1775314800, 1775311200),
+        ("Australia/Lord_Howe", "minute", 1775314800, 1775314800),
+        ("Australia/Lord_Howe", "year", 1775316600, 1767186000),
+        ("Australia/Lord_Howe", "month", 1775316600, 1774962000),
+        ("Australia/Lord_Howe", "week", 1775316600, 1775307600),
+        ("Australia/Lord_Howe", "day", 1775316600, 1775307600),
+        ("Australia/Lord_Howe", "hour", 1775316600, 1775316600),
+        ("Australia/Lord_Howe", "minute", 1775316600, 1775316600),
+        ("Australia/Lord_Howe", "year", 1775320200, 1767186000),
+        ("Australia/Lord_Howe", "month", 1775320200, 1774962000),
+        ("Australia/Lord_Howe", "week", 1775320200, 1775307600),
+        ("Australia/Lord_Howe", "day", 1775320200, 1775307600),
+        ("Australia/Lord_Howe", "hour", 1775320200, 1775320200),
+        ("Australia/Lord_Howe", "minute", 1775320200, 1775320200),
+        ("Australia/Lord_Howe", "year", 1782898200, 1767186000),
+        ("Australia/Lord_Howe", "month", 1782898200, 1782826200),
+        ("Australia/Lord_Howe", "week", 1782898200, 1782567000),
+        ("Australia/Lord_Howe", "day", 1782898200, 1782826200),
+        ("Australia/Lord_Howe", "hour", 1782898200, 1782898200),
+        ("Australia/Lord_Howe", "minute", 1782898200, 1782898200),
+        ("Australia/Lord_Howe", "year", 1791036000, 1767186000),
+        ("Australia/Lord_Howe", "month", 1791036000, 1790775000),
+        ("Australia/Lord_Howe", "week", 1791036000, 1791034200),
+        ("Australia/Lord_Howe", "day", 1791036000, 1791034200),
+        ("Australia/Lord_Howe", "hour", 1791036000, 1791034200),
+        ("Australia/Lord_Howe", "minute", 1791036000, 1791036000),
+        ("Australia/Lord_Howe", "year", 1791041399, 1767186000),
+        ("Australia/Lord_Howe", "month", 1791041399, 1790775000),
+        ("Australia/Lord_Howe", "week", 1791041399, 1791034200),
+        ("Australia/Lord_Howe", "day", 1791041399, 1791034200),
+        ("Australia/Lord_Howe", "hour", 1791041399, 1791037800),
+        ("Australia/Lord_Howe", "minute", 1791041399, 1791041340),
+        ("Australia/Lord_Howe", "year", 1791041400, 1767186000),
+        ("Australia/Lord_Howe", "month", 1791041400, 1790775000),
+        ("Australia/Lord_Howe", "week", 1791041400, 1791034200),
+        ("Australia/Lord_Howe", "day", 1791041400, 1791034200),
+        ("Australia/Lord_Howe", "hour", 1791041400, 1791041400),
+        ("Australia/Lord_Howe", "minute", 1791041400, 1791041400),
+        ("Australia/Lord_Howe", "year", 1791043200, 1767186000),
+        ("Australia/Lord_Howe", "month", 1791043200, 1790775000),
+        ("Australia/Lord_Howe", "week", 1791043200, 1791034200),
+        ("Australia/Lord_Howe", "day", 1791043200, 1791034200),
+        ("Australia/Lord_Howe", "hour", 1791043200, 1791043200),
+        ("Australia/Lord_Howe", "minute", 1791043200, 1791043200),
+        ("Australia/Lord_Howe", "year", 1791046800, 1767186000),
+        ("Australia/Lord_Howe", "month", 1791046800, 1790775000),
+        ("Australia/Lord_Howe", "week", 1791046800, 1791034200),
+        ("Australia/Lord_Howe", "day", 1791046800, 1791034200),
+        ("Australia/Lord_Howe", "hour", 1791046800, 1791046800),
+        ("Australia/Lord_Howe", "minute", 1791046800, 1791046800),
+        ("Asia/Kolkata", "year", 1767259800, 1767205800),
+        ("Asia/Kolkata", "month", 1767259800, 1767205800),
+        ("Asia/Kolkata", "week", 1767259800, 1766860200),
+        ("Asia/Kolkata", "day", 1767259800, 1767205800),
+        ("Asia/Kolkata", "hour", 1767259800, 1767259800),
+        ("Asia/Kolkata", "minute", 1767259800, 1767259800),
+        ("Asia/Kolkata", "year", 1767277800, 1767205800),
+        ("Asia/Kolkata", "month", 1767277800, 1767205800),
+        ("Asia/Kolkata", "week", 1767277800, 1766860200),
+        ("Asia/Kolkata", "day", 1767277800, 1767205800),
+        ("Asia/Kolkata", "hour", 1767277800, 1767277800),
+        ("Asia/Kolkata", "minute", 1767277800, 1767277800),
+        ("Asia/Kolkata", "year", 1782898200, 1767205800),
+        ("Asia/Kolkata", "month", 1782898200, 1782844200),
+        ("Asia/Kolkata", "week", 1782898200, 1782585000),
+        ("Asia/Kolkata", "day", 1782898200, 1782844200),
+        ("Asia/Kolkata", "hour", 1782898200, 1782898200),
+        ("Asia/Kolkata", "minute", 1782898200, 1782898200),
+        ("Asia/Kathmandu", "year", 1767259800, 1767204900),
+        ("Asia/Kathmandu", "month", 1767259800, 1767204900),
+        ("Asia/Kathmandu", "week", 1767259800, 1766859300),
+        ("Asia/Kathmandu", "day", 1767259800, 1767204900),
+        ("Asia/Kathmandu", "hour", 1767259800, 1767258900),
+        ("Asia/Kathmandu", "minute", 1767259800, 1767259800),
+        ("Asia/Kathmandu", "year", 1767277800, 1767204900),
+        ("Asia/Kathmandu", "month", 1767277800, 1767204900),
+        ("Asia/Kathmandu", "week", 1767277800, 1766859300),
+        ("Asia/Kathmandu", "day", 1767277800, 1767204900),
+        ("Asia/Kathmandu", "hour", 1767277800, 1767276900),
+        ("Asia/Kathmandu", "minute", 1767277800, 1767277800),
+        ("Asia/Kathmandu", "year", 1782898200, 1767204900),
+        ("Asia/Kathmandu", "month", 1782898200, 1782843300),
+        ("Asia/Kathmandu", "week", 1782898200, 1782584100),
+        ("Asia/Kathmandu", "day", 1782898200, 1782843300),
+        ("Asia/Kathmandu", "hour", 1782898200, 1782897300),
+        ("Asia/Kathmandu", "minute", 1782898200, 1782898200),
+        ("America/Havana", "year", 1767259800, 1767243600),
+        ("America/Havana", "month", 1767259800, 1767243600),
+        ("America/Havana", "week", 1767259800, 1766898000),
+        ("America/Havana", "day", 1767259800, 1767243600),
+        ("America/Havana", "hour", 1767259800, 1767258000),
+        ("America/Havana", "minute", 1767259800, 1767259800),
+        ("America/Havana", "year", 1767277800, 1767243600),
+        ("America/Havana", "month", 1767277800, 1767243600),
+        ("America/Havana", "week", 1767277800, 1766898000),
+        ("America/Havana", "day", 1767277800, 1767243600),
+        ("America/Havana", "hour", 1767277800, 1767276000),
+        ("America/Havana", "minute", 1767277800, 1767277800),
+        ("America/Havana", "year", 1772940600, 1767243600),
+        ("America/Havana", "month", 1772940600, 1772341200),
+        ("America/Havana", "week", 1772940600, 1772341200),
+        ("America/Havana", "day", 1772940600, 1772859600),
+        ("America/Havana", "hour", 1772940600, 1772938800),
+        ("America/Havana", "minute", 1772940600, 1772940600),
+        ("America/Havana", "year", 1772945999, 1767243600),
+        ("America/Havana", "month", 1772945999, 1772341200),
+        ("America/Havana", "week", 1772945999, 1772341200),
+        ("America/Havana", "day", 1772945999, 1772859600),
+        ("America/Havana", "hour", 1772945999, 1772942400),
+        ("America/Havana", "minute", 1772945999, 1772945940),
+        ("America/Havana", "year", 1772946000, 1767243600),
+        ("America/Havana", "month", 1772946000, 1772341200),
+        ("America/Havana", "week", 1772946000, 1772946000),
+        ("America/Havana", "day", 1772946000, 1772946000),
+        ("America/Havana", "hour", 1772946000, 1772946000),
+        ("America/Havana", "minute", 1772946000, 1772946000),
+        ("America/Havana", "year", 1772947800, 1767243600),
+        ("America/Havana", "month", 1772947800, 1772341200),
+        ("America/Havana", "week", 1772947800, 1772946000),
+        ("America/Havana", "day", 1772947800, 1772946000),
+        ("America/Havana", "hour", 1772947800, 1772946000),
+        ("America/Havana", "minute", 1772947800, 1772947800),
+        ("America/Havana", "year", 1772951400, 1767243600),
+        ("America/Havana", "month", 1772951400, 1772341200),
+        ("America/Havana", "week", 1772951400, 1772946000),
+        ("America/Havana", "day", 1772951400, 1772946000),
+        ("America/Havana", "hour", 1772951400, 1772949600),
+        ("America/Havana", "minute", 1772951400, 1772951400),
+        ("America/Havana", "year", 1782898200, 1767243600),
+        ("America/Havana", "month", 1782898200, 1782878400),
+        ("America/Havana", "week", 1782898200, 1782619200),
+        ("America/Havana", "day", 1782898200, 1782878400),
+        ("America/Havana", "hour", 1782898200, 1782896400),
+        ("America/Havana", "minute", 1782898200, 1782898200),
+        ("America/Havana", "year", 1793503800, 1767243600),
+        ("America/Havana", "month", 1793503800, 1790827200),
+        ("America/Havana", "week", 1793503800, 1792900800),
+        ("America/Havana", "day", 1793503800, 1793419200),
+        ("America/Havana", "hour", 1793503800, 1793502000),
+        ("America/Havana", "minute", 1793503800, 1793503800),
+        ("America/Havana", "year", 1793509199, 1767243600),
+        ("America/Havana", "month", 1793509199, 1793505600),
+        ("America/Havana", "week", 1793509199, 1793505600),
+        ("America/Havana", "day", 1793509199, 1793505600),
+        ("America/Havana", "hour", 1793509199, 1793505600),
+        ("America/Havana", "minute", 1793509199, 1793509140),
+        ("America/Havana", "year", 1793509200, 1767243600),
+        ("America/Havana", "month", 1793509200, 1793509200),
+        ("America/Havana", "week", 1793509200, 1793509200),
+        ("America/Havana", "day", 1793509200, 1793509200),
+        ("America/Havana", "hour", 1793509200, 1793509200),
+        ("America/Havana", "minute", 1793509200, 1793509200),
+        ("America/Havana", "year", 1793511000, 1767243600),
+        ("America/Havana", "month", 1793511000, 1793509200),
+        ("America/Havana", "week", 1793511000, 1793509200),
+        ("America/Havana", "day", 1793511000, 1793509200),
+        ("America/Havana", "hour", 1793511000, 1793509200),
+        ("America/Havana", "minute", 1793511000, 1793511000),
+        ("America/Havana", "year", 1793514600, 1767243600),
+        ("America/Havana", "month", 1793514600, 1793509200),
+        ("America/Havana", "week", 1793514600, 1793509200),
+        ("America/Havana", "day", 1793514600, 1793509200),
+        ("America/Havana", "hour", 1793514600, 1793512800),
+        ("America/Havana", "minute", 1793514600, 1793514600),
+        ("Asia/Beirut", "year", 1767259800, 1767218400),
+        ("Asia/Beirut", "month", 1767259800, 1767218400),
+        ("Asia/Beirut", "week", 1767259800, 1766872800),
+        ("Asia/Beirut", "day", 1767259800, 1767218400),
+        ("Asia/Beirut", "hour", 1767259800, 1767258000),
+        ("Asia/Beirut", "minute", 1767259800, 1767259800),
+        ("Asia/Beirut", "year", 1767277800, 1767218400),
+        ("Asia/Beirut", "month", 1767277800, 1767218400),
+        ("Asia/Beirut", "week", 1767277800, 1766872800),
+        ("Asia/Beirut", "day", 1767277800, 1767218400),
+        ("Asia/Beirut", "hour", 1767277800, 1767276000),
+        ("Asia/Beirut", "minute", 1767277800, 1767277800),
+        ("Asia/Beirut", "year", 1774729800, 1767218400),
+        ("Asia/Beirut", "month", 1774729800, 1772316000),
+        ("Asia/Beirut", "week", 1774729800, 1774130400),
+        ("Asia/Beirut", "day", 1774729800, 1774648800),
+        ("Asia/Beirut", "hour", 1774729800, 1774728000),
+        ("Asia/Beirut", "minute", 1774729800, 1774729800),
+        ("Asia/Beirut", "year", 1774735199, 1767218400),
+        ("Asia/Beirut", "month", 1774735199, 1772316000),
+        ("Asia/Beirut", "week", 1774735199, 1774130400),
+        ("Asia/Beirut", "day", 1774735199, 1774648800),
+        ("Asia/Beirut", "hour", 1774735199, 1774731600),
+        ("Asia/Beirut", "minute", 1774735199, 1774735140),
+        ("Asia/Beirut", "year", 1774735200, 1767218400),
+        ("Asia/Beirut", "month", 1774735200, 1772316000),
+        ("Asia/Beirut", "week", 1774735200, 1774735200),
+        ("Asia/Beirut", "day", 1774735200, 1774735200),
+        ("Asia/Beirut", "hour", 1774735200, 1774735200),
+        ("Asia/Beirut", "minute", 1774735200, 1774735200),
+        ("Asia/Beirut", "year", 1774737000, 1767218400),
+        ("Asia/Beirut", "month", 1774737000, 1772316000),
+        ("Asia/Beirut", "week", 1774737000, 1774735200),
+        ("Asia/Beirut", "day", 1774737000, 1774735200),
+        ("Asia/Beirut", "hour", 1774737000, 1774735200),
+        ("Asia/Beirut", "minute", 1774737000, 1774737000),
+        ("Asia/Beirut", "year", 1774740600, 1767218400),
+        ("Asia/Beirut", "month", 1774740600, 1772316000),
+        ("Asia/Beirut", "week", 1774740600, 1774735200),
+        ("Asia/Beirut", "day", 1774740600, 1774735200),
+        ("Asia/Beirut", "hour", 1774740600, 1774738800),
+        ("Asia/Beirut", "minute", 1774740600, 1774740600),
+        ("Asia/Beirut", "year", 1782898200, 1767218400),
+        ("Asia/Beirut", "month", 1782898200, 1782853200),
+        ("Asia/Beirut", "week", 1782898200, 1782594000),
+        ("Asia/Beirut", "day", 1782898200, 1782853200),
+        ("Asia/Beirut", "hour", 1782898200, 1782896400),
+        ("Asia/Beirut", "minute", 1782898200, 1782898200),
+        ("Asia/Beirut", "year", 1792870200, 1767218400),
+        ("Asia/Beirut", "month", 1792870200, 1790802000),
+        ("Asia/Beirut", "week", 1792870200, 1792270800),
+        ("Asia/Beirut", "day", 1792870200, 1792789200),
+        ("Asia/Beirut", "hour", 1792870200, 1792868400),
+        ("Asia/Beirut", "minute", 1792870200, 1792870200),
+        ("Asia/Beirut", "year", 1792875599, 1767218400),
+        ("Asia/Beirut", "month", 1792875599, 1790802000),
+        ("Asia/Beirut", "week", 1792875599, 1792270800),
+        ("Asia/Beirut", "day", 1792875599, 1792789200),
+        ("Asia/Beirut", "hour", 1792875599, 1792872000),
+        ("Asia/Beirut", "minute", 1792875599, 1792875540),
+        ("Asia/Beirut", "year", 1792875600, 1767218400),
+        ("Asia/Beirut", "month", 1792875600, 1790802000),
+        ("Asia/Beirut", "week", 1792875600, 1792270800),
+        ("Asia/Beirut", "day", 1792875600, 1792789200),
+        ("Asia/Beirut", "hour", 1792875600, 1792875600),
+        ("Asia/Beirut", "minute", 1792875600, 1792875600),
+        ("Asia/Beirut", "year", 1792877400, 1767218400),
+        ("Asia/Beirut", "month", 1792877400, 1790802000),
+        ("Asia/Beirut", "week", 1792877400, 1792270800),
+        ("Asia/Beirut", "day", 1792877400, 1792789200),
+        ("Asia/Beirut", "hour", 1792877400, 1792875600),
+        ("Asia/Beirut", "minute", 1792877400, 1792877400),
+        ("Asia/Beirut", "year", 1792881000, 1767218400),
+        ("Asia/Beirut", "month", 1792881000, 1790802000),
+        ("Asia/Beirut", "week", 1792881000, 1792879200),
+        ("Asia/Beirut", "day", 1792881000, 1792879200),
+        ("Asia/Beirut", "hour", 1792881000, 1792879200),
+        ("Asia/Beirut", "minute", 1792881000, 1792881000),
+        ("America/Santiago", "year", 1767259800, 1767236400),
+        ("America/Santiago", "month", 1767259800, 1767236400),
+        ("America/Santiago", "week", 1767259800, 1766890800),
+        ("America/Santiago", "day", 1767259800, 1767236400),
+        ("America/Santiago", "hour", 1767259800, 1767258000),
+        ("America/Santiago", "minute", 1767259800, 1767259800),
+        ("America/Santiago", "year", 1767277800, 1767236400),
+        ("America/Santiago", "month", 1767277800, 1767236400),
+        ("America/Santiago", "week", 1767277800, 1766890800),
+        ("America/Santiago", "day", 1767277800, 1767236400),
+        ("America/Santiago", "hour", 1767277800, 1767276000),
+        ("America/Santiago", "minute", 1767277800, 1767277800),
+        ("America/Santiago", "year", 1775352600, 1767236400),
+        ("America/Santiago", "month", 1775352600, 1775012400),
+        ("America/Santiago", "week", 1775352600, 1774753200),
+        ("America/Santiago", "day", 1775352600, 1775271600),
+        ("America/Santiago", "hour", 1775352600, 1775350800),
+        ("America/Santiago", "minute", 1775352600, 1775352600),
+        ("America/Santiago", "year", 1775357999, 1767236400),
+        ("America/Santiago", "month", 1775357999, 1775012400),
+        ("America/Santiago", "week", 1775357999, 1774753200),
+        ("America/Santiago", "day", 1775357999, 1775271600),
+        ("America/Santiago", "hour", 1775357999, 1775354400),
+        ("America/Santiago", "minute", 1775357999, 1775357940),
+        ("America/Santiago", "year", 1775358000, 1767236400),
+        ("America/Santiago", "month", 1775358000, 1775012400),
+        ("America/Santiago", "week", 1775358000, 1774753200),
+        ("America/Santiago", "day", 1775358000, 1775271600),
+        ("America/Santiago", "hour", 1775358000, 1775358000),
+        ("America/Santiago", "minute", 1775358000, 1775358000),
+        ("America/Santiago", "year", 1775359800, 1767236400),
+        ("America/Santiago", "month", 1775359800, 1775012400),
+        ("America/Santiago", "week", 1775359800, 1774753200),
+        ("America/Santiago", "day", 1775359800, 1775271600),
+        ("America/Santiago", "hour", 1775359800, 1775358000),
+        ("America/Santiago", "minute", 1775359800, 1775359800),
+        ("America/Santiago", "year", 1775363400, 1767236400),
+        ("America/Santiago", "month", 1775363400, 1775012400),
+        ("America/Santiago", "week", 1775363400, 1775361600),
+        ("America/Santiago", "day", 1775363400, 1775361600),
+        ("America/Santiago", "hour", 1775363400, 1775361600),
+        ("America/Santiago", "minute", 1775363400, 1775363400),
+        ("America/Santiago", "year", 1782898200, 1767236400),
+        ("America/Santiago", "month", 1782898200, 1782878400),
+        ("America/Santiago", "week", 1782898200, 1782619200),
+        ("America/Santiago", "day", 1782898200, 1782878400),
+        ("America/Santiago", "hour", 1782898200, 1782896400),
+        ("America/Santiago", "minute", 1782898200, 1782898200),
+        ("America/Santiago", "year", 1788661800, 1767236400),
+        ("America/Santiago", "month", 1788661800, 1788235200),
+        ("America/Santiago", "week", 1788661800, 1788062400),
+        ("America/Santiago", "day", 1788661800, 1788580800),
+        ("America/Santiago", "hour", 1788661800, 1788660000),
+        ("America/Santiago", "minute", 1788661800, 1788661800),
+        ("America/Santiago", "year", 1788667199, 1767236400),
+        ("America/Santiago", "month", 1788667199, 1788235200),
+        ("America/Santiago", "week", 1788667199, 1788062400),
+        ("America/Santiago", "day", 1788667199, 1788580800),
+        ("America/Santiago", "hour", 1788667199, 1788663600),
+        ("America/Santiago", "minute", 1788667199, 1788667140),
+        ("America/Santiago", "year", 1788667200, 1767236400),
+        ("America/Santiago", "month", 1788667200, 1788235200),
+        ("America/Santiago", "week", 1788667200, 1788667200),
+        ("America/Santiago", "day", 1788667200, 1788667200),
+        ("America/Santiago", "hour", 1788667200, 1788667200),
+        ("America/Santiago", "minute", 1788667200, 1788667200),
+        ("America/Santiago", "year", 1788669000, 1767236400),
+        ("America/Santiago", "month", 1788669000, 1788235200),
+        ("America/Santiago", "week", 1788669000, 1788667200),
+        ("America/Santiago", "day", 1788669000, 1788667200),
+        ("America/Santiago", "hour", 1788669000, 1788667200),
+        ("America/Santiago", "minute", 1788669000, 1788669000),
+        ("America/Santiago", "year", 1788672600, 1767236400),
+        ("America/Santiago", "month", 1788672600, 1788235200),
+        ("America/Santiago", "week", 1788672600, 1788667200),
+        ("America/Santiago", "day", 1788672600, 1788667200),
+        ("America/Santiago", "hour", 1788672600, 1788670800),
+        ("America/Santiago", "minute", 1788672600, 1788672600),
+    ];
+
+    /// Time zone, instant in seconds, months added, and the resulting instant.
+    const MONTHS: &[(&str, i64, i32, i64)] = &[
+        ("Australia/Sydney", 1788453000, 1, 1791045000),
+        ("Australia/Sydney", 1772638200, 1, 1775316600),
+        ("Australia/Sydney", 1773529200, 1, 1776211200),
+        ("Australia/Sydney", 1769807700, 1, 1772226900),
+        ("Australia/Sydney", 1782871200, 6, 1798765200),
+        ("Australia/Sydney", 1782871200, -6, 1767229200),
+        ("America/New_York", 1770535800, 1, 1772955000),
+        ("America/New_York", 1790832600, 1, 1793511000),
+        ("America/New_York", 1768485600, 12, 1800021600),
+        ("America/New_York", 1709215200, 12, 1740751200),
+        ("Europe/London", 1772242200, 1, 1774661400),
+        ("Europe/London", 1772242200, 13, 1806197400),
+        ("Australia/Lord_Howe", 1788450300, 1, 1791042300),
+        ("America/Havana", 1770528600, 1, 1772947800),
+        ("America/Havana", 1790829000, 1, 1793507400),
+        ("Asia/Kolkata", 1769884140, 1, 1772303340),
+        ("Asia/Kathmandu", 1780189200, -3, 1772240400),
+    ];
+
+    const UNITS: [(TimeUnit, i64); 4] = [
+        (TimeUnit::Seconds, 1),
+        (TimeUnit::Milliseconds, 1_000),
+        (TimeUnit::Microseconds, 1_000_000),
+        (TimeUnit::Nanoseconds, 1_000_000_000),
+    ];
+
+    fn zoned(values: &[i64], tz: &str, unit: TimeUnit) -> DatetimeArray<i64> {
+        DatetimeArray::<i64>::from_slice(values, Dt::Timestamp(unit, Some(tz.into())))
+    }
+
+    fn components(arr: &DatetimeArray<i64>, row: usize) -> [i32; 11] {
+        [
+            arr.year().data[row],
+            arr.month().data[row],
+            arr.day().data[row],
+            arr.hour().data[row],
+            arr.minute().data[row],
+            arr.second().data[row],
+            arr.weekday().data[row],
+            arr.day_of_year().data[row],
+            arr.iso_week().data[row],
+            arr.quarter().data[row],
+            arr.week_of_year().data[row],
+        ]
+    }
+
+    #[test]
+    fn test_components_read_the_wall_time_of_the_time_zone() {
+        for (unit, scale) in UNITS {
+            for (tz, instant, fields, leap) in COMPONENTS {
+                // A fraction of a second is added for the sub-second units.
+                let value = instant * scale + scale / 4;
+                let arr = zoned(&[value], tz, unit);
+                assert_eq!(components(&arr, 0), *fields, "{tz} at {instant} in {unit:?}");
+                assert_eq!(arr.is_leap_year().get(0), Some(*leap), "{tz} at {instant}");
+                // The stored value is the UTC value.
+                assert_eq!(arr.data[0], value);
+            }
+        }
+    }
+
+    #[test]
+    fn test_truncation_writes_the_utc_value_of_the_period_start_on_the_wall_clock() {
+        for (unit, scale) in UNITS {
+            for (tz, period, instant, start) in TRUNCATIONS {
+                let value = instant * scale + scale / 4;
+                let arr = zoned(&[value], tz, unit);
+                let truncated = arr.truncate(*period);
+                assert_eq!(
+                    truncated.data[0],
+                    start * scale,
+                    "{tz} at {instant} to the {period} in {unit:?}"
+                );
+                assert_eq!(truncated.dtype, arr.dtype);
+                assert_eq!(arr.data[0], value);
+            }
+        }
+    }
+
+    #[test]
+    fn test_add_months_keeps_the_wall_time_and_writes_its_utc_value() {
+        for (unit, scale) in UNITS {
+            for (tz, instant, months, result) in MONTHS {
+                let value = instant * scale + scale / 4;
+                let arr = zoned(&[value], tz, unit);
+                let added = arr.add_months(*months).unwrap();
+                assert_eq!(
+                    added.data[0],
+                    result * scale + scale / 4,
+                    "{tz} at {instant} plus {months} months in {unit:?}"
+                );
+                assert_eq!(added.dtype, arr.dtype);
+                assert_eq!(arr.data[0], value);
+            }
+        }
+    }
+
+    #[test]
+    fn test_add_years_adds_twelve_months_on_the_wall_time() {
+        for (tz, instant, months, result) in MONTHS.iter().filter(|case| case.2 == 12) {
+            let arr = zoned(&[*instant], tz, TimeUnit::Seconds);
+            assert_eq!(arr.add_years(months / 12).unwrap().data[0], *result, "{tz} at {instant}");
+        }
+    }
+
+    #[test]
+    fn test_null_rows_stay_null_and_other_rows_read_their_wall_time() {
+        let rows: Vec<&(&str, i64, [i32; 11], bool)> = COMPONENTS
+            .iter()
+            .filter(|row| row.0 == "Australia/Sydney")
+            .collect();
+        let values: Vec<i64> = rows.iter().map(|row| row.1).collect();
+        let mut arr = zoned(&values, "Australia/Sydney", TimeUnit::Seconds);
+        let mut mask = Bitmask::new_set_all(values.len(), true);
+        mask.set(1, false);
+        arr.null_mask = Some(mask);
+
+        let hours = arr.hour();
+        let days = arr.truncate(TimePeriod::Day);
+        for (i, row) in rows.iter().enumerate() {
+            assert_eq!(hours.is_null(i), i == 1);
+            assert_eq!(days.is_null(i), i == 1);
+            if i != 1 {
+                assert_eq!(hours.data[i], row.2[3], "row {i}");
+            }
+        }
+        assert_eq!(&arr.data[..], &values[..]);
+    }
+
+    #[test]
+    fn test_views_and_the_temporal_enum_read_the_wall_time_of_the_time_zone() {
+        let rows: Vec<&(&str, i64, [i32; 11], bool)> = COMPONENTS
+            .iter()
+            .filter(|row| row.0 == "America/New_York")
+            .collect();
+        let values: Vec<i64> = rows.iter().map(|row| row.1).collect();
+        let temporal = TemporalArray::Datetime64(Arc::new(zoned(
+            &values,
+            "America/New_York",
+            TimeUnit::Seconds,
+        )));
+
+        let hours = temporal.hour();
+        let days = temporal.day();
+        let leap = temporal.is_leap_year();
+        for (i, row) in rows.iter().enumerate() {
+            assert_eq!(hours.data[i], row.2[3], "enum row {i}");
+            assert_eq!(days.data[i], row.2[2], "enum row {i}");
+            assert_eq!(leap.get(i), Some(row.3), "enum row {i}");
+        }
+
+        // The view covers the rows after the first one.
+        let view = TemporalArrayV::new(temporal, 1, values.len() - 1);
+        let hours = view.hour();
+        let days = view.day();
+        let weekdays = view.weekday();
+        let leap = view.is_leap_year();
+        for (i, row) in rows.iter().skip(1).enumerate() {
+            assert_eq!(hours.data[i], row.2[3], "view row {i}");
+            assert_eq!(days.data[i], row.2[2], "view row {i}");
+            assert_eq!(weekdays.data[i], row.2[6], "view row {i}");
+            assert_eq!(leap.get(i), Some(row.3), "view row {i}");
+        }
+    }
+
+    #[test]
+    fn test_output_buffer_kernels_read_the_wall_time_of_the_time_zone() {
+        let rows: Vec<&(&str, i64, [i32; 11], bool)> = COMPONENTS
+            .iter()
+            .filter(|row| row.0 == "Australia/Lord_Howe")
+            .collect();
+        let values: Vec<i64> = rows.iter().map(|row| row.1).collect();
+        let arr = zoned(&values, "Australia/Lord_Howe", TimeUnit::Seconds);
+
+        // The window covers the rows after the first one.
+        let len = values.len() - 1;
+        let mut hours = vec![0i32; len];
+        let mut minutes = vec![0i32; len];
+        let mut mask = Bitmask::new_set_all(len, true);
+        hour_into(&arr, 1, &mut hours, Some(&mut mask));
+        minute_into(&arr, 1, &mut minutes, None);
+        let mut leap = Bitmask::new_set_all(len, false);
+        is_leap_year_into(&arr, 1, &mut leap, None);
+        for (i, row) in rows.iter().skip(1).enumerate() {
+            assert_eq!((hours[i], minutes[i]), (row.2[3], row.2[4]), "row {i}");
+            assert_eq!(leap.get(i), row.3, "row {i}");
+            assert!(mask.get(i));
+        }
+    }
+
+    #[test]
+    fn test_instant_operations_return_the_values_of_arrays_without_a_time_zone() {
+        let values: Vec<i64> = COMPONENTS.iter().map(|row| row.1 * 1_000 + 250).collect();
+        let later: Vec<i64> = values.iter().map(|value| value + 5_400_000).collect();
+        let plain = DatetimeArray::<i64>::from_slice(&values, Dt::Timestamp(TimeUnit::Milliseconds, None));
+        let plain_later =
+            DatetimeArray::<i64>::from_slice(&later, Dt::Timestamp(TimeUnit::Milliseconds, None));
+        let arr = zoned(&values, "Australia/Sydney", TimeUnit::Milliseconds);
+        let arr_later = zoned(&later, "Australia/Sydney", TimeUnit::Milliseconds);
+
+        let duration = Duration::hours(36);
+        assert_eq!(
+            &arr.add_duration(duration).unwrap().data[..],
+            &plain.add_duration(duration).unwrap().data[..]
+        );
+        assert_eq!(
+            &arr.sub_duration(duration).unwrap().data[..],
+            &plain.sub_duration(duration).unwrap().data[..]
+        );
+        // `add_days` adds days of 24 hours to the instant.
+        assert_eq!(&arr.add_days(1).unwrap().data[..], &plain.add_days(1).unwrap().data[..]);
+        assert_eq!(
+            &arr_later.diff(&arr, TimeUnit::Seconds).unwrap().data[..],
+            &plain_later.diff(&plain, TimeUnit::Seconds).unwrap().data[..]
+        );
+        assert_eq!(arr.is_before(&arr_later).unwrap(), plain.is_before(&plain_later).unwrap());
+        assert_eq!(arr.is_after(&arr_later).unwrap(), plain.is_after(&plain_later).unwrap());
+        assert_eq!(
+            &arr.cast_time_unit(TimeUnit::Seconds).unwrap().data[..],
+            &plain.cast_time_unit(TimeUnit::Seconds).unwrap().data[..]
+        );
+        // Truncation to seconds is not affected by offsets of whole seconds.
+        assert_eq!(&arr.sec().data[..], &plain.sec().data[..]);
+    }
+
+    #[test]
+    fn test_unresolved_time_zone_text_is_read_as_utc() {
+        let values: Vec<i64> = COMPONENTS.iter().map(|row| row.1).collect();
+        let plain = DatetimeArray::<i64>::from_slice(&values, Dt::Timestamp(TimeUnit::Seconds, None));
+        let arr = zoned(&values, "Mars/Olympus_Mons", TimeUnit::Seconds);
+        assert_eq!(&arr.hour().data[..], &plain.hour().data[..]);
+        assert_eq!(&arr.day().data[..], &plain.day().data[..]);
+        assert_eq!(
+            &arr.truncate(TimePeriod::Day).data[..],
+            &plain.truncate(TimePeriod::Day).data[..]
+        );
+        assert_eq!(&arr.add_months(1).unwrap().data[..], &plain.add_months(1).unwrap().data[..]);
+    }
+
+    #[test]
+    fn test_offsets_and_abbreviations_shift_the_wall_time_by_their_fixed_offset() {
+        // 2026-01-01 09:30:00 UTC.
+        let arr = zoned(&[1_767_259_800], "+05:30", TimeUnit::Seconds);
+        assert_eq!((arr.hour().data[0], arr.minute().data[0]), (15, 0));
+        let arr = zoned(&[1_767_259_800], "-08:00", TimeUnit::Seconds);
+        assert_eq!((arr.day().data[0], arr.hour().data[0]), (1, 1));
+        let arr = zoned(&[1_767_259_800], "AEST", TimeUnit::Seconds);
+        assert_eq!((arr.hour().data[0], arr.minute().data[0]), (19, 30));
+        // The day starts at 14:00 UTC of the previous day at ten hours ahead of UTC.
+        assert_eq!(arr.truncate(TimePeriod::Day).data[0], 1_767_189_600);
+    }
+
+    #[test]
+    fn test_printed_text_and_components_read_the_same_wall_time() {
+        for (tz, instant, fields, _) in COMPONENTS {
+            let arr = zoned(&[*instant], tz, TimeUnit::Seconds);
+            let text = Array::from_datetime_i64(arr.clone()).value_to_string(0);
+            // The text is `YYYY-MM-DD HH:MM:SS` followed by the offset and the time zone.
+            let printed: Vec<i32> = [0..4, 5..7, 8..10, 11..13, 14..16, 17..19]
+                .into_iter()
+                .map(|range| text[range].parse().unwrap())
+                .collect();
+            assert_eq!(printed, fields[..6], "{tz} at {instant} prints {text}");
+            assert_eq!(components(&arr, 0)[..6], fields[..6]);
+        }
     }
 }

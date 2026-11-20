@@ -219,11 +219,13 @@ datetime_ops = ["dep:time", "datetime"]
 # - Wall times and UTC offsets for IANA identifiers such as `Australia/Sydney`,
 #   including daylight saving and historical transitions
 # - Fixed offsets for abbreviations such as `AEST`, and for offsets such as `+10:00`
+# - Display, component extraction, truncation and month arithmetic on the wall time
+#   of the time zone
 #
-# The IANA Time Zone Database is compiled into the binary as static data,
-# which adds about 400 KB to the binary.
+# Stored values stay UTC integers. The IANA Time Zone Database is compiled into the
+# binary as static data, which adds about 400 KB to the binary.
 #
-# Without this feature, timestamps with a time zone are printed in UTC.
+# Without this feature, timestamps with a time zone are printed and computed in UTC.
 time_zones = ["datetime_ops", "dep:tzdb_data"]
 
 # Adds string arithmetic kernels

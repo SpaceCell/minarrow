@@ -441,62 +441,15 @@ where
     format!("{v}{suffix}")
 }
 
-/// Returns the UTC offset in effect at `unix_seconds` for the time zone text `tz`.
-///
-/// ## Behaviour
-/// - Time zone abbreviations listed in `abbreviation_offset` return their fixed offset.
-/// - IANA identifiers return the offset of that instant from the IANA Time
-///   Zone Database, which includes daylight saving and historical transitions.
-/// - `UTC`, `Z` and offsets such as `+05:00` and `+0530` return that offset.
-///
-/// Returns `None` for any other text.
+/// Returns the UTC offset in effect at `unix_seconds` for the time zone text
+/// `tz`, or `None` for text that `utc_offset_seconds` does not resolve.
 #[cfg(feature = "time_zones")]
 fn timezone_offset(tz: &str, unix_seconds: i64) -> Option<time::UtcOffset> {
-    use crate::structs::variants::datetime::tz::abbreviation_offset;
+    use crate::structs::variants::datetime::tz::utc_offset_seconds;
     use time::UtcOffset;
 
-    let tz = match abbreviation_offset(tz) {
-        Some(offset) => offset,
-        None => {
-            if let Some(zone) = tzdb_data::find_tz(tz.as_bytes()) {
-                let seconds = zone.find_local_time_type(unix_seconds).ok()?.ut_offset();
-                return UtcOffset::from_whole_seconds(seconds).ok();
-            }
-            tz
-        }
-    }
-    .trim();
-
-    // Handle UTC specially
-    if tz.eq_ignore_ascii_case("UTC") || tz.eq_ignore_ascii_case("Z") {
-        return Some(UtcOffset::UTC);
-    }
-
-    // Parse offset strings like "+05:00", "-08:00", "+0530"
-    if !tz.starts_with('+') && !tz.starts_with('-') {
-        return None;
-    }
-
-    let (sign, rest) = tz.split_at(1);
-    let sign = if sign == "+" { 1 } else { -1 };
-
-    // Try parsing HH:MM format
-    if let Some((hours_str, mins_str)) = rest.split_once(':') {
-        let hours: i8 = hours_str.parse().ok()?;
-        let mins: i8 = mins_str.parse().ok()?;
-        let seconds = sign * (hours as i32 * 3600 + mins as i32 * 60);
-        return UtcOffset::from_whole_seconds(seconds).ok();
-    }
-
-    // Try parsing HHMM format
-    if rest.len() == 4 {
-        let hours: i8 = rest[0..2].parse().ok()?;
-        let mins: i8 = rest[2..4].parse().ok()?;
-        let seconds = sign * (hours as i32 * 3600 + mins as i32 * 60);
-        return UtcOffset::from_whole_seconds(seconds).ok();
-    }
-
-    None
+    let seconds = utc_offset_seconds(tz)?(unix_seconds);
+    UtcOffset::from_whole_seconds(i32::try_from(seconds).ok()?).ok()
 }
 
 #[cfg(test)]
