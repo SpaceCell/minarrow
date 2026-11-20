@@ -304,8 +304,9 @@ pub(crate) fn print_ndarray_body<T: Float + Display>(
 ///   `2026-01-01 14:30:00+05:00`. Time zone text other than an offset follows
 ///   the value, as in `2026-01-01 18:30:00+09:00 Asia/Tokyo`.
 /// - Time zones that observe daylight saving time, and time zones absent from
-///   the time zone tables, print the UTC value with `+00:00` and the time zone
-///   text, because the tables hold offsets without transition dates.
+///   the time zone tables, print the UTC value with `+00:00` and without the
+///   time zone text. The tables hold their offsets without transition dates,
+///   and the time zone text is printed only beside the wall time of that zone.
 /// - `Time32` and `Time64` print the time of day as `HH:MM:SS`, with the
 ///   fraction digits of their time unit.
 /// - `Duration32` and `Duration64` print the stored count with its time unit
@@ -383,10 +384,12 @@ where
                     let is_offset_text = tz.starts_with(['+', '-'])
                         || tz.eq_ignore_ascii_case("UTC")
                         || tz.eq_ignore_ascii_case("Z");
-                    return if offset.is_some() && is_offset_text {
-                        text
-                    } else {
+                    // The time zone text follows wall times of that zone only. Values
+                    // printed in UTC end with their `+00:00` offset.
+                    return if offset.is_some() && !is_offset_text {
                         format!("{text} {tz}")
+                    } else {
+                        text
                     };
                 }
             }
@@ -705,7 +708,7 @@ mod tests {
 
     #[cfg(feature = "datetime_ops")]
     #[test]
-    fn test_timestamp_with_unresolved_zone_prints_utc_value_and_zone_text() {
+    fn test_timestamp_with_unresolved_zone_prints_utc_value_with_utc_offset() {
         use crate::{Dt, TimeUnit};
         let arr = timestamp_array(
             &[Some(1_767_259_800), None],
@@ -713,19 +716,19 @@ mod tests {
         );
         assert_datetime_text(
             arr,
-            &["2026-01-01 09:30:00+00:00 Mars/Olympus_Mons", "null"],
+            &["2026-01-01 09:30:00+00:00", "null"],
         );
     }
 
     #[cfg(feature = "datetime_ops")]
     #[test]
-    fn test_timestamp_with_daylight_saving_zone_prints_utc_value_and_zone_text() {
+    fn test_timestamp_with_daylight_saving_zone_prints_utc_value_with_utc_offset() {
         use crate::{Dt, TimeUnit};
         let arr = timestamp_array(
             &[Some(1_767_259_800), None],
             Dt::Timestamp(TimeUnit::Seconds, Some("Australia/Sydney".into())),
         );
-        assert_datetime_text(arr, &["2026-01-01 09:30:00+00:00 Australia/Sydney", "null"]);
+        assert_datetime_text(arr, &["2026-01-01 09:30:00+00:00", "null"]);
     }
 
     #[cfg(feature = "datetime_ops")]
