@@ -294,19 +294,26 @@ pub(crate) fn print_ndarray_body<T: Float + Display>(
 
 /// Formats the datetime value at `idx` according to the array's `Dt`.
 ///
-/// Under `datetime_ops`, dates and timestamps print in ISO form:
+/// ## Behaviour
+/// With `datetime_ops`:
 /// - `Date32` and `Date64` print as `YYYY-MM-DD`.
-/// - `Timestamp` prints as `YYYY-MM-DD HH:MM:SS`, with fractional seconds
-///   only when they are not zero, using the fewest digits needed.
-/// - Timestamps with a time zone that resolves to an offset print the local
-///   wall time, the offset and the time zone text, as in
-///   `2026-01-01 19:30:00 +10:00:00 Australia/Sydney`.
-///   Unresolved time zones print the UTC value followed by the time zone text.
-/// - `Time32`, `Time64` and `Duration` values print through the `time` crate's
-///   `OffsetDateTime` display.
+/// - `Timestamp` prints as `YYYY-MM-DD HH:MM:SS`, followed by the fraction
+///   digits of its time unit: 3 for milliseconds, 6 for microseconds and 9 for
+///   nanoseconds. The values of an array therefore print at one width.
+/// - Timestamps with a time zone print the wall time and the UTC offset, as in
+///   `2026-01-01 14:30:00+05:00`. Time zone text other than an offset follows
+///   the value, as in `2026-01-01 18:30:00+09:00 Asia/Tokyo`.
+/// - Time zones that observe daylight saving time, and time zones absent from
+///   the time zone tables, print the UTC value with `+00:00` and the time zone
+///   text, because the tables hold offsets without transition dates.
+/// - `Time32` and `Time64` print the time of day as `HH:MM:SS`, with the
+///   fraction digits of their time unit.
+/// - `Duration32` and `Duration64` print the stored count with its time unit
+///   suffix, as in `90s`.
 ///
-/// Without `datetime_ops`, and for values outside the supported date range, the
-/// raw integer prints with its time unit suffix. Nulls print as `null`.
+/// Without `datetime_ops`, and for dates and timestamps outside the `time`
+/// crate's date range, the stored integer prints with its time unit suffix.
+/// Nulls print as `null`.
 #[cfg(feature = "datetime")]
 pub(crate) fn format_datetime_value<T>(arr: &DatetimeArray<T>, idx: usize) -> String
 where
@@ -320,42 +327,87 @@ where
     #[cfg(feature = "datetime_ops")]
     {
         use crate::Dt;
-        use time::OffsetDateTime;
-        use time::macros::format_description;
+        use time::{OffsetDateTime, UtcOffset};
 
-        // The conversion depends only on the time unit, and is shared with `DatetimeOps`.
+        let unit = arr.time_unit();
         let value = arr.data[idx].to_i64().unwrap();
-        if let Some(utc_dt) = DatetimeArray::<i64>::i64_to_datetime(value, arr.time_unit()) {
-            let date_format = format_description!("[year]-[month]-[day]");
-            let whole_seconds_format =
-                format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
-            let fractional_seconds_format =
-                format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond]");
 
-            let format_timestamp = |dt: OffsetDateTime| {
-                let text = if dt.nanosecond() == 0 {
-                    dt.format(whole_seconds_format)
-                } else {
-                    dt.format(fractional_seconds_format)
+        // The time unit fixes the number of fraction digits.
+        let fraction = |nanosecond: u32| match unit {
+            TimeUnit::Milliseconds => format!(".{:03}", nanosecond / 1_000_000),
+            TimeUnit::Microseconds => format!(".{:06}", nanosecond / 1_000),
+            TimeUnit::Nanoseconds => format!(".{:09}", nanosecond),
+            TimeUnit::Seconds | TimeUnit::Days => String::new(),
+        };
+        let format_date = |dt: OffsetDateTime| {
+            format!("{:04}-{:02}-{:02}", dt.year(), u8::from(dt.month()), dt.day())
+        };
+        let format_timestamp = |dt: OffsetDateTime| {
+            format!(
+                "{} {:02}:{:02}:{:02}{}",
+                format_date(dt),
+                dt.hour(),
+                dt.minute(),
+                dt.second(),
+                fraction(dt.nanosecond())
+            )
+        };
+
+        match &arr.dtype {
+            Dt::Date32 | Dt::Date64 => {
+                // The conversion depends only on the time unit, and is shared with `DatetimeOps`.
+                if let Some(dt) = DatetimeArray::<i64>::i64_to_datetime(value, unit) {
+                    return format_date(dt);
+                }
+            }
+            Dt::Timestamp(_, None) => {
+                if let Some(dt) = DatetimeArray::<i64>::i64_to_datetime(value, unit) {
+                    return format_timestamp(dt);
+                }
+            }
+            Dt::Timestamp(_, Some(tz)) => {
+                let offset = parse_timezone_offset(tz);
+                let local_dt = DatetimeArray::<i64>::i64_to_datetime(value, unit)
+                    .and_then(|dt| dt.checked_to_offset(offset.unwrap_or(UtcOffset::UTC)));
+                if let Some(local_dt) = local_dt {
+                    let seconds = local_dt.offset().whole_seconds();
+                    let sign = if seconds < 0 { '-' } else { '+' };
+                    let text = format!(
+                        "{}{}{:02}:{:02}",
+                        format_timestamp(local_dt),
+                        sign,
+                        seconds.abs() / 3_600,
+                        seconds.abs() / 60 % 60
+                    );
+                    // Time zone text that is an offset is already printed with the value.
+                    let is_offset_text = tz.starts_with(['+', '-'])
+                        || tz.eq_ignore_ascii_case("UTC")
+                        || tz.eq_ignore_ascii_case("Z");
+                    return if offset.is_some() && is_offset_text {
+                        text
+                    } else {
+                        format!("{text} {tz}")
+                    };
+                }
+            }
+            Dt::Time32(_) | Dt::Time64(_) if value >= 0 && unit != TimeUnit::Days => {
+                let per_second: i64 = match unit {
+                    TimeUnit::Milliseconds => 1_000,
+                    TimeUnit::Microseconds => 1_000_000,
+                    TimeUnit::Nanoseconds => 1_000_000_000,
+                    TimeUnit::Seconds | TimeUnit::Days => 1,
                 };
-                text.unwrap_or_else(|_| dt.to_string())
-            };
-
-            return match &arr.dtype {
-                Dt::Date32 | Dt::Date64 => utc_dt
-                    .format(date_format)
-                    .unwrap_or_else(|_| utc_dt.to_string()),
-                Dt::Timestamp(_, None) => format_timestamp(utc_dt),
-                Dt::Timestamp(_, Some(tz)) => match parse_timezone_offset(tz) {
-                    Some(offset) => {
-                        let local_dt = utc_dt.to_offset(offset);
-                        format!("{} {} {}", format_timestamp(local_dt), local_dt.offset(), tz)
-                    }
-                    // Time zones without a known offset print the UTC value and the time zone text.
-                    None => format!("{} {}", utc_dt, tz),
-                },
-                _ => utc_dt.to_string(),
-            };
+                let seconds = value / per_second;
+                let nanosecond = (value % per_second * (1_000_000_000 / per_second)) as u32;
+                return format!(
+                    "{:02}:{:02}:{:02}{}",
+                    seconds / 3_600,
+                    seconds / 60 % 60,
+                    seconds % 60,
+                    fraction(nanosecond)
+                );
+            }
+            _ => {}
         }
     }
 
@@ -370,10 +422,23 @@ where
     format!("{v}{suffix}")
 }
 
+/// Returns the UTC offset of the time zone text `tz`, for offsets, time zone
+/// abbreviations and IANA identifiers with one offset throughout the year.
+///
+/// Returns `None` for IANA identifiers that observe daylight saving time,
+/// because the time zone tables hold their two offsets without the dates on
+/// which each applies, and for text absent from the tables.
 #[cfg(all(feature = "datetime", feature = "datetime_ops"))]
 fn parse_timezone_offset(tz: &str) -> Option<time::UtcOffset> {
-    use crate::structs::variants::datetime::tz::lookup_timezone;
+    use crate::structs::variants::datetime::tz::{TZ_DATABASE, lookup_timezone};
     use time::UtcOffset;
+
+    if TZ_DATABASE
+        .get(tz)
+        .is_some_and(|info| info.std_offset != info.dst_offset)
+    {
+        return None;
+    }
 
     // First try timezone database lookup (handles IANA IDs, abbreviations, and direct offsets)
     let tz_offset = lookup_timezone(tz)?;
@@ -504,13 +569,6 @@ mod tests {
     // `FieldArray` Display for each value of a 64-bit datetime array.
     #[cfg(feature = "datetime_ops")]
     fn assert_datetime_text(arr: crate::DatetimeArray<i64>, expected: &[&str]) {
-        // Values of zoned timestamps print the time zone text given to the array.
-        if let crate::Dt::Timestamp(_, Some(tz)) = &arr.dtype {
-            for text in expected.iter().filter(|text| **text != "null") {
-                assert!(text.ends_with(&format!(" {tz}")), "{text} should end with {tz}");
-            }
-        }
-
         let list = format!("[{}]", expected.join(", "));
         assert_eq!(arr.to_string().lines().last(), Some(list.as_str()));
 
@@ -562,7 +620,7 @@ mod tests {
 
     #[cfg(feature = "datetime_ops")]
     #[test]
-    fn test_timestamp_milliseconds_prints_fraction_when_not_zero() {
+    fn test_timestamp_milliseconds_prints_three_fraction_digits() {
         use crate::{Dt, TimeUnit};
         let arr = timestamp_array(
             &[Some(1_767_259_800_123), Some(1_767_259_800_000), None],
@@ -570,13 +628,13 @@ mod tests {
         );
         assert_datetime_text(
             arr,
-            &["2026-01-01 09:30:00.123", "2026-01-01 09:30:00", "null"],
+            &["2026-01-01 09:30:00.123", "2026-01-01 09:30:00.000", "null"],
         );
     }
 
     #[cfg(feature = "datetime_ops")]
     #[test]
-    fn test_timestamp_microseconds_prints_fewest_fraction_digits() {
+    fn test_timestamp_microseconds_prints_six_fraction_digits() {
         use crate::{Dt, TimeUnit};
         let arr = timestamp_array(
             &[Some(1_767_259_800_500_000), Some(1_767_259_800_000_000), Some(1_767_259_800_000_250)],
@@ -584,13 +642,13 @@ mod tests {
         );
         assert_datetime_text(
             arr,
-            &["2026-01-01 09:30:00.5", "2026-01-01 09:30:00", "2026-01-01 09:30:00.00025"],
+            &["2026-01-01 09:30:00.500000", "2026-01-01 09:30:00.000000", "2026-01-01 09:30:00.000250"],
         );
     }
 
     #[cfg(feature = "datetime_ops")]
     #[test]
-    fn test_timestamp_nanoseconds_prints_fraction_when_not_zero() {
+    fn test_timestamp_nanoseconds_prints_nine_fraction_digits() {
         use crate::{Dt, TimeUnit};
         let arr = timestamp_array(
             &[Some(1_767_259_800_000_000_001), Some(1_767_259_800_000_000_000), None],
@@ -598,7 +656,7 @@ mod tests {
         );
         assert_datetime_text(
             arr,
-            &["2026-01-01 09:30:00.000000001", "2026-01-01 09:30:00", "null"],
+            &["2026-01-01 09:30:00.000000001", "2026-01-01 09:30:00.000000000", "null"],
         );
     }
 
@@ -612,31 +670,37 @@ mod tests {
         );
         assert_datetime_text(
             arr,
-            &["2026-01-01 14:30:00 +05:00:00 +05:00", "2026-01-01 14:30:00.25 +05:00:00 +05:00", "null"],
+            &["2026-01-01 14:30:00.000000+05:00", "2026-01-01 14:30:00.250000+05:00", "null"],
         );
 
         let arr = timestamp_array(
             &[Some(1_767_259_800)],
             Dt::Timestamp(TimeUnit::Seconds, Some("-08:00".into())),
         );
-        assert_datetime_text(arr, &["2026-01-01 01:30:00 -08:00:00 -08:00"]);
+        assert_datetime_text(arr, &["2026-01-01 01:30:00-08:00"]);
     }
 
     #[cfg(feature = "datetime_ops")]
     #[test]
-    fn test_timestamp_with_named_zone_prints_local_time_and_offset() {
+    fn test_timestamp_with_fixed_offset_zone_prints_local_time_offset_and_zone() {
         use crate::{Dt, TimeUnit};
         let arr = timestamp_array(
             &[Some(1_767_259_800_000), None],
             Dt::Timestamp(TimeUnit::Milliseconds, Some("Asia/Tokyo".into())),
         );
-        assert_datetime_text(arr, &["2026-01-01 18:30:00 +09:00:00 Asia/Tokyo", "null"]);
+        assert_datetime_text(arr, &["2026-01-01 18:30:00.000+09:00 Asia/Tokyo", "null"]);
+
+        let arr = timestamp_array(
+            &[Some(1_767_259_800)],
+            Dt::Timestamp(TimeUnit::Seconds, Some("AEST".into())),
+        );
+        assert_datetime_text(arr, &["2026-01-01 19:30:00+10:00 AEST"]);
 
         let arr = timestamp_array(
             &[Some(1_767_259_800)],
             Dt::Timestamp(TimeUnit::Seconds, Some("UTC".into())),
         );
-        assert_datetime_text(arr, &["2026-01-01 09:30:00 +00:00:00 UTC"]);
+        assert_datetime_text(arr, &["2026-01-01 09:30:00+00:00"]);
     }
 
     #[cfg(feature = "datetime_ops")]
@@ -649,8 +713,48 @@ mod tests {
         );
         assert_datetime_text(
             arr,
-            &["2026-01-01 9:30:00.0 +00:00:00 Mars/Olympus_Mons", "null"],
+            &["2026-01-01 09:30:00+00:00 Mars/Olympus_Mons", "null"],
         );
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_timestamp_with_daylight_saving_zone_prints_utc_value_and_zone_text() {
+        use crate::{Dt, TimeUnit};
+        let arr = timestamp_array(
+            &[Some(1_767_259_800), None],
+            Dt::Timestamp(TimeUnit::Seconds, Some("Australia/Sydney".into())),
+        );
+        assert_datetime_text(arr, &["2026-01-01 09:30:00+00:00 Australia/Sydney", "null"]);
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_time_of_day_prints_hours_minutes_seconds() {
+        use crate::{DatetimeArray, Dt, TimeUnit};
+        let mut arr = DatetimeArray::<i32>::from_slice(&[34_200, 0, 86_399, 0], Dt::Time32(TimeUnit::Seconds));
+        arr.null_mask = Some(crate::Bitmask::from_bools(&[true, true, true, false]));
+        assert_eq!(arr.to_string().lines().last(), Some("[09:30:00, 00:00:00, 23:59:59, null]"));
+
+        let arr = timestamp_array(
+            &[Some(34_200_250_000), Some(0), None],
+            Dt::Time64(TimeUnit::Microseconds),
+        );
+        assert_datetime_text(arr, &["09:30:00.250000", "00:00:00.000000", "null"]);
+
+        let arr = timestamp_array(&[Some(34_200_000_000_001)], Dt::Time64(TimeUnit::Nanoseconds));
+        assert_datetime_text(arr, &["09:30:00.000000001"]);
+    }
+
+    #[cfg(feature = "datetime_ops")]
+    #[test]
+    fn test_durations_print_count_with_unit_suffix() {
+        use crate::{DatetimeArray, Dt, TimeUnit};
+        let arr = timestamp_array(&[Some(90), Some(-5), None], Dt::Duration64(TimeUnit::Seconds));
+        assert_datetime_text(arr, &["90s", "-5s", "null"]);
+
+        let arr = DatetimeArray::<i32>::from_slice(&[1_500], Dt::Duration32(TimeUnit::Milliseconds));
+        assert_eq!(arr.to_string().lines().last(), Some("[1500ms]"));
     }
 
     #[cfg(all(feature = "datetime", not(feature = "datetime_ops")))]
