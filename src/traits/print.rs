@@ -307,7 +307,7 @@ pub(crate) fn print_ndarray_body<T: Float + Display>(
 /// - `Duration32` and `Duration64` print the stored count with its time unit
 ///   suffix, as in `90s`.
 ///
-/// With `time_zones`, which adds about 400 KB to the binary:
+/// With `time_zones`:
 /// - Timestamps with a time zone print the wall time of that time zone and
 ///   its UTC offset at that instant, as in `2026-01-01 14:30:00+05:00`. Time
 ///   zone text other than an offset follows the value, as in

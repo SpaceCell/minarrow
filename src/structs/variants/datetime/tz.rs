@@ -28,7 +28,7 @@
 //! where an exact reading is required.
 //!
 //! This module is part of the `time_zones` feature, which compiles the IANA
-//! Time Zone Database into the binary and adds about 400 KB to it.
+//! Time Zone Database into the binary.
 
 use std::cell::Cell;
 
