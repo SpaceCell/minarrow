@@ -376,3 +376,21 @@ fn test_data_selector_boxed_resolve_axis_forwards() {
     let full: Box<dyn DataSelector + Send + Sync> = DataSelector::to_owned(&..);
     assert_eq!(full.resolve_axis(5), (0, 5, false));
 }
+
+#[test]
+fn test_array_selectors_equal_their_reference_forms() {
+    let table = create_test_table();
+
+    let by_names = table.c(["name", "value"]);
+    let by_names_ref = table.c(&["name", "value"]);
+    assert_eq!(by_names.col_names(), by_names_ref.col_names());
+
+    let by_indices = table.c([0, 2]);
+    let by_indices_ref = table.c(&[0, 2]);
+    assert_eq!(by_indices.col_names(), by_indices_ref.col_names());
+
+    let rows = table.r([0, 2, 4]);
+    let rows_ref = table.r(&[0, 2, 4]);
+    assert_eq!(rows.n_rows(), 3);
+    assert_eq!(rows.n_rows(), rows_ref.n_rows());
+}

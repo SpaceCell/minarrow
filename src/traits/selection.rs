@@ -112,7 +112,8 @@ pub trait ColumnSelection {
     /// # Examples
     /// ```ignore
     /// table.c("age")           // single column by name
-    /// table.c(&["a", "b"])     // multiple columns by name
+    /// table.c(["a", "b"])       // multiple columns by name
+    /// table.c(&["a", "b"])     // multiple columns by name, by reference
     /// table.c(0)               // single column by index
     /// table.c(0..3)            // columns by range
     /// ```
@@ -126,7 +127,8 @@ pub trait ColumnSelection {
     /// # Examples
     /// ```ignore
     /// table.col("age")         // single column by name
-    /// table.c(&["a", "b"])     // multiple columns by name
+    /// table.c(["a", "b"])       // multiple columns by name
+    /// table.c(&["a", "b"])     // multiple columns by name, by reference
     /// table.c(0)               // single column by index
     /// table.c(0..3)            // columns by range
     /// ```
@@ -159,7 +161,8 @@ pub trait RowSelection {
     /// # Examples
     /// ```ignore
     /// table.r(5)               // single row
-    /// table.r(&[1, 3, 5])      // specific rows
+    /// table.r([1, 3, 5])       // specific rows
+    /// table.r(&[1, 3, 5])      // specific rows, by reference
     /// table.r(0..10)           // row range
     /// ```
     fn r<S: DataSelector>(&self, selection: S) -> Self::View;
@@ -172,7 +175,8 @@ pub trait RowSelection {
     /// # Examples
     /// ```ignore
     /// table.row(5)             // single row
-    /// table.r(&[1, 3, 5])      // specific rows
+    /// table.r([1, 3, 5])       // specific rows
+    /// table.r(&[1, 3, 5])      // specific rows, by reference
     /// table.r(0..10)           // row range
     /// ```
     fn row(&self, idx: usize) -> Self::View {
@@ -249,7 +253,7 @@ impl<T> Selection2D for T where
 }
 
 // These allow users to pass names, indices, and ranges when selecting fields.
-// For example: table.c("age"), table.c(&["name", "age"]), table.c(0..3)
+// For example: table.c("age"), table.c(["name", "age"]), table.c(&["name", "age"]), table.c(0..3)
 
 /// Single field by name
 impl FieldSelector for &str {
@@ -279,6 +283,18 @@ impl FieldSelector for &[&str] {
 
 /// Multiple fields by names (array reference)
 impl<const N: usize> FieldSelector for &[&str; N] {
+    fn resolve_fields(&self, fields: &[Arc<Field>]) -> Vec<usize> {
+        self.iter()
+            .filter_map(|name| fields.iter().position(|f| f.name == *name))
+            .collect()
+    }
+    fn to_owned(&self) -> Box<dyn FieldSelector + Send + Sync> {
+        Box::new(self.iter().map(|s| s.to_string()).collect::<Vec<String>>())
+    }
+}
+
+/// Multiple fields by names (array)
+impl<const N: usize> FieldSelector for [&str; N] {
     fn resolve_fields(&self, fields: &[Arc<Field>]) -> Vec<usize> {
         self.iter()
             .filter_map(|name| fields.iter().position(|f| f.name == *name))
@@ -342,6 +358,19 @@ impl FieldSelector for &[usize] {
 
 /// Multiple fields by indices (array reference)
 impl<const N: usize> FieldSelector for &[usize; N] {
+    fn resolve_fields(&self, fields: &[Arc<Field>]) -> Vec<usize> {
+        self.iter()
+            .copied()
+            .filter(|&idx| idx < fields.len())
+            .collect()
+    }
+    fn to_owned(&self) -> Box<dyn FieldSelector + Send + Sync> {
+        Box::new(self.to_vec())
+    }
+}
+
+/// Multiple fields by indices (array)
+impl<const N: usize> FieldSelector for [usize; N] {
     fn resolve_fields(&self, fields: &[Arc<Field>]) -> Vec<usize> {
         self.iter()
             .copied()
@@ -431,7 +460,7 @@ impl FieldSelector for Box<dyn FieldSelector + Send + Sync> {
 }
 
 // These allow users to pass indices and ranges when selecting data (rows, time, etc.).
-// For example: table.r(5), table.r(&[1, 3, 5]), table.r(0..10)
+// For example: table.r(5), table.r([1, 3, 5]), table.r(&[1, 3, 5]), table.r(0..10)
 
 /// Single data index
 impl DataSelector for usize {
@@ -523,6 +552,23 @@ impl DataSelector for &[usize] {
 
 /// Multiple data indices (array reference)
 impl<const N: usize> DataSelector for &[usize; N] {
+    fn resolve_mask(&self, count: usize) -> Bitmask {
+        let mut mask = Bitmask::new_set_all(count, false);
+        for &idx in self.iter() {
+            if idx < count {
+                mask.set_true(idx);
+            }
+        }
+        mask
+    }
+
+    fn to_owned(&self) -> Box<dyn DataSelector + Send + Sync> {
+        Box::new(self.to_vec())
+    }
+}
+
+/// Multiple data indices (array)
+impl<const N: usize> DataSelector for [usize; N] {
     fn resolve_mask(&self, count: usize) -> Bitmask {
         let mut mask = Bitmask::new_set_all(count, false);
         for &idx in self.iter() {
