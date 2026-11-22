@@ -133,6 +133,20 @@ impl Matrix {
         }
     }
 
+    /// Constructs a Matrix with shape, optional name and every element set to
+    /// `value`.
+    ///
+    /// The column padding stays zeroed, as with [`Matrix::new`].
+    pub fn fill(n_rows: usize, n_cols: usize, value: f64, name: Option<impl Into<String>>) -> Self {
+        let mut out = Self::new(n_rows, n_cols, name);
+        let stride = out.stride;
+        let data = Arc::make_mut(&mut out.data).as_mut_slice();
+        for j in 0..n_cols {
+            data[j * stride..j * stride + n_rows].fill(value);
+        }
+        out
+    }
+
     /// Constructs a Matrix from a pre-padded Vec64 buffer.
     /// The buffer must already have `stride * n_cols` elements with the correct
     /// stride layout. Use `from_f64_unaligned` if your data is unpadded.
@@ -1428,6 +1442,18 @@ mod buffer_sharing_tests {
             before,
             "a sole owner must write in place rather than copy"
         );
+    }
+
+    #[test]
+    fn fill_sets_every_element_and_leaves_padding_zeroed() {
+        let m = Matrix::fill(3, 2, f64::NAN, Some("filled"));
+        assert_eq!((m.n_rows, m.n_cols, m.stride), (3, 2, 8));
+        assert_eq!(m.name.as_deref(), Some("filled"));
+        for j in 0..2 {
+            assert!(m.col(j).iter().all(|v| v.is_nan()));
+            assert!(m.as_slice()[j * m.stride + 3..(j + 1) * m.stride].iter().all(|&v| v == 0.0));
+        }
+        assert_eq!(Matrix::fill(2, 2, 0.0, None::<String>), Matrix::new(2, 2, None::<String>));
     }
 
     #[test]
