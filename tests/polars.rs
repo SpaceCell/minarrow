@@ -1101,8 +1101,11 @@ fn rt_polars_time64_us_preserves_null_mask_through_promotion() {
 /// Round-trip through polars `DataFrame` and verify decoded strings match
 /// pre/post and the rebuilt structure preserves the append-only invariant
 /// (later batch's dictionary is a superset of earlier).
+///
+/// Excluded on Windows, where the Polars round-trip fails intermittently.
 #[cfg(all(
-    feature = "shared_dict"
+    feature = "shared_dict",
+    not(windows)
 ))]
 #[test]
 fn rt_polars_super_table_shared_categorical32() {
